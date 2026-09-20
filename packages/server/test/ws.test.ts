@@ -1,9 +1,19 @@
 import type { AddressInfo } from "net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
-import { responseTokens } from "../src/stream";
+
+vi.mock("../src/llm", () => ({
+    streamLlmResponse: vi.fn(async function* (prompt: string) {
+        if (prompt === "boom") {
+            throw new Error("model exploded");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        yield "Hello,";
+        yield " World!";
+    }),
+}));
 
 const server = createApp().listen(0);
 attachChatServer(server);
@@ -19,12 +29,6 @@ afterAll(() => {
     server.close();
 });
 
-describe("responseTokens", () => {
-    it("returns the streaming tokens for a prompt", () => {
-        expect(responseTokens("hi")).toEqual(["Hello,", " World!"]);
-    });
-});
-
 describe("chat websocket", () => {
     it("streams the response as chunks and finishes with done", async () => {
         const { chunks, done, error } = await exchange({ prompt: "hi" });
@@ -38,6 +42,23 @@ describe("chat websocket", () => {
         expect(error).toMatch(/prompt/i);
         expect(done).toBe(true);
         expect(chunks).toEqual([]);
+    });
+
+    it("replies with an error frame when the model request fails", async () => {
+        const { chunks, done, error } = await exchange({ prompt: "boom" });
+        expect(error).toMatch(/model request failed/);
+        expect(done).toBe(true);
+        expect(chunks).toEqual([]);
+    });
+
+    it("rejects a new prompt while the previous response is streaming", async () => {
+        const result = await exchangeMany(
+            [{ prompt: "first" }, { prompt: "second" }],
+            2,
+        );
+        expect(result.chunks.join("")).toBe("Hello, World!");
+        expect(result.errors.join(";")).toMatch(/in progress/);
+        expect(result.dones).toBe(2);
     });
 });
 
@@ -65,6 +86,46 @@ function exchange(payload: unknown): Promise<{
                 done = true;
                 ws.close();
                 resolve({ chunks, done, error });
+            }
+        });
+        ws.on("error", reject);
+    });
+}
+
+/** Sends every payload in order on one socket, resolving after `expectedDones`. */
+function exchangeMany(
+    payloads: unknown[],
+    expectedDones: number,
+): Promise<{
+    chunks: string[];
+    errors: string[];
+    dones: number;
+}> {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        const chunks: string[] = [];
+        const errors: string[] = [];
+        let dones = 0;
+
+        ws.on("open", () => {
+            for (const payload of payloads) {
+                ws.send(JSON.stringify(payload));
+            }
+        });
+        ws.on("message", (data) => {
+            const msg = JSON.parse(data.toString());
+            if (typeof msg.chunk === "string") {
+                chunks.push(msg.chunk);
+            }
+            if (typeof msg.error === "string") {
+                errors.push(msg.error);
+            }
+            if (msg.done === true) {
+                dones += 1;
+                if (dones === expectedDones) {
+                    ws.close();
+                    resolve({ chunks, errors, dones });
+                }
             }
         });
         ws.on("error", reject);

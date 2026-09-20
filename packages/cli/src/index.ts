@@ -18,8 +18,8 @@ const rl = readline.createInterface({
     output: process.stdout,
 });
 
-console.log(`Jarvis CLI — connected to ${serverUrl}`);
-console.log(
+console.info(`Jarvis CLI — connected to ${serverUrl}`);
+console.info(
     `Type a prompt and press Enter. Type 'exit' or press Ctrl+C to quit.`,
 );
 

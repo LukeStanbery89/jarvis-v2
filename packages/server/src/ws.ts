@@ -8,9 +8,7 @@
 import type { Server } from "http";
 import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
-import { responseTokens } from "./stream";
-
-const STREAM_DELAY_MS = 150;
+import { streamLlmResponse } from "./llm";
 
 /**
  * Attaches the WebSocket chat server to an HTTP server and returns it.
@@ -19,27 +17,39 @@ const STREAM_DELAY_MS = 150;
  * connections on the `"/ws"` path.
  */
 export function attachChatServer(httpServer: Server): WebSocketServer {
-    console.info("Attaching WebSocket server to HTTP server");
+    console.info("[INFO] Attaching WebSocket server to HTTP server...");
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
     wss.on("connection", (socket) => {
-        console.info(`New WebSocket connection from ${socket.url}`);
-        socket.on("message", (raw) => handleMessage(raw, socket));
+        console.info("[INFO] New WebSocket connection");
+        let active: Promise<void> | null = null;
+
+        socket.on("message", (raw) => {
+            if (active) {
+                console.warn(
+                    "[WARN] Rejecting prompt: another request is already in progress",
+                );
+                sendError(socket, "another request is already in progress");
+                return;
+            }
+            active = handleMessage(raw, socket).finally(() => {
+                active = null;
+            });
+        });
     });
 
-    console.log("WebSocket server attached to HTTP server");
+    console.info("[INFO] WebSocket server attached to HTTP server ✓");
     return wss;
 }
 
 /**
  * Handles one incoming frame: parses the `prompt` field and streams the
- * response tokens back over the socket. Invalid messages get an error frame.
- *
- * TEMPORARY: once the server is wired to a real LLM, this will be replaced by
- * logic that forwards the prompt to the model and streams its tokens.
+ * model's response tokens back over the socket. Invalid messages get an error
+ * frame, as do LLM failures. Returns a promise that settles when the response
+ * is fully streamed or the stream fails.
  */
-function handleMessage(raw: RawData, socket: WebSocket): void {
-    console.info(`Received message from WebSocket: ${raw.toString()}`);
+async function handleMessage(raw: RawData, socket: WebSocket): Promise<void> {
+    console.info(`[INFO] Received message from WebSocket: ${raw.toString()}`);
     let prompt: string;
     try {
         const parsed: unknown = JSON.parse(raw.toString());
@@ -50,7 +60,7 @@ function handleMessage(raw: RawData, socket: WebSocket): void {
         prompt = promptField;
     } catch (err) {
         console.error(
-            `Error parsing WebSocket message: ${err instanceof Error ? err.message : "invalid message"}`,
+            `[ERROR] Error parsing WebSocket message: ${err instanceof Error ? err.message : "invalid message"}`,
         );
         sendError(
             socket,
@@ -59,36 +69,43 @@ function handleMessage(raw: RawData, socket: WebSocket): void {
         return;
     }
 
-    streamTokens(socket, responseTokens(prompt));
+    await streamTokensToSocket(socket, prompt);
 }
 
 /**
- * Streams `tokens` to the socket as `{"chunk": "..."}` frames at a fixed
- * interval, finishing with `{"done": true}` once all tokens are sent.
- * Spins down early if the socket closes mid-stream.
- *
- * TEMPORARY: the fixed-delay timer simulates streaming. When a real LLM is
- * connected, the chunk frames will instead be driven by the model's own
- * token stream.
+ * Streams the LLM's response tokens to the socket as `{"chunk": ...}` frames,
+ * finishing with `{"done": true}`, or an error frame followed by `done` if the
+ * model request fails or the socket closes mid-stream.
  */
-function streamTokens(socket: WebSocket, tokens: string[]): void {
-    let index = 0;
-    const timer = setInterval(() => {
+async function streamTokensToSocket(
+    socket: WebSocket,
+    prompt: string,
+): Promise<void> {
+    console.info(`[INFO] Streaming LLM response for prompt: ${prompt}`);
+    try {
+        for await (const token of streamLlmResponse(prompt)) {
+            console.debug(`[DEBUG] LLM token: ${token}`);
+            if (socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            socket.send(JSON.stringify({ chunk: token }));
+        }
+        console.debug("[DEBUG] LLM stream complete");
         if (socket.readyState !== WebSocket.OPEN) {
-            clearInterval(timer);
             return;
         }
-        if (index < tokens.length) {
-            socket.send(JSON.stringify({ chunk: tokens[index++] }));
-        } else {
-            clearInterval(timer);
-            socket.send(JSON.stringify({ done: true }));
-        }
-    }, STREAM_DELAY_MS);
+        socket.send(JSON.stringify({ done: true }));
+    } catch (err) {
+        console.error(
+            `[ERROR] LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        sendError(socket, "model request failed");
+    }
 }
 
 /** Sends an error frame followed by a `done` frame. */
 function sendError(socket: WebSocket, message: string): void {
+    console.info(`[INFO] Sending error frame to WebSocket: ${message}`);
     socket.send(JSON.stringify({ error: message }));
     socket.send(JSON.stringify({ done: true }));
 }

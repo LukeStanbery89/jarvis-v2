@@ -8,12 +8,16 @@ import express from "express";
  * `index.ts`.
  */
 export function createApp() {
+    console.info("[INFO] Creating Express app...");
     const app = express();
     app.use(express.json());
 
+    console.info("[INFO] Registering HTTP endpoints...");
     app.get("/", (req, res) => {
         res.send("Hello World");
     });
 
+    console.info("[INFO] Registered HTTP endpoints successfully ✓");
+    console.info("[INFO] Express app created successfully ✓");
     return app;
 }

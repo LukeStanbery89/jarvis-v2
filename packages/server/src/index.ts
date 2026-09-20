@@ -10,7 +10,7 @@ import { attachChatServer } from "./ws";
 const port = Number(process.env.PORT ?? 54321);
 
 const server = createApp().listen(port, () => {
-    console.log(`Jarvis server listening on http://localhost:${port}`);
+    console.info(`[INFO] Jarvis server listening on http://localhost:${port}`);
 });
 
 attachChatServer(server);

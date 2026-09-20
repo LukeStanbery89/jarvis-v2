@@ -7,6 +7,8 @@ WebSocket and streams a response back to the client.
 
 - Node.js 18+
 - npm
+- A running OpenAI-compatible inference server. [LM Studio](https://lmstudio.ai) is the
+  default — launch it, load a model, and start its local server on port `1234`.
 
 ## Install
 
@@ -37,6 +39,20 @@ the `PORT` environment variable:
 PORT=8080 npm run dev
 ```
 
+### Configuration
+
+The model is reached via the `openai` SDK pointed at an OpenAI-compatible
+endpoint. Both are configurable through environment variables:
+
+| Variable       | Default                    | Description                |
+| -------------- | -------------------------- | -------------------------- |
+| `LLM_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible base URL |
+| `LLM_MODEL`    | `qwen/qwen3-4b-2507`       | Model served by the server |
+
+```sh
+LLM_MODEL=some-other-model npm run dev
+```
+
 ### Endpoints
 
 | Method | Path  | Description                         |
@@ -50,7 +66,9 @@ Connect a WebSocket client to `/ws`, then exchange JSON text frames:
 
 - Client → Server: `{ "prompt": "<your prompt>" }`
 - Server → Client: one or more `{ "chunk": "<text>" }` frames, followed by `{ "done": true }`
-- On invalid input: `{ "error": "<message>" }`, followed by `{ "done": true }`
+- On invalid input or model failure: `{ "error": "<message>" }`, followed by `{ "done": true }`
+- Sending a new prompt while a response is still streaming is rejected with an
+  `in progress` error frame.
 
-Concatenate the `chunk` payloads verbatim to reconstruct the full response
-(currently `Hello, World!`). Try it with the `@jarvis/cli` REPL.
+Concatenate the `chunk` payloads verbatim to reconstruct the full response, streamed
+from the configured LLM. Try it with the `@jarvis/cli` REPL.
