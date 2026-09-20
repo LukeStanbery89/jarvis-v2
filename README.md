@@ -4,10 +4,10 @@ AI-powered assistant monorepo.
 
 ## Packages
 
-| Package                              | Description                               |
-| ------------------------------------ | ----------------------------------------- |
-| [packages/server](./packages/server) | Express backend server (`@jarvis/server`) |
-| [packages/cli](./packages/cli)       | CLI text chat client (`@jarvis/cli`)      |
+| Package                              | Description                                                   |
+| ------------------------------------ | ------------------------------------------------------------- |
+| [packages/server](./packages/server) | Express backend server with WebSocket chat (`@jarvis/server`) |
+| [packages/cli](./packages/cli)       | WebSocket chat REPL client (`@jarvis/cli`)                    |
 
 ## Getting started
 

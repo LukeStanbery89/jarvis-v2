@@ -29,12 +29,14 @@
     "license": "MIT",
     "type": "commonjs",
     "dependencies": {
-        "express": "^5.2.1"
+        "express": "^5.2.1",
+        "ws": "^8.21.3"
     },
     "devDependencies": {
         "@types/express": "^5.0.6",
         "@types/node": "^26.6.2",
         "@types/supertest": "^7.2.1",
+        "@types/ws": "^8.18.1",
         "supertest": "^7.2.2",
         "tsx": "^4.23.15",
         "typescript": "^7.0.2",

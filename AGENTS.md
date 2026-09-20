@@ -13,8 +13,8 @@
 
 npm workspaces monorepo with independent, publishable packages under `packages/`:
 
-- `packages/server` (`@jarvis/server`) — Express backend server. Exposes a single `GET /` endpoint returning "Hello World". Currently a template; real chat endpoints come later.
-- `packages/cli` (`@jarvis/cli`) — CLI text chat client. Prints "Hello World" on start. Currently a template; real chat functionality comes later.
+- `packages/server` (`@jarvis/server`) — Express backend server. Exposes `GET /` (health check) and a WebSocket chat endpoint at `/ws` that accepts a prompt and streams back `Hello, World!`. Real AI responses come later.
+- `packages/cli` (`@jarvis/cli`) — WebSocket chat REPL. Forwards prompts to the server and prints the streamed response. Uses Node's global `WebSocket` (no runtime deps).
 
 Each package has its own `package.json`, `tsconfig.json` (extends `tsconfig.base.json`), `src/` (or `server` + per-package `test/`), and `README.md`.
 

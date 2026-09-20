@@ -1,6 +1,7 @@
 # @jarvis/server
 
-Express backend server for the Jarvis AI assistant.
+Express backend server for the Jarvis AI assistant. Accepts prompt messages over
+WebSocket and streams a response back to the client.
 
 ## Prerequisites
 
@@ -38,8 +39,18 @@ PORT=8080 npm run dev
 
 ### Endpoints
 
-| Method | Path | Response      |
-| ------ | ---- | ------------- |
-| `GET`  | `/`  | `Hello World` |
+| Method | Path  | Description                         |
+| ------ | ----- | ----------------------------------- |
+| `GET`  | `/`   | Health-check, returns `Hello World` |
+| `WS`   | `/ws` | Chat endpoint (WebSocket)           |
 
-This is a template project focused on the build/test workflow. Real chat endpoints will be added later.
+### Chat protocol
+
+Connect a WebSocket client to `/ws`, then exchange JSON text frames:
+
+- Client → Server: `{ "prompt": "<your prompt>" }`
+- Server → Client: one or more `{ "chunk": "<text>" }` frames, followed by `{ "done": true }`
+- On invalid input: `{ "error": "<message>" }`, followed by `{ "done": true }`
+
+Concatenate the `chunk` payloads verbatim to reconstruct the full response
+(currently `Hello, World!`). Try it with the `@jarvis/cli` REPL.
