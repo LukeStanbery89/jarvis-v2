@@ -41,13 +41,16 @@ PORT=8080 npm run dev
 
 ### Configuration
 
-The model is reached via the `openai` SDK pointed at an OpenAI-compatible
-endpoint. Both are configurable through environment variables:
+The model is reached via LangChain (`@langchain/openai`) pointed at an
+OpenAI-compatible endpoint. Everything is configurable through environment
+variables:
 
-| Variable       | Default                    | Description                |
-| -------------- | -------------------------- | -------------------------- |
-| `LLM_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible base URL |
-| `LLM_MODEL`    | `qwen/qwen3-4b-2507`       | Model served by the server |
+| Variable            | Default                                                                   | Description                                      |
+| ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
+| `LLM_BASE_URL`      | `http://localhost:1234/v1`                                                | OpenAI-compatible base URL                       |
+| `LLM_MODEL`         | `qwen/qwen3-4b-2507`                                                      | Model served by the server                       |
+| `LLM_TEMPERATURE`   | `0`                                                                       | Sampling temperature                             |
+| `LLM_SYSTEM_PROMPT` | `You are Jarvis, a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev

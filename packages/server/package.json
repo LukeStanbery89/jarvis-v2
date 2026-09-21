@@ -29,9 +29,11 @@
     "license": "MIT",
     "type": "commonjs",
     "dependencies": {
+        "@langchain/core": "^1.2.12",
+        "@langchain/openai": "^1.5.13",
         "express": "^5.2.1",
-        "openai": "^7.20.0",
-        "ws": "^8.21.3"
+        "ws": "^8.21.3",
+        "zod": "^4.6.5"
     },
     "devDependencies": {
         "@types/express": "^5.0.6",

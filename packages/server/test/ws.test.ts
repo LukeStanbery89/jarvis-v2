@@ -4,8 +4,8 @@ import { WebSocket } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
 
-vi.mock("../src/llm", () => ({
-    streamLlmResponse: vi.fn(async function* (prompt: string) {
+vi.mock("../src/agent", () => ({
+    runAgent: vi.fn(async function* (prompt: string) {
         if (prompt === "boom") {
             throw new Error("model exploded");
         }

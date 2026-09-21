@@ -1,12 +1,30 @@
 /**
- * Resolves the LLM base URL and model name from the environment.
+ * Resolves LLM settings from the environment.
  *
  * Defaults match the local LM Studio OpenAI-compatible server, overridable
- * via the `LLM_BASE_URL` and `LLM_MODEL` environment variables.
+ * via the `LLM_BASE_URL`, `LLM_MODEL`, `LLM_TEMPERATURE`, and
+ * `LLM_SYSTEM_PROMPT` environment variables. `streamUsage` is fixed off
+ * because local OpenAI-compatible endpoints typically do not emit streaming
+ * token-usage metadata.
  */
-export function getLlmConfig(): { baseUrl: string; model: string } {
+export interface LlmConfig {
+    baseUrl: string;
+    model: string;
+    temperature: number;
+    streamUsage: boolean;
+    systemPrompt: string;
+}
+
+export function getLlmConfig(): LlmConfig {
     return {
         baseUrl: process.env.LLM_BASE_URL ?? "http://localhost:1234/v1",
         model: process.env.LLM_MODEL ?? "qwen/qwen3-4b-2507",
+        temperature: Number(process.env.LLM_TEMPERATURE ?? 0),
+        streamUsage: false,
+        systemPrompt:
+            process.env.LLM_SYSTEM_PROMPT ??
+            "You are Jarvis, a helpful, personal AI assistant. " +
+                "Answer directly and concisely; avoid unnecessary verbosity, " +
+                "markup, and preamble.",
     };
 }

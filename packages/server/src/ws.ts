@@ -8,7 +8,7 @@
 import type { Server } from "http";
 import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
-import { streamLlmResponse } from "./llm";
+import { runAgent } from "./agent";
 
 /**
  * Attaches the WebSocket chat server to an HTTP server and returns it.
@@ -81,9 +81,8 @@ async function streamTokensToSocket(
     socket: WebSocket,
     prompt: string,
 ): Promise<void> {
-    console.info(`[INFO] Streaming LLM response for prompt: ${prompt}`);
     try {
-        for await (const token of streamLlmResponse(prompt)) {
+        for await (const token of runAgent(prompt)) {
             console.debug(`[DEBUG] LLM token: ${token}`);
             if (socket.readyState !== WebSocket.OPEN) {
                 return;
