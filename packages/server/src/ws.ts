@@ -12,7 +12,15 @@ import { runAgent } from "./agent";
 import { logger } from "./logger";
 
 /** A frame the server sends to chat clients over `/ws`. */
-type ServerFrame = { chunk: string } | { done: true } | { error: string };
+type ServerFrame =
+    | { chunk: string }
+    | { tool: { name: string; args?: unknown } }
+    | { toolResult: { name: string; output?: unknown } }
+    | { done: true }
+    | { error: string };
+
+/** Longest `sessionId` a client may send. */
+const MAX_SESSION_ID_LENGTH = 128;
 
 /**
  * Attaches the WebSocket chat server to an HTTP server and returns it.
@@ -45,53 +53,90 @@ export function attachChatServer(httpServer: Server): WebSocketServer {
 }
 
 /**
- * Handles one incoming frame: parses the `prompt` field and streams the
- * model's response tokens back over the socket. Invalid messages get an error
- * frame, as do LLM failures. Returns a promise that settles when the response
- * is fully streamed or the stream fails.
+ * Handles one incoming frame: parses the `prompt` and `sessionId` fields and
+ * streams the agent's events back over the socket. Invalid messages get an
+ * error frame, as do LLM failures. Returns a promise that settles when the
+ * response is fully streamed or the stream fails.
  */
 async function handleMessage(raw: RawData, socket: WebSocket): Promise<void> {
     const frameText = raw.toString();
     logger.sensitive("Received message from WebSocket", frameText);
     let prompt: string;
+    let sessionId: string;
     try {
         const parsed: unknown = JSON.parse(frameText);
-        const promptField = (parsed as { prompt?: unknown }).prompt;
-        if (typeof promptField !== "string" || promptField.trim() === "") {
+        const request = parsed as { prompt?: unknown; sessionId?: unknown };
+        if (
+            typeof request.prompt !== "string" ||
+            request.prompt.trim() === ""
+        ) {
             throw new Error("expected a non-empty string field 'prompt'");
         }
-        prompt = promptField;
+        if (
+            typeof request.sessionId !== "string" ||
+            request.sessionId.trim() === ""
+        ) {
+            throw new Error("expected a non-empty string field 'sessionId'");
+        }
+        prompt = request.prompt;
+        sessionId = request.sessionId;
+        if (sessionId.length > MAX_SESSION_ID_LENGTH) {
+            throw new Error(
+                `sessionId must be at most ${MAX_SESSION_ID_LENGTH} characters`,
+            );
+        }
     } catch (err) {
         const detail = err instanceof Error ? err.message : "unknown error";
         logger.error(`Failed to parse WebSocket message: ${detail}`);
         sendError(
             socket,
-            "invalid message format; expected a non-empty string field 'prompt'",
+            "invalid message format; expected 'prompt' and 'sessionId' " +
+                "non-empty string fields",
         );
         return;
     }
 
-    await streamTokensToSocket(socket, prompt);
+    await streamEventsToSocket(socket, prompt, sessionId);
 }
 
 /**
- * Streams the LLM's response tokens to the socket as `{"chunk": ...}` frames,
- * finishing with `{"done": true}`, or an error frame followed by `done` if the
- * model request fails or the socket closes mid-stream.
+ * Streams the agent's events to the socket as frames, finishing with
+ * `{"done": true}`, or an error frame followed by `done` if the agent fails or
+ * the socket closes mid-stream.
  */
-async function streamTokensToSocket(
+async function streamEventsToSocket(
     socket: WebSocket,
     prompt: string,
+    sessionId: string,
 ): Promise<void> {
     try {
-        for await (const token of runAgent(prompt)) {
-            logger.sensitiveDebug("LLM token", token);
+        for await (const event of runAgent(prompt, sessionId)) {
             if (socket.readyState !== WebSocket.OPEN) {
                 return;
             }
-            sendFrame(socket, { chunk: token });
+            switch (event.type) {
+                case "token":
+                    logger.sensitiveDebug("LLM token", event.text);
+                    sendFrame(socket, { chunk: event.text });
+                    break;
+                case "tool":
+                    logger.info(`Agent calling tool ${event.name}`);
+                    sendFrame(socket, {
+                        tool: { name: event.name, args: event.args },
+                    });
+                    break;
+                case "toolResult":
+                    logger.debug(`Tool ${event.name} returned`);
+                    sendFrame(socket, {
+                        toolResult: {
+                            name: event.name,
+                            output: event.output,
+                        },
+                    });
+                    break;
+            }
         }
-        logger.debug("LLM stream complete");
+        logger.debug("Agent stream complete");
         if (socket.readyState !== WebSocket.OPEN) {
             return;
         }

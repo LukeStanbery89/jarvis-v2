@@ -3,15 +3,27 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
+import type { AgentEvent } from "../src/llm/agentGraph";
 
 vi.mock("../src/agent", () => ({
-    runAgent: vi.fn(async function* (prompt: string) {
+    runAgent: vi.fn(async function* (
+        prompt: string,
+        _sessionId: string,
+    ): AsyncGenerator<AgentEvent> {
         if (prompt === "boom") {
             throw new Error("model exploded");
         }
+        if (prompt === "tools") {
+            yield { type: "tool", name: "getCurrentTime", args: {} };
+            yield {
+                type: "toolResult",
+                name: "getCurrentTime",
+                output: "2026-09-20T00:00:00.000Z",
+            };
+        }
         await new Promise((resolve) => setTimeout(resolve, 25));
-        yield "Hello,";
-        yield " World!";
+        yield { type: "token", text: "Hello," };
+        yield { type: "token", text: " World!" };
     }),
 }));
 
@@ -29,12 +41,32 @@ afterAll(() => {
     server.close();
 });
 
+const SESSION_ID = "test-session";
+
 describe("chat websocket", () => {
     it("streams the response as chunks and finishes with done", async () => {
-        const { chunks, done, error } = await exchange({ prompt: "hi" });
+        const { chunks, tools, done, error } = await exchange({
+            prompt: "hi",
+            sessionId: SESSION_ID,
+        });
         expect(error).toBeNull();
         expect(done).toBe(true);
         expect(chunks.join("")).toBe("Hello, World!");
+        expect(tools).toHaveLength(0);
+    });
+
+    it("forwards tool and toolResult events from the agent", async () => {
+        const { chunks, tools, toolResults, done, error } = await exchange({
+            prompt: "tools",
+            sessionId: SESSION_ID,
+        });
+        expect(error).toBeNull();
+        expect(done).toBe(true);
+        expect(chunks.join("")).toBe("Hello, World!");
+        expect(tools).toEqual([{ name: "getCurrentTime", args: {} }]);
+        expect(toolResults).toEqual([
+            { name: "getCurrentTime", output: "2026-09-20T00:00:00.000Z" },
+        ]);
     });
 
     it("replies with an error frame for an invalid message", async () => {
@@ -44,8 +76,18 @@ describe("chat websocket", () => {
         expect(chunks).toEqual([]);
     });
 
+    it("replies with an error frame when sessionId is missing", async () => {
+        const { chunks, done, error } = await exchange({ prompt: "hi" });
+        expect(error).toMatch(/sessionId/i);
+        expect(done).toBe(true);
+        expect(chunks).toEqual([]);
+    });
+
     it("replies with an error frame when the model request fails", async () => {
-        const { chunks, done, error } = await exchange({ prompt: "boom" });
+        const { chunks, done, error } = await exchange({
+            prompt: "boom",
+            sessionId: SESSION_ID,
+        });
         expect(error).toMatch(/model request failed/);
         expect(done).toBe(true);
         expect(chunks).toEqual([]);
@@ -53,7 +95,10 @@ describe("chat websocket", () => {
 
     it("rejects a new prompt while the previous response is streaming", async () => {
         const result = await exchangeMany(
-            [{ prompt: "first" }, { prompt: "second" }],
+            [
+                { prompt: "first", sessionId: SESSION_ID },
+                { prompt: "second", sessionId: SESSION_ID },
+            ],
             2,
         );
         expect(result.chunks.join("")).toBe("Hello, World!");
@@ -64,12 +109,16 @@ describe("chat websocket", () => {
 
 function exchange(payload: unknown): Promise<{
     chunks: string[];
+    tools: { name: string; args?: unknown }[];
+    toolResults: { name: string; output?: unknown }[];
     done: boolean;
     error: string | null;
 }> {
     return new Promise((resolve, reject) => {
         const ws = new WebSocket(url);
         const chunks: string[] = [];
+        const tools: { name: string; args?: unknown }[] = [];
+        const toolResults: { name: string; output?: unknown }[] = [];
         let done = false;
         let error: string | null = null;
 
@@ -79,13 +128,22 @@ function exchange(payload: unknown): Promise<{
             if (typeof msg.chunk === "string") {
                 chunks.push(msg.chunk);
             }
+            if (msg.tool) {
+                tools.push({ name: msg.tool.name, args: msg.tool.args });
+            }
+            if (msg.toolResult) {
+                toolResults.push({
+                    name: msg.toolResult.name,
+                    output: msg.toolResult.output,
+                });
+            }
             if (typeof msg.error === "string") {
                 error = msg.error;
             }
             if (msg.done === true) {
                 done = true;
                 ws.close();
-                resolve({ chunks, done, error });
+                resolve({ chunks, tools, toolResults, done, error });
             }
         });
         ws.on("error", reject);

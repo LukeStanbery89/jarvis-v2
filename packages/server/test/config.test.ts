@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+    DEFAULT_AGENT_MAX_TURNS,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TEMPERATURE,
     DEFAULT_SYSTEM_PROMPT,
+    defaultCheckpointPath,
     getLlmConfig,
 } from "../src/config";
 
@@ -12,6 +14,8 @@ afterEach(() => {
     delete process.env.LLM_MODEL;
     delete process.env.LLM_TEMPERATURE;
     delete process.env.LLM_SYSTEM_PROMPT;
+    delete process.env.JARVIS_AGENT_MAX_TURNS;
+    delete process.env.JARVIS_CHECKPOINT_PATH;
 });
 
 describe("getLlmConfig", () => {
@@ -22,6 +26,8 @@ describe("getLlmConfig", () => {
             temperature: DEFAULT_LLM_TEMPERATURE,
             streamUsage: false,
             systemPrompt: DEFAULT_SYSTEM_PROMPT,
+            agentMaxTurns: DEFAULT_AGENT_MAX_TURNS,
+            checkpointPath: defaultCheckpointPath(),
         });
     });
 
@@ -40,6 +46,15 @@ describe("getLlmConfig", () => {
         expect(getLlmConfig()).toMatchObject({
             temperature: 0.7,
             systemPrompt: "You are a pirate.",
+        });
+    });
+
+    it("honours JARVIS_AGENT_MAX_TURNS and JARVIS_CHECKPOINT_PATH overrides", () => {
+        process.env.JARVIS_AGENT_MAX_TURNS = "4";
+        process.env.JARVIS_CHECKPOINT_PATH = "/tmp/jarvis-test.db";
+        expect(getLlmConfig()).toMatchObject({
+            agentMaxTurns: 4,
+            checkpointPath: "/tmp/jarvis-test.db",
         });
     });
 });

@@ -46,7 +46,9 @@ jarvis
 ```
 
 Type a prompt and press Enter; the server's response is printed as it streams
-in. Type `exit` or `quit`, or press `Ctrl+C`/`Ctrl+D`, to quit.
+in. When the agent calls a tool, the CLI prints a diagnostic line to **stderr**
+(e.g. `Agent calling tool getCurrentTime`) and keeps the streamed answer on
+stdout. Type `exit` or `quit`, or press `Ctrl+C`/`Ctrl+D`, to quit.
 
 ### Configuration
 
@@ -56,6 +58,12 @@ The server URL defaults to `ws://localhost:54321/ws`. Override it with the
 ```sh
 JARVIS_SERVER_URL=ws://localhost:9000/ws jarvis
 ```
+
+The CLI keeps a conversation id in `~/.jarvis/session-id` (override the path
+with `JARVIS_SESSION_FILE`). The id is sent as `sessionId` with every prompt,
+so the server continues the same conversation thread across CLI restarts;
+delete the file (or set `JARVIS_SESSION_FILE` to a fresh path) to start a new
+conversation.
 
 If the server is unreachable, the CLI prints the error and keeps running — just
 try again once the server is up.

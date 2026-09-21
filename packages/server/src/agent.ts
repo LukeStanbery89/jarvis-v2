@@ -1,24 +1,75 @@
 /**
- * Runs a single chat turn: streams the model's response tokens for a prompt.
+ * Runs an agent turn and streams its events.
  *
- * This is the sole seam between the WebSocket transport and the model stack;
- * `ws.ts` imports nothing else from the provider layer. Today it is a plain
- * model stream; when LangGraph lands, this body becomes the graph's model
- * node and the async-generator contract stays stable for `ws.ts`.
+ * The transport seam between `ws.ts` and the LangGraph agent: this module
+ * owns the compiled graph and exposes the same async-generator contract the
+ * WebSocket layer has always consumed. Today the generator yields
+ * `AgentEvent`s (text tokens plus tool activity) for a thread identified by
+ * `sessionId`; transports map those onto their own wire frames.
  */
+import Database from "better-sqlite3";
+import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { createChatModel } from "./llm/chatModel";
-import { buildMessages } from "./llm/messages";
+import {
+    createAgentGraph,
+    streamAgentTurn,
+    type AgentEvent,
+} from "./llm/agentGraph";
+import { tools } from "./llm/tools";
+import { getLlmConfig } from "./config";
 import { logger } from "./logger";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
-const chatModel = createChatModel();
+let graph: ReturnType<typeof createAgentGraph> | null = null;
 
-export async function* runAgent(prompt: string): AsyncGenerator<string> {
-    logger.sensitive("Streaming LLM response", prompt);
-    const stream = await chatModel.stream(buildMessages(prompt));
-    for await (const chunk of stream) {
-        const token = typeof chunk.content === "string" ? chunk.content : "";
-        if (token) {
-            yield token;
-        }
+/**
+ * Returns the shared, compiled agent graph, building it on first use.
+ *
+ * The graph is a singleton: one checkpointer (the SQLite store at
+ * `JARVIS_CHECKPOINT_PATH`) backs every session thread, and every turn reuses
+ * the same compiled graph instance.
+ */
+function getAgentGraph(): ReturnType<typeof createAgentGraph> {
+    if (!graph) {
+        const { checkpointPath, agentMaxTurns } = getLlmConfig();
+        mkdirSync(dirname(checkpointPath), { recursive: true });
+        logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
+        const saver = new SqliteSaver(new Database(checkpointPath));
+        graph = createAgentGraph({
+            model: createChatModel(),
+            tools,
+            checkpointer: saver,
+        });
+        void graph.getState({ configurable: { thread_id: "__init__" } }).then(
+            () =>
+                logger.info(
+                    `Agent graph ready; checkpoints in ${checkpointPath}`,
+                ),
+            (err) =>
+                logger.error(
+                    `Checkpointer init failed: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+        );
     }
+    return graph;
+}
+
+/** Runs one agent turn for `sessionId`, streaming events as they happen. */
+export async function* runAgent(
+    prompt: string,
+    sessionId: string,
+): AsyncGenerator<AgentEvent> {
+    logger.sensitive(
+        "Running agent turn",
+        JSON.stringify({ prompt, sessionId }),
+    );
+    const { systemPrompt, agentMaxTurns } = getLlmConfig();
+    yield* streamAgentTurn(
+        getAgentGraph(),
+        prompt,
+        sessionId,
+        systemPrompt,
+        agentMaxTurns,
+    );
 }

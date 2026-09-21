@@ -24,8 +24,14 @@ Run from `packages/cli`:
 
 ## Configuration
 
-The server URL defaults to `ws://localhost:54321/ws`, overridable via the `JARVIS_SERVER_URL`
-environment variable (`src/config.ts`). Chat protocol is defined by `@jarvis/server`.
+The server URL defaults to `ws://localhost:54321/ws`, overridable via the
+`JARVIS_SERVER_URL` environment variable; the session-id file defaults to
+`~/.jarvis/session-id`, overridable via `JARVIS_SESSION_FILE` (`src/config.ts`).
+`loadOrCreateSessionId()` (`src/session.ts`) loads or creates that file and is
+sent as `sessionId` with every prompt so the CLI resumes the server-side
+conversation thread across restarts. Chat protocol is defined by
+`@jarvis/server`; tool and toolResult frames are surfaced to the REPL's stderr
+diagnostics via the `onTool`/`onToolResult` callbacks (`src/client.ts`).
 
 ## Logging
 

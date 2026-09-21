@@ -18,6 +18,15 @@ Install all workspace dependencies from the repository root:
 npm install
 ```
 
+## Architecture
+
+The server answers every prompt with a **LangGraph agent** rather than a bare
+LLM: the model can call tools inside a bounded loop before streaming its final
+answer, and each client-supplied `sessionId` maps to a conversation thread that
+is persisted to a SQLite checkpoint file. The CLI keeps its `sessionId` in
+`~/.jarvis/session-id`, so conversations survive both CLI and server restarts.
+See each package's README for the protocol and configuration details.
+
 During development the workspace packages resolve each other **through the
 workspace symlinks** npm creates in `node_modules` — edit source in
 `packages/logger`, for example, and `@jarvis/server` picks up the change as

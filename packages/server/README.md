@@ -46,14 +46,16 @@ The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
 variables:
 
-| Variable               | Default                                                                         | Description                                           |
-| ---------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `LLM_BASE_URL`         | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                            |
-| `LLM_MODEL`            | `qwen/qwen3-4b-2507`                                                            | Model served by the server                            |
-| `LLM_TEMPERATURE`      | `0`                                                                             | Sampling temperature                                  |
-| `LLM_SYSTEM_PROMPT`    | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread      |
-| `JARVIS_LOG_LEVEL`     | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
-| `JARVIS_LOG_SENSITIVE` | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted` |
+| Variable                 | Default                                                                         | Description                                           |
+| ------------------------ | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `LLM_BASE_URL`           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                            |
+| `LLM_MODEL`              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                            |
+| `LLM_TEMPERATURE`        | `0`                                                                             | Sampling temperature                                  |
+| `LLM_SYSTEM_PROMPT`      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread      |
+| `JARVIS_AGENT_MAX_TURNS` | `10`                                                                            | Max agent loop steps per turn (tools + model calls)   |
+| `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence   |
+| `JARVIS_LOG_LEVEL`       | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
+| `JARVIS_LOG_SENSITIVE`   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted` |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev
@@ -84,11 +86,23 @@ option is provided by `@jarvis/logger` (`sensitive` / `sensitiveDebug`).
 
 Connect a WebSocket client to `/ws`, then exchange JSON text frames:
 
-- Client → Server: `{ "prompt": "<your prompt>" }`
-- Server → Client: one or more `{ "chunk": "<text>" }` frames, followed by `{ "done": true }`
+- Client → Server: `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
+  `sessionId` names the conversation thread. Reuse it to continue an earlier
+  conversation (bounded to 128 characters); each distinct id is isolated.
+- Server → Client (in order, per prompt):
+    - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
+      a tool (emitted once per call).
+    - `{ "toolResult": { "name": "<tool>", "output": <any> } }` — the tool returned.
+    - zero or more `{ "chunk": "<text>" }` frames — the streamed answer.
+    - `{ "done": true }` — the response is complete.
 - On invalid input or model failure: `{ "error": "<message>" }`, followed by `{ "done": true }`
 - Sending a new prompt while a response is still streaming is rejected with an
   `in progress` error frame.
 
-Concatenate the `chunk` payloads verbatim to reconstruct the full response, streamed
-from the configured LLM. Try it with the `@jarvis/cli` REPL.
+Concatenate the `chunk` payloads verbatim to reconstruct the full response. A
+single prompt may loop through `tool`/`toolResult` pairs several times before
+the agent produces its final text (bounded by `JARVIS_AGENT_MAX_TURNS`); tool
+events cannot appear inside the text stream, only before it. The agent state —
+including the whole message history of each session — is persisted to the
+SQLite checkpoint file (`JARVIS_CHECKPOINT_PATH`), so a server restart resumes
+conversations. Try it with the `@jarvis/cli` REPL.

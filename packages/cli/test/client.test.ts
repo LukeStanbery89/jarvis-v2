@@ -1,69 +1,117 @@
 import type { AddressInfo } from "net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+import { afterEach, describe, expect, it } from "vitest";
+import { createServer, type Server } from "node:http";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { WebSocketServer, type WebSocket } from "ws";
 import { ChatClient } from "../src/client";
-import { getServerUrl } from "../src/config";
+import { getServerUrl, getSessionFilePath } from "../src/config";
+import { loadOrCreateSessionId } from "../src/session";
 
-const server = createServer();
-const wss = new WebSocketServer({ server });
-
-wss.on("connection", (socket) => {
-    socket.on("message", () => {
-        for (const chunk of ["Hello,", " World!"]) {
-            socket.send(JSON.stringify({ chunk }));
-        }
-        socket.send(JSON.stringify({ done: true }));
+/**
+ * Starts an ephemeral HTTP server with a WebSocket endpoint wired to
+ * `onMessage` and returns its base URL, one wss per test so upgrades never
+ * collide.
+ */
+async function withSocketServer(
+    onMessage: (raw: unknown, socket: WebSocket) => void,
+): Promise<{ url: string; close: () => void }> {
+    const server = createServer();
+    const wss = new WebSocketServer({ server });
+    wss.on("connection", (socket) => {
+        socket.on("message", (raw) => onMessage(raw, socket));
     });
-});
-
-let url: string;
-
-beforeAll(async () => {
     await new Promise<void>((resolve) =>
         server.listen(0, "127.0.0.1", resolve),
     );
-    url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
-});
+    return {
+        url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        close: () => {
+            wss.close();
+            server.close();
+        },
+    };
+}
 
-afterAll(() => {
-    wss.close();
-    server.close();
+afterEach(() => {
+    delete process.env.JARVIS_SERVER_URL;
+    delete process.env.JARVIS_SESSION_FILE;
 });
 
 describe("ChatClient", () => {
-    it("streams chunks from the server until done", async () => {
-        const client = new ChatClient(url);
-        const chunks: string[] = [];
+    it("sends the sessionId with the prompt and streams chunks until done", async () => {
+        let received: unknown;
+        const { url, close } = await withSocketServer((raw, socket) => {
+            received = JSON.parse(String(raw));
+            for (const chunk of ["Hello,", " World!"]) {
+                socket.send(JSON.stringify({ chunk }));
+            }
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url);
+            const chunks: string[] = [];
+            await client.prompt("hi", "abc-123", {
+                onChunk: (chunk) => chunks.push(chunk),
+            });
+            expect(chunks.join("")).toBe("Hello, World!");
+            expect(received).toEqual({ prompt: "hi", sessionId: "abc-123" });
+            client.close();
+        } finally {
+            close();
+        }
+    });
 
-        await client.prompt("hi", (chunk) => chunks.push(chunk));
-
-        expect(chunks.join("")).toBe("Hello, World!");
-        client.close();
+    it("invokes the tool callbacks for tool and toolResult frames", async () => {
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            socket.send(
+                JSON.stringify({ tool: { name: "getCurrentTime", args: {} } }),
+            );
+            socket.send(
+                JSON.stringify({
+                    toolResult: {
+                        name: "getCurrentTime",
+                        output: "2026-09-20T00:00:00Z",
+                    },
+                }),
+            );
+            socket.send(JSON.stringify({ chunk: "done!" }));
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url);
+            const tools: [string, unknown][] = [];
+            const results: [string, unknown][] = [];
+            const chunks: string[] = [];
+            await client.prompt("time?", "s", {
+                onChunk: (chunk) => chunks.push(chunk),
+                onTool: (name, args) => tools.push([name, args]),
+                onToolResult: (name, output) => results.push([name, output]),
+            });
+            expect(chunks.join("")).toBe("done!");
+            expect(tools).toEqual([["getCurrentTime", {}]]);
+            expect(results).toEqual([
+                ["getCurrentTime", "2026-09-20T00:00:00Z"],
+            ]);
+            client.close();
+        } finally {
+            close();
+        }
     });
 
     it("rejects when the server closes the socket mid-stream", async () => {
-        const closeServer = createServer();
-        const closeWss = new WebSocketServer({ server: closeServer });
-        closeWss.on("connection", (socket) => {
-            socket.on("message", () => {
-                socket.send(JSON.stringify({ chunk: "partial" }));
-                socket.close();
-            });
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            socket.send(JSON.stringify({ chunk: "partial" }));
+            socket.close();
         });
         try {
-            await new Promise<void>((resolve) =>
-                closeServer.listen(0, "127.0.0.1", resolve),
-            );
-            const closeUrl = `ws://127.0.0.1:${(closeServer.address() as AddressInfo).port}`;
-            const client = new ChatClient(closeUrl);
-
-            await expect(client.prompt("hi", () => {})).rejects.toThrow(
-                /closed while streaming/,
-            );
+            const client = new ChatClient(url);
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(/closed while streaming/);
         } finally {
-            closeWss.close();
-            closeServer.close();
+            close();
         }
     });
 });
@@ -77,6 +125,33 @@ describe("getServerUrl", () => {
     it("reads JARVIS_SERVER_URL", () => {
         process.env.JARVIS_SERVER_URL = "ws://example.test/ws";
         expect(getServerUrl()).toBe("ws://example.test/ws");
-        delete process.env.JARVIS_SERVER_URL;
+    });
+});
+
+describe("sessions", () => {
+    describe("getSessionFilePath", () => {
+        it("defaults to ~/.jarvis/session-id", () => {
+            expect(getSessionFilePath()).toBe(
+                `${homedir()}/.jarvis/session-id`,
+            );
+        });
+
+        it("honours JARVIS_SESSION_FILE", () => {
+            process.env.JARVIS_SESSION_FILE = "/tmp/jarvis-session";
+            expect(getSessionFilePath()).toBe("/tmp/jarvis-session");
+        });
+    });
+
+    it("creates a session id file on first use and reuses it after", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-session-"));
+        const path = join(dir, "session-id");
+        process.env.JARVIS_SESSION_FILE = path;
+
+        const first = loadOrCreateSessionId();
+        expect(first.length).toBeGreaterThan(0);
+        expect(readFileSync(path, "utf8").trim()).toBe(first);
+
+        const second = loadOrCreateSessionId();
+        expect(second).toBe(first);
     });
 });

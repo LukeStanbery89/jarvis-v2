@@ -3,15 +3,28 @@
  */
 type ChatEvent =
     | { type: "chunk"; text: string }
+    | { type: "tool"; name: string; args?: unknown }
+    | { type: "toolResult"; name: string; output?: unknown }
     | { type: "done" }
     | { type: "error"; message: string };
+
+/** Callbacks invoked as events arrive during a `prompt()` exchange. */
+export interface PromptHandlers {
+    /** Called for each streamed text chunk of the answer. */
+    onChunk: (chunk: string) => void;
+    /** Called when the agent starts a tool call. */
+    onTool?: (name: string, args: unknown) => void;
+    /** Called when a tool finishes and returns its output. */
+    onToolResult?: (name: string, output: unknown) => void;
+}
 
 /**
  * WebSocket chat client for the J.A.R.V.I.S. server.
  *
  * Connects lazily on the first `prompt()` call and reconnects automatically
- * if the connection drops. Uses Node's built-in `WebSocket`, so this module
- * adds no third-party runtime dependency.
+ * if the connection drops. Each prompt carries the conversation's `sessionId`
+ * so the server continues the same thread. Uses Node's built-in `WebSocket`,
+ * so this module adds no third-party runtime dependency.
  */
 export class ChatClient {
     private socket: WebSocket | null = null;
@@ -19,18 +32,19 @@ export class ChatClient {
     constructor(private readonly url: string) {}
 
     /**
-     * Sends a prompt and invokes `onChunk` for each streamed chunk until the
-     * server signals `done`.
+     * Sends `text` for conversation `sessionId` and drives the `handlers`
+     * callbacks with the server's events until `done`.
      *
      * Rejects with an `Error` if the server reports an error frame or the
      * connection fails.
      */
     async prompt(
         text: string,
-        onChunk: (chunk: string) => void,
+        sessionId: string,
+        handlers: PromptHandlers,
     ): Promise<void> {
         const socket = await this.ensureConnected();
-        socket.send(JSON.stringify({ prompt: text }));
+        socket.send(JSON.stringify({ prompt: text, sessionId }));
 
         await new Promise<void>((resolve, reject) => {
             const teardown = (): void => {
@@ -42,7 +56,13 @@ export class ChatClient {
                 const frame = parseFrame(String(event.data));
                 switch (frame.type) {
                     case "chunk":
-                        onChunk(frame.text);
+                        handlers.onChunk(frame.text);
+                        break;
+                    case "tool":
+                        handlers.onTool?.(frame.name, frame.args);
+                        break;
+                    case "toolResult":
+                        handlers.onToolResult?.(frame.name, frame.output);
                         break;
                     case "done":
                         teardown();
@@ -106,9 +126,25 @@ function parseFrame(raw: string): ChatEvent {
         chunk?: unknown;
         done?: unknown;
         error?: unknown;
+        tool?: { name?: unknown; args?: unknown };
+        toolResult?: { name?: unknown; output?: unknown };
     };
     if (typeof frame.chunk === "string") {
         return { type: "chunk", text: frame.chunk };
+    }
+    if (frame.tool && typeof frame.tool.name === "string") {
+        return {
+            type: "tool",
+            name: frame.tool.name,
+            args: frame.tool.args,
+        };
+    }
+    if (frame.toolResult && typeof frame.toolResult.name === "string") {
+        return {
+            type: "toolResult",
+            name: frame.toolResult.name,
+            output: frame.toolResult.output,
+        };
     }
     if (frame.done === true) {
         return { type: "done" };
