@@ -9,18 +9,19 @@
 import * as readline from "node:readline";
 import { ChatClient } from "./client";
 import { getServerUrl } from "./config";
+import { logger } from "./logger";
 
 const serverUrl = getServerUrl();
 const client = new ChatClient(serverUrl);
 
 const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
 });
 
-console.info(`Jarvis CLI — connected to ${serverUrl}`);
-console.info(
-    `Type a prompt and press Enter. Type 'exit' or press Ctrl+C to quit.`,
+logger.info(`J.A.R.V.I.S. CLI — connected to ${serverUrl}`);
+logger.info(
+    "Type a prompt and press Enter. Type 'exit' or press Ctrl+C to quit.",
 );
 
 // Tracks the in-flight prompt so the app waits for it to finish streaming
@@ -50,7 +51,7 @@ rl.on("line", (line) => {
             process.stdout.write("\n");
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            process.stdout.write(`\nError: ${message}\n`);
+            logger.error(`Error: ${message}`);
         }
     })();
     void inflight.then(() => rl.prompt());

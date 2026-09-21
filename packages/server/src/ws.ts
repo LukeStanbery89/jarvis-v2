@@ -9,6 +9,7 @@ import type { Server } from "http";
 import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
 import { runAgent } from "./agent";
+import { logger } from "./logger";
 
 /** A frame the server sends to chat clients over `/ws`. */
 type ServerFrame = { chunk: string } | { done: true } | { error: string };
@@ -23,13 +24,13 @@ export function attachChatServer(httpServer: Server): WebSocketServer {
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
     wss.on("connection", (socket) => {
-        console.info("[INFO] New WebSocket connection");
+        logger.info("New WebSocket connection");
         let active: Promise<void> | null = null;
 
         socket.on("message", (raw) => {
             if (active) {
-                console.warn(
-                    "[WARN] Rejecting prompt: another request is already in progress",
+                logger.warn(
+                    "Rejecting prompt: another request is already in progress",
                 );
                 sendError(socket, "another request is already in progress");
                 return;
@@ -51,7 +52,7 @@ export function attachChatServer(httpServer: Server): WebSocketServer {
  */
 async function handleMessage(raw: RawData, socket: WebSocket): Promise<void> {
     const frameText = raw.toString();
-    console.info(`[INFO] Received message from WebSocket: ${frameText}`);
+    logger.sensitive("Received message from WebSocket", frameText);
     let prompt: string;
     try {
         const parsed: unknown = JSON.parse(frameText);
@@ -62,7 +63,7 @@ async function handleMessage(raw: RawData, socket: WebSocket): Promise<void> {
         prompt = promptField;
     } catch (err) {
         const detail = err instanceof Error ? err.message : "unknown error";
-        console.error(`[ERROR] Failed to parse WebSocket message: ${detail}`);
+        logger.error(`Failed to parse WebSocket message: ${detail}`);
         sendError(
             socket,
             "invalid message format; expected a non-empty string field 'prompt'",
@@ -84,20 +85,20 @@ async function streamTokensToSocket(
 ): Promise<void> {
     try {
         for await (const token of runAgent(prompt)) {
-            console.debug(`[DEBUG] LLM token: ${token}`);
+            logger.sensitiveDebug("LLM token", token);
             if (socket.readyState !== WebSocket.OPEN) {
                 return;
             }
             sendFrame(socket, { chunk: token });
         }
-        console.debug("[DEBUG] LLM stream complete");
+        logger.debug("LLM stream complete");
         if (socket.readyState !== WebSocket.OPEN) {
             return;
         }
         sendFrame(socket, { done: true });
     } catch (err) {
-        console.error(
-            `[ERROR] LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
+        logger.error(
+            `LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         sendError(socket, "model request failed");
     }
@@ -105,7 +106,7 @@ async function streamTokensToSocket(
 
 /** Sends an error frame followed by a `done` frame. */
 function sendError(socket: WebSocket, message: string): void {
-    console.info(`[INFO] Sending error frame to WebSocket: ${message}`);
+    logger.info(`Sending error frame to WebSocket: ${message}`);
     sendFrame(socket, { error: message });
     sendFrame(socket, { done: true });
 }

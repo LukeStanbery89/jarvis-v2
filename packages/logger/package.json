@@ -1,43 +1,35 @@
 {
-    "name": "@jarvis/cli",
+    "name": "@jarvis/logger",
     "version": "0.1.0",
-    "description": "CLI text chat client for J.A.R.V.I.S.",
+    "description": "Shared leveled, timestamped logging for J.A.R.V.I.S. packages",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "files": [
         "dist"
     ],
-    "bin": {
-        "jarvis": "dist/index.js"
-    },
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit -p tsconfig.test.json",
-        "dev": "tsx src/index.ts",
-        "start": "node dist/index.js",
         "test": "vitest run",
         "prepublishOnly": "npm run build"
     },
     "repository": {
         "type": "git",
         "url": "git+https://github.com/LukeStanbery89/jarvis-v2.git",
-        "directory": "packages/cli"
+        "directory": "packages/logger"
     },
     "bugs": {
         "url": "https://github.com/LukeStanbery89/jarvis-v2/issues"
     },
-    "homepage": "https://github.com/LukeStanbery89/jarvis-v2/tree/main/packages/cli#readme",
+    "homepage": "https://github.com/LukeStanbery89/jarvis-v2/tree/main/packages/logger#readme",
     "license": "MIT",
     "type": "commonjs",
     "dependencies": {
-        "@jarvis/logger": "^0.1.0"
+        "consola": "^3.4.2"
     },
     "devDependencies": {
         "@types/node": "^26.6.2",
-        "@types/ws": "^8.18.1",
-        "tsx": "^4.23.15",
         "typescript": "^7.0.2",
-        "vitest": "^5.0.1",
-        "ws": "^8.21.3"
+        "vitest": "^5.0.1"
     }
 }

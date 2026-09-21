@@ -7,11 +7,11 @@ type ChatEvent =
     | { type: "error"; message: string };
 
 /**
- * WebSocket chat client for the Jarvis server.
+ * WebSocket chat client for the J.A.R.V.I.S. server.
  *
  * Connects lazily on the first `prompt()` call and reconnects automatically
- * if the connection drops. Uses Node's built-in `WebSocket`, so this package
- * has no runtime dependencies.
+ * if the connection drops. Uses Node's built-in `WebSocket`, so this module
+ * adds no third-party runtime dependency.
  */
 export class ChatClient {
     private socket: WebSocket | null = null;

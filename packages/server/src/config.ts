@@ -9,7 +9,7 @@ export const DEFAULT_LLM_TEMPERATURE = 0;
 
 /** Default persona the assistant is primed with on every conversation thread. */
 export const DEFAULT_SYSTEM_PROMPT =
-    "You are Jarvis, a helpful, personal AI assistant. " +
+    "You are J.A.R.V.I.S., a helpful, personal AI assistant. " +
     "Answer directly and concisely; avoid unnecessary verbosity, markup, " +
     "and preamble.";
 

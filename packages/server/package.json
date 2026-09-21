@@ -1,7 +1,7 @@
 {
     "name": "@jarvis/server",
     "version": "0.1.0",
-    "description": "Express backend server for Jarvis",
+    "description": "Express backend server for J.A.R.V.I.S.",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "files": [
@@ -13,7 +13,7 @@
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit -p tsconfig.test.json",
-        "dev": "tsx watch src/index.ts",
+        "dev": "NODE_ENV=development tsx watch src/index.ts",
         "start": "node dist/index.js",
         "test": "vitest run",
         "prepublishOnly": "npm run build"
@@ -30,6 +30,7 @@
     "license": "MIT",
     "type": "commonjs",
     "dependencies": {
+        "@jarvis/logger": "^0.1.0",
         "@langchain/core": "^1.2.12",
         "@langchain/openai": "^1.5.13",
         "express": "^5.2.1",

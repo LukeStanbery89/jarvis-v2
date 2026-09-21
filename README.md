@@ -8,6 +8,7 @@ AI-powered assistant monorepo.
 | ------------------------------------ | ------------------------------------------------------------- |
 | [packages/server](./packages/server) | Express backend server with WebSocket chat (`@jarvis/server`) |
 | [packages/cli](./packages/cli)       | WebSocket chat REPL client (`@jarvis/cli`)                    |
+| [packages/logger](./packages/logger) | Shared leveled, timestamped logging (`@jarvis/logger`)        |
 
 ## Getting started
 
@@ -16,6 +17,14 @@ Install all workspace dependencies from the repository root:
 ```sh
 npm install
 ```
+
+During development the workspace packages resolve each other **through the
+workspace symlinks** npm creates in `node_modules` — edit source in
+`packages/logger`, for example, and `@jarvis/server` picks up the change as
+soon as you rebuild (see `npm run build`). When a package is published and
+installed standalone, npm resolves its `@jarvis/*` dependencies normally from
+the registry; the workspace symlink is a dev-only artifact and never ships in
+a published tarball.
 
 ## Commands
 

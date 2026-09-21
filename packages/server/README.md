@@ -1,6 +1,6 @@
 # @jarvis/server
 
-Express backend server for the Jarvis AI assistant. Accepts prompt messages over
+Express backend server for the J.A.R.V.I.S. AI assistant. Accepts prompt messages over
 WebSocket and streams a response back to the client.
 
 ## Prerequisites
@@ -46,16 +46,32 @@ The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
 variables:
 
-| Variable            | Default                                                                   | Description                                      |
-| ------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ |
-| `LLM_BASE_URL`      | `http://localhost:1234/v1`                                                | OpenAI-compatible base URL                       |
-| `LLM_MODEL`         | `qwen/qwen3-4b-2507`                                                      | Model served by the server                       |
-| `LLM_TEMPERATURE`   | `0`                                                                       | Sampling temperature                             |
-| `LLM_SYSTEM_PROMPT` | `You are Jarvis, a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread |
+| Variable               | Default                                                                         | Description                                           |
+| ---------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `LLM_BASE_URL`         | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                            |
+| `LLM_MODEL`            | `qwen/qwen3-4b-2507`                                                            | Model served by the server                            |
+| `LLM_TEMPERATURE`      | `0`                                                                             | Sampling temperature                                  |
+| `LLM_SYSTEM_PROMPT`    | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread      |
+| `JARVIS_LOG_LEVEL`     | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
+| `JARVIS_LOG_SENSITIVE` | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted` |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev
 ```
+
+### Logging
+
+Log lines look like
+`2026-09-20 12:00:00 [INFO] server — message`, colored by level. Reach the
+level filter with `JARVIS_LOG_LEVEL` (default `info`).
+
+User prompts and streamed response tokens are treated as **sensitive
+payloads** and are redacted by default (the data is replaced by `[REDACTED]`,
+token tracing suppressed). Payloads are logged verbatim only in development:
+`npm run dev` sets `NODE_ENV=development`. Production deployments (any other
+`NODE_ENV`, including unset) stay redacted even if `JARVIS_LOG_LEVEL=debug` is
+forced. Override either way with `JARVIS_LOG_SENSITIVE=full|redacted`. The
+option is provided by `@jarvis/logger` (`sensitive` / `sensitiveDebug`).
 
 ### Endpoints
 

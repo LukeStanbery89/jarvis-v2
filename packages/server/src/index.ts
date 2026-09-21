@@ -5,6 +5,7 @@
  * the configured port (default 54321, overridable via `PORT`).
  */
 import { createApp } from "./app";
+import { logger } from "./logger";
 import { attachChatServer } from "./ws";
 
 // Default port 54321 is referenced by the CLI's default server URL
@@ -12,7 +13,7 @@ import { attachChatServer } from "./ws";
 const port = Number(process.env.PORT ?? 54321);
 
 const server = createApp().listen(port, () => {
-    console.info(`[INFO] Jarvis server listening on http://localhost:${port}`);
+    logger.info(`J.A.R.V.I.S. server listening on http://localhost:${port}`);
 });
 
 attachChatServer(server);

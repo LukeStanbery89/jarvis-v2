@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@jarvis/server` — Express backend server for the Jarvis AI assistant. Exposes a `GET /` health
+`@jarvis/server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /` health
 endpoint and a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response.
 
 ## Stack
@@ -11,18 +11,20 @@ endpoint and a WebSocket chat endpoint (`/ws`) that accepts prompts and streams 
 - Express 5
 - `ws` for WebSocket server
 - LangChain (`@langchain/core` + `@langchain/openai`) for the model stack
+- Logging via `@jarvis/logger` (Consola-based; see `src/logger.ts`)
 - Tests via Vitest + supertest
 
 ## Scripts
 
 Run from `packages/server`:
 
-| Command         | Description                    |
-| --------------- | ------------------------------ |
-| `npm run build` | Compile TypeScript to `dist/`  |
-| `npm run dev`   | Run the server with watch mode |
-| `npm start`     | Run the compiled server        |
-| `npm test`      | Run the test suite             |
+| Command             | Description                    |
+| ------------------- | ------------------------------ |
+| `npm run build`     | Compile TypeScript to `dist/`  |
+| `npm run typecheck` | Type-check src and tests       |
+| `npm run dev`       | Run the server with watch mode |
+| `npm start`         | Run the compiled server        |
+| `npm test`          | Run the test suite             |
 
 ## Endpoints
 
@@ -32,6 +34,20 @@ Run from `packages/server`:
 | `WS`   | `/ws` | Chat endpoint (WebSocket)           |
 
 The server listens on port `54321` by default, overridable via `PORT`.
+
+## Logging
+
+Server logs go through the shared `@jarvis/logger` instance in `src/logger.ts`
+(tag `server`): `YYYY-MM-DD HH:mm:ss [LEVEL] server — message` lines, colored
+by level. Default level is `info`; set `JARVIS_LOG_LEVEL`
+(`debug` | `info` | `warn` | `error`) to change it. Token-level tracing is
+`debug` and stays hidden by default.
+
+User prompts (`logger.sensitive`) and streamed tokens
+(`logger.sensitiveDebug`) are sensitive payloads: redacted by default, logged
+verbatim only under `NODE_ENV=development` (the `npm run dev` script sets
+this). Production is redacted by default — never log prompt/response payloads
+there; `JARVIS_LOG_SENSITIVE=full|redacted` overrides the mode.
 
 ## Chat protocol
 

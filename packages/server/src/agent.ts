@@ -8,11 +8,12 @@
  */
 import { createChatModel } from "./llm/chatModel";
 import { buildMessages } from "./llm/messages";
+import { logger } from "./logger";
 
 const chatModel = createChatModel();
 
 export async function* runAgent(prompt: string): AsyncGenerator<string> {
-    console.info(`[INFO] Streaming LLM response for prompt: ${prompt}`);
+    logger.sensitive("Streaming LLM response", prompt);
     const stream = await chatModel.stream(buildMessages(prompt));
     for await (const chunk of stream) {
         const token = typeof chunk.content === "string" ? chunk.content : "";
