@@ -11,13 +11,14 @@ src/
 ├── index.ts       # entry point (bootstrap + listen)
 ├── app.ts         # Express app factory (health check)
 ├── config.ts      # LLM configuration from environment
-├── agent.ts       # runAgent — the brain seam (server ↔ model)
+├── agent.ts       # runAgent — owns the compiled graph + checkpointer (seam)
 ├── ws.ts          # /ws chat endpoint (server ↔ client transport)
 ├── llm/
-│   ├── chatModel.ts  # createChatModel — the ONE @langchain/openai import site
-│   ├── messages.ts   # buildMessages — thread shape ([System, Human])
+│   ├── chatModel.ts   # createChatModel — the ONE @langchain/openai import site
+│   ├── agentGraph.ts  # createAgentGraph + streamAgentTurn (the LangGraph loop)
+│   ├── toolCallTracker.ts # folds streamed messages into AgentEvents
 │   └── tools/
-│       ├── index.ts  # tool registry (defined, not yet bound)
+│       ├── index.ts  # tool registry (bound to the model by the graph)
 │       ├── time.ts   # getCurrentTime tool
 │       └── math.ts   # calculate tool (safe arithmetic parser)
 └── README.md      # this file
@@ -25,36 +26,34 @@ src/
 
 ## File map
 
-| File               | Responsibility                                                                                                                                     |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`         | Entry point: builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                          |
-| `app.ts`           | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port |
-| `config.ts`        | `getLlmConfig()` → base URL, model, temperature, stream-usage flag, and system prompt, from env (with LM Studio defaults)                          |
-| `agent.ts`         | `runAgent(prompt)` → streams the model's response tokens. The only seam `ws.ts` imports from the model layer                                       |
-| `ws.ts`            | `attachChatServer(httpServer)` → the `/ws` chat endpoint; pushes tokens to clients as frames (server → client direction)                           |
-| `llm/chatModel.ts` | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                        |
-| `llm/messages.ts`  | `buildMessages(prompt)` → `[SystemMessage, HumanMessage]`. Single place the thread shape is defined                                                |
-| `llm/tools/*`      | `tool()`-defined tools + the `tools` registry. Not bound to the model yet — consumed by LangGraph when tool execution lands                        |
+| File                | Responsibility                                                                                                                                     |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`          | Entry point: builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                          |
+| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port |
+| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path, from env (with LM Studio defaults)                |
+| `agent.ts`          | `runAgent(prompt, sessionId)` → owns the singleton compiled graph + SQLite checkpointer, streams `AgentEvent`s. The only seam `ws.ts` imports      |
+| `ws.ts`             | `attachChatServer(httpServer)` → the `/ws` chat endpoint; validates frames, maps `AgentEvent`s to wire frames (server → client direction)          |
+| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                        |
+| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s   |
+| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                |
 
 ## Data flow
 
 ```
 CLI / WebSocket client
-      │  {"prompt": "..."}
+      │  {"prompt": "...", "sessionId": "..."}
       ▼
-ws.ts  handleMessage          (parse + validate the prompt frame)
-      │  prompt
+ws.ts  handleMessage/watch   (parse + validate prompt + sessionId)
+      │  prompt, sessionId
       ▼
-ws.ts  streamTokensToSocket   ← streams chunk frames back to the socket
-      │  for await ...
+agent.ts runAgent            (the brain seam: graph + checkpointer)
+      │  AgentEvents: token | tool | toolResult
       ▼
-agent.ts runAgent             (the brain seam: model composition)
+llm/agentGraph.ts streamAgentTurn  (thread seeded from the checkpointer)
       │  messages
       ▼
-llm/messages.ts buildMessages ([SystemMessage, HumanMessage])
-      ▼
 llm/chatModel.ts createChatModel  (ChatOpenAI → LM Studio /chat/completions)
-      │  content deltas
+      │  content deltas + tool calls
       ▼
 LM Studio (OpenAI-compatible server)
 ```
@@ -70,14 +69,15 @@ without a live model.
 - **One provider import site.** `llm/chatModel.ts` is the only module that
   imports `@langchain/openai`. Swapping backends means changing one factory,
   not the whole pipeline.
-- **Every request is a fresh single-turn thread** — a `SystemMessage` primer
-  (persona, verbosity) followed by the user's `HumanMessage`. Multi-turn
-  memory and real conversation state are deferred to the LangGraph phase;
-  `buildMessages` is where that history threads in.
-- **Tools are defined, not yet bound.** Tool execution is an agent _loop_
-  (model → tool call → `ToolMessage` → model), which LangGraph will own. The
-  registry (`llm/tools/`) is the payload that phase consumes, so tools are
-  `tool()`-factory style with zod schemas — the idiomatic, LangGraph-ready form.
+- **Conversations are LangGraph threads.** Every `sessionId` maps to a
+  persisted thread in the SQLite checkpointer; a fresh thread is primed with
+  the system prompt + the user prompt, existing threads just receive the new
+  `HumanMessage`. Multi-turn memory therefore survives server restarts.
+- **The model loops through tools.** Tool calls are the model's job to
+  request and the ToolNode's to run, bounded by `JARVIS_AGENT_MAX_TURNS`. The
+  streamed `messages`-mode output is flattened into `AgentEvent`s
+  (`token`/`tool`/`toolResult`) by `streamAgentTurn` + the `ToolCallTracker`,
+  so transports never see graph internals.
 - **One active response per connection.** A second prompt arriving while a
   response is streaming is rejected with an error frame (see protocol in the
   package README); `active` lives per-connection inside `attachChatServer`.

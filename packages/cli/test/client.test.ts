@@ -114,6 +114,35 @@ describe("ChatClient", () => {
             close();
         }
     });
+
+    it("rejects a prompt while another is already streaming", async () => {
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url);
+            const first = client.prompt("one", "s", { onChunk: () => {} });
+            await expect(
+                client.prompt("two", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(/in progress/);
+            await first;
+        } finally {
+            close();
+        }
+    });
+
+    it("allows prompt after the previous one completed", async () => {
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url);
+            await client.prompt("one", "s", { onChunk: () => {} });
+            await client.prompt("two", "s", { onChunk: () => {} });
+        } finally {
+            close();
+        }
+    });
 });
 
 describe("getServerUrl", () => {

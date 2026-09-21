@@ -28,6 +28,7 @@ export interface PromptHandlers {
  */
 export class ChatClient {
     private socket: WebSocket | null = null;
+    private active = false;
 
     constructor(private readonly url: string) {}
 
@@ -35,54 +36,62 @@ export class ChatClient {
      * Sends `text` for conversation `sessionId` and drives the `handlers`
      * callbacks with the server's events until `done`.
      *
-     * Rejects with an `Error` if the server reports an error frame or the
-     * connection fails.
+     * Rejects with an `Error` if the server reports an error frame, the
+     * connection fails, or another prompt is already streaming on this socket.
      */
     async prompt(
         text: string,
         sessionId: string,
         handlers: PromptHandlers,
     ): Promise<void> {
-        const socket = await this.ensureConnected();
-        socket.send(JSON.stringify({ prompt: text, sessionId }));
+        if (this.active) {
+            throw new Error("another prompt is already in progress");
+        }
+        this.active = true;
+        try {
+            const socket = await this.ensureConnected();
+            socket.send(JSON.stringify({ prompt: text, sessionId }));
 
-        await new Promise<void>((resolve, reject) => {
-            const teardown = (): void => {
-                socket.onmessage = null;
-                socket.onerror = null;
-                socket.onclose = null;
-            };
-            socket.onmessage = (event: MessageEvent): void => {
-                const frame = parseFrame(String(event.data));
-                switch (frame.type) {
-                    case "chunk":
-                        handlers.onChunk(frame.text);
-                        break;
-                    case "tool":
-                        handlers.onTool?.(frame.name, frame.args);
-                        break;
-                    case "toolResult":
-                        handlers.onToolResult?.(frame.name, frame.output);
-                        break;
-                    case "done":
-                        teardown();
-                        resolve();
-                        break;
-                    case "error":
-                        teardown();
-                        reject(new Error(frame.message));
-                        break;
-                }
-            };
-            socket.onerror = (): void => {
-                teardown();
-                reject(new Error("connection error"));
-            };
-            socket.onclose = (): void => {
-                teardown();
-                reject(new Error("connection closed while streaming"));
-            };
-        });
+            await new Promise<void>((resolve, reject) => {
+                const teardown = (): void => {
+                    socket.onmessage = null;
+                    socket.onerror = null;
+                    socket.onclose = null;
+                };
+                socket.onmessage = (event: MessageEvent): void => {
+                    const frame = parseFrame(String(event.data));
+                    switch (frame.type) {
+                        case "chunk":
+                            handlers.onChunk(frame.text);
+                            break;
+                        case "tool":
+                            handlers.onTool?.(frame.name, frame.args);
+                            break;
+                        case "toolResult":
+                            handlers.onToolResult?.(frame.name, frame.output);
+                            break;
+                        case "done":
+                            teardown();
+                            resolve();
+                            break;
+                        case "error":
+                            teardown();
+                            reject(new Error(frame.message));
+                            break;
+                    }
+                };
+                socket.onerror = (): void => {
+                    teardown();
+                    reject(new Error("connection error"));
+                };
+                socket.onclose = (): void => {
+                    teardown();
+                    reject(new Error("connection closed while streaming"));
+                };
+            });
+        } finally {
+            this.active = false;
+        }
     }
 
     /** Closes the connection if one is currently open. */
@@ -114,7 +123,7 @@ export class ChatClient {
  *
  * Throws if the payload is not valid JSON or matches no known frame shape.
  */
-function parseFrame(raw: string): ChatEvent {
+export function parseFrame(raw: string): ChatEvent {
     let parsed: unknown;
     try {
         parsed = JSON.parse(raw);

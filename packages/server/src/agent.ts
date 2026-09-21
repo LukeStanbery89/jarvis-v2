@@ -14,6 +14,7 @@ import {
     createAgentGraph,
     streamAgentTurn,
     type AgentEvent,
+    type AgentGraph,
 } from "./llm/agentGraph";
 import { tools } from "./llm/tools";
 import { getLlmConfig } from "./config";
@@ -21,7 +22,7 @@ import { logger } from "./logger";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-let graph: ReturnType<typeof createAgentGraph> | null = null;
+let graph: AgentGraph | null = null;
 
 /**
  * Returns the shared, compiled agent graph, building it on first use.
@@ -30,7 +31,7 @@ let graph: ReturnType<typeof createAgentGraph> | null = null;
  * `JARVIS_CHECKPOINT_PATH`) backs every session thread, and every turn reuses
  * the same compiled graph instance.
  */
-function getAgentGraph(): ReturnType<typeof createAgentGraph> {
+function getAgentGraph(): AgentGraph {
     if (!graph) {
         const { checkpointPath, agentMaxTurns } = getLlmConfig();
         mkdirSync(dirname(checkpointPath), { recursive: true });
@@ -41,16 +42,7 @@ function getAgentGraph(): ReturnType<typeof createAgentGraph> {
             tools,
             checkpointer: saver,
         });
-        void graph.getState({ configurable: { thread_id: "__init__" } }).then(
-            () =>
-                logger.info(
-                    `Agent graph ready; checkpoints in ${checkpointPath}`,
-                ),
-            (err) =>
-                logger.error(
-                    `Checkpointer init failed: ${err instanceof Error ? err.message : String(err)}`,
-                ),
-        );
+        logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
     }
     return graph;
 }
