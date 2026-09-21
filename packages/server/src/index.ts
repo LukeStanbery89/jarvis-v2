@@ -7,6 +7,8 @@
 import { createApp } from "./app";
 import { attachChatServer } from "./ws";
 
+// Default port 54321 is referenced by the CLI's default server URL
+// (packages/cli/src/config.ts) — keep the two in sync.
 const port = Number(process.env.PORT ?? 54321);
 
 const server = createApp().listen(port, () => {

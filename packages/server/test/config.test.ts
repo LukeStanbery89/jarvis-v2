@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getLlmConfig } from "../src/config";
-
-const DEFAULT_SYSTEM_PROMPT =
-    "You are Jarvis, a helpful, personal AI assistant. " +
-    "Answer directly and concisely; avoid unnecessary verbosity, markup, " +
-    "and preamble.";
+import {
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TEMPERATURE,
+    DEFAULT_SYSTEM_PROMPT,
+    getLlmConfig,
+} from "../src/config";
 
 afterEach(() => {
     delete process.env.LLM_BASE_URL;
@@ -16,9 +17,9 @@ afterEach(() => {
 describe("getLlmConfig", () => {
     it("returns the local LM Studio defaults", () => {
         expect(getLlmConfig()).toEqual({
-            baseUrl: "http://localhost:1234/v1",
-            model: "qwen/qwen3-4b-2507",
-            temperature: 0,
+            baseUrl: DEFAULT_LLM_BASE_URL,
+            model: DEFAULT_LLM_MODEL,
+            temperature: DEFAULT_LLM_TEMPERATURE,
             streamUsage: false,
             systemPrompt: DEFAULT_SYSTEM_PROMPT,
         });

@@ -10,6 +10,9 @@ import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
 import { runAgent } from "./agent";
 
+/** A frame the server sends to chat clients over `/ws`. */
+type ServerFrame = { chunk: string } | { done: true } | { error: string };
+
 /**
  * Attaches the WebSocket chat server to an HTTP server and returns it.
  *
@@ -47,22 +50,22 @@ export function attachChatServer(httpServer: Server): WebSocketServer {
  * is fully streamed or the stream fails.
  */
 async function handleMessage(raw: RawData, socket: WebSocket): Promise<void> {
-    console.info(`[INFO] Received message from WebSocket: ${raw.toString()}`);
+    const frameText = raw.toString();
+    console.info(`[INFO] Received message from WebSocket: ${frameText}`);
     let prompt: string;
     try {
-        const parsed: unknown = JSON.parse(raw.toString());
+        const parsed: unknown = JSON.parse(frameText);
         const promptField = (parsed as { prompt?: unknown }).prompt;
         if (typeof promptField !== "string" || promptField.trim() === "") {
             throw new Error("expected a non-empty string field 'prompt'");
         }
         prompt = promptField;
     } catch (err) {
-        console.error(
-            `[ERROR] Error parsing WebSocket message: ${err instanceof Error ? err.message : "invalid message"}`,
-        );
+        const detail = err instanceof Error ? err.message : "unknown error";
+        console.error(`[ERROR] Failed to parse WebSocket message: ${detail}`);
         sendError(
             socket,
-            err instanceof Error ? err.message : "invalid message",
+            "invalid message format; expected a non-empty string field 'prompt'",
         );
         return;
     }
@@ -85,13 +88,13 @@ async function streamTokensToSocket(
             if (socket.readyState !== WebSocket.OPEN) {
                 return;
             }
-            socket.send(JSON.stringify({ chunk: token }));
+            sendFrame(socket, { chunk: token });
         }
         console.debug("[DEBUG] LLM stream complete");
         if (socket.readyState !== WebSocket.OPEN) {
             return;
         }
-        socket.send(JSON.stringify({ done: true }));
+        sendFrame(socket, { done: true });
     } catch (err) {
         console.error(
             `[ERROR] LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -103,6 +106,11 @@ async function streamTokensToSocket(
 /** Sends an error frame followed by a `done` frame. */
 function sendError(socket: WebSocket, message: string): void {
     console.info(`[INFO] Sending error frame to WebSocket: ${message}`);
-    socket.send(JSON.stringify({ error: message }));
-    socket.send(JSON.stringify({ done: true }));
+    sendFrame(socket, { error: message });
+    sendFrame(socket, { done: true });
+}
+
+/** Serializes and sends one server frame. */
+function sendFrame(socket: WebSocket, frame: ServerFrame): void {
+    socket.send(JSON.stringify(frame));
 }
