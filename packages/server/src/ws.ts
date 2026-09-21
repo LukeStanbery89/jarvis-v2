@@ -2,25 +2,17 @@
  * WebSocket chat endpoint.
  *
  * Mounted on the `"/ws"` path of the HTTP server. Clients send JSON prompt
- * frames and receive chunk/done frames back (see the package README for the
- * protocol).
+ * frames and receive chunk/done frames back. The frame shapes and
+ * parse/serialize logic live in `@jarvis/protocol` — the single source of
+ * truth for the wire protocol — so the server never re-declares them.
  */
 import type { Server } from "http";
 import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
+import { parseRequest, serializeFrame } from "@jarvis/protocol";
+import type { ServerFrame } from "@jarvis/protocol";
 import { runAgent } from "./agent";
 import { logger } from "./logger";
-
-/** A frame the server sends to chat clients over `/ws`. */
-type ServerFrame =
-    | { chunk: string }
-    | { tool: { name: string; args?: unknown } }
-    | { toolResult: { name: string; output?: unknown } }
-    | { done: true }
-    | { error: string };
-
-/** Longest `sessionId` a client may send. */
-const MAX_SESSION_ID_LENGTH = 128;
 
 /**
  * Attaches the WebSocket chat server to an HTTP server and returns it.
@@ -64,27 +56,9 @@ async function handleMessage(raw: RawData, socket: WebSocket): Promise<void> {
     let prompt: string;
     let sessionId: string;
     try {
-        const parsed: unknown = JSON.parse(frameText);
-        const request = parsed as { prompt?: unknown; sessionId?: unknown };
-        if (
-            typeof request.prompt !== "string" ||
-            request.prompt.trim() === ""
-        ) {
-            throw new Error("expected a non-empty string field 'prompt'");
-        }
-        if (
-            typeof request.sessionId !== "string" ||
-            request.sessionId.trim() === ""
-        ) {
-            throw new Error("expected a non-empty string field 'sessionId'");
-        }
+        const request = parseRequest(frameText);
         prompt = request.prompt;
         sessionId = request.sessionId;
-        if (sessionId.length > MAX_SESSION_ID_LENGTH) {
-            throw new Error(
-                `sessionId must be at most ${MAX_SESSION_ID_LENGTH} characters`,
-            );
-        }
     } catch (err) {
         const detail = err instanceof Error ? err.message : "unknown error";
         logger.error(`Failed to parse WebSocket message: ${detail}`);
@@ -158,5 +132,5 @@ function sendError(socket: WebSocket, message: string): void {
 
 /** Serializes and sends one server frame. */
 function sendFrame(socket: WebSocket, frame: ServerFrame): void {
-    socket.send(JSON.stringify(frame));
+    socket.send(serializeFrame(frame));
 }

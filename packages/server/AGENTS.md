@@ -52,7 +52,10 @@ there; `JARVIS_LOG_SENSITIVE=full|redacted` overrides the mode.
 
 ## Chat protocol
 
-JSON text frames on `/ws`:
+The wire protocol (frames, the ≤128-char `sessionId` bound, and all
+parsing/serialization) is defined once in the shared `@jarvis/protocol`
+package; the server imports `parseRequest`/`serializeFrame` rather than
+re-declaring frames. JSON text frames on `/ws`:
 
 - Client → Server: `{ "prompt": "<text>", "sessionId": "<id>" }` — sessionId
   (required, ≤128 chars) names the LangGraph conversation thread.

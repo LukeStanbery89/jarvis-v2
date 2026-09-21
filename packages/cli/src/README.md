@@ -39,9 +39,11 @@ index.ts onChunk → process.stdout.write(chunk)   (prints as it streams)
 
 ## Key decisions
 
-- **Zero runtime dependencies.** `ChatClient` uses Node's global `WebSocket`,
-  so the package has no runtime deps — it speaks the JSON protocol defined by
-  `@jarvis/server` directly (see `parseFrame` for the single frame-shape check).
+- **Zero third-party runtime dependencies.** `ChatClient` uses Node's global
+  `WebSocket`, so the package pulls in no third-party runtime deps; it speaks
+  the JSON protocol defined in the shared first-party `@jarvis/protocol`
+  package (parsing via its `parseFrame`, serialization via its
+  `serializeRequest`; see `packages/protocol`).
 - **Connect-on-demand.** The socket is opened lazily on the first `prompt()`
   call and reused, so a simple `jarvis` startup with no input costs nothing.
 - **Wait for done.** If the REPL closes mid-response, the in-flight promise is

@@ -43,7 +43,7 @@ src/
 CLI / WebSocket client
       │  {"prompt": "...", "sessionId": "..."}
       ▼
-ws.ts  handleMessage/watch   (parse + validate prompt + sessionId)
+ws.ts  handleMessage/watch   (parse + validate prompt + sessionId via @jarvis/protocol)
       │  prompt, sessionId
       ▼
 agent.ts runAgent            (the brain seam: graph + checkpointer)

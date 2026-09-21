@@ -31,6 +31,7 @@
     "type": "commonjs",
     "dependencies": {
         "@jarvis/logger": "^0.1.0",
+        "@jarvis/protocol": "^0.1.0",
         "@langchain/core": "^1.2.12",
         "@langchain/langgraph": "^1.4.16",
         "@langchain/langgraph-checkpoint-sqlite": "^1.0.4",

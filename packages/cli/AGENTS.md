@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@jarvis/cli` — CLI text chat client for the J.A.R.V.I.S. AI assistant. Runs a REPL that forwards prompts to the server over WebSocket and prints the streamed response. Uses Node's global `WebSocket` for the transport and depends only on `@jarvis/logger` for logging (no third-party runtime deps).
+`@jarvis/cli` — CLI text chat client for the J.A.R.V.I.S. AI assistant. Runs a REPL that forwards prompts to the server over WebSocket and prints the streamed response. Uses Node's global `WebSocket` for transport, `@jarvis/logger` for logging, and `@jarvis/protocol` for framing (no third-party runtime deps).
 
 ## Stack
 
@@ -29,9 +29,10 @@ The server URL defaults to `ws://localhost:54321/ws`, overridable via the
 `~/.jarvis/session-id`, overridable via `JARVIS_SESSION_FILE` (`src/config.ts`).
 `loadOrCreateSessionId()` (`src/session.ts`) loads or creates that file and is
 sent as `sessionId` with every prompt so the CLI resumes the server-side
-conversation thread across restarts. Chat protocol is defined by
-`@jarvis/server`; tool and toolResult frames are surfaced to the REPL's stderr
-diagnostics via the `onTool`/`onToolResult` callbacks (`src/client.ts`).
+conversation thread across restarts. The chat wire protocol is defined in the
+shared `@jarvis/protocol` package (parsing via `parseFrame`, serialization via
+`serializeRequest`); tool and toolResult frames are surfaced to the REPL's
+stderr diagnostics via the `onTool`/`onToolResult` callbacks (`src/client.ts`).
 
 ## Logging
 

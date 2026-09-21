@@ -84,7 +84,9 @@ option is provided by `@jarvis/logger` (`sensitive` / `sensitiveDebug`).
 
 ### Chat protocol
 
-Connect a WebSocket client to `/ws`, then exchange JSON text frames:
+The wire protocol (frames, limits, and parse/serialize logic) is defined once
+in the shared `@jarvis/protocol` package; connect a WebSocket client to `/ws`
+and exchange JSON text frames:
 
 - Client → Server: `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
   `sessionId` names the conversation thread. Reuse it to continue an earlier

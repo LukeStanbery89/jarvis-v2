@@ -1,12 +1,16 @@
 /**
- * A single frame received from the server.
+ * WebSocket chat client for the J.A.R.V.I.S. server.
+ *
+ * Connects lazily on the first `prompt()` call and reconnects automatically
+ * if the connection drops. Each prompt carries the conversation's `sessionId`
+ * so the server continues the same thread. Uses Node's built-in `WebSocket`,
+ * so this module adds no third-party runtime dependency.
+ *
+ * Frame parsing and serialization come from `@jarvis/protocol`, the single
+ * source of truth for the wire protocol; this module only maps parsed frames
+ * onto the `PromptHandlers` callbacks.
  */
-type ChatEvent =
-    | { type: "chunk"; text: string }
-    | { type: "tool"; name: string; args?: unknown }
-    | { type: "toolResult"; name: string; output?: unknown }
-    | { type: "done" }
-    | { type: "error"; message: string };
+import { parseFrame, serializeRequest } from "@jarvis/protocol";
 
 /** Callbacks invoked as events arrive during a `prompt()` exchange. */
 export interface PromptHandlers {
@@ -50,7 +54,7 @@ export class ChatClient {
         this.active = true;
         try {
             const socket = await this.ensureConnected();
-            socket.send(JSON.stringify({ prompt: text, sessionId }));
+            socket.send(serializeRequest(text, sessionId));
 
             await new Promise<void>((resolve, reject) => {
                 const teardown = (): void => {
@@ -60,24 +64,21 @@ export class ChatClient {
                 };
                 socket.onmessage = (event: MessageEvent): void => {
                     const frame = parseFrame(String(event.data));
-                    switch (frame.type) {
-                        case "chunk":
-                            handlers.onChunk(frame.text);
-                            break;
-                        case "tool":
-                            handlers.onTool?.(frame.name, frame.args);
-                            break;
-                        case "toolResult":
-                            handlers.onToolResult?.(frame.name, frame.output);
-                            break;
-                        case "done":
-                            teardown();
-                            resolve();
-                            break;
-                        case "error":
-                            teardown();
-                            reject(new Error(frame.message));
-                            break;
+                    if ("chunk" in frame) {
+                        handlers.onChunk(frame.chunk);
+                    } else if ("tool" in frame) {
+                        handlers.onTool?.(frame.tool.name, frame.tool.args);
+                    } else if ("toolResult" in frame) {
+                        handlers.onToolResult?.(
+                            frame.toolResult.name,
+                            frame.toolResult.output,
+                        );
+                    } else if ("error" in frame) {
+                        teardown();
+                        reject(new Error(frame.error));
+                    } else {
+                        teardown();
+                        resolve();
                     }
                 };
                 socket.onerror = (): void => {
@@ -116,50 +117,4 @@ export class ChatClient {
         this.socket = socket;
         return socket;
     }
-}
-
-/**
- * Parses one raw server frame into a typed `ChatEvent`.
- *
- * Throws if the payload is not valid JSON or matches no known frame shape.
- */
-export function parseFrame(raw: string): ChatEvent {
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(raw);
-    } catch {
-        throw new Error("received a malformed message from the server");
-    }
-
-    const frame = parsed as {
-        chunk?: unknown;
-        done?: unknown;
-        error?: unknown;
-        tool?: { name?: unknown; args?: unknown };
-        toolResult?: { name?: unknown; output?: unknown };
-    };
-    if (typeof frame.chunk === "string") {
-        return { type: "chunk", text: frame.chunk };
-    }
-    if (frame.tool && typeof frame.tool.name === "string") {
-        return {
-            type: "tool",
-            name: frame.tool.name,
-            args: frame.tool.args,
-        };
-    }
-    if (frame.toolResult && typeof frame.toolResult.name === "string") {
-        return {
-            type: "toolResult",
-            name: frame.toolResult.name,
-            output: frame.toolResult.output,
-        };
-    }
-    if (frame.done === true) {
-        return { type: "done" };
-    }
-    if (typeof frame.error === "string") {
-        return { type: "error", message: frame.error };
-    }
-    throw new Error("received an unrecognized message from the server");
 }
