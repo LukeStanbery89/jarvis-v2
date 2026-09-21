@@ -18,12 +18,13 @@ npm install @jarvis/server
 
 ## Scripts
 
-| Script          | Description                    |
-| --------------- | ------------------------------ |
-| `npm run build` | Compile TypeScript to `dist/`  |
-| `npm run dev`   | Run the server with watch mode |
-| `npm start`     | Run the compiled server        |
-| `npm test`      | Run the test suite (Vitest)    |
+| Script              | Description                        |
+| ------------------- | ---------------------------------- |
+| `npm run build`     | Compile TypeScript to `dist/`      |
+| `npm run typecheck` | Type-check src and tests (no emit) |
+| `npm run dev`       | Run the server with watch mode     |
+| `npm start`         | Run the compiled server            |
+| `npm test`          | Run the test suite (Vitest)        |
 
 ## Usage
 

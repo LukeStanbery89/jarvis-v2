@@ -17,7 +17,6 @@ import { runAgent } from "./agent";
  * connections on the `"/ws"` path.
  */
 export function attachChatServer(httpServer: Server): WebSocketServer {
-    console.info("[INFO] Attaching WebSocket server to HTTP server...");
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
     wss.on("connection", (socket) => {
@@ -38,7 +37,6 @@ export function attachChatServer(httpServer: Server): WebSocketServer {
         });
     });
 
-    console.info("[INFO] WebSocket server attached to HTTP server ✓");
     return wss;
 }
 

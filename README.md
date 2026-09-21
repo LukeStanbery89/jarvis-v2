@@ -22,7 +22,9 @@ npm install
 | Command                | Description                               |
 | ---------------------- | ----------------------------------------- |
 | `npm run build`        | Build all packages                        |
+| `npm run typecheck`    | Type-check all packages (src + tests)     |
 | `npm test`             | Run all package tests                     |
+| `npm run check`        | Build + typecheck + test + format check   |
 | `npm run format`       | Auto-format all files with Prettier       |
 | `npm run format:check` | Verify formatting without modifying files |
 
@@ -36,4 +38,5 @@ Formatting is enforced with [Prettier](https://prettier.io) using the rules in
 
 Format-on-save is configured for VS Code (`.vscode/settings.json`, requires the
 [Prettier extension](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode))
-and for the OpenCode editor (`opencode.json`). Run `npm run format:check` in CI to enforce.
+and for the OpenCode editor (`opencode.json`). Run `npm run check` in CI
+to enforce type-checking, tests, and formatting.

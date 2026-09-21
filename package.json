@@ -8,6 +8,7 @@
     ],
     "scripts": {
         "build": "npm run build --workspaces --if-present",
+        "check": "npm run build --workspaces --if-present && npm run typecheck --workspaces --if-present && npm test && npm run format:check",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "npm run test --workspaces --if-present",

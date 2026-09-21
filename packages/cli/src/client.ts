@@ -33,6 +33,11 @@ export class ChatClient {
         socket.send(JSON.stringify({ prompt: text }));
 
         await new Promise<void>((resolve, reject) => {
+            const teardown = (): void => {
+                socket.onmessage = null;
+                socket.onerror = null;
+                socket.onclose = null;
+            };
             socket.onmessage = (event: MessageEvent): void => {
                 const frame = parseFrame(String(event.data));
                 switch (frame.type) {
@@ -40,18 +45,22 @@ export class ChatClient {
                         onChunk(frame.text);
                         break;
                     case "done":
-                        socket.onmessage = null;
+                        teardown();
                         resolve();
                         break;
                     case "error":
-                        socket.onmessage = null;
+                        teardown();
                         reject(new Error(frame.message));
                         break;
                 }
             };
             socket.onerror = (): void => {
-                socket.onmessage = null;
+                teardown();
                 reject(new Error("connection error"));
+            };
+            socket.onclose = (): void => {
+                teardown();
+                reject(new Error("connection closed while streaming"));
             };
         });
     }

@@ -9,10 +9,11 @@
 import { createChatModel } from "./llm/chatModel";
 import { buildMessages } from "./llm/messages";
 
+const chatModel = createChatModel();
+
 export async function* runAgent(prompt: string): AsyncGenerator<string> {
     console.info(`[INFO] Streaming LLM response for prompt: ${prompt}`);
-    const model = createChatModel();
-    const stream = await model.stream(buildMessages(prompt));
+    const stream = await chatModel.stream(buildMessages(prompt));
     for await (const chunk of stream) {
         const token = typeof chunk.content === "string" ? chunk.content : "";
         if (token) {

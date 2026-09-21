@@ -28,7 +28,9 @@ Run from the repository root:
 | ---------------------- | ----------------------------------------- |
 | `npm install`          | Install all workspace dependencies        |
 | `npm run build`        | Build all packages with `tsc`             |
+| `npm run typecheck`    | Type-check all packages (src + tests)     |
 | `npm test`             | Run all package test suites (Vitest)      |
+| `npm run check`        | Build + typecheck + test + format check   |
 | `npm run format`       | Auto-format all files with Prettier       |
 | `npm run format:check` | Verify formatting without modifying files |
 

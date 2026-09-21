@@ -17,12 +17,13 @@ npm install -g @jarvis/cli
 
 ## Scripts
 
-| Script          | Description                   |
-| --------------- | ----------------------------- |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run dev`   | Run the CLI in dev mode       |
-| `npm start`     | Run the compiled CLI          |
-| `npm test`      | Run the test suite (Vitest)   |
+| Script              | Description                        |
+| ------------------- | ---------------------------------- |
+| `npm run build`     | Compile TypeScript to `dist/`      |
+| `npm run typecheck` | Type-check src and tests (no emit) |
+| `npm run dev`       | Run the CLI in dev mode            |
+| `npm start`         | Run the compiled CLI               |
+| `npm test`          | Run the test suite (Vitest)        |
 
 ## Usage
 

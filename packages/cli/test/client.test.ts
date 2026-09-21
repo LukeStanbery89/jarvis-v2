@@ -41,6 +41,31 @@ describe("ChatClient", () => {
         expect(chunks.join("")).toBe("Hello, World!");
         client.close();
     });
+
+    it("rejects when the server closes the socket mid-stream", async () => {
+        const closeServer = createServer();
+        const closeWss = new WebSocketServer({ server: closeServer });
+        closeWss.on("connection", (socket) => {
+            socket.on("message", () => {
+                socket.send(JSON.stringify({ chunk: "partial" }));
+                socket.close();
+            });
+        });
+        try {
+            await new Promise<void>((resolve) =>
+                closeServer.listen(0, "127.0.0.1", resolve),
+            );
+            const closeUrl = `ws://127.0.0.1:${(closeServer.address() as AddressInfo).port}`;
+            const client = new ChatClient(closeUrl);
+
+            await expect(client.prompt("hi", () => {})).rejects.toThrow(
+                /closed while streaming/,
+            );
+        } finally {
+            closeWss.close();
+            closeServer.close();
+        }
+    });
 });
 
 describe("getServerUrl", () => {
