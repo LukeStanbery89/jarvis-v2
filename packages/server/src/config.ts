@@ -3,6 +3,9 @@ import { homedir } from "node:os";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
+/** Default HTTP port the server listens on. */
+export const DEFAULT_PORT = 54321;
+
 /** Default model served by the local inference server. */
 export const DEFAULT_LLM_MODEL = "qwen/qwen3-4b-2507";
 
@@ -48,6 +51,17 @@ export interface LlmConfig {
     systemPrompt: string;
     agentMaxTurns: number;
     checkpointPath: string;
+}
+
+/**
+ * Resolves the HTTP port the server listens on.
+ *
+ * Reads the `PORT` environment variable, falling back to `DEFAULT_PORT`. The
+ * default is referenced by the CLI's default server URL
+ * (`packages/cli/src/config.ts`) — keep them in sync.
+ */
+export function getServerPort(): number {
+    return Number(process.env.PORT ?? DEFAULT_PORT);
 }
 
 export function getLlmConfig(): LlmConfig {

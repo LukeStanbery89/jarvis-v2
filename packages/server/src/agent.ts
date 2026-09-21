@@ -22,6 +22,8 @@ import { logger } from "./logger";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+export type { AgentEvent, AgentGraph } from "./llm/agentGraph";
+
 let graph: AgentGraph | null = null;
 
 /**

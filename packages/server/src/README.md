@@ -26,16 +26,17 @@ src/
 
 ## File map
 
-| File                | Responsibility                                                                                                                                     |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`          | Entry point: builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                          |
-| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port |
-| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path, from env (with LM Studio defaults)                |
-| `agent.ts`          | `runAgent(prompt, sessionId)` → owns the singleton compiled graph + SQLite checkpointer, streams `AgentEvent`s. The only seam `ws.ts` imports      |
-| `ws.ts`             | `attachChatServer(httpServer)` → the `/ws` chat endpoint; validates frames, maps `AgentEvent`s to wire frames (server → client direction)          |
-| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                        |
-| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s   |
-| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                |
+| File                | Responsibility                                                                                                                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`          | Entry point: builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                                                           |
+| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port                                  |
+| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getServerPort()` → the listening port (default `54321`), all from env             |
+| `agent.ts`          | `runAgent(prompt, sessionId)` → owns the singleton compiled graph + SQLite checkpointer, streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph` |
+| `ws.ts`             | `attachChatServer(httpServer)` → the `/ws` chat endpoint; validates frames, maps `AgentEvent`s to wire frames (server → client direction)                                           |
+| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                         |
+| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                    |
+| `llm/event.ts`      | The `AgentEvent` union (`token`/`tool`/`toolResult`) — one turn's streamed output shape; also re-exported from the `agentGraph` and `agent` layers                                  |
+| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                                                 |
 
 ## Data flow
 

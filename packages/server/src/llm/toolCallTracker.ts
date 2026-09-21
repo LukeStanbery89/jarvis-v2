@@ -22,12 +22,9 @@ import {
     AIMessageChunk,
     ToolMessage,
 } from "@langchain/core/messages";
+import type { AgentEvent } from "./event";
 
-/** One event produced while running an agent turn. */
-export type AgentEvent =
-    | { type: "token"; text: string }
-    | { type: "tool"; name: string; args: unknown }
-    | { type: "toolResult"; name: string; output: unknown };
+export type { AgentEvent } from "./event";
 
 /** Tracks a tool call seen in the stream until its result arrives. */
 interface PendingToolCall {

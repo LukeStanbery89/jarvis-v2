@@ -32,9 +32,9 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { ToolCallTracker } from "./toolCallTracker";
-import type { AgentEvent } from "./toolCallTracker";
+import type { AgentEvent } from "./event";
 
-export type { AgentEvent } from "./toolCallTracker";
+export type { AgentEvent } from "./event";
 
 /**
  * Concrete compiled-graph type used across the agent layer.

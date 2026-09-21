@@ -6,11 +6,10 @@
  */
 import { createApp } from "./app";
 import { logger } from "./logger";
+import { getServerPort } from "./config";
 import { attachChatServer } from "./ws";
 
-// Default port 54321 is referenced by the CLI's default server URL
-// (packages/cli/src/config.ts) — keep the two in sync.
-const port = Number(process.env.PORT ?? 54321);
+const port = getServerPort();
 
 const server = createApp().listen(port, () => {
     logger.info(`J.A.R.V.I.S. server listening on http://localhost:${port}`);
