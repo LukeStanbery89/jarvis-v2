@@ -164,6 +164,37 @@ describe("createAgentGraph", () => {
         ]);
     });
 
+    it("refreshes the system prompt on an existing thread when it changes", async () => {
+        const model = new ScriptedChatModel([
+            new AIMessage({ content: "One" }),
+            new AIMessage({ content: "Two" }),
+        ]);
+        const graph = buildGraph(model);
+        await collect(streamAgentTurn(graph, "one", "t5", "OLD PROMPT", 10));
+        await collect(streamAgentTurn(graph, "two", "t5", "NEW PROMPT", 10));
+
+        const secondInput = model.callInputs[1];
+        expect(
+            secondInput.filter((m) => m._getType() === "system"),
+        ).toHaveLength(1);
+        expect(secondInput[0].content).toBe("NEW PROMPT");
+
+        const state = (
+            await graph.getState({
+                configurable: { thread_id: "t5" },
+            })
+        ).values.messages as BaseMessage[];
+        expect(state.map((m) => m._getType())).toEqual([
+            "system",
+            "human",
+            "ai",
+            "human",
+            "ai",
+        ]);
+        expect(state[0].content).toBe("NEW PROMPT");
+        expect(state[4].content).toBe("Two");
+    });
+
     it("isolates state between different thread ids", async () => {
         const model = new ScriptedChatModel([
             new AIMessage({ content: "Shared" }),

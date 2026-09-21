@@ -101,6 +101,12 @@ export function createAgentGraph({
  * executed tools yield `toolResult`. Emits no events if the model answer
  * carries no text. `recursionLimit` caps the number of model/tool turns in one
  * run, aborting an agent that keeps requesting tools.
+ *
+ * If a thread already exists but its prime differs from `systemPrompt` (the
+ * persona changed), the stored system message is replaced in place — the
+ * reducer swaps it by id — so updated system prompts (e.g. new persona rules)
+ * reach existing conversations on their next turn without duplicating or
+ * losing history.
  */
 export async function* streamAgentTurn(
     graph: AgentGraph,
@@ -115,10 +121,11 @@ export async function* streamAgentTurn(
     };
     const prior = await graph.getState(config);
     const messages = prior.values.messages as BaseMessage[] | undefined;
-    const needsPriming = !messages || messages.length === 0;
-    const input = needsPriming
-        ? [new SystemMessage(systemPrompt), new HumanMessage(prompt)]
-        : [new HumanMessage(prompt)];
+    const history = messages ?? [];
+    const input =
+        history.length === 0
+            ? [new SystemMessage(systemPrompt), new HumanMessage(prompt)]
+            : refreshedPrime(history, systemPrompt, prompt);
 
     const tracked = new ToolCallTracker();
     const stream = await graph.stream(
@@ -143,4 +150,31 @@ function hasToolCalls(message: BaseMessage): boolean {
         (ai.tool_calls?.length ?? 0) > 0 ||
         (ai.invalid_tool_calls?.length ?? 0) > 0
     );
+}
+
+/**
+ * Builds the turn input for an existing thread.
+ *
+ * Appends `prompt` as the new human turn and, when the thread's prime is a
+ * stale system message (its content differs from the current `systemPrompt`),
+ * re-emits that same message with the new content. The messages reducer
+ * replaces by id, so the stored system message is refreshed in place and the
+ * rest of the history is untouched.
+ */
+function refreshedPrime(
+    history: BaseMessage[],
+    systemPrompt: string,
+    prompt: string,
+): BaseMessage[] {
+    const primer = history[0];
+    const staleSystem =
+        primer?._getType() === "system" &&
+        typeof primer.id === "string" &&
+        (typeof primer.content !== "string" || primer.content !== systemPrompt);
+    return staleSystem && primer.id
+        ? [
+              new SystemMessage({ id: primer.id, content: systemPrompt }),
+              new HumanMessage(prompt),
+          ]
+        : [new HumanMessage(prompt)];
 }
