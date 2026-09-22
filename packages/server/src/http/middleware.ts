@@ -8,6 +8,7 @@
  * to see the guaranteed identity.
  */
 import type { NextFunction, Request, RequestHandler, Response } from "express";
+import { MAX_TOKEN_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "../auth";
 import type { AppStore } from "../auth";
 import type { AppDevice, AppUser } from "../auth";
@@ -21,9 +22,6 @@ import type { AppDevice, AppUser } from "../auth";
 export interface AuthedRequest extends Request {
     jarv: { user: AppUser; device: AppDevice };
 }
-
-/** Upper bound on presented token size; 32-byte tokens are ~43 chars. */
-const MAX_TOKEN_LENGTH = 512;
 
 /** Extracts the token from `Authorization: Bearer <token>`, if well-formed. */
 function parseBearerToken(header: string | undefined): string | null {

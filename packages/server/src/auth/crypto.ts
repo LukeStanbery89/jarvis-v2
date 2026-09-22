@@ -24,9 +24,6 @@ export interface ScryptParams {
 /** Baseline scrypt cost for a household server (roughly 50-100ms hashing). */
 export const DEFAULT_SCRYPT_PARAMS: ScryptParams = { N: 16384, r: 8, p: 1 };
 
-/** Cost-broken params for tests only — DO NOT use for real credentials. */
-export const FAST_SCRYPT_PARAMS: ScryptParams = { N: 4, r: 1, p: 1 };
-
 const SALT_LENGTH = 16;
 const PASSWORD_KEY_LENGTH = 64;
 const TOKEN_BYTES = 32;
@@ -94,9 +91,14 @@ export async function verifyPassword(
         !Number.isFinite(N) ||
         !Number.isFinite(r) ||
         !Number.isFinite(p) ||
-        N <= 1 ||
+        N < 2 ||
+        // scrypt requires a power-of-two N; anything else is a corrupted store.
+        (N & (N - 1)) !== 0 ||
+        N > 2 ** 20 ||
         r < 1 ||
-        p < 1
+        r > 16 ||
+        p < 1 ||
+        p > 16
     ) {
         throw new AuthError(
             "MALFORMED_HASH",

@@ -13,23 +13,26 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import {
     AuthError,
-    DEFAULT_SCRYPT_PARAMS,
     generateDeviceToken,
     hashPassword,
     verifyPassword,
 } from "../auth";
 import type { AppStore } from "../auth";
-import type { ScryptParams } from "../auth";
 import type { AppConfig } from "../config";
 import { AuthedRequest, requireAuth, requireOwner } from "./middleware";
 
 const USERNAME_MAX = 64;
+const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 1024;
 const DEVICE_NAME_MAX = 64;
 
-interface RouterOptions {
-    /** scrypt cost for hashing new passwords (tests use the fast params). */
-    scryptParams?: ScryptParams;
+/** Cached dummy hash so a missing username costs the same scrypt as a real one. */
+let dummyPasswordHash: Promise<string> | null = null;
+function dummyHash(): Promise<string> {
+    // Any password; never actually verified against, only the *cost* must
+    // match the real path so usernames can't be enumerated by response time.
+    dummyPasswordHash ??= hashPassword("definitely-not-a-real-password");
+    return dummyPasswordHash;
 }
 
 /** Maps a stable AuthError code to an HTTP status. */
@@ -49,12 +52,11 @@ const AUTH_ERROR_STATUS: Record<string, number> = {
  * Builds the `/api` router.
  *
  * `store` backs every ledger query; `appConfig` supplies the bootstrap token
- * gate. `options.scryptParams` lets tests hash quickly.
+ * gate. Passwords are hashed at the default scrypt cost (`DEFAULT_SCRYPT_PARAMS`).
  */
 export function createAuthRouter(
     store: AppStore,
     appConfig: AppConfig,
-    options: RouterOptions = {},
 ): Router {
     const router = Router();
 
@@ -66,12 +68,6 @@ export function createAuthRouter(
                     "first-owner setup is disabled; set JARVIS_BOOTSTRAP_TOKEN to enable it",
                 );
             }
-            if (store.hasOwner()) {
-                throw new AuthError(
-                    "OWNER_EXISTS",
-                    "an owner already exists; bootstrap is a one-time step",
-                );
-            }
             const bootstrap = bootstrapTokenFrom(req);
             if (!constantTimeMatches(bootstrap, appConfig.bootstrapToken)) {
                 throw new AuthError(
@@ -79,10 +75,16 @@ export function createAuthRouter(
                     "bootstrap token mismatch",
                 );
             }
+            if (store.hasOwner()) {
+                throw new AuthError(
+                    "OWNER_EXISTS",
+                    "an owner already exists; bootstrap is a one-time step",
+                );
+            }
             const { username, password, deviceName } = credentialBody(req);
             const owner = store.createUser(
                 username,
-                await hashPassword(password, scryptParamsOf(options)),
+                await hashPassword(password),
                 "owner",
             );
             const material = generateDeviceToken();
@@ -119,8 +121,9 @@ export function createAuthRouter(
                 );
             }
             const { username, password, deviceName } = credentialBody(req);
-            const storedHash = store.getPasswordHash(username);
-            if (!storedHash || !(await verifyPassword(password, storedHash))) {
+            const storedHash =
+                store.getPasswordHash(username) ?? (await dummyHash());
+            if (!(await verifyPassword(password, storedHash))) {
                 throw new AuthError(
                     "INVALID_CREDENTIALS",
                     "invalid username or password",
@@ -194,12 +197,14 @@ export function createAuthRouter(
     router.delete("/devices/:id", requireAuth(store), (req, res) => {
         const jarv = (req as AuthedRequest).jarv;
         const deviceId = Number(String(req.params.id));
-        const device = store.getDeviceById(deviceId);
-        if (
-            device &&
-            device.userId !== jarv.user.id &&
-            jarv.user.role !== "owner"
-        ) {
+        const device = Number.isInteger(deviceId)
+            ? store.getDeviceById(deviceId)
+            : null;
+        if (!device) {
+            res.status(404).json({ error: "device not found" });
+            return;
+        }
+        if (device.userId !== jarv.user.id && jarv.user.role !== "owner") {
             res.status(403).json({
                 error: "you can only revoke your own devices",
             });
@@ -229,7 +234,7 @@ export function createAuthRouter(
                 const role = roleFrom(req.body);
                 const user = store.createUser(
                     username,
-                    await hashPassword(password, scryptParamsOf(options)),
+                    await hashPassword(password),
                     role,
                 );
                 res.status(201).json({
@@ -260,7 +265,10 @@ export function createAuthRouter(
         const jarv = (req as AuthedRequest).jarv;
         const threadId = String(req.params.threadId);
         const session = store.getSessionByThread(threadId);
-        if (!session || session.userId !== jarv.user.id) {
+        if (
+            !session ||
+            (session.userId !== jarv.user.id && jarv.user.role !== "owner")
+        ) {
             res.status(404).json({ error: "session not found" });
             return;
         }
@@ -283,6 +291,12 @@ function credentialBody(req: Request): {
         throw new AuthError("BAD_REQUEST", "username is too long");
     }
     const password = stringField(body.password, "password");
+    if (password.length < PASSWORD_MIN) {
+        throw new AuthError(
+            "BAD_REQUEST",
+            `password must be at least ${PASSWORD_MIN} characters`,
+        );
+    }
     if (password.length > PASSWORD_MAX) {
         throw new AuthError("BAD_REQUEST", "password is too long");
     }
@@ -306,7 +320,10 @@ function deviceNameFrom(body: unknown): string {
 
 function roleFrom(body: unknown): "owner" | "user" {
     const role = (body as Record<string, unknown>).role ?? "user";
-    return role === "owner" || role === "user" ? role : "user";
+    if (role !== "owner" && role !== "user") {
+        throw new AuthError("BAD_REQUEST", "'role' must be 'owner' or 'user'");
+    }
+    return role;
 }
 
 function stringField(value: unknown, field: string): string {
@@ -319,16 +336,10 @@ function stringField(value: unknown, field: string): string {
     return value;
 }
 
-/** The bootstrap secret: either the `x-bootstrap-token` header or the body. */
+/** The bootstrap secret, read exclusively from the `x-bootstrap-token` header. */
 function bootstrapTokenFrom(req: Request): string | undefined {
     const header = req.headers["x-bootstrap-token"];
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof header === "string" && header.length > 0) {
-        return header;
-    }
-    return typeof body.bootstrapToken === "string"
-        ? body.bootstrapToken
-        : undefined;
+    return typeof header === "string" && header.length > 0 ? header : undefined;
 }
 
 function constantTimeMatches(
@@ -341,10 +352,6 @@ function constantTimeMatches(
     const a = Buffer.from(presented);
     const b = Buffer.from(configured);
     return a.length === b.length && timingSafeEqual(a, b);
-}
-
-function scryptParamsOf(options: RouterOptions): ScryptParams {
-    return options.scryptParams ?? DEFAULT_SCRYPT_PARAMS;
 }
 
 /** Answers with the mapped status + a user-safe error message. */

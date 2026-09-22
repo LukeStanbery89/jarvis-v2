@@ -73,12 +73,16 @@ curl -X POST http://localhost:54321/api/bootstrap \
   -d '{"username":"luke","password":"<choose-a-strong-password>"}'
 ```
 
-The response's `device.token` is your admin credential. Later, log in again
+The response's `device.token` is your admin credential. Passwords must be at
+least 8 characters, and the bootstrap token is read **only** from the
+`x-bootstrap-token` header (never the JSON body). Later, log in again
 from any client with `POST /api/auth/login` to receive a fresh token, then use
 it as `Authorization: Bearer <token>` (for the `/api` routes) or as the
 `{ "type": "auth", "token" }` first frame on `/ws`. Re-login on the same
 device name rotates the token (the old one stops working); use distinct
-`deviceName`s for distinct clients.
+`deviceName`s for distinct clients. A failed login is indistinguishable from an
+unknown username (same error, uniform response time), so account existence
+can't be probed.
 
 ### Logging
 
@@ -108,7 +112,7 @@ option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDeb
 | `GET`    | `/api/users`              | device token (owner)                | List accounts                                       |
 | `POST`   | `/api/users`              | device token (owner)                | Create an account (`role` optional, default `user`) |
 | `GET`    | `/api/sessions`           | device token                        | List the caller's owned sessions                    |
-| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete one of the caller's owned sessions           |
+| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete the caller's owned session (owner: any)      |
 
 "Device token" auth is `Authorization: Bearer <token>`.
 
@@ -137,15 +141,22 @@ and exchange JSON text frames:
 - Sending a new prompt while a response is still streaming — or while another
   socket is running a concurrent turn on the same `sessionId` (per-thread lock)
   — is rejected with an `in progress` error frame.
+- A `sessionId` already owned by a different account — carrying that user's
+  conversation history — is rejected with a `session belongs to another user`
+  error frame. An authenticated socket may **adopt** a guest-owned thread
+  (its own earlier guest conversation), after which that session persists as
+  owned.
 - Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS` (default `120000`): a turn
   that exceeds it is aborted and the client receives a `turn timed out` error
-  frame, so the per-thread lock always drains.
+  frame. Draining is **best-effort on a hung model** — the per-thread lock
+  releases once the in-flight model call settles.
 
 Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
 `~/.jarvis/jarvis.sqlite`): `sessionId` is claimed atomically as a
 **session** tagged `guest`/`owned` and `text`/`voice`. Guest sessions are
-deleted when their socket closes; owned sessions persist and can be listed or
-deleted via the REST management API.
+deleted when their socket closes (unless an authenticated user adopted them);
+owned sessions persist and can be listed or deleted via the REST management
+API.
 
 Concatenate the `chunk` payloads verbatim to reconstruct the full response. A
 single prompt may loop through `tool`/`toolResult` pairs several times before

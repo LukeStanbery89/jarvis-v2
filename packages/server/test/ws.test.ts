@@ -133,7 +133,7 @@ describe("chat websocket", () => {
 
 describe("auth handshake", () => {
     it("authenticates a valid device token on the first frame", async () => {
-        const user = store.createUser("luke", "unused", "owner");
+        const user = store.createUser("luke", "unused", "user");
         const material = generateDeviceToken();
         store.createDevice(
             user.id,
@@ -162,7 +162,7 @@ describe("auth handshake", () => {
     });
 
     it("rejects an auth frame once the handshake slot is consumed", async () => {
-        const user = store.createUser("lateauth", "unused", "owner");
+        const user = store.createUser("lateauth", "unused", "user");
         const material = generateDeviceToken();
         store.createDevice(
             user.id,
@@ -208,7 +208,7 @@ describe("session ledger", () => {
     });
 
     it("keeps an owned session alive after the socket closes", async () => {
-        const user = store.createUser("ledger-owner", "unused", "owner");
+        const user = store.createUser("ledger-owner", "unused", "user");
         const material = generateDeviceToken();
         store.createDevice(
             user.id,
@@ -250,6 +250,161 @@ describe("session ledger", () => {
         );
         expect(result.error).toMatch(/timed out/);
         expect(result.chunks).toEqual([]);
+    });
+
+    it("rejects a guest from using a session owned by another account", async () => {
+        const user = store.createUser("owner-guy", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+        const threadId = "owner-secret-thread";
+
+        await twoPhase(
+            [{ type: "auth", token: material.token }],
+            "authResult",
+            [{ prompt: "hi", sessionId: threadId }],
+        );
+
+        const guest = await exchange({ prompt: "hi", sessionId: threadId });
+        expect(guest.error).toMatch(/another user/);
+        expect(guest.chunks).toEqual([]);
+    });
+
+    it("rejects a token for a session owned by another account", async () => {
+        const alice = store.createUser("alice", "unused", "user");
+        const bob = store.createUser("bob", "unused", "user");
+        const aliceMaterial = generateDeviceToken();
+        const bobMaterial = generateDeviceToken();
+        store.createDevice(
+            alice.id,
+            "alice-phone",
+            aliceMaterial.tokenHash,
+            aliceMaterial.prefix,
+        );
+        store.createDevice(
+            bob.id,
+            "bob-phone",
+            bobMaterial.tokenHash,
+            bobMaterial.prefix,
+        );
+        const threadId = "alice-thread";
+
+        await twoPhase(
+            [{ type: "auth", token: aliceMaterial.token }],
+            "authResult",
+            [{ prompt: "hi", sessionId: threadId }],
+        );
+
+        const { again } = await twoPhase(
+            [{ type: "auth", token: bobMaterial.token }],
+            "authResult",
+            [{ prompt: "hi", sessionId: threadId }],
+        );
+        expect(
+            again.some((f) => f.error === "session belongs to another user"),
+        ).toBe(true);
+    });
+
+    it("adopts a guest-owned session for the authenticating user", async () => {
+        const user = store.createUser("adopter", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+        const threadId = "guest-then-owned";
+
+        // Guest claims the thread and *stays open* so the row survives to be
+        // adopted. Wait for its `done` frame first so the thread lock is free.
+        const guestWs = new WebSocket(url);
+        await new Promise<void>((resolve) => {
+            guestWs.on("open", () => {
+                guestWs.send(
+                    JSON.stringify({ prompt: "hi", sessionId: threadId }),
+                );
+            });
+            guestWs.on("message", (data) => {
+                const msg = JSON.parse(data.toString()) as Record<
+                    string,
+                    unknown
+                >;
+                if (msg.done !== undefined) {
+                    resolve();
+                }
+            });
+        });
+        await settle();
+
+        const adopter = await twoPhase(
+            [{ type: "auth", token: material.token }],
+            "authResult",
+            [{ prompt: "hi", sessionId: threadId }],
+        );
+        expect(adopter.frames.some((f) => typeof f.error === "string")).toBe(
+            false,
+        );
+
+        // Closing the (now stale) guest socket must NOT delete the adopted row.
+        guestWs.close();
+        await settle();
+
+        const session = store.getSessionByThread(threadId);
+        expect(session).not.toBeNull();
+        expect(session!.userId).toBe(user.id);
+    });
+
+    it("lets a second device of the same user continue the thread", async () => {
+        const user = store.createUser("two-devices", "unused", "user");
+        const first = generateDeviceToken();
+        const second = generateDeviceToken();
+        store.createDevice(user.id, "mac-a", first.tokenHash, first.prefix);
+        store.createDevice(user.id, "mac-b", second.tokenHash, second.prefix);
+        const threadId = "shared-thread";
+
+        await twoPhase([{ type: "auth", token: first.token }], "authResult", [
+            { prompt: "hi", sessionId: threadId },
+        ]);
+
+        const { again } = await twoPhase(
+            [{ type: "auth", token: second.token }],
+            "authResult",
+            [{ prompt: "hi", sessionId: threadId }],
+        );
+        expect(again.some((f) => typeof f.error === "string")).toBe(false);
+        expect(again.some((f) => f.done === true)).toBe(true);
+    });
+
+    it("keeps serving after the timeout fires on a dropped socket", async () => {
+        await new Promise<void>((resolve) => {
+            const ws = new WebSocket(timeoutUrl);
+            ws.on("open", () => {
+                ws.send(
+                    JSON.stringify({ prompt: "slow", sessionId: "drop-me" }),
+                );
+                // Drop before the 30ms turn timeout fires.
+                setTimeout(() => {
+                    ws.close();
+                    resolve();
+                }, 5);
+            });
+            ws.on("error", () => resolve());
+        });
+
+        // Give the timer a beat to fire against the closed socket, then prove
+        // the server still accepts + streams a fresh turn.
+        await settle();
+        const stillAlive = await chatOn(
+            { prompt: "hi", sessionId: "alive-check" },
+            { url: timeoutUrl },
+        );
+        expect(stillAlive.error).toBeNull();
+        expect(stillAlive.chunks.join("")).toBe("Hello, World!");
     });
 });
 

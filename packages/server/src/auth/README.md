@@ -25,10 +25,17 @@ router) — it consumes these seams and never touches SQL.
 - **Device tokens** → 32 random bytes (base64url). Only their SHA-256 hash and
   an 8-char display `prefix` are persisted (`crypto.ts`). A leaked DB never
   leaks a usable token; a support listing never shows one.
-- **Verifier seam.** Login fingers a verifier (`loginHandler`), and the token
-  resolver (`resolveContext`) is the only place a device's `secret_hash` is
-  compared against a presented token. That is the hook biometric auth (issue
-  #25) slots into — nothing outside `auth/` verifies credentials.
+- **Verifier seam.** Password verification happens in exactly one place —
+  `src/http/authRoutes.ts`: `getPasswordHash(username)` then
+  `verifyPassword(password, hash)`. A username with no row verifies against a
+  cached same-cost dummy hash so account existence can't be inferred from
+  response time. Device tokens are the credential for everything else:
+  the presented token is run through `hashDeviceToken` and looked up by exact
+  `secret_hash` in `store.resolveToken`. Nothing outside the REST/WS layers
+  compares credentials, and the store only ever seats hash-versus-hash
+  equality. Biometric auth (issue #25) slots in at the login seam — replace
+  the password step with a biometric challenge and still provision a device
+  token afterwards.
 
 ## App database
 

@@ -12,9 +12,11 @@
  *
  * Every prompt claims its `sessionId` in the app session ledger
  * (`claimSession`), runs under a **per-thread lock** (a concurrent turn on the
- * same thread is rejected) and a hard **turn timeout** so the lock always
- * drains. Guest sockets' claimed sessions are deleted when the socket closes;
- * owned sessions persist until explicitly deleted.
+ * same thread is rejected) and a hard **turn timeout**. Guest sockets' claimed
+ * sessions are deleted when the socket closes; owned sessions persist until
+ * explicitly deleted. A session belonging to another account is never
+ * touchable; an authenticated socket may adopt a guest-owned thread, which
+ * then persists like any owned session.
  */
 import type { Server } from "http";
 import type { RawData } from "ws";
@@ -97,7 +99,13 @@ export function attachChatServer(
 
         socket.on("close", () => {
             for (const threadId of conn.guestThreads) {
-                store.deleteSession(threadId);
+                const session = store.getSessionByThread(threadId);
+                // Only tear down rows this socket still owns: a thread may
+                // have been adopted by an authenticated user since (its row
+                // then belongs to them and must persist).
+                if (session && session.userId === null) {
+                    store.deleteSession(threadId);
+                }
             }
             logger.info("WebSocket connection closed");
         });
@@ -130,11 +138,7 @@ async function handleMessage(
     } catch (err) {
         const detail = err instanceof Error ? err.message : "unknown error";
         logger.error(`Failed to parse WebSocket message: ${detail}`);
-        sendError(
-            socket,
-            "invalid message format; expected 'prompt' and 'sessionId' " +
-                "non-empty string fields",
-        );
+        sendError(socket, detail);
         return;
     }
 
@@ -176,13 +180,35 @@ async function handlePrompt(
     }
     threadLocks.add(sessionId);
     try {
-        const { created } = store.claimSession(sessionId, {
+        const { session, created } = store.claimSession(sessionId, {
             userId: conn.ctx.user?.id ?? null,
             deviceId: conn.ctx.device?.id ?? null,
             kind: "text",
         });
         if (created && !conn.ctx.user) {
             conn.guestThreads.add(sessionId);
+        }
+        // Thread-takeover guard: a session already owned by another account
+        // (identifiable via its LangGraph history) must never be chatted on
+        // from a different identity's socket. An authenticated user may,
+        // however, adopt a guest-owned thread — that row represents their own
+        // earlier guest conversation and would otherwise be a dangling
+        // `userId = NULL` orphan no REST endpoint could delete.
+        if (session.userId === null && conn.ctx.user) {
+            store.setSessionOwner(sessionId, {
+                userId: conn.ctx.user.id,
+                deviceId: conn.ctx.device?.id ?? null,
+            });
+            conn.guestThreads.delete(sessionId);
+        } else if (
+            session.userId !== null &&
+            session.userId !== conn.ctx.user?.id
+        ) {
+            logger.warn(
+                `Rejecting prompt: session ${sessionId} belongs to another user`,
+            );
+            sendError(socket, "session belongs to another user");
+            return;
         }
         await streamEventsToSocket(
             socket,
@@ -223,6 +249,7 @@ async function handleAuth(
         return;
     }
     conn.ctx = { user: identity.user, device: identity.device };
+    store.touchDevice(identity.device.id);
     logger.info(
         `Socket authenticated as ${identity.user.username} (device: ${identity.device.name})`,
     );
@@ -240,8 +267,10 @@ async function handleAuth(
  * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`.
  *
  * The timeout error is emitted by the timer itself (the in-flight generator
- * gets `return()`d shortly after, running its finally path and dropping
- * further events) so the per-thread lock drains promptly.
+ * gets `return()`d shortly after). Draining is **best-effort on a hung model**:
+ * `return()` only takes effect once the generator's in-flight LLM await
+ * settles, so the per-thread lock can outlive the error frame until that read
+ * resolves. The lock always eventually releases.
  */
 async function streamEventsToSocket(
     socket: WebSocket,
@@ -321,7 +350,17 @@ function sendError(socket: WebSocket, message: string): void {
     sendFrame(socket, { done: true });
 }
 
-/** Serializes and sends one server frame. */
+/**
+ * Serializes and sends one server frame.
+ *
+ * Sending is silently skipped on a socket that is no longer open — the ws
+ * library throws `WebSocket is not open` otherwise, which (from inside the
+ * turn-timeout timer, for example) would become an uncaught exception and
+ * crash the whole server. Frame delivery is best-effort by nature here.
+ */
 function sendFrame(socket: WebSocket, frame: ServerFrame): void {
+    if (socket.readyState !== WebSocket.OPEN) {
+        return;
+    }
     socket.send(serializeFrame(frame));
 }

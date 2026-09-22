@@ -39,12 +39,12 @@ let ownerHeaderPromise: Promise<string> | null = null;
 function ownerHeader(): Promise<string> {
     ownerHeaderPromise ??= (async () => {
         if (store.getUserByUsername("luke")) {
-            return `Bearer ${await passwordLogin("luke", "hunter2")}`;
+            return `Bearer ${await passwordLogin("luke", "hunter2pw")}`;
         }
         const res = await request(app)
             .post("/api/bootstrap")
             .set("x-bootstrap-token", FAST.bootstrapToken)
-            .send({ username: "luke", password: "hunter2" });
+            .send({ username: "luke", password: "hunter2pw" });
         expect(res.status).toBe(201);
         return `Bearer ${res.body.device.token}`;
     })();
@@ -85,7 +85,7 @@ describe("bootstrap", () => {
             .set("x-bootstrap-token", FAST.bootstrapToken)
             .send({
                 username: "luke",
-                password: "hunter2",
+                password: "hunter2pw",
                 deviceName: "init",
             });
         expect(res.status).toBe(201);
@@ -110,6 +110,16 @@ describe("bootstrap", () => {
         expect(again.status).toBe(409);
         expect(again.body.error).toMatch(/owner already exists/);
     });
+
+    it("ignores a bootstrap token supplied in the body (header only)", async () => {
+        const res = await request(app).post("/api/bootstrap").send({
+            username: "body-hacker",
+            password: "secretpass",
+            bootstrapToken: FAST.bootstrapToken,
+        });
+        expect(res.status).toBe(403);
+        expect(res.body.error).toMatch(/bootstrap token mismatch/);
+    });
 });
 
 describe("auth middleware", () => {
@@ -130,7 +140,7 @@ describe("auth middleware", () => {
 
 describe("login + devices", () => {
     it("logs in with username + password and returns a device token", async () => {
-        const token = await passwordLogin("luke", "hunter2", "cli");
+        const token = await passwordLogin("luke", "hunter2pw", "cli");
         const me = await request(app)
             .get("/api/me")
             .set("authorization", `Bearer ${token}`);
@@ -142,12 +152,12 @@ describe("login + devices", () => {
     });
 
     it("rotates the same-named device and invalidates the old token", async () => {
-        const first = await passwordLogin("luke", "hunter2", "cli");
+        const first = await passwordLogin("luke", "hunter2pw", "cli");
         const afterFirst = await request(app)
             .get("/api/me")
             .set("authorization", `Bearer ${first}`);
 
-        const second = await passwordLogin("luke", "hunter2", "cli");
+        const second = await passwordLogin("luke", "hunter2pw", "cli");
         const afterSecond = await request(app)
             .get("/api/me")
             .set("authorization", `Bearer ${second}`);
@@ -166,7 +176,7 @@ describe("login + devices", () => {
     it("rejects wrong credentials", async () => {
         const bad = await request(app).post("/api/auth/login").send({
             username: "luke",
-            password: "wrong",
+            password: "wrong-pass",
         });
         expect(bad.status).toBe(401);
         expect(bad.body.error).toMatch(/invalid username or password/);
@@ -188,6 +198,22 @@ describe("login + devices", () => {
         expect(huge.status).toBe(400);
     });
 
+    it("rejects passwords shorter than 8 characters", async () => {
+        const short = await request(app).post("/api/auth/login").send({
+            username: "luke",
+            password: "hunter2",
+        });
+        expect(short.status).toBe(400);
+        expect(short.body.error).toMatch(/at least 8/);
+
+        const createShort = await request(app)
+            .post("/api/users")
+            .set("authorization", await ownerHeader())
+            .send({ username: "shorty", password: "tiny" });
+        expect(createShort.status).toBe(400);
+        expect(createShort.body.error).toMatch(/at least 8/);
+    });
+
     it("rejects login before an owner is bootstrapped", async () => {
         const freshStore = new SqliteAppStore(new Database(":memory:"));
         const freshApp = createApp(freshStore, FAST);
@@ -205,9 +231,9 @@ describe("login + devices", () => {
             .set("authorization", await ownerHeader())
             .send({
                 username: "pepper",
-                password: "pw",
+                password: "pwd-1234",
             });
-        const pepperToken = await passwordLogin("pepper", "pw");
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
 
         const deviceRes = await request(app)
             .post("/api/devices")
@@ -230,12 +256,25 @@ describe("login + devices", () => {
             material.tokenHash,
             material.prefix,
         );
-        const pepperToken = await passwordLogin("pepper", "pw");
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
 
         const denied = await request(app)
             .delete(`/api/devices/${lukeDevice.id}`)
             .set("authorization", `Bearer ${pepperToken}`);
         expect(denied.status).toBe(403);
+    });
+
+    it("answers 404 for a nonexistent or malformed device id", async () => {
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
+        const missing = await request(app)
+            .delete("/api/devices/999999")
+            .set("authorization", `Bearer ${pepperToken}`);
+        expect(missing.status).toBe(404);
+
+        const bogus = await request(app)
+            .delete("/api/devices/nope")
+            .set("authorization", `Bearer ${pepperToken}`);
+        expect(bogus.status).toBe(404);
     });
 });
 
@@ -251,7 +290,7 @@ describe("users (owner-only)", () => {
     });
 
     it("rejects non-owners from user management", async () => {
-        const pepperToken = await passwordLogin("pepper", "pw");
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
         const res = await request(app)
             .get("/api/users")
             .set("authorization", `Bearer ${pepperToken}`);
@@ -262,7 +301,7 @@ describe("users (owner-only)", () => {
 
 describe("sessions", () => {
     it("lists and deletes only the caller's owned sessions", async () => {
-        const pepperToken = await passwordLogin("pepper", "pw");
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
         const pepperId = store.getUserByUsername("pepper")!.id;
         const ownerId = store.getUserByUsername("luke")!.id;
 
@@ -296,5 +335,20 @@ describe("sessions", () => {
             .set("authorization", `Bearer ${pepperToken}`);
         expect(deleteOwn.status).toBe(204);
         expect(store.getSessionByThread("pepper-conversation")).toBeNull();
+    });
+
+    it("lets the owner delete any user's session", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        store.claimSession("pepper-again", {
+            userId: pepperId,
+            deviceId: null,
+            kind: "text",
+        });
+
+        const res = await request(app)
+            .delete("/api/sessions/pepper-again")
+            .set("authorization", await ownerHeader());
+        expect(res.status).toBe(204);
+        expect(store.getSessionByThread("pepper-again")).toBeNull();
     });
 });

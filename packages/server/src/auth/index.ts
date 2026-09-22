@@ -10,7 +10,6 @@ export { AuthError } from "./errors";
 export type { AuthErrorCode } from "./errors";
 export {
     DEFAULT_SCRYPT_PARAMS,
-    FAST_SCRYPT_PARAMS,
     generateDeviceToken,
     hashDeviceToken,
     hashPassword,
