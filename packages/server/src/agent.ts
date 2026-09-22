@@ -27,24 +27,43 @@ export type { AgentEvent, AgentGraph } from "./llm/agentGraph";
 let graph: AgentGraph | null = null;
 
 /**
- * Returns the shared, compiled agent graph, building it on first use.
+ * Builds the shared agent graph up-front and opens its checkpoint store.
  *
- * The graph is a singleton: one checkpointer (the SQLite store at
- * `JARVIS_CHECKPOINT_PATH`) backs every session thread, and every turn reuses
- * the same compiled graph instance.
+ * Call once at server startup (`index.ts`): creates `~/.jarvis` and the SQLite
+ * checkpointer, and compiles the graph. Idempotent — calling it again returns
+ * the existing instance. The graph is a singleton: one checkpointer (the
+ * SQLite store at `JARVIS_CHECKPOINT_PATH`) backs every session thread, and
+ * every turn reuses the same compiled graph instance.
+ */
+export function initAgentGraph(): AgentGraph {
+    if (graph) {
+        return graph;
+    }
+    const { checkpointPath, agentMaxTurns } = getLlmConfig();
+    mkdirSync(dirname(checkpointPath), { recursive: true });
+    logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
+    const saver = new SqliteSaver(new Database(checkpointPath));
+    graph = createAgentGraph({
+        model: createChatModel(),
+        tools,
+        checkpointer: saver,
+    });
+    logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
+    return graph;
+}
+
+/**
+ * Returns the shared, compiled agent graph.
+ *
+ * Throws if `initAgentGraph()` was not called at startup — the graph is no
+ * longer built on first use, so a missing call is a programmer error (usually
+ * a test whose module under test reaches `runAgent` without bootstrapping).
  */
 function getAgentGraph(): AgentGraph {
     if (!graph) {
-        const { checkpointPath, agentMaxTurns } = getLlmConfig();
-        mkdirSync(dirname(checkpointPath), { recursive: true });
-        logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
-        const saver = new SqliteSaver(new Database(checkpointPath));
-        graph = createAgentGraph({
-            model: createChatModel(),
-            tools,
-            checkpointer: saver,
-        });
-        logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
+        throw new Error(
+            "agent graph not initialized; call initAgentGraph() at server startup",
+        );
     }
     return graph;
 }
