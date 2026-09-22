@@ -5,13 +5,13 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 
 ## Files
 
-| File        | Responsibility                                                                                                                                     |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`  | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` (what `req.jarv` / the WS ctx carry)                  |
-| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                              |
-| `store.ts`  | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
-| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                         |
-| `README.md` | this file                                                                                                                                          |
+| File        | Responsibility                                                                                                                                                                                                                   |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`  | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`) |
+| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                            |
+| `store.ts`  | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger                                                                               |
+| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
+| `README.md` | this file                                                                                                                                                                                                                        |
 
 The REST layer lives outside this module in `src/http/` (`middleware.ts` =
 `requireAuth`/`requireOwner` filling `req.jarv`; `authRoutes.ts` = the `/api`
@@ -59,7 +59,7 @@ router) — it consumes these seams and never touches SQL.
 
 - Owned data (sessions, prefs) is always resolved _relative to the identity_
   in `AuthContext`; never trust a client-supplied owner id.
-- Guests (`user: null`, `device: null`) may reach identity-independent
+- Guests (`kind: "guest"` — no user/device) may reach identity-independent
   actions only. The lifecycle matrix and ownership checks live at the
   WS/REST layers, not in the store.
 - The store never hashes or compares secrets — that is `crypto.ts`'s job;

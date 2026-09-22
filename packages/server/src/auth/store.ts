@@ -296,23 +296,24 @@ export class SqliteAppDatabase implements AppDatabase {
                 err !== null &&
                 (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
             ) {
-                const message =
-                    err instanceof Error ? err.message : String(err);
-                if (
-                    message.includes("users.role") ||
-                    message.includes("idx_users_single_owner")
-                ) {
-                    // The partial single-owner index fired: two owners is the
-                    // one account the system forbids (also the atomic backstop
-                    // for a concurrent double-bootstrap).
+                // Classify structurally instead of sniffing the (engine- and
+                // version-fragile) error message — a precedence policy, not an
+                // inference about which constraint SQLite reported: when a row
+                // for this username already exists, USERNAME_TAKEN is the more
+                // specific, caller-actionable error even if the conflicting
+                // insert was an owner and the owner index fired instead.
+                // Only when no such row exists could the failure be the
+                // partial single-owner index — the atomic backstop for a
+                // concurrent double-bootstrap — so that means OWNER_EXISTS.
+                if (this.getUserByUsername(username)) {
                     throw new AuthError(
-                        "OWNER_EXISTS",
-                        "an owner already exists; bootstrap is a one-time step",
+                        "USERNAME_TAKEN",
+                        `the username '${username}' is already taken`,
                     );
                 }
                 throw new AuthError(
-                    "USERNAME_TAKEN",
-                    `the username '${username}' is already taken`,
+                    "OWNER_EXISTS",
+                    "an owner already exists; bootstrap is a one-time step",
                 );
             }
             throw err;

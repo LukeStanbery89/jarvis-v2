@@ -19,7 +19,7 @@ import {
 } from "../auth";
 import type { AppDatabase } from "../auth";
 import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
-import { AuthedRequest, requireAuth, requireOwner } from "./middleware";
+import { authed, requireAuth, requireOwner } from "./middleware";
 import { RateLimiter } from "./rateLimit";
 
 const USERNAME_MAX = 64;
@@ -223,7 +223,7 @@ export function createAuthRouter(
     });
 
     router.get("/me", requireAuth(store), (req: Request, res: Response) => {
-        const jarv = (req as AuthedRequest).jarv;
+        const jarv = authed(req).jarv;
         const devices = store.listDevicesByUser(jarv.user.id).map((d) => ({
             id: d.id,
             name: d.name,
@@ -243,7 +243,7 @@ export function createAuthRouter(
 
     router.post("/devices", requireAuth(store), (req, res) => {
         try {
-            const jarv = (req as AuthedRequest).jarv;
+            const jarv = authed(req).jarv;
             const name = deviceNameFrom(req.body);
             const material = generateDeviceToken();
             const device = store.provisionDevice(
@@ -266,7 +266,7 @@ export function createAuthRouter(
     });
 
     router.delete("/devices/:id", requireAuth(store), (req, res) => {
-        const jarv = (req as AuthedRequest).jarv;
+        const jarv = authed(req).jarv;
         const deviceId = Number(String(req.params.id));
         const device = Number.isInteger(deviceId)
             ? store.getDeviceById(deviceId)
@@ -322,7 +322,7 @@ export function createAuthRouter(
     );
 
     router.get("/sessions", requireAuth(store), (req, res) => {
-        const jarv = (req as AuthedRequest).jarv;
+        const jarv = authed(req).jarv;
         const sessions = store.listOwnedSessions(jarv.user.id).map((s) => ({
             threadId: s.threadId,
             kind: s.kind,
@@ -333,7 +333,7 @@ export function createAuthRouter(
     });
 
     router.delete("/sessions/:threadId", requireAuth(store), (req, res) => {
-        const jarv = (req as AuthedRequest).jarv;
+        const jarv = authed(req).jarv;
         const threadId = String(req.params.threadId);
         const session = store.getSessionByThread(threadId);
         if (

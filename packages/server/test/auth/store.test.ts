@@ -52,6 +52,31 @@ describe("users", () => {
         store.createUser("luke", "hash", "owner");
         expect(store.hasOwner()).toBe(true);
     });
+
+    it("rejects a second owner (distinct username) with OWNER_EXISTS", () => {
+        store.createUser("luke", "hash", "owner");
+        let caught: unknown = null;
+        try {
+            store.createUser("zoe", "hash", "owner");
+        } catch (err) {
+            caught = err;
+        }
+        expect(caught).toBeInstanceOf(AuthError);
+        expect((caught as AuthError).code).toBe("OWNER_EXISTS");
+    });
+
+    it("rejects a taken username inserted as owner with USERNAME_TAKEN", () => {
+        store.createUser("luke", "hash", "owner");
+        store.createUser("admin", "hash", "user");
+        let caught: unknown = null;
+        try {
+            store.createUser("admin", "different-hash", "owner");
+        } catch (err) {
+            caught = err;
+        }
+        expect(caught).toBeInstanceOf(AuthError);
+        expect((caught as AuthError).code).toBe("USERNAME_TAKEN");
+    });
 });
 
 describe("devices", () => {

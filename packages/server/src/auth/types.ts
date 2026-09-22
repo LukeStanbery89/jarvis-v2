@@ -2,8 +2,9 @@
  * Auth domain types: the account/device shapes and the resolution seam.
  *
  * These are the object shapes the REST and WebSocket layers read. `AuthContext`
- * is what `req.jarv` / the WS handshake carry; a guest has `user: null` and
- * `device: null`, an authenticated socket has both.
+ * is the discriminated union that `req.jarv` / the WS handshake carry: either
+ * a bare `kind: "guest"` or an authenticated `{ kind: "authed" }` identity, so
+ * consumers narrow by `kind` and never re-check for null.
  */
 
 /** Account role: the owner manages users; regular users only manage themselves. */
@@ -34,15 +35,25 @@ export interface ResolvedIdentity {
 }
 
 /**
- * The auth state attached to one request/socket.
+ * The auth state attached to one request/socket, discriminated by `kind`.
  *
- * `user`/`device` are `null` for guests. Middleware on REST and the WS
- * resolve this once and thread it through, so the endpoint/turn handlers
- * never re-parse tokens.
+ * Middleware on REST and the WS resolve this once and thread it through, so
+ * the endpoint/turn handlers never re-parse tokens. A guest carries no
+ * identity; an authed context carries both user and device (the shape of
+ * {@link ResolvedIdentity}), so narrowing by `kind` yields non-null fields.
  */
-export interface AuthContext {
-    user: AppUser | null;
-    device: AppDevice | null;
+export type AuthContext = GuestContext | AuthenticatedContext;
+
+/** A request/socket with no resolved identity. */
+export interface GuestContext {
+    kind: "guest";
+}
+
+/**
+ * A request/socket authenticated as a particular user/device pair.
+ */
+export interface AuthenticatedContext extends ResolvedIdentity {
+    kind: "authed";
 }
 
 /** Input modality of a chat session. */

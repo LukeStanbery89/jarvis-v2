@@ -38,7 +38,7 @@ import { toServerFrame } from "./transport";
 import { logger } from "./logger";
 
 /** The identity every socket starts with and failed auth falls back to. */
-const GUEST_CONTEXT: AuthContext = Object.freeze({ user: null, device: null });
+const GUEST_CONTEXT: AuthContext = Object.freeze({ kind: "guest" });
 
 /** Thread ids with a turn currently in flight, across all sockets. */
 const threadLocks = new Set<string>();
@@ -183,11 +183,11 @@ async function handlePrompt(
     // DHCP-style revocation check: a device token may have been revoked since
     // the handshake. Re-resolve on every prompt so a revoked credential is
     // cut off immediately instead of living on in `conn.ctx`.
-    if (conn.ctx.device) {
+    if (conn.ctx.kind === "authed") {
         const identity = store.resolveTokenHash(conn.tokenHash!);
         if (!identity) {
             logger.warn(
-                `Dropping socket: device token for ${conn.ctx.user!.username} was revoked`,
+                `Dropping socket: device token for ${conn.ctx.user.username} was revoked`,
             );
             sendError(
                 socket,
@@ -208,11 +208,11 @@ async function handlePrompt(
     threadLocks.add(sessionId);
     try {
         const { session, created } = store.claimSession(sessionId, {
-            userId: conn.ctx.user?.id ?? null,
-            deviceId: conn.ctx.device?.id ?? null,
+            userId: conn.ctx.kind === "authed" ? conn.ctx.user.id : null,
+            deviceId: conn.ctx.kind === "authed" ? conn.ctx.device.id : null,
             kind: "text",
         });
-        if (created && !conn.ctx.user) {
+        if (created && conn.ctx.kind !== "authed") {
             conn.guestThreads.add(sessionId);
         }
         // Thread-takeover guard: a session must only ever be chatted on by the
@@ -221,7 +221,10 @@ async function handlePrompt(
         // touching an owned thread, or one account touching another's — is
         // rejected: the thread names a LangGraph history, and ownership is all
         // that stands between a socket and that history.
-        if (session.userId !== (conn.ctx.user?.id ?? null)) {
+        if (
+            session.userId !==
+            (conn.ctx.kind === "authed" ? conn.ctx.user.id : null)
+        ) {
             logger.warn(
                 `Rejecting prompt: session ${sessionId} belongs to another user`,
             );
@@ -266,7 +269,11 @@ async function handleAuth(
         sendError(socket, "invalid device token");
         return;
     }
-    conn.ctx = { user: identity.user, device: identity.device };
+    conn.ctx = {
+        kind: "authed",
+        user: identity.user,
+        device: identity.device,
+    };
     conn.tokenHash = hashDeviceToken(token);
     store.touchDevice(identity.device.id);
     logger.info(

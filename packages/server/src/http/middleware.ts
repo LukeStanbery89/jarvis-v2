@@ -2,25 +2,35 @@
  * REST auth middleware.
  *
  * `requireAuth(store)` reads a `Bearer <device token>` header, resolves it to
- * an identity, and attaches it to the request as `jarv` (null on any
+ * an identity, and attaches it to the request as `jarv` (a 401 on any
  * failure). `requireOwner` then restricts a route to the owner account.
- * Route handlers that passed `requireAuth` cast `req` to {@link AuthedRequest}
- * to see the guaranteed identity.
+ *
+ * `jarv` is the `{ kind: "authed" }` member of the `AuthContext` union, so
+ * handlers mounted behind `requireAuth` read `authed(req).jarv` and the
+ * user/device fields are guaranteed non-null by the type system — `authed()`
+ * in this module is the only place a `Request` is asserted.
  */
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { MAX_TOKEN_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "../auth";
-import type { AppDatabase } from "../auth";
-import type { AppDevice, AppUser } from "../auth";
+import type { AppDatabase, AuthenticatedContext } from "../auth";
 
 /**
  * Request augmented with the identity resolved by {@link requireAuth}.
  *
- * Guests never reach REST routes (`requireAuth` rejects them), so `user` and
- * `device` are guaranteed non-null here.
+ * Derived from the `AuthContext` union (not a duplicate shape), so it can
+ * never drift: `jarv` is exactly the authenticated member, carrying the
+ * non-null `user`/`device` pair.
  */
-export interface AuthedRequest extends Request {
-    jarv: { user: AppUser; device: AppDevice };
+export type AuthedRequest = Request & { jarv: AuthenticatedContext };
+
+/**
+ * Narrows a route-handler `Request` to the {@link AuthedRequest} guaranteed by
+ * `requireAuth`. The cast lives here — in the module that posts `jarv` — so
+ * handlers themselves stay cast-free.
+ */
+export function authed(req: Request): AuthedRequest {
+    return req as AuthedRequest;
 }
 
 /** Extracts the token from `Authorization: Bearer <token>`, if well-formed. */
@@ -47,6 +57,7 @@ export function requireAuth(store: AppDatabase): RequestHandler {
         }
         store.touchDevice(identity.device.id);
         (req as AuthedRequest).jarv = {
+            kind: "authed",
             user: identity.user,
             device: identity.device,
         };
@@ -60,7 +71,10 @@ export function requireOwner(
     res: Response,
     next: NextFunction,
 ): void {
-    const jarv = (req as AuthedRequest).jarv;
+    const jarv = authed(req).jarv;
+    // Belt-and-suspenders: the type system can't verify Express chain order,
+    // so a misthread (requireOwner without requireAuth) answers a clean 403
+    // instead of crashing on a missing `jarv`.
     if (!jarv || jarv.user.role !== "owner") {
         res.status(403).json({ error: "owner access required" });
         return;

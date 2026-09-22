@@ -22,7 +22,7 @@ src/
 │   ├── index.ts   # auth module exports (store + crypto + types + errors)
 │   ├── store.ts   # AppDatabase seam + SqliteAppDatabase (app database ~/.jarvis/jarvis.sqlite)
 │   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing
-│   ├── types.ts   # AppUser/AppDevice/AuthContext/ResolvedIdentity/AppSession/SessionKind
+│   ├── types.ts   # AppUser/AppDevice/AuthContext (guest|authed union)/ResolvedIdentity/AppSession/SessionKind
 │   ├── errors.ts  # AuthError
 │   └── README.md  # auth module guide
 ├── llm/
@@ -48,7 +48,7 @@ src/
 | `transport.ts`       | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                                                                                                                   |
 | `ws.ts`              | `attachChatServer(httpServer, store, options)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, claims sessions in the ledger, enforces the per-thread lock + turn timeout, forwards events through `toServerFrame`, emits the terminal `done` frame            |
 | `auth/*`             | Accounts, device credentials, and the app database: `AppDatabase` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                                                                                                            |
-| `http/middleware.ts` | `requireAuth(store)` (Bearer device token → `req.jarv`, 401 otherwise) + `requireOwner` (403 for non-owners); `AuthedRequest` carries the guaranteed identity                                                                                                                                                                           |
+| `http/middleware.ts` | `requireAuth(store)` (Bearer device token → `req.jarv`, 401 otherwise) + `requireOwner` (403 for non-owners); `AuthedRequest` derives from the `AuthContext` union so `authed(req).jarv` is the guaranteed non-null identity                                                                                                            |
 | `http/authRoutes.ts` | `createAuthRouter(store, appConfig)` → the `/api` router: `bootstrap`, `auth/login`, `me`, `devices`, `users`, `sessions`; maps `AuthError` codes to HTTP statuses                                                                                                                                                                      |
 | `llm/chatModel.ts`   | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                                                                                                             |
 | `llm/agentGraph.ts`  | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                                                                                                                        |
@@ -64,7 +64,7 @@ CLI / WebSocket client
       ▼
 ws.ts  handleMessage/watch   (resolve handshake via store; parse + validate prompt via @lukestanbery/jarvis-protocol;
       │                       claim session in ledger, take per-thread lock, arm turn timer)
-      │  prompt, sessionId + AuthContext (user/device or guest)
+      │  prompt, sessionId + AuthContext (guest | authed user/device)
       ▼
 agent.ts runAgent            (the brain seam: graph + checkpointer)
       │  AgentEvents: token | tool | toolResult

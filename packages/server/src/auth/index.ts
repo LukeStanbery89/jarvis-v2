@@ -23,6 +23,8 @@ export type {
     AppSession,
     AppUser,
     AuthContext,
+    AuthenticatedContext,
+    GuestContext,
     ResolvedIdentity,
     Role,
     SessionKind,
