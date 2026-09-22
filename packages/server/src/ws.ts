@@ -184,7 +184,7 @@ async function handlePrompt(
     // the handshake. Re-resolve on every prompt so a revoked credential is
     // cut off immediately instead of living on in `conn.ctx`.
     if (conn.ctx.device) {
-        const identity = store.resolveToken(conn.tokenHash!);
+        const identity = store.resolveTokenHash(conn.tokenHash!);
         if (!identity) {
             logger.warn(
                 `Dropping socket: device token for ${conn.ctx.user!.username} was revoked`,
@@ -260,7 +260,7 @@ async function handleAuth(
         return;
     }
     conn.authed = true;
-    const identity = store.resolveToken(hashDeviceToken(token));
+    const identity = store.resolveTokenHash(hashDeviceToken(token));
     if (!identity) {
         logger.warn("Rejecting auth: unknown device token");
         sendError(socket, "invalid device token");

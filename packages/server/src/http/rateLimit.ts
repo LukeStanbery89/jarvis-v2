@@ -24,24 +24,7 @@
  * distributed state, no persistence, and `req.ip` is trusted as-is (document
  * `app.set('trust proxy', …)` if the server ever sits behind a reverse proxy).
  */
-export interface RateLimitConfig {
-    /** Fixed window during which attempts accumulate. */
-    windowMs: number;
-    /** Attempts allowed per key before a lockout begins. */
-    maxFailures: number;
-    /** Base lockout duration; doubles (×2, ×4, …) per repeat until capped. */
-    lockoutMs: number;
-    /** Aggregate attempt cap per IP, regardless of which username is hit. */
-    maxIpFailures: number;
-}
-
-/** LAN-reasonable defaults: 10 attempts/user/15 min, 100 attempts/IP/15 min. */
-export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
-    windowMs: 15 * 60_000,
-    maxFailures: 10,
-    lockoutMs: 60_000,
-    maxIpFailures: 100,
-};
+import type { RateLimitConfig } from "../config";
 
 /** Per-key in-memory state. */
 interface Entry {

@@ -13,7 +13,6 @@ export {
     generateDeviceToken,
     hashDeviceToken,
     hashPassword,
-    verifyDeviceToken,
     verifyPassword,
 } from "./crypto";
 export type { DeviceTokenMaterial, ScryptParams } from "./crypto";

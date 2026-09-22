@@ -18,14 +18,49 @@ import {
     verifyPassword,
 } from "../auth";
 import type { AppDatabase } from "../auth";
-import type { AppConfig } from "../config";
+import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
 import { AuthedRequest, requireAuth, requireOwner } from "./middleware";
-import { DEFAULT_RATE_LIMIT_CONFIG, RateLimiter } from "./rateLimit";
+import { RateLimiter } from "./rateLimit";
 
 const USERNAME_MAX = 64;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 1024;
 const DEVICE_NAME_MAX = 64;
+
+/**
+ * Single-use bootstrap gate owned by the router.
+ *
+ * `AppConfig.bootstrapToken` stays a pure, immutable ADT field; the "this
+ * secret works exactly once" policy lives here. A consumed (or unset) gate
+ * answers `isEnabled() === false`, so an operator's leftover env secret can
+ * never bootstrap a duplicate owner.
+ *
+ * The gate is scoped per `createAuthRouter` call (one per app, one per test);
+ * a second router built from the same config gets its own fresh gate, but
+ * `store.hasOwner()` rejects the attempt as `OWNER_EXISTS` — the database row
+ * remains the cross-instance backstop.
+ */
+class BootstrapGate {
+    constructor(
+        private readonly token: string | undefined,
+        private consumed = false,
+    ) {}
+
+    /** Whether a bootstrap attempt may proceed at all. */
+    isEnabled(): boolean {
+        return this.token !== undefined && !this.consumed;
+    }
+
+    /** The configured secret, for comparison by the route handler. */
+    get secret(): string | undefined {
+        return this.consumed ? undefined : this.token;
+    }
+
+    /** Consumes the gate on success; subsequent attempts are disabled. */
+    consume(): void {
+        this.consumed = true;
+    }
+}
 
 /** Long enough that a single attempt can't be meaningfully throttled; a rate
  * check keying on username requires the body to parse first. */
@@ -71,10 +106,11 @@ export function createAuthRouter(
     const limiter = new RateLimiter(
         appConfig.loginRateLimit ?? DEFAULT_RATE_LIMIT_CONFIG,
     );
+    const bootstrapGate = new BootstrapGate(appConfig.bootstrapToken);
 
     router.post("/bootstrap", async (req, res) => {
         try {
-            if (!appConfig.bootstrapToken) {
+            if (!bootstrapGate.isEnabled()) {
                 throw new AuthError(
                     "BOOTSTRAP_DISABLED",
                     "first-owner setup is disabled; set JARVIS_BOOTSTRAP_TOKEN to enable it",
@@ -89,7 +125,7 @@ export function createAuthRouter(
                 );
             }
             const bootstrap = bootstrapTokenFrom(req);
-            if (!constantTimeMatches(bootstrap, appConfig.bootstrapToken)) {
+            if (!constantTimeMatches(bootstrap, bootstrapGate.secret)) {
                 throw new AuthError(
                     "BAD_BOOTSTRAP_TOKEN",
                     "bootstrap token mismatch",
@@ -109,7 +145,7 @@ export function createAuthRouter(
             );
             // Single-use: the operator's secret is gone once setup succeeds,
             // so a leaked/leftover env value can't bootstrap a duplicate owner.
-            appConfig.bootstrapToken = undefined;
+            bootstrapGate.consume();
             const material = generateDeviceToken();
             const device = store.provisionDevice(
                 owner.id,
@@ -379,9 +415,9 @@ function bootstrapTokenFrom(req: Request): string | undefined {
 
 function constantTimeMatches(
     presented: string | undefined,
-    configured: string,
+    configured: string | undefined,
 ): boolean {
-    if (!presented) {
+    if (!presented || !configured) {
         return false;
     }
     const a = Buffer.from(presented);

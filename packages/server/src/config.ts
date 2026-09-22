@@ -1,6 +1,5 @@
 /** Default base URL of the local LM Studio OpenAI-compatible server. */
 import { homedir } from "node:os";
-import type { RateLimitConfig } from "./http/rateLimit";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
@@ -99,6 +98,32 @@ export function getLlmConfig(): LlmConfig {
 }
 
 /**
+ * Throttle settings for the credential endpoints.
+ *
+ * Lives here (not in `http/`) so the config module never depends on the HTTP
+ * layer — `src/http/rateLimit.ts` imports it from config, keeping the
+ * dependency direction pointing downward.
+ */
+export interface RateLimitConfig {
+    /** Fixed window during which attempts accumulate. */
+    readonly windowMs: number;
+    /** Attempts allowed per key before a lockout begins. */
+    readonly maxFailures: number;
+    /** Base lockout duration; doubles (×2, ×4, …) per repeat until capped. */
+    readonly lockoutMs: number;
+    /** Aggregate attempt cap per IP, regardless of which username is hit. */
+    readonly maxIpFailures: number;
+}
+
+/** LAN-reasonable defaults: 10 attempts/user/15 min, 100 attempts/IP/15 min. */
+export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
+    windowMs: 15 * 60_000,
+    maxFailures: 10,
+    lockoutMs: 60_000,
+    maxIpFailures: 100,
+};
+
+/**
  * App-level settings (accounts, sessions, and resource control).
  *
  * These are operator/account concerns rather than LLM configuration, so they
@@ -112,24 +137,24 @@ export function getLlmConfig(): LlmConfig {
  */
 export interface AppConfig {
     /** Path of the app database (`JARVIS_DB_PATH`). */
-    appDbPath: string;
+    readonly appDbPath: string;
     /** Hard cap for one agent turn before the server aborts it. */
-    turnTimeoutMs: number;
+    readonly turnTimeoutMs: number;
     /** One-time token permitting first-owner bootstrap; disabled when unset. */
-    bootstrapToken: string | undefined;
+    readonly bootstrapToken: string | undefined;
     /** Bind address for the listener (`JARVIS_HOST`), default all interfaces. */
-    host?: string;
+    readonly host?: string;
     /** Path to a PEM certificate to serve HTTPS (`JARVIS_TLS_CERT`). */
-    tlsCertPath?: string;
+    readonly tlsCertPath?: string;
     /** Path to the matching PEM private key (`JARVIS_TLS_KEY`). */
-    tlsKeyPath?: string;
+    readonly tlsKeyPath?: string;
     /**
      * Cleartext upgrade port used when TLS is enabled
      * (`JARVIS_HTTP_REDIRECT_PORT`); defaults to `port + 1` when unset.
      */
-    httpRedirectPort?: number;
+    readonly httpRedirectPort?: number;
     /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
-    loginRateLimit?: RateLimitConfig;
+    readonly loginRateLimit?: RateLimitConfig;
 }
 
 export function getAppConfig(): AppConfig {

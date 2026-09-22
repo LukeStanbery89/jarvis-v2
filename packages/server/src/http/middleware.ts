@@ -40,7 +40,7 @@ export function requireAuth(store: AppDatabase): RequestHandler {
             res.status(401).json({ error: "a valid bearer token is required" });
             return;
         }
-        const identity = store.resolveToken(hashDeviceToken(token));
+        const identity = store.resolveTokenHash(hashDeviceToken(token));
         if (!identity) {
             res.status(401).json({ error: "invalid device token" });
             return;

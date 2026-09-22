@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RateLimiter, type RateLimitConfig } from "../src/http/rateLimit";
+import { RateLimiter } from "../src/http/rateLimit";
+import type { RateLimitConfig } from "../src/config";
 
 const CFG: RateLimitConfig = {
     windowMs: 10_000,

@@ -12,7 +12,7 @@ const FAST: AppConfig & { bootstrapToken: string } = {
     bootstrapToken: "s3cret-bootstrap",
 };
 
-/** Fresh bootstrap secret, immune to the single-use token mutation on FAST. */
+/** Bootstrap secret for per-test apps (gate consumption leaves FAST untouched). */
 const BOOTSTRAP = "s3cret-bootstrap";
 
 const store = new SqliteAppDatabase(new Database(":memory:")) as AppDatabase;
@@ -148,28 +148,27 @@ describe("bootstrap", () => {
         freshStore.close();
     });
 
-    it("zeroes the single-use token after a successful bootstrap", async () => {
+    it("consumes the single-use token after a successful bootstrap", async () => {
         const freshStore = new SqliteAppDatabase(new Database(":memory:"));
-        const cfg: AppConfig & { bootstrapToken: string } = {
+        const freshApp = createApp(freshStore, {
             ...FAST,
             appDbPath: ":memory:",
             bootstrapToken: "once-only",
-        };
-        const freshApp = createApp(freshStore, cfg);
+        });
         const ok = await request(freshApp)
             .post("/api/bootstrap")
             .set("x-bootstrap-token", "once-only")
             .send({ username: "first-guy", password: "hunter2pw" });
         expect(ok.status).toBe(201);
-        // The token is consumed even though it stays in the process env;
-        // a second bootstrap must now be refused outright.
-        expect(cfg.bootstrapToken).toBeUndefined();
+        // The router's BootstrapGate consumed the secret even though the
+        // config object was never mutated; a second bootstrap is refused
+        // outright as disabled (not merely because an owner now exists).
         const again = await request(freshApp)
             .post("/api/bootstrap")
             .set("x-bootstrap-token", "once-only")
             .send({ username: "second-guy", password: "hunter2pw" });
         expect(again.status).toBe(409);
-        expect(again.body.error).toMatch(/disabled|owner already exists/i);
+        expect(again.body.error).toMatch(/setup is disabled/i);
         freshStore.close();
     });
 

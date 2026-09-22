@@ -4,7 +4,6 @@ import {
     generateDeviceToken,
     hashDeviceToken,
     hashPassword,
-    verifyDeviceToken,
     verifyPassword,
     type ScryptParams,
 } from "../../src/auth";
@@ -52,7 +51,7 @@ describe("hashPassword / verifyPassword", () => {
     });
 });
 
-describe("generateDeviceToken / verifyDeviceToken", () => {
+describe("generateDeviceToken / hashDeviceToken", () => {
     it("issues a base64url token with a matching 8-char prefix", () => {
         const material = generateDeviceToken();
         expect(material.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -67,14 +66,8 @@ describe("generateDeviceToken / verifyDeviceToken", () => {
         );
     });
 
-    it("hashes deterministically and verifies", () => {
+    it("hashes deterministically into the store's form", () => {
         const material = generateDeviceToken();
         expect(hashDeviceToken(material.token)).toBe(material.tokenHash);
-        expect(verifyDeviceToken(material.token, material.tokenHash)).toBe(
-            true,
-        );
-        expect(verifyDeviceToken("wrong-token", material.tokenHash)).toBe(
-            false,
-        );
     });
 });

@@ -88,7 +88,7 @@ export interface AppDatabase {
     listUsers(): AppUser[];
     revokeDevice(id: number): void;
     touchDevice(id: number): void;
-    resolveToken(tokenHash: string): ResolvedIdentity | null;
+    resolveTokenHash(tokenHash: string): ResolvedIdentity | null;
     claimSession(
         threadId: string,
         opts: {
@@ -469,7 +469,7 @@ export class SqliteAppDatabase implements AppDatabase {
         this.statements.updateDeviceLastSeen.run(now(), id);
     }
 
-    resolveToken(tokenHash: string): ResolvedIdentity | null {
+    resolveTokenHash(tokenHash: string): ResolvedIdentity | null {
         const row = this.statements.selectDeviceByHash.get(tokenHash) as
             | {
                   deviceId: number;

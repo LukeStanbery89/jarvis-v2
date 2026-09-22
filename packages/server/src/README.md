@@ -120,5 +120,5 @@ without a live model.
 - **Auth is a first-frame handshake.** A client may authenticate with a device
   token on its first frame (`{ type: "auth", token }` → one `authResult`
   frame); any other first frame, or none, runs the socket as a guest. The
-  token is hashed (`SHA-256`) before `AppDatabase.resolveToken` compares it — no
+  token is hashed (`SHA-256`) before `AppDatabase.resolveTokenHash` compares it — no
   raw secret is ever logged or persisted.

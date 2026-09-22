@@ -84,7 +84,8 @@ curl -X POST http://localhost:54321/api/bootstrap \
 The response's `device.token` is your admin credential. Passwords must be at
 least 8 characters, and the bootstrap token is read **only** from the
 `x-bootstrap-token` header (never the JSON body). The bootstrap token is
-single-use: once bootstrap succeeds it is zeroed in memory, so rerunning with
+single-use: a `BootstrapGate` in the router consumes it after the first
+successful bootstrap (the config object is left untouched), so rerunning with
 the same env value cannot mint a second owner — restart the process with a new
 token if you truly need to re-bootstrap. Later, log in again
 from any client with `POST /api/auth/login` to receive a fresh token, then use

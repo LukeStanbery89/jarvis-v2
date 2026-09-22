@@ -2,12 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
     DEFAULT_HOST,
     DEFAULT_PORT,
+    DEFAULT_RATE_LIMIT_CONFIG,
     DEFAULT_TURN_TIMEOUT_MS,
     defaultAppDbPath,
     getAppConfig,
     getServerPort,
 } from "../src/config";
-import { DEFAULT_RATE_LIMIT_CONFIG } from "../src/http/rateLimit";
 import { homedir } from "node:os";
 
 afterEach(() => {

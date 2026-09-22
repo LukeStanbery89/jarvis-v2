@@ -141,12 +141,3 @@ export function generateDeviceToken(): DeviceTokenMaterial {
 export function hashDeviceToken(token: string): string {
     return createHash("sha256").update(token).digest("hex");
 }
-
-/** Constant-time check of a presented token against a stored token hash. */
-export function verifyDeviceToken(token: string, secretHash: string): boolean {
-    const actual = Buffer.from(hashDeviceToken(token), "hex");
-    const expected = Buffer.from(secretHash, "hex");
-    return (
-        actual.length === expected.length && timingSafeEqual(actual, expected)
-    );
-}

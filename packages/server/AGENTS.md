@@ -71,15 +71,16 @@ sessions are deleted on socket close; owned sessions persist. Turns are hard-cap
 store on every prompt so a revoked device is cut off immediately.
 
 `POST /api/auth/login` and `POST /api/bootstrap` are RateLimited (per `(ip, username)` plus an aggregate per `ip`,
-exponential backoff) by `src/http/rateLimit.ts`. The bootstrap token is single-use — `authRoutes` zeroes it in the
-config object after a successful bootstrap. TLS is optional in-node (`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS
-mode the main listener is HTTPS and a cleartext redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`)
-upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its database files to `0600` on open.
+exponential backoff) by `src/http/rateLimit.ts`. The bootstrap token is single-use — a `BootstrapGate` in
+`authRoutes` consumes it after a successful bootstrap, leaving the config object untouched. TLS is optional in-node
+(`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS mode the main listener is HTTPS and a cleartext redirect app
+(port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its
+database files to `0600` on open.
 
 ## Source layout
 
 - `src/index.ts` — process entry: config, `openAppDatabase`, `createApp`, `attachChatServer` — hands the app to the listener seam.
-- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`).
+- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`).
 - `src/fs.ts` — `ensurePrivateStorage`/`ensurePrivateFile`: tightens `~/.jarvis` to `0700`/`0600`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).

@@ -78,14 +78,14 @@ describe("devices", () => {
             material.prefix,
         );
 
-        const identity = store.resolveToken(material.tokenHash);
+        const identity = store.resolveTokenHash(material.tokenHash);
         expect(identity).not.toBeNull();
         expect(identity!.user).toEqual(user);
         expect(identity!.device.id).toBe(device.id);
         expect(identity!.device.name).toBe("macbook");
 
         expect(
-            store.resolveToken(
+            store.resolveTokenHash(
                 "0000000000000000000000000000000000000000000000000000000000000000",
             ),
         ).toBeNull();
@@ -115,11 +115,11 @@ describe("devices", () => {
         );
 
         store.revokeDevice(999);
-        expect(store.resolveToken(material.tokenHash)).not.toBeNull();
+        expect(store.resolveTokenHash(material.tokenHash)).not.toBeNull();
 
         store.revokeDevice(device.id);
         expect(store.getDeviceById(device.id)).toBeNull();
-        expect(store.resolveToken(material.tokenHash)).toBeNull();
+        expect(store.resolveTokenHash(material.tokenHash)).toBeNull();
     });
 });
 

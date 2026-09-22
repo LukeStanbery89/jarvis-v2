@@ -31,7 +31,7 @@ router) — it consumes these seams and never touches SQL.
   cached same-cost dummy hash so account existence can't be inferred from
   response time. Device tokens are the credential for everything else:
   the presented token is run through `hashDeviceToken` and looked up by exact
-  `secret_hash` in `store.resolveToken`. Nothing outside the REST/WS layers
+  `secret_hash` in `store.resolveTokenHash`. Nothing outside the REST/WS layers
   compares credentials, and the store only ever seats hash-versus-hash
   equality. Biometric auth (issue #25) slots in at the login seam — replace
   the password step with a biometric challenge and still provision a device
@@ -64,4 +64,4 @@ router) — it consumes these seams and never touches SQL.
   WS/REST layers, not in the store.
 - The store never hashes or compares secrets — that is `crypto.ts`'s job;
   the REST/WS layers that received a presented token call `hashDeviceToken`
-  before any `resolveToken` lookup.
+  before any `resolveTokenHash` lookup.
