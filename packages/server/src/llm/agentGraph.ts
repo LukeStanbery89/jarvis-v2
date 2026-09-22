@@ -93,27 +93,36 @@ export function createAgentGraph({
 }
 
 /**
+ * Options for one {@link streamAgentTurn} run.
+ */
+export interface TurnOptions {
+    /** Persona primed into a fresh thread (see `streamAgentTurn`). */
+    systemPrompt: string;
+    /** Caps the number of model/tool turns in one run, aborting a runaway agent. */
+    recursionLimit: number;
+}
+
+/**
  * Runs a single agent turn for `sessionId`'s thread.
  *
  * Primes a fresh thread with the system prompt, streams the graph in
  * `"messages"` mode, and maps each streamed message onto the public event
  * shape: text tokens yield `token`, model tool calls yield `tool`, and
  * executed tools yield `toolResult`. Emits no events if the model answer
- * carries no text. `recursionLimit` caps the number of model/tool turns in one
- * run, aborting an agent that keeps requesting tools.
+ * carries no text. `options.recursionLimit` caps the number of model/tool
+ * turns in one run, aborting an agent that keeps requesting tools.
  *
- * If a thread already exists but its prime differs from `systemPrompt` (the
- * persona changed), the stored system message is replaced in place — the
- * reducer swaps it by id — so updated system prompts (e.g. new persona rules)
- * reach existing conversations on their next turn without duplicating or
- * losing history.
+ * If a thread already exists but its prime differs from
+ * `options.systemPrompt` (the persona changed), the stored system message is
+ * replaced in place — the reducer swaps it by id — so updated system prompts
+ * (e.g. new persona rules) reach existing conversations on their next turn
+ * without duplicating or losing history.
  */
 export async function* streamAgentTurn(
     graph: AgentGraph,
     prompt: string,
     sessionId: string,
-    systemPrompt: string,
-    recursionLimit: number,
+    { systemPrompt, recursionLimit }: TurnOptions,
 ): AsyncGenerator<AgentEvent> {
     const config = {
         configurable: { thread_id: sessionId },

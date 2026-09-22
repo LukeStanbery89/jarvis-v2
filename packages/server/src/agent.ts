@@ -59,11 +59,8 @@ export async function* runAgent(
         JSON.stringify({ prompt, sessionId }),
     );
     const { systemPrompt, agentMaxTurns } = getLlmConfig();
-    yield* streamAgentTurn(
-        getAgentGraph(),
-        prompt,
-        sessionId,
+    yield* streamAgentTurn(getAgentGraph(), prompt, sessionId, {
         systemPrompt,
-        agentMaxTurns,
-    );
+        recursionLimit: agentMaxTurns,
+    });
 }

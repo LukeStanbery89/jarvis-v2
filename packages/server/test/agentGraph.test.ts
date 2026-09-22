@@ -91,7 +91,10 @@ describe("createAgentGraph", () => {
         ]);
         const graph = buildGraph(model);
         const events = await collect(
-            streamAgentTurn(graph, "what time is it?", "t1", SYSTEM_PROMPT, 10),
+            streamAgentTurn(graph, "what time is it?", "t1", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
         );
 
         expect(events).toHaveLength(3);
@@ -122,10 +125,16 @@ describe("createAgentGraph", () => {
         const graph = buildGraph(model);
 
         await collect(
-            streamAgentTurn(graph, "first prompt", "t2", SYSTEM_PROMPT, 10),
+            streamAgentTurn(graph, "first prompt", "t2", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
         );
         await collect(
-            streamAgentTurn(graph, "second prompt", "t2", SYSTEM_PROMPT, 10),
+            streamAgentTurn(graph, "second prompt", "t2", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
         );
 
         const state = (
@@ -150,8 +159,18 @@ describe("createAgentGraph", () => {
             new AIMessage({ content: "Two" }),
         ]);
         const graph = buildGraph(model);
-        await collect(streamAgentTurn(graph, "one", "t3", SYSTEM_PROMPT, 10));
-        await collect(streamAgentTurn(graph, "two", "t3", SYSTEM_PROMPT, 10));
+        await collect(
+            streamAgentTurn(graph, "one", "t3", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+        await collect(
+            streamAgentTurn(graph, "two", "t3", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
         const secondInput = model.callInputs[1];
         expect(
             secondInput.filter((m) => m._getType() === "system"),
@@ -170,8 +189,18 @@ describe("createAgentGraph", () => {
             new AIMessage({ content: "Two" }),
         ]);
         const graph = buildGraph(model);
-        await collect(streamAgentTurn(graph, "one", "t5", "OLD PROMPT", 10));
-        await collect(streamAgentTurn(graph, "two", "t5", "NEW PROMPT", 10));
+        await collect(
+            streamAgentTurn(graph, "one", "t5", {
+                systemPrompt: "OLD PROMPT",
+                recursionLimit: 10,
+            }),
+        );
+        await collect(
+            streamAgentTurn(graph, "two", "t5", {
+                systemPrompt: "NEW PROMPT",
+                recursionLimit: 10,
+            }),
+        );
 
         const secondInput = model.callInputs[1];
         expect(
@@ -201,8 +230,18 @@ describe("createAgentGraph", () => {
             new AIMessage({ content: "Shared" }),
         ]);
         const graph = buildGraph(model);
-        await collect(streamAgentTurn(graph, "a", "ta", SYSTEM_PROMPT, 10));
-        await collect(streamAgentTurn(graph, "b", "tb", SYSTEM_PROMPT, 10));
+        await collect(
+            streamAgentTurn(graph, "a", "ta", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+        await collect(
+            streamAgentTurn(graph, "b", "tb", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
 
         const a = (
             await graph.getState({
@@ -223,7 +262,12 @@ describe("createAgentGraph", () => {
         const model = new ScriptedChatModel([TOOL_CALL]);
         const graph = buildGraph(model);
         await expect(
-            collect(streamAgentTurn(graph, "loop", "t4", SYSTEM_PROMPT, 3)),
+            collect(
+                streamAgentTurn(graph, "loop", "t4", {
+                    systemPrompt: SYSTEM_PROMPT,
+                    recursionLimit: 3,
+                }),
+            ),
         ).rejects.toThrow(/recursion|limit/i);
     });
 });
