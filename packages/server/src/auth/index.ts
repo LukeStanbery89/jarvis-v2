@@ -14,7 +14,12 @@ export { createCredentialVerifier } from "./credential";
 export type { CredentialVerifier } from "./credential";
 export { canManage, ownsRow } from "./ownership";
 export { openAppDatabase, SqliteAppDatabase } from "./store";
-export type { AppDatabase } from "./store";
+export type {
+    AppDatabase,
+    DeviceLedger,
+    SessionLedger,
+    UserLedger,
+} from "./store";
 export type {
     AppDevice,
     AppSession,

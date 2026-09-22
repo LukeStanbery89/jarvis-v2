@@ -89,7 +89,8 @@ database files to `0600` on open.
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
 - `src/auth/` — app database + credential crypto (see `src/auth/README.md`): `store.ts` (backed by
-  `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`), `crypto.ts` (the primitives), `credential.ts` (the
+  `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`) exposes `AppDatabase` as the intersection of three role
+  interfaces — `UserLedger`/`DeviceLedger`/`SessionLedger`; `crypto.ts` (the primitives), `credential.ts` (the
   `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
   shared row-ownership policy), `errors.ts`, `types.ts`.
 - `src/ws.ts` — the `/ws` endpoint: auth handshake + prompt framing. The session lifecycle (claim, ownership

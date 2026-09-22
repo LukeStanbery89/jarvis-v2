@@ -1,12 +1,13 @@
 /**
  * The app database: SQLite-backed ledger of users, devices, sessions, and prefs.
  *
- * This is the `AppDatabase` seam from the auth design: an {@link AppDatabase}
- * interface plus {@link SqliteAppDatabase}, its better-sqlite3 implementation,
- * so a future portal can swap storage or the package can grow a second
- * backend without churning the REST/WS layers. `openAppDatabase(path)` creates
- * the parent directory and runs schema migrations; tests construct
- * `SqliteAppDatabase` over `:memory:` directly.
+ * This is the `AppDatabase` seam from the auth design: the {@link AppDatabase}
+ * type — an intersection of the three ledger roles {@link UserLedger},
+ * {@link DeviceLedger}, {@link SessionLedger} — plus {@link SqliteAppDatabase},
+ * its better-sqlite3 implementation, so a future portal can swap storage or
+ * the package can grow a second backend without churning the REST/WS layers.
+ * `openAppDatabase(path)` creates the parent directory and runs schema
+ * migrations; tests construct `SqliteAppDatabase` over `:memory:` directly.
  *
  * Device tokens are persisted only as SHA-256 hashes (see `crypto.ts`); raw
  * secrets never touch the database.
@@ -60,17 +61,31 @@ CREATE TABLE IF NOT EXISTS prefs (
 `;
 
 /**
- * Accounts, devices, sessions, and prefs ledger access.
+ * Account-rows ledger: users, their stored password hashes, and owner state.
+ *
+ * `getPasswordHash` exists for the credential-verifier seam only
+ * (`authRoutes.ts` / `CredentialVerifier`) — no caller may read stored hashes
+ * for any other purpose.
  *
  * Methods throw {@link AuthError} where a domain rule is broken
  * (`USERNAME_TAKEN`) and return `null` where a row simply does not exist.
  */
-export interface AppDatabase {
+export interface UserLedger {
     createUser(username: string, passwordHash: string, role: Role): AppUser;
     getUserByUsername(username: string): AppUser | null;
     getPasswordHash(username: string): string | null;
     getUserById(id: number): AppUser | null;
     hasOwner(): boolean;
+    listUsers(): AppUser[];
+}
+
+/**
+ * Device-rows ledger: device credentials and token resolution.
+ *
+ * Only the SHA-256 hash of a device token is ever stored or compared — the
+ * raw secret exists solely on the wire.
+ */
+export interface DeviceLedger {
     createDevice(
         userId: number,
         name: string,
@@ -85,10 +100,15 @@ export interface AppDatabase {
     ): AppDevice;
     getDeviceById(id: number): AppDevice | null;
     listDevicesByUser(userId: number): AppDevice[];
-    listUsers(): AppUser[];
     revokeDevice(id: number): void;
     touchDevice(id: number): void;
     resolveTokenHash(tokenHash: string): ResolvedIdentity | null;
+}
+
+/**
+ * Session-rows ledger: the WS chat sessions (one per `thread_id`).
+ */
+export interface SessionLedger {
     claimSession(
         threadId: string,
         opts: {
@@ -104,8 +124,21 @@ export interface AppDatabase {
     deleteSession(threadId: string): void;
     /** Owned sessions for a user, newest-active first (powers `GET /api/sessions`). */
     listOwnedSessions(userId: number): AppSession[];
-    close(): void;
 }
+
+/**
+ * The complete app store: every ledger role plus lifecycle.
+ *
+ * Consumers narrow to the role they need (`createSessionManager` takes a
+ * {@link SessionLedger}, `requireAuth` calls device + user methods…); this is
+ * the full surface `createApp`/`attachChatServer` receive.
+ */
+export type AppDatabase = UserLedger &
+    DeviceLedger &
+    SessionLedger & {
+        /** Releases the underlying connection. */
+        close(): void;
+    };
 
 function now(): string {
     return new Date().toISOString();

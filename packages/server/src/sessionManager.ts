@@ -15,17 +15,11 @@
  * package (voice, another chat endpoint) ever mounts a second manager over the
  * same ledger, the lock must move to a store-level key instead.
  */
-import type { AppDatabase, AuthContext } from "./auth";
+import type { AuthContext, SessionLedger } from "./auth";
 import { ownsRow } from "./auth";
 
 /** How a turn resolved; the caller decides the user-facing message. */
 export type TurnOutcome = "completed" | "busy" | "not-owned";
-
-/** The session-ledger surface `SessionManager` depends on (see Phase 5). */
-export type SessionLedgerPort = Pick<
-    AppDatabase,
-    "claimSession" | "getSessionByThread" | "touchSession" | "deleteSession"
->;
 
 /**
  * Interface the `/ws` endpoint codes against.
@@ -59,11 +53,10 @@ export interface SessionManager {
 }
 
 /**
- * Builds the default {@link SessionManager} over `store` — narrowed to the
- * `SessionLedgerPort` surface it calls, so a Phase-5 ledger split slots in
- * without touching this seam.
+ * Builds the default {@link SessionManager} over a `SessionLedger` — the
+ * narrow role this seam needs, so the ledger split stays honest.
  */
-export function createSessionManager(store: SessionLedgerPort): SessionManager {
+export function createSessionManager(store: SessionLedger): SessionManager {
     /** Thread ids with a turn currently in flight, across all sockets. */
     const threadLocks = new Set<string>();
     return {

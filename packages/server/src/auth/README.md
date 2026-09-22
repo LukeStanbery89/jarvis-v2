@@ -11,13 +11,30 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 | `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                        |
 | `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                            |
 | `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                       |
-| `store.ts`      | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger                                                                               |
+| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & SessionLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
 | `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
 | `README.md`     | this file                                                                                                                                                                                                                        |
 
 The REST layer lives outside this module in `src/http/` (`middleware.ts` =
 `requireAuth`/`requireOwner` filling `req.jarv`; `authRoutes.ts` = the `/api`
 router) — it consumes these seams and never touches SQL.
+
+## Ledger roles
+
+`AppDatabase` is an intersection of three narrower roles, so consumers depend
+on only the surface they call:
+
+- `UserLedger` — account rows + stored password hashes (`getPasswordHash` is
+  for the credential-verifier seam only).
+- `DeviceLedger` — device credentials and token resolution: presented tokens
+  run through `hashDeviceToken` (crypto) before `DeviceLedger.resolveTokenHash`.
+- `SessionLedger` — the WS chat sessions (`claimSession` / get-by-thread /
+  touch / delete / list-owned). `SessionManager` (in `../sessionManager.ts`)
+  is typed against exactly this role.
+
+`createApp`/`attachChatServer` are the composition roots; the REST router and
+middleware span all three ledgers and therefore take the full `AppDatabase`,
+while `createSessionManager` narrows to `SessionLedger`.
 
 ## Credential model
 
@@ -56,12 +73,16 @@ router) — it consumes these seams and never touches SQL.
   REST management API and guest cleanup. The WS layer decides _when_ rows are
   deleted (guest sockets on close), not the store.
 - `prefs` — per-user integration prefs (JSON values); LLM settings stay in
-  the environment.
+  the environment. **Kept-but-unused:** the table exists in the schema but has
+  no `AppDatabase` accessor yet — it is the reserved home for per-user
+  integration state once the web portal (roadmap #24) lands; until a consumer
+  arrives, its shape can only drift from this README, not from dead code.
 
 ## Rules for callers
 
 - Owned data (sessions, prefs) is always resolved _relative to the identity_
-  in `AuthContext`; never trust a client-supplied owner id.
+  in `AuthContext` (prefs once #24 lands); never trust a client-supplied
+  owner id.
 - Guests (`kind: "guest"` — no user/device) may reach identity-independent
   actions only. Row ownership is decided by the shared policy in
   `ownership.ts` (`ownsRow` for the WS chat path, `canManage` for REST) — the
