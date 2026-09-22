@@ -8,7 +8,7 @@
     ],
     "scripts": {
         "build": "npm run build -w @jarvis/protocol -w @jarvis/logger && npm run build -w @jarvis/cli -w @jarvis/server",
-        "check": "npm run build --workspaces --if-present && npm run typecheck --workspaces --if-present && npm test && npm run format:check",
+        "check": "npm run build && npm run typecheck && npm test && npm run format:check",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "npm run test --workspaces --if-present",
