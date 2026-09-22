@@ -12,6 +12,7 @@ export { generateDeviceToken, hashDeviceToken } from "./crypto";
 export type { DeviceTokenMaterial } from "./crypto";
 export { createCredentialVerifier } from "./credential";
 export type { CredentialVerifier } from "./credential";
+export { canManage, ownsRow } from "./ownership";
 export { openAppDatabase, SqliteAppDatabase } from "./store";
 export type { AppDatabase } from "./store";
 export type {

@@ -13,6 +13,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import {
     AuthError,
+    canManage,
     createCredentialVerifier,
     generateDeviceToken,
 } from "../auth";
@@ -278,7 +279,9 @@ export function createAuthRouter(
             res.status(404).json({ error: "device not found" });
             return;
         }
-        if (device.userId !== jarv.user.id && jarv.user.role !== "owner") {
+        if (
+            !canManage(device.userId, jarv.user.id, jarv.user.role === "owner")
+        ) {
             res.status(403).json({
                 error: "you can only revoke your own devices",
             });
@@ -341,7 +344,7 @@ export function createAuthRouter(
         const session = store.getSessionByThread(threadId);
         if (
             !session ||
-            (session.userId !== jarv.user.id && jarv.user.role !== "owner")
+            !canManage(session.userId, jarv.user.id, jarv.user.role === "owner")
         ) {
             res.status(404).json({ error: "session not found" });
             return;

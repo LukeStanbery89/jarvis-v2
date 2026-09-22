@@ -90,9 +90,10 @@ database files to `0600` on open.
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
 - `src/auth/` — app database + credential crypto (see `src/auth/README.md`): `store.ts` (backed by
   `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`), `crypto.ts` (the primitives), `credential.ts` (the
-  `CredentialVerifier` seam the REST layer codes against), `errors.ts`, `types.ts`.
-- `src/ws.ts` — the `/ws` endpoint: auth handshake, session claiming + ownership guard, per-thread lock, turn
-  timeout.
+  `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
+  shared row-ownership policy), `errors.ts`, `types.ts`.
+- `src/ws.ts` — the `/ws` endpoint: auth handshake + prompt framing. The session lifecycle (claim, ownership
+  guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`.
 - `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer.
 - `src/transport.ts` — `AgentEvent → ServerFrame` mapping.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).

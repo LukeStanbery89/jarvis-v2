@@ -10,6 +10,7 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 | `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`) |
 | `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                        |
 | `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                            |
+| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                       |
 | `store.ts`      | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger                                                                               |
 | `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
 | `README.md`     | this file                                                                                                                                                                                                                        |
@@ -62,8 +63,10 @@ router) — it consumes these seams and never touches SQL.
 - Owned data (sessions, prefs) is always resolved _relative to the identity_
   in `AuthContext`; never trust a client-supplied owner id.
 - Guests (`kind: "guest"` — no user/device) may reach identity-independent
-  actions only. The lifecycle matrix and ownership checks live at the
-  WS/REST layers, not in the store.
+  actions only. Row ownership is decided by the shared policy in
+  `ownership.ts` (`ownsRow` for the WS chat path, `canManage` for REST) — the
+  lifecycle matrix lives in the WS/REST + `sessionManager.ts` layers, not in
+  the store.
 - The store never hashes or compares secrets — that is `crypto.ts`'s job, and
   the REST layer reaches it only through the `CredentialVerifier` seam. The
   REST/WS layers that received a presented token call `hashDeviceToken`

@@ -32,6 +32,8 @@ import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "./auth";
 import type { AppDatabase, AuthContext } from "./auth";
 import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
+import { createSessionManager } from "./sessionManager";
+import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
 import type { AgentEvent } from "./agent";
 import { toServerFrame } from "./transport";
@@ -39,9 +41,6 @@ import { logger } from "./logger";
 
 /** The identity every socket starts with and failed auth falls back to. */
 const GUEST_CONTEXT: AuthContext = Object.freeze({ kind: "guest" });
-
-/** Thread ids with a turn currently in flight, across all sockets. */
-const threadLocks = new Set<string>();
 
 /** Per-connection auth + guest-ledger state. */
 interface ConnectionState {
@@ -66,7 +65,10 @@ export interface AttachmentOptions {
  *
  * `httpServer` should already be listening; the chat server accepts
  * connections on the `"/ws"` path. `store` backs the auth handshake and the
- * session ledger; `options.turnTimeoutMs` bounds every turn.
+ * session ledger; `options.turnTimeoutMs` bounds every turn. The per-prompt
+ * session pipeline (lock → claim → ownership guard → stream → touch →
+ * release) runs inside a {@link SessionManager}, keeping this module to
+ * protocol + socket concerns.
  */
 export function attachChatServer(
     httpServer: Server,
@@ -74,6 +76,7 @@ export function attachChatServer(
     options: AttachmentOptions = { turnTimeoutMs: DEFAULT_TURN_TIMEOUT_MS },
 ): WebSocketServer {
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+    const sessions = createSessionManager(store);
 
     wss.on("connection", (socket) => {
         logger.info("New WebSocket connection");
@@ -92,7 +95,7 @@ export function attachChatServer(
                 sendError(socket, "another request is already in progress");
                 return;
             }
-            active = handleMessage(raw, socket, conn, store, options)
+            active = handleMessage(raw, socket, conn, store, sessions, options)
                 .catch((err) => {
                     // handleMessage answers expected failures with error frames;
                     // anything escaping it (a store error, an unexpected throw)
@@ -108,15 +111,7 @@ export function attachChatServer(
         });
 
         socket.on("close", () => {
-            for (const threadId of conn.guestThreads) {
-                const session = store.getSessionByThread(threadId);
-                // Only tear down rows this socket still owns: guest rows are
-                // `userId = NULL` and belong to no account — a re-parented
-                // (owned) row must never be deleted from under its owner.
-                if (session && session.userId === null) {
-                    store.deleteSession(threadId);
-                }
-            }
+            sessions.cleanupGuests(conn.guestThreads);
             logger.info("WebSocket connection closed");
         });
     });
@@ -138,6 +133,7 @@ async function handleMessage(
     socket: WebSocket,
     conn: ConnectionState,
     store: AppDatabase,
+    sessions: SessionManager,
     options: AttachmentOptions,
 ): Promise<void> {
     const frameText = raw.toString();
@@ -153,7 +149,7 @@ async function handleMessage(
     }
 
     if (!("type" in frame)) {
-        await handlePrompt(socket, conn, store, frame, options);
+        await handlePrompt(socket, conn, store, sessions, frame, options);
         return;
     }
     await handleAuth(socket, conn, store, frame.token);
@@ -163,16 +159,17 @@ async function handleMessage(
  * Runs one guest/owned prompt turn.
  *
  * The socket degrades to guest on its first prompt if it never authed. The
- * prompt's `sessionId` is claimed in the session ledger, then streamed under a
- * per-thread lock so a second concurrent turn on the same thread is rejected;
- * the turn also runs under {@link AttachmentOptions.turnTimeoutMs}. Guest
- * sockets track the sessions they created so the socket-close handler can
- * remove the ephemeral rows; owned sessions persist.
+ * prompt's `sessionId` goes through the {@link SessionManager} pipeline —
+ * lock, claim in the ledger, ownership guard, stream under `turnTimeoutMs`,
+ * touch, release — which answers `busy`/`not-owned` where ws.ts only needs to
+ * pick the error frame. Guest sockets track the sessions they created so the
+ * socket-close handler can remove the ephemeral rows; owned sessions persist.
  */
 async function handlePrompt(
     socket: WebSocket,
     conn: ConnectionState,
     store: AppDatabase,
+    sessions: SessionManager,
     prompt: Extract<ClientFrame, { prompt: string }>,
     options: AttachmentOptions,
 ): Promise<void> {
@@ -197,49 +194,42 @@ async function handlePrompt(
             return;
         }
     }
-    const { sessionId } = prompt;
-    if (threadLocks.has(sessionId)) {
-        logger.warn(
-            `Rejecting prompt: another request is already in progress for ${sessionId}`,
-        );
-        sendError(socket, "another request is already in progress");
-        return;
-    }
-    threadLocks.add(sessionId);
-    try {
-        const { session, created } = store.claimSession(sessionId, {
-            userId: conn.ctx.kind === "authed" ? conn.ctx.user.id : null,
-            deviceId: conn.ctx.kind === "authed" ? conn.ctx.device.id : null,
-            kind: "text",
-        });
-        if (created && conn.ctx.kind !== "authed") {
-            conn.guestThreads.add(sessionId);
-        }
-        // Thread-takeover guard: a session must only ever be chatted on by the
-        // principal that owns it (guests own `userId = NULL` rows). Anything
-        // else — an authenticated user touching a guest's thread, a guest
-        // touching an owned thread, or one account touching another's — is
-        // rejected: the thread names a LangGraph history, and ownership is all
-        // that stands between a socket and that history.
-        if (
-            session.userId !==
-            (conn.ctx.kind === "authed" ? conn.ctx.user.id : null)
-        ) {
+    const turn = await sessions.runTurn({
+        sessionId: prompt.sessionId,
+        actor: conn.ctx,
+        guestThreads: conn.guestThreads,
+        stream: async (sessionId) =>
+            streamEventsToSocket(
+                socket,
+                prompt.prompt,
+                sessionId,
+                options.turnTimeoutMs,
+            ),
+    });
+    respondToTurn(socket, turn, prompt.sessionId);
+}
+
+/** Picks the user-facing error frame for a rejected turn outcome. */
+function respondToTurn(
+    socket: WebSocket,
+    turn: TurnOutcome,
+    sessionId: string,
+): void {
+    switch (turn) {
+        case "busy":
+            logger.warn(
+                `Rejecting prompt: another request is already in progress for ${sessionId}`,
+            );
+            sendError(socket, "another request is already in progress");
+            break;
+        case "not-owned":
             logger.warn(
                 `Rejecting prompt: session ${sessionId} belongs to another user`,
             );
             sendError(socket, "session belongs to another user");
-            return;
-        }
-        await streamEventsToSocket(
-            socket,
-            prompt.prompt,
-            sessionId,
-            options.turnTimeoutMs,
-        );
-        store.touchSession(sessionId);
-    } finally {
-        threadLocks.delete(sessionId);
+            break;
+        case "completed":
+            break;
     }
 }
 

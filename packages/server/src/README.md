@@ -14,7 +14,8 @@ src/
 ├── config.ts      # LLM configuration from environment
 ├── agent.ts       # runAgent — owns the compiled graph + checkpointer (seam)
 ├── transport.ts   # toServerFrame — pure AgentEvent → wire-frame mapping
-├── ws.ts          # /ws chat endpoint (server ↔ client transport)
+├── ws.ts              # /ws chat endpoint (server ↔ client transport)
+├── sessionManager.ts  # createSessionManager — the per-prompt session pipeline (lock→claim→guard→stream→touch→release)
 ├── http/
 │   ├── middleware.ts   # requireAuth / requireOwner — fill req.jarv from a bearer token
 │   └── authRoutes.ts   # createAuthRouter — the /api management router
@@ -23,6 +24,7 @@ src/
 │   ├── store.ts   # AppDatabase seam + SqliteAppDatabase (app database ~/.jarvis/jarvis.sqlite)
 │   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing (the primitives)
 │   ├── credential.ts  # CredentialVerifier seam — hash/verify + dummy-hash timing equalization
+│   ├── ownership.ts  # ownsRow/canManage — the one shared row-ownership policy
 │   ├── types.ts   # AppUser/AppDevice/AuthContext (guest|authed union)/ResolvedIdentity/AppSession/SessionKind
 │   ├── errors.ts  # AuthError
 │   └── README.md  # auth module guide
@@ -47,8 +49,9 @@ src/
 | `config.ts`          | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getAppConfig()` → app database path, turn timeout, bootstrap token, TLS/redirect settings; `getServerPort()` → the listening port (default `54321`), all from env                                                                     |
 | `agent.ts`           | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`                                                                                              |
 | `transport.ts`       | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                                                                                                                   |
-| `ws.ts`              | `attachChatServer(httpServer, store, options)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, claims sessions in the ledger, enforces the per-thread lock + turn timeout, forwards events through `toServerFrame`, emits the terminal `done` frame            |
-| `auth/*`             | Accounts, device credentials, and the app database: `AppDatabase` (SQLite) + the `CredentialVerifier` seam (scrypt/token crypto) + `AuthError`. The REST middleware, credential endpoints, and WS auth handshake resolve tokens through these seams                                                                                     |
+| `ws.ts`              | `attachChatServer(httpServer, store, options)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, forwards events through `toServerFrame`, emits the terminal `done` frame. The per-prompt session pipeline runs in a `SessionManager` (see `sessionManager.ts`)  |
+| `sessionManager.ts`  | `createSessionManager(store)` → the session-lifecycle seam: claim → ownership guard → per-thread lock → stream → touch → release, plus guest cleanup on close. ws.ts stays protocol/socket-only; `busy`/`not-owned` outcomes map to error frames there                                                                                  |
+| `auth/*`             | Accounts, device credentials, and the app database: `AppDatabase` (SQLite) + the `CredentialVerifier` seam (scrypt/token crypto) + `AuthError` + the shared `ownsRow`/`canManage` ownership policy. The REST middleware, credential endpoints, and WS auth handshake resolve tokens through these seams                                 |
 | `http/middleware.ts` | `requireAuth(store)` (Bearer device token → `req.jarv`, 401 otherwise) + `requireOwner` (403 for non-owners); `AuthedRequest` derives from the `AuthContext` union so `authed(req).jarv` is the guaranteed non-null identity                                                                                                            |
 | `http/authRoutes.ts` | `createAuthRouter(store, appConfig, credentials?)` → the `/api` router: `bootstrap`, `auth/login`, `me`, `devices`, `users`, `sessions`; maps `AuthError` codes to HTTP statuses; `credentials` defaults to the scrypt-backed `CredentialVerifier` seam                                                                                 |
 | `llm/chatModel.ts`   | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                                                                                                             |
