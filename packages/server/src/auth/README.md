@@ -5,13 +5,13 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 
 ## Files
 
-| File        | Responsibility                                                                                                                               |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`  | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` (what `req.jarv` / the WS ctx carry)            |
-| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                        |
-| `store.ts`  | `AppStore` seam + `SqliteAppStore` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
-| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                   |
-| `README.md` | this file                                                                                                                                    |
+| File        | Responsibility                                                                                                                                     |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`  | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` (what `req.jarv` / the WS ctx carry)                  |
+| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                              |
+| `store.ts`  | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
+| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                         |
+| `README.md` | this file                                                                                                                                          |
 
 The REST layer lives outside this module in `src/http/` (`middleware.ts` =
 `requireAuth`/`requireOwner` filling `req.jarv`; `authRoutes.ts` = the `/api`

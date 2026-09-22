@@ -5,18 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
     AuthError,
-    SqliteAppStore,
+    SqliteAppDatabase,
     generateDeviceToken,
-    openAppStore,
-    type AppStore,
+    openAppDatabase,
+    type AppDatabase,
 } from "../../src/auth";
 
-let store: AppStore;
+let store: AppDatabase;
 let db: Database.Database;
 
 beforeEach(() => {
     db = new Database(":memory:");
-    store = new SqliteAppStore(db);
+    store = new SqliteAppDatabase(db);
 });
 
 afterEach(() => {
@@ -216,16 +216,16 @@ describe("sessions", () => {
     });
 });
 
-describe("openAppStore", () => {
+describe("openAppDatabase", () => {
     it("reopens an existing database without error (migration is idempotent)", () => {
         const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
         const path = join(dir, "app.sqlite");
         try {
-            const first = openAppStore(path);
+            const first = openAppDatabase(path);
             first.createUser("luke", "hash", "owner");
             first.close();
 
-            const second = openAppStore(path);
+            const second = openAppDatabase(path);
             expect(second.getUserByUsername("luke")?.role).toBe("owner");
             second.close();
         } finally {
@@ -237,7 +237,7 @@ describe("openAppStore", () => {
         const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
         const path = join(dir, "app.sqlite");
         try {
-            const first = openAppStore(path);
+            const first = openAppDatabase(path);
             expect(statSync(dir).mode & 0o777).toBe(0o700);
             expect(statSync(path).mode & 0o777).toBe(0o600);
             first.close();

@@ -1,12 +1,12 @@
 /**
- * The app store: SQLite-backed ledger of users, devices, sessions, and prefs.
+ * The app database: SQLite-backed ledger of users, devices, sessions, and prefs.
  *
- * This is the `AppStore` seam from the auth design: an {@link AppStore}
- * interface plus {@link SqliteAppStore}, its better-sqlite3 implementation,
+ * This is the `AppDatabase` seam from the auth design: an {@link AppDatabase}
+ * interface plus {@link SqliteAppDatabase}, its better-sqlite3 implementation,
  * so a future portal can swap storage or the package can grow a second
- * backend without churning the REST/WS layers. `openAppStore(path)` creates
+ * backend without churning the REST/WS layers. `openAppDatabase(path)` creates
  * the parent directory and runs schema migrations; tests construct
- * `SqliteAppStore` over `:memory:` directly.
+ * `SqliteAppDatabase` over `:memory:` directly.
  *
  * Device tokens are persisted only as SHA-256 hashes (see `crypto.ts`); raw
  * secrets never touch the database.
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS prefs (
  * Methods throw {@link AuthError} where a domain rule is broken
  * (`USERNAME_TAKEN`) and return `null` where a row simply does not exist.
  */
-export interface AppStore {
+export interface AppDatabase {
     createUser(username: string, passwordHash: string, role: Role): AppUser;
     getUserByUsername(username: string): AppUser | null;
     getPasswordHash(username: string): string | null;
@@ -191,16 +191,16 @@ function migrate(db: Database.Database): void {
     }
 }
 
-export function openAppStore(dbPath: string): AppStore {
+export function openAppDatabase(dbPath: string): AppDatabase {
     ensurePrivateStorage(dbPath);
-    const store = new SqliteAppStore(new Database(dbPath));
+    const store = new SqliteAppDatabase(new Database(dbPath));
     // Belt-and-suspenders chmod: the file was pre-created at 0600, but a
     // library migration that reopens it stays safe even on odd filesystems.
     ensurePrivateFile(dbPath);
     return store;
 }
 
-export class SqliteAppStore implements AppStore {
+export class SqliteAppDatabase implements AppDatabase {
     private readonly db: Database.Database;
     private readonly statements: {
         insertUser: Database.Statement;

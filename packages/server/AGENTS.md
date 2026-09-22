@@ -65,7 +65,7 @@ re-declares frames.
   (per-thread lock), and a `sessionId` owned by a different principal (`session belongs to another user` — knowing a
   session id alone is never enough to read someone else's conversation).
 
-Every prompt claims its `sessionId` in the session ledger (`AppStore.claimSession`). Guest sockets' claimed
+Every prompt claims its `sessionId` in the session ledger (`AppDatabase.claimSession`). Guest sockets' claimed
 sessions are deleted on socket close; owned sessions persist. Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS`
 (default `120000`); draining is best-effort on a hung model. Authenticated sockets are re-checked against the
 store on every prompt so a revoked device is cut off immediately.
@@ -78,7 +78,7 @@ upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its database fil
 
 ## Source layout
 
-- `src/index.ts` — process entry: config, `openAppStore`, `createApp`, `attachChatServer`, listen (HTTPS + redirect when TLS enabled).
+- `src/index.ts` — process entry: config, `openAppDatabase`, `createApp`, `attachChatServer`, listen (HTTPS + redirect when TLS enabled).
 - `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`).
 - `src/fs.ts` — `ensurePrivateStorage`/`ensurePrivateFile`: tightens `~/.jarvis` to `0700`/`0600`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).

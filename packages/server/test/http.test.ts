@@ -2,8 +2,8 @@ import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app";
-import { SqliteAppStore, generateDeviceToken } from "../src/auth";
-import type { AppStore } from "../src/auth";
+import { SqliteAppDatabase, generateDeviceToken } from "../src/auth";
+import type { AppDatabase } from "../src/auth";
 import type { AppConfig } from "../src/config";
 
 const FAST: AppConfig & { bootstrapToken: string } = {
@@ -15,7 +15,7 @@ const FAST: AppConfig & { bootstrapToken: string } = {
 /** Fresh bootstrap secret, immune to the single-use token mutation on FAST. */
 const BOOTSTRAP = "s3cret-bootstrap";
 
-const store = new SqliteAppStore(new Database(":memory:")) as AppStore;
+const store = new SqliteAppDatabase(new Database(":memory:")) as AppDatabase;
 
 const app = createApp(store, FAST);
 
@@ -69,7 +69,7 @@ describe("bootstrap", () => {
     });
 
     it("rejects a missing or wrong bootstrap token", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const freshApp = createApp(freshStore, {
             ...FAST,
             bootstrapToken: BOOTSTRAP,
@@ -112,7 +112,7 @@ describe("bootstrap", () => {
     });
 
     it("rejects a second bootstrap once an owner exists", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const freshApp = createApp(freshStore, {
             ...FAST,
             bootstrapToken: BOOTSTRAP,
@@ -133,7 +133,7 @@ describe("bootstrap", () => {
     });
 
     it("ignores a bootstrap token supplied in the body (header only)", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const freshApp = createApp(freshStore, {
             ...FAST,
             bootstrapToken: BOOTSTRAP,
@@ -149,7 +149,7 @@ describe("bootstrap", () => {
     });
 
     it("zeroes the single-use token after a successful bootstrap", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
             appDbPath: ":memory:",
@@ -174,7 +174,7 @@ describe("bootstrap", () => {
     });
 
     it("throttles login attempts past the per-key limit", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const limiterConfig = { maxFailures: 3 } as const;
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
@@ -208,7 +208,7 @@ describe("bootstrap", () => {
     });
 
     it("resets the failure count on a successful login", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
             appDbPath: ":memory:",
@@ -249,7 +249,7 @@ describe("bootstrap", () => {
     });
 
     it("throttles bootstrap guesses by IP", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
             appDbPath: ":memory:",
@@ -372,7 +372,7 @@ describe("login + devices", () => {
     });
 
     it("rejects login before an owner is bootstrapped", async () => {
-        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
         const freshApp = createApp(freshStore, FAST);
         const res = await request(freshApp).post("/api/auth/login").send({
             username: "anyone",

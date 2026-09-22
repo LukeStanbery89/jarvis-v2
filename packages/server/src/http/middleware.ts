@@ -10,7 +10,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { MAX_TOKEN_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "../auth";
-import type { AppStore } from "../auth";
+import type { AppDatabase } from "../auth";
 import type { AppDevice, AppUser } from "../auth";
 
 /**
@@ -33,7 +33,7 @@ function parseBearerToken(header: string | undefined): string | null {
 }
 
 /** Route guard: attaches the resolved identity as `req.jarv` or answers 401. */
-export function requireAuth(store: AppStore): RequestHandler {
+export function requireAuth(store: AppDatabase): RequestHandler {
     return (req: Request, res: Response, next: NextFunction): void => {
         const token = parseBearerToken(req.headers.authorization);
         if (!token || token.length > MAX_TOKEN_LENGTH) {

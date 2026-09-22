@@ -19,7 +19,7 @@ src/
 │   └── authRoutes.ts   # createAuthRouter — the /api management router
 ├── auth/
 │   ├── index.ts   # auth module exports (store + crypto + types + errors)
-│   ├── store.ts   # AppStore seam + SqliteAppStore (app database ~/.jarvis/jarvis.sqlite)
+│   ├── store.ts   # AppDatabase seam + SqliteAppDatabase (app database ~/.jarvis/jarvis.sqlite)
 │   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing
 │   ├── types.ts   # AppUser/AppDevice/AuthContext/ResolvedIdentity/AppSession/SessionKind
 │   ├── errors.ts  # AuthError
@@ -45,7 +45,7 @@ src/
 | `agent.ts`           | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`                                                                                   |
 | `transport.ts`       | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                                                                                                        |
 | `ws.ts`              | `attachChatServer(httpServer, store, options)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, claims sessions in the ledger, enforces the per-thread lock + turn timeout, forwards events through `toServerFrame`, emits the terminal `done` frame |
-| `auth/*`             | Accounts, device credentials, and the app database: `AppStore` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                                                                                                    |
+| `auth/*`             | Accounts, device credentials, and the app database: `AppDatabase` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                                                                                                 |
 | `http/middleware.ts` | `requireAuth(store)` (Bearer device token → `req.jarv`, 401 otherwise) + `requireOwner` (403 for non-owners); `AuthedRequest` carries the guaranteed identity                                                                                                                                                                |
 | `http/authRoutes.ts` | `createAuthRouter(store, appConfig)` → the `/api` router: `bootstrap`, `auth/login`, `me`, `devices`, `users`, `sessions`; maps `AuthError` codes to HTTP statuses                                                                                                                                                           |
 | `llm/chatModel.ts`   | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                                                                                                  |
@@ -109,7 +109,7 @@ without a live model.
   lock always drains — the timeout error is emitted by the timer and the
   in-flight generator is `return()`d.
 - **Sessions are a ledger, not just threads.** Each prompt claims its
-  `sessionId` in the app database (`AppStore.claimSession`, atomic
+  `sessionId` in the app database (`AppDatabase.claimSession`, atomic
   `INSERT … ON CONFLICT DO NOTHING`) tagging it guest vs owned and
   `text`/`voice`. Guest sockets' claimed sessions are deleted when the socket
   closes (`guestThreads` tracked per connection); owned sessions persist for
@@ -118,5 +118,5 @@ without a live model.
 - **Auth is a first-frame handshake.** A client may authenticate with a device
   token on its first frame (`{ type: "auth", token }` → one `authResult`
   frame); any other first frame, or none, runs the socket as a guest. The
-  token is hashed (`SHA-256`) before `AppStore.resolveToken` compares it — no
+  token is hashed (`SHA-256`) before `AppDatabase.resolveToken` compares it — no
   raw secret is ever logged or persisted.

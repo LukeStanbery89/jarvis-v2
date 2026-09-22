@@ -19,7 +19,7 @@ import { logger } from "./logger";
 import { getAppConfig, getServerPort, DEFAULT_HOST } from "./config";
 import { attachChatServer } from "./ws";
 import { initAgentGraph } from "./agent";
-import { openAppStore } from "./auth";
+import { openAppDatabase } from "./auth";
 
 const port = getServerPort();
 const appConfig = getAppConfig();
@@ -36,7 +36,7 @@ if (Boolean(appConfig.tlsCertPath) !== Boolean(appConfig.tlsKeyPath)) {
 }
 
 initAgentGraph();
-const store = openAppStore(appConfig.appDbPath);
+const store = openAppDatabase(appConfig.appDbPath);
 
 const webApp = createApp(store, appConfig);
 const url = `http${tlsEnabled ? "s" : ""}://localhost:${port}`;

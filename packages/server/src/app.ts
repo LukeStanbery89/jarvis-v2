@@ -1,7 +1,7 @@
 import express from "express";
 import type { ErrorRequestHandler } from "express";
 import type { AppConfig } from "./config";
-import type { AppStore } from "./auth";
+import type { AppDatabase } from "./auth";
 import { createAuthRouter } from "./http/authRoutes";
 
 /**
@@ -12,7 +12,7 @@ import { createAuthRouter } from "./http/authRoutes";
  * `index.ts`. `store` backs the `/api` management routes and `appConfig`
  * supplies their settings.
  */
-export function createApp(store: AppStore, appConfig: AppConfig) {
+export function createApp(store: AppDatabase, appConfig: AppConfig) {
     const app = express();
     app.use(express.json());
 

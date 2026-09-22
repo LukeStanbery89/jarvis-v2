@@ -17,8 +17,8 @@ export {
     verifyPassword,
 } from "./crypto";
 export type { DeviceTokenMaterial, ScryptParams } from "./crypto";
-export { openAppStore, SqliteAppStore } from "./store";
-export type { AppStore } from "./store";
+export { openAppDatabase, SqliteAppDatabase } from "./store";
+export type { AppDatabase } from "./store";
 export type {
     AppDevice,
     AppSession,

@@ -30,7 +30,7 @@ import {
 } from "@lukestanbery/jarvis-protocol";
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "./auth";
-import type { AppStore, AuthContext } from "./auth";
+import type { AppDatabase, AuthContext } from "./auth";
 import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
 import { runAgent } from "./agent";
 import type { AgentEvent } from "./agent";
@@ -70,7 +70,7 @@ export interface AttachmentOptions {
  */
 export function attachChatServer(
     httpServer: Server,
-    store: AppStore,
+    store: AppDatabase,
     options: AttachmentOptions = { turnTimeoutMs: DEFAULT_TURN_TIMEOUT_MS },
 ): WebSocketServer {
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
@@ -137,7 +137,7 @@ async function handleMessage(
     raw: RawData,
     socket: WebSocket,
     conn: ConnectionState,
-    store: AppStore,
+    store: AppDatabase,
     options: AttachmentOptions,
 ): Promise<void> {
     const frameText = raw.toString();
@@ -172,7 +172,7 @@ async function handleMessage(
 async function handlePrompt(
     socket: WebSocket,
     conn: ConnectionState,
-    store: AppStore,
+    store: AppDatabase,
     prompt: Extract<ClientFrame, { prompt: string }>,
     options: AttachmentOptions,
 ): Promise<void> {
@@ -251,7 +251,7 @@ async function handlePrompt(
 async function handleAuth(
     socket: WebSocket,
     conn: ConnectionState,
-    store: AppStore,
+    store: AppDatabase,
     token: string,
 ): Promise<void> {
     if (conn.authed) {

@@ -17,7 +17,7 @@ import {
     hashPassword,
     verifyPassword,
 } from "../auth";
-import type { AppStore } from "../auth";
+import type { AppDatabase } from "../auth";
 import type { AppConfig } from "../config";
 import { AuthedRequest, requireAuth, requireOwner } from "./middleware";
 import { DEFAULT_RATE_LIMIT_CONFIG, RateLimiter } from "./rateLimit";
@@ -64,7 +64,7 @@ const AUTH_ERROR_STATUS: Record<string, number> = {
  * limiter built from `appConfig.loginRateLimit`.
  */
 export function createAuthRouter(
-    store: AppStore,
+    store: AppDatabase,
     appConfig: AppConfig,
 ): Router {
     const router = Router();

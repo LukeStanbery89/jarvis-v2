@@ -4,7 +4,7 @@ import { WebSocket } from "ws";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
-import { SqliteAppStore, generateDeviceToken } from "../src/auth";
+import { SqliteAppDatabase, generateDeviceToken } from "../src/auth";
 import type { AgentEvent } from "../src/llm/agentGraph";
 
 vi.mock("../src/agent", () => ({
@@ -33,7 +33,7 @@ vi.mock("../src/agent", () => ({
     }),
 }));
 
-const store = new SqliteAppStore(new Database(":memory:"));
+const store = new SqliteAppDatabase(new Database(":memory:"));
 const appConfig = {
     appDbPath: ":memory:",
     turnTimeoutMs: 30_000,
