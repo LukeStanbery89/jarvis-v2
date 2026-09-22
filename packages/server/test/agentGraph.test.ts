@@ -107,9 +107,10 @@ describe("createAgentGraph", () => {
             type: "toolResult",
             name: "getCurrentTime",
         });
-        expect(
-            new Date((events[1] as { output: string }).output).toISOString(),
-        ).toBe((events[1] as { output: string }).output);
+        const timeOutput = (events[1] as { output: string }).output;
+        expect(timeOutput).toMatch(
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} UTC[+-]\d{2}:\d{2}$/,
+        );
         expect(events[2]).toEqual({
             type: "token",
             text: "The time is 2026-09-20.",
