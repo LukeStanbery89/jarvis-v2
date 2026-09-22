@@ -5,8 +5,8 @@
  * timestamp, attributed to the `"server"` tag. Default level is `info`; set
  * `JARVIS_LOG_LEVEL` (debug | info | warn | error) to raise or lower it.
  *
- * See `@jarvis/logger` for the full API.
+ * See `@lukestanbery/jarvis-logger` for the full API.
  */
-import { createLogger } from "@jarvis/logger";
+import { createLogger } from "@lukestanbery/jarvis-logger";
 
 export const logger = createLogger({ tag: "server" });

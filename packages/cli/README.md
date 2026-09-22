@@ -1,4 +1,4 @@
-# @jarvis/cli
+# @lukestanbery/jarvis-cli
 
 CLI text chat client for the J.A.R.V.I.S. AI assistant. This is a REPL: type a prompt,
 send it to the server over WebSocket, and watch the response stream back to the
@@ -12,7 +12,7 @@ screen.
 ## Install
 
 ```sh
-npm install -g @jarvis/cli
+npm install -g @lukestanbery/jarvis-cli
 ```
 
 ## Scripts
@@ -27,7 +27,7 @@ npm install -g @jarvis/cli
 
 ## Usage
 
-Start the server first (see `@jarvis/server`), then run the CLI:
+Start the server first (see `@lukestanbery/jarvis-server`), then run the CLI:
 
 ```sh
 npm run dev

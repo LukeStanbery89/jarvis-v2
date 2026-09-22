@@ -1,5 +1,5 @@
 {
-    "name": "@jarvis/logger",
+    "name": "@lukestanbery/jarvis-logger",
     "version": "0.1.0",
     "description": "Shared leveled, timestamped logging for J.A.R.V.I.S. packages",
     "main": "dist/index.js",

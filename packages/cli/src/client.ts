@@ -6,11 +6,11 @@
  * so the server continues the same thread. Uses Node's built-in `WebSocket`,
  * so this module adds no third-party runtime dependency.
  *
- * Frame parsing and serialization come from `@jarvis/protocol`, the single
+ * Frame parsing and serialization come from `@lukestanbery/jarvis-protocol`, the single
  * source of truth for the wire protocol; this module only maps parsed frames
  * onto the `PromptHandlers` callbacks.
  */
-import { parseFrame, serializeRequest } from "@jarvis/protocol";
+import { parseFrame, serializeRequest } from "@lukestanbery/jarvis-protocol";
 
 /** Callbacks invoked as events arrive during a `prompt()` exchange. */
 export interface PromptHandlers {

@@ -2,8 +2,8 @@
  * Parsing and serialization for the J.A.R.V.I.S. chat wire protocol.
  *
  * These are the only functions allowed to turn raw WebSocket payloads into
- * typed frames (and back), so the server (`@jarvis/server`'s `ws.ts`) and the
- * CLI (`@jarvis/cli`'s `client.ts`) share one implementation of the framing
+ * typed frames (and back), so the server (`@lukestanbery/jarvis-server`'s `ws.ts`) and the
+ * CLI (`@lukestanbery/jarvis-cli`'s `client.ts`) share one implementation of the framing
  * rules. Everything here is a pure data transformation with no I/O.
  *
  * Behavior is deliberately conservative and unchanged from the historical
@@ -18,7 +18,7 @@ import type { ChatPrompt, ServerFrame } from "./types";
  * Parses one raw server frame into a typed {@link ServerFrame}.
  *
  * Throws if the payload is not valid JSON or matches no known frame shape;
- * the thrown message is surfaced to users by `@jarvis/cli`.
+ * the thrown message is surfaced to users by `@lukestanbery/jarvis-cli`.
  */
 export function parseFrame(raw: string): ServerFrame {
     let parsed: unknown;

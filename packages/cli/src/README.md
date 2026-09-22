@@ -1,4 +1,4 @@
-# @jarvis/cli — src architecture
+# @lukestanbery/jarvis-cli — src architecture
 
 This README explains how the CLI's source is organized. It is not a usage
 guide — see the package `README.md` for install and usage instructions.
@@ -30,7 +30,7 @@ readline REPL (index.ts)
       │  line of text
       ▼
 client.ts ChatClient.prompt(text, sessionId, handlers)
-      │  {"prompt": "...", "sessionId": "..."}  over WebSocket → @jarvis/server /ws
+      │  {"prompt": "...", "sessionId": "..."}  over WebSocket → @lukestanbery/jarvis-server /ws
       │  {"chunk": ...} / {"tool": ...} / {"toolResult": ...} frames … then {"done": true}
       ▼
 index.ts onChunk → process.stdout.write(chunk)   (prints as it streams)
@@ -41,7 +41,7 @@ index.ts onChunk → process.stdout.write(chunk)   (prints as it streams)
 
 - **Zero third-party runtime dependencies.** `ChatClient` uses Node's global
   `WebSocket`, so the package pulls in no third-party runtime deps; it speaks
-  the JSON protocol defined in the shared first-party `@jarvis/protocol`
+  the JSON protocol defined in the shared first-party `@lukestanbery/jarvis-protocol`
   package (parsing via its `parseFrame`, serialization via its
   `serializeRequest`; see `packages/protocol`).
 - **Connect-on-demand.** The socket is opened lazily on the first `prompt()`

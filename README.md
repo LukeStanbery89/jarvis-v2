@@ -4,12 +4,12 @@ AI-powered assistant monorepo.
 
 ## Packages
 
-| Package                                  | Description                                                    |
-| ---------------------------------------- | -------------------------------------------------------------- |
-| [packages/protocol](./packages/protocol) | Shared chat wire-protocol types + framing (`@jarvis/protocol`) |
-| [packages/server](./packages/server)     | Express backend server with WebSocket chat (`@jarvis/server`)  |
-| [packages/cli](./packages/cli)           | WebSocket chat REPL client (`@jarvis/cli`)                     |
-| [packages/logger](./packages/logger)     | Shared leveled, timestamped logging (`@jarvis/logger`)         |
+| Package                                  | Description                                                                 |
+| ---------------------------------------- | --------------------------------------------------------------------------- |
+| [packages/protocol](./packages/protocol) | Shared chat wire-protocol types + framing (`@lukestanbery/jarvis-protocol`) |
+| [packages/server](./packages/server)     | Express backend server with WebSocket chat (`@lukestanbery/jarvis-server`)  |
+| [packages/cli](./packages/cli)           | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                     |
+| [packages/logger](./packages/logger)     | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)         |
 
 ## Getting started
 
@@ -27,13 +27,13 @@ answer, and each client-supplied `sessionId` maps to a conversation thread that
 is persisted to a SQLite checkpoint file. The CLI keeps its `sessionId` in
 `~/.jarvis/session-id`, so conversations survive both CLI and server restarts.
 The wire protocol those two packages speak over `/ws` is defined **once** in
-`@jarvis/protocol`; see each package's README for details.
+`@lukestanbery/jarvis-protocol`; see each package's README for details.
 
 During development the workspace packages resolve each other **through the
 workspace symlinks** npm creates in `node_modules` — edit source in
-`packages/logger`, for example, and `@jarvis/server` picks up the change as
+`packages/logger`, for example, and `@lukestanbery/jarvis-server` picks up the change as
 soon as you rebuild (see `npm run build`). When a package is published and
-installed standalone, npm resolves its `@jarvis/*` dependencies normally from
+installed standalone, npm resolves its `@lukestanbery/jarvis-*` dependencies normally from
 the registry; the workspace symlink is a dev-only artifact and never ships in
 a published tarball.
 

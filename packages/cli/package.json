@@ -1,5 +1,5 @@
 {
-    "name": "@jarvis/cli",
+    "name": "@lukestanbery/jarvis-cli",
     "version": "0.1.0",
     "description": "CLI text chat client for J.A.R.V.I.S.",
     "main": "dist/index.js",
@@ -30,8 +30,8 @@
     "license": "MIT",
     "type": "commonjs",
     "dependencies": {
-        "@jarvis/logger": "^0.1.0",
-        "@jarvis/protocol": "^0.1.0"
+        "@lukestanbery/jarvis-logger": "^0.1.0",
+        "@lukestanbery/jarvis-protocol": "^0.1.0"
     },
     "devDependencies": {
         "@types/node": "^26.6.2",

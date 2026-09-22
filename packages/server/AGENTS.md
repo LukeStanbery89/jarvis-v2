@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@jarvis/server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /` health
+`@lukestanbery/jarvis-server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /` health
 endpoint and a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response.
 
 ## Stack
@@ -12,7 +12,7 @@ endpoint and a WebSocket chat endpoint (`/ws`) that accepts prompts and streams 
 - `ws` for WebSocket server
 - LangChain (`@langchain/core` + `@langchain/openai`) for the model stack
 - LangGraph (`@langchain/langgraph`) + SQLite checkpoints for the agent loop
-- Logging via `@jarvis/logger` (Consola-based; see `src/logger.ts`)
+- Logging via `@lukestanbery/jarvis-logger` (Consola-based; see `src/logger.ts`)
 - Tests via Vitest + supertest
 
 ## Scripts
@@ -38,7 +38,7 @@ The server listens on port `54321` by default, overridable via `PORT`.
 
 ## Logging
 
-Server logs go through the shared `@jarvis/logger` instance in `src/logger.ts`
+Server logs go through the shared `@lukestanbery/jarvis-logger` instance in `src/logger.ts`
 (tag `server`): `YYYY-MM-DD HH:mm:ss [LEVEL] server — message` lines, colored
 by level. Default level is `info`; set `JARVIS_LOG_LEVEL`
 (`debug` | `info` | `warn` | `error`) to change it. Token-level tracing is
@@ -53,7 +53,7 @@ there; `JARVIS_LOG_SENSITIVE=full|redacted` overrides the mode.
 ## Chat protocol
 
 The wire protocol (frames, the ≤128-char `sessionId` bound, and all
-parsing/serialization) is defined once in the shared `@jarvis/protocol`
+parsing/serialization) is defined once in the shared `@lukestanbery/jarvis-protocol`
 package; the server imports `parseRequest`/`serializeFrame` rather than
 re-declaring frames. JSON text frames on `/ws`:
 

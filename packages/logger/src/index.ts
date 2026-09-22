@@ -9,7 +9,7 @@
  * like `YYYY-MM-DD HH:mm:ss [LEVEL] tag — message`, colorized by level when
  * colors are enabled.
  *
- * Consumers are the other `@jarvis/*` packages (`createLogger({ tag })` per
+ * Consumers are the other `@lukestanbery/jarvis-*` packages (`createLogger({ tag })` per
  * package, see the package README). The default level is `info`, overridable
  * per logger, via the `JARVIS_LOG_LEVEL` env var, or per-instance `level`.
  *

@@ -1,4 +1,4 @@
-# @jarvis/server
+# @lukestanbery/jarvis-server
 
 Express backend server for the J.A.R.V.I.S. AI assistant. Accepts prompt messages over
 WebSocket and streams a response back to the client.
@@ -13,7 +13,7 @@ WebSocket and streams a response back to the client.
 ## Install
 
 ```sh
-npm install @jarvis/server
+npm install @lukestanbery/jarvis-server
 ```
 
 ## Scripts
@@ -73,7 +73,7 @@ token tracing suppressed). Payloads are logged verbatim only in development:
 `npm run dev` sets `NODE_ENV=development`. Production deployments (any other
 `NODE_ENV`, including unset) stay redacted even if `JARVIS_LOG_LEVEL=debug` is
 forced. Override either way with `JARVIS_LOG_SENSITIVE=full|redacted`. The
-option is provided by `@jarvis/logger` (`sensitive` / `sensitiveDebug`).
+option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDebug`).
 
 ### Endpoints
 
@@ -85,7 +85,7 @@ option is provided by `@jarvis/logger` (`sensitive` / `sensitiveDebug`).
 ### Chat protocol
 
 The wire protocol (frames, limits, and parse/serialize logic) is defined once
-in the shared `@jarvis/protocol` package; connect a WebSocket client to `/ws`
+in the shared `@lukestanbery/jarvis-protocol` package; connect a WebSocket client to `/ws`
 and exchange JSON text frames:
 
 - Client → Server: `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
@@ -107,4 +107,4 @@ the agent produces its final text (bounded by `JARVIS_AGENT_MAX_TURNS`); tool
 events cannot appear inside the text stream, only before it. The agent state —
 including the whole message history of each session — is persisted to the
 SQLite checkpoint file (`JARVIS_CHECKPOINT_PATH`), so a server restart resumes
-conversations. Try it with the `@jarvis/cli` REPL.
+conversations. Try it with the `@lukestanbery/jarvis-cli` REPL.

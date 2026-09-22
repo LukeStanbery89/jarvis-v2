@@ -1,14 +1,14 @@
-# @jarvis/protocol
+# @lukestanbery/jarvis-protocol
 
 Shared chat wire-protocol types and framing for J.A.R.V.I.S. packages. This is
 the **single source of truth** for the frames exchanged over the `/ws`
-WebSocket: both `@jarvis/server` and `@jarvis/cli` import their frame types
+WebSocket: both `@lukestanbery/jarvis-server` and `@lukestanbery/jarvis-cli` import their frame types
 and parsing/serialization from here instead of maintaining their own copies.
 
 ## Install
 
 ```sh
-npm install @jarvis/protocol
+npm install @lukestanbery/jarvis-protocol
 ```
 
 ## Scripts
@@ -53,6 +53,6 @@ drift.
 - Zero runtime dependencies and no I/O — this package is deliberately types +
   parsing only, uncoupled from LangGraph, Express, and `ws`.
 - Because consumers resolve through the compiled `dist` output (same as
-  `@jarvis/logger`), `@jarvis/protocol` must be rebuilt after source edits and
+  `@lukestanbery/jarvis-logger`), `@lukestanbery/jarvis-protocol` must be rebuilt after source edits and
   before type-checking dependents — run the root `npm run check` (which builds
   in dependency order) rather than a bare `tsc` in a dependent package.

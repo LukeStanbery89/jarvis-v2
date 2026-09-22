@@ -1,4 +1,4 @@
-# @jarvis/server — src architecture
+# @lukestanbery/jarvis-server — src architecture
 
 This README explains how the server's source is organized. It is not a usage
 guide — see the package `README.md` for prerequisites, endpoints, and
@@ -44,7 +44,7 @@ src/
 CLI / WebSocket client
       │  {"prompt": "...", "sessionId": "..."}
       ▼
-ws.ts  handleMessage/watch   (parse + validate prompt + sessionId via @jarvis/protocol)
+ws.ts  handleMessage/watch   (parse + validate prompt + sessionId via @lukestanbery/jarvis-protocol)
       │  prompt, sessionId
       ▼
 agent.ts runAgent            (the brain seam: graph + checkpointer)

@@ -3,7 +3,7 @@
  *
  * The single home for the frames exchanged over the `/ws` WebSocket, and the
  * only implementation of their parsing and serialization. Consumers are
- * `@jarvis/server` (`src/ws.ts`) and `@jarvis/cli` (`src/client.ts`); see the
+ * `@lukestanbery/jarvis-server` (`src/ws.ts`) and `@lukestanbery/jarvis-cli` (`src/client.ts`); see the
  * package README for the canonical protocol specification.
  */
 export type { ChatPrompt, ServerFrame } from "./types";

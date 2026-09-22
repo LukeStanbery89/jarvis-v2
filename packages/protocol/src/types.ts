@@ -2,7 +2,7 @@
  * Shared chat wire-protocol types for J.A.R.V.I.S. packages.
  *
  * This is the **single source of truth** for the frames exchanged over the
- * `/ws` WebSocket between `@jarvis/cli` and `@jarvis/server`. Keeping the
+ * `/ws` WebSocket between `@lukestanbery/jarvis-cli` and `@lukestanbery/jarvis-server`. Keeping the
  * shapes here (rather than duplicated in each package) guarantees a frame
  * rename or shape change surfaces as a compile error everywhere a frame is
  * handled, instead of a silent runtime mismatch.

@@ -1,4 +1,4 @@
-# @jarvis/logger
+# @lukestanbery/jarvis-logger
 
 Shared leveled logging for J.A.R.V.I.S. packages. Wraps [Consola](https://consola.unjs.io)
 behind a small API that emits timestamped, level-tagged lines.
@@ -6,7 +6,7 @@ behind a small API that emits timestamped, level-tagged lines.
 ## Install
 
 ```sh
-npm install @jarvis/logger
+npm install @lukestanbery/jarvis-logger
 ```
 
 ## Scripts
@@ -20,7 +20,7 @@ npm install @jarvis/logger
 ## Usage
 
 ```ts
-import { createLogger } from "@jarvis/logger";
+import { createLogger } from "@lukestanbery/jarvis-logger";
 
 const logger = createLogger({ tag: "server" });
 
@@ -105,13 +105,13 @@ place. With no `stream` and no `process` (browsers), lines fall back to
 
 ## Notes for maintainers
 
-- Server and CLI depend on `@jarvis/logger` normally (declared in their
+- Server and CLI depend on `@lukestanbery/jarvis-logger` normally (declared in their
   `package.json`). In this monorepo npm workspaces satisfies that dependency
   with a symlink to `packages/logger`, so **local edits are used in dev**;
-  when `@jarvis/server`/`@jarvis/cli` are installed standalone, npm resolves
-  `@jarvis/logger` from the registry. The workspace symlink is a
+  when `@lukestanbery/jarvis-server`/`@lukestanbery/jarvis-cli` are installed standalone, npm resolves
+  `@lukestanbery/jarvis-logger` from the registry. The workspace symlink is a
   dev-only artifact and is never included in published tarballs.
-- Because consumers resolve through the compiled `dist` output, `@jarvis/logger`
+- Because consumers resolve through the compiled `dist` output, `@lukestanbery/jarvis-logger`
   must be rebuilt after source edits and before type-checking dependents — run
   the root `npm run check` (which builds in dependency order) rather than a
   bare `tsc` in a dependent package.

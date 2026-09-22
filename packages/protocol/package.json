@@ -1,5 +1,5 @@
 {
-    "name": "@jarvis/protocol",
+    "name": "@lukestanbery/jarvis-protocol",
     "version": "0.1.0",
     "description": "Shared chat wire-protocol types and framing for J.A.R.V.I.S. packages",
     "main": "dist/index.js",

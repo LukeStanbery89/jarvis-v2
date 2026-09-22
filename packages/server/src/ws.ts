@@ -3,14 +3,14 @@
  *
  * Mounted on the `"/ws"` path of the HTTP server. Clients send JSON prompt
  * frames and receive chunk/done frames back. The frame shapes and
- * parse/serialize logic live in `@jarvis/protocol` — the single source of
+ * parse/serialize logic live in `@lukestanbery/jarvis-protocol` — the single source of
  * truth for the wire protocol — so the server never re-declares them.
  */
 import type { Server } from "http";
 import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
-import { parseRequest, serializeFrame } from "@jarvis/protocol";
-import type { ServerFrame } from "@jarvis/protocol";
+import { parseRequest, serializeFrame } from "@lukestanbery/jarvis-protocol";
+import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { runAgent } from "./agent";
 import { logger } from "./logger";
 
