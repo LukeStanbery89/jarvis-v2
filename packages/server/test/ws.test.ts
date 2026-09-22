@@ -309,8 +309,8 @@ describe("session ledger", () => {
         ).toBe(true);
     });
 
-    it("adopts a guest-owned session for the authenticating user", async () => {
-        const user = store.createUser("adopter", "unused", "user");
+    it("rejects an authenticated user from taking a guest-owned session", async () => {
+        const user = store.createUser("not-owner-guy", "unused", "user");
         const material = generateDeviceToken();
         store.createDevice(
             user.id,
@@ -318,10 +318,9 @@ describe("session ledger", () => {
             material.tokenHash,
             material.prefix,
         );
-        const threadId = "guest-then-owned";
+        const threadId = "guest-conversation";
 
-        // Guest claims the thread and *stays open* so the row survives to be
-        // adopted. Wait for its `done` frame first so the thread lock is free.
+        // A guest claims the thread and stays open while the authed user tries.
         const guestWs = new WebSocket(url);
         await new Promise<void>((resolve) => {
             guestWs.on("open", () => {
@@ -341,22 +340,74 @@ describe("session ledger", () => {
         });
         await settle();
 
-        const adopter = await twoPhase(
+        const { again } = await twoPhase(
             [{ type: "auth", token: material.token }],
             "authResult",
             [{ prompt: "hi", sessionId: threadId }],
         );
-        expect(adopter.frames.some((f) => typeof f.error === "string")).toBe(
-            false,
-        );
+        expect(
+            again.some((f) => f.error === "session belongs to another user"),
+        ).toBe(true);
 
-        // Closing the (now stale) guest socket must NOT delete the adopted row.
+        // The caller did NOT seize the thread: it stays guest-owned until the
+        // guest disconnects, then guest cleanup removes it entirely.
+        const untouched = store.getSessionByThread(threadId);
+        expect(untouched).not.toBeNull();
+        expect(untouched!.userId).toBeNull();
+
         guestWs.close();
         await settle();
+        expect(store.getSessionByThread(threadId)).toBeNull();
+    });
 
-        const session = store.getSessionByThread(threadId);
-        expect(session).not.toBeNull();
-        expect(session!.userId).toBe(user.id);
+    it("cuts off a socket whose device token was revoked mid-session", async () => {
+        const user = store.createUser("revokee", "unused", "user");
+        const material = generateDeviceToken();
+        const device = store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+        const threadId = "revoked-device-thread";
+
+        await new Promise<void>((resolve) => {
+            const ws = new WebSocket(url);
+            let authed = false;
+            let revoked = false;
+            ws.on("open", () => {
+                ws.send(
+                    JSON.stringify({ type: "auth", token: material.token }),
+                );
+            });
+            ws.on("message", (data) => {
+                const msg = JSON.parse(data.toString()) as Record<
+                    string,
+                    unknown
+                >;
+                if (!authed && typeof msg.authResult === "object") {
+                    authed = true;
+                    store.revokeDevice(device.id);
+                    ws.send(
+                        JSON.stringify({ prompt: "hi", sessionId: threadId }),
+                    );
+                    return;
+                }
+                if (
+                    authed &&
+                    typeof msg.error === "string" &&
+                    /device token revoked/.test(msg.error)
+                ) {
+                    revoked = true;
+                    return;
+                }
+                if (authed && revoked && msg.done === true) {
+                    ws.close();
+                    resolve();
+                }
+            });
+            ws.on("error", () => resolve());
+        });
     });
 
     it("lets a second device of the same user continue the thread", async () => {

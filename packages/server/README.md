@@ -141,11 +141,10 @@ and exchange JSON text frames:
 - Sending a new prompt while a response is still streaming — or while another
   socket is running a concurrent turn on the same `sessionId` (per-thread lock)
   — is rejected with an `in progress` error frame.
-- A `sessionId` already owned by a different account — carrying that user's
-  conversation history — is rejected with a `session belongs to another user`
-  error frame. An authenticated socket may **adopt** a guest-owned thread
-  (its own earlier guest conversation), after which that session persists as
-  owned.
+- A `sessionId` owned by a different principal — another account, or a guest's
+  thread — is rejected with a `session belongs to another user` error frame:
+  knowing a `sessionId` alone is never enough to read or continue a
+  conversation you don't own. Sessions are only ever usable by their owner.
 - Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS` (default `120000`): a turn
   that exceeds it is aborted and the client receives a `turn timed out` error
   frame. Draining is **best-effort on a hung model** — the per-thread lock
@@ -154,9 +153,10 @@ and exchange JSON text frames:
 Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
 `~/.jarvis/jarvis.sqlite`): `sessionId` is claimed atomically as a
 **session** tagged `guest`/`owned` and `text`/`voice`. Guest sessions are
-deleted when their socket closes (unless an authenticated user adopted them);
-owned sessions persist and can be listed or deleted via the REST management
-API.
+deleted when their socket closes; owned sessions persist and can be listed or
+deleted via the REST management API. Note that deleting a session removes the
+ledger row, not the conversation history in the LangGraph checkpointer (see
+`JARVIS_CHECKPOINT_PATH`) — that remains a documented limitation.
 
 Concatenate the `chunk` payloads verbatim to reconstruct the full response. A
 single prompt may loop through `tool`/`toolResult` pairs several times before

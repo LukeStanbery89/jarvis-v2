@@ -27,7 +27,7 @@ export function createApp(store: AppStore, appConfig: AppConfig) {
     return app;
 }
 
-/** Returns a `400 {"error"}` for malformed JSON bodies instead of the HTML page. */
+/** Returns JSON `{ "error" }` for bad HTTP bodies instead of the HTML page. */
 const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
     if (
         typeof err === "object" &&
@@ -35,6 +35,15 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
         (err as { type?: string }).type === "entity.parse.failed"
     ) {
         res.status(400).json({ error: "invalid JSON body" });
+        return;
+    }
+    if (
+        typeof err === "object" &&
+        err !== null &&
+        ((err as { type?: string }).type === "entity.too.large" ||
+            (err as { statusCode?: number }).statusCode === 413)
+    ) {
+        res.status(413).json({ error: "request body too large" });
         return;
     }
     next(err);

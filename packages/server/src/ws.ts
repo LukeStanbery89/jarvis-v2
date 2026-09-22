@@ -14,9 +14,11 @@
  * (`claimSession`), runs under a **per-thread lock** (a concurrent turn on the
  * same thread is rejected) and a hard **turn timeout**. Guest sockets' claimed
  * sessions are deleted when the socket closes; owned sessions persist until
- * explicitly deleted. A session belonging to another account is never
- * touchable; an authenticated socket may adopt a guest-owned thread, which
- * then persists like any owned session.
+ * explicitly deleted. A session is only ever touchable by the principal that
+ * owns it — a compromise of a `sessionId` alone is not enough to read another
+ * account's (or another guest's) conversation history. Authenticated sockets
+ * are re-checked against the store on every prompt, so a revoked device is
+ * cut off as soon as it speaks.
  */
 import type { Server } from "http";
 import type { RawData } from "ws";
@@ -47,6 +49,8 @@ interface ConnectionState {
     authed: boolean;
     /** Resolved identity: the account + presenting device, or guest. */
     ctx: AuthContext;
+    /** Token hash of the authenticating device (for per-prompt revocation checks). */
+    tokenHash?: string;
     /** Guest sessions this socket claimed; deleted when the socket closes. */
     guestThreads: Set<string>;
 }
@@ -89,8 +93,14 @@ export function attachChatServer(
                 return;
             }
             active = handleMessage(raw, socket, conn, store, options)
-                .catch(() => {
-                    // handleMessage sends its own error frames; never reject.
+                .catch((err) => {
+                    // handleMessage answers expected failures with error frames;
+                    // anything escaping it (a store error, an unexpected throw)
+                    // must still surface to the client rather than hang it.
+                    logger.error(
+                        `Unhandled error handling message: ${err instanceof Error ? err.message : String(err)}`,
+                    );
+                    sendError(socket, "internal server error");
                 })
                 .finally(() => {
                     active = null;
@@ -100,9 +110,9 @@ export function attachChatServer(
         socket.on("close", () => {
             for (const threadId of conn.guestThreads) {
                 const session = store.getSessionByThread(threadId);
-                // Only tear down rows this socket still owns: a thread may
-                // have been adopted by an authenticated user since (its row
-                // then belongs to them and must persist).
+                // Only tear down rows this socket still owns: guest rows are
+                // `userId = NULL` and belong to no account — a re-parented
+                // (owned) row must never be deleted from under its owner.
                 if (session && session.userId === null) {
                     store.deleteSession(threadId);
                 }
@@ -170,6 +180,23 @@ async function handlePrompt(
         conn.authed = true;
         conn.ctx = GUEST_CONTEXT;
     }
+    // DHCP-style revocation check: a device token may have been revoked since
+    // the handshake. Re-resolve on every prompt so a revoked credential is
+    // cut off immediately instead of living on in `conn.ctx`.
+    if (conn.ctx.device) {
+        const identity = store.resolveToken(conn.tokenHash!);
+        if (!identity) {
+            logger.warn(
+                `Dropping socket: device token for ${conn.ctx.user!.username} was revoked`,
+            );
+            sendError(
+                socket,
+                "device token revoked; reconnect to re-authenticate",
+            );
+            socket.close();
+            return;
+        }
+    }
     const { sessionId } = prompt;
     if (threadLocks.has(sessionId)) {
         logger.warn(
@@ -188,22 +215,13 @@ async function handlePrompt(
         if (created && !conn.ctx.user) {
             conn.guestThreads.add(sessionId);
         }
-        // Thread-takeover guard: a session already owned by another account
-        // (identifiable via its LangGraph history) must never be chatted on
-        // from a different identity's socket. An authenticated user may,
-        // however, adopt a guest-owned thread — that row represents their own
-        // earlier guest conversation and would otherwise be a dangling
-        // `userId = NULL` orphan no REST endpoint could delete.
-        if (session.userId === null && conn.ctx.user) {
-            store.setSessionOwner(sessionId, {
-                userId: conn.ctx.user.id,
-                deviceId: conn.ctx.device?.id ?? null,
-            });
-            conn.guestThreads.delete(sessionId);
-        } else if (
-            session.userId !== null &&
-            session.userId !== conn.ctx.user?.id
-        ) {
+        // Thread-takeover guard: a session must only ever be chatted on by the
+        // principal that owns it (guests own `userId = NULL` rows). Anything
+        // else — an authenticated user touching a guest's thread, a guest
+        // touching an owned thread, or one account touching another's — is
+        // rejected: the thread names a LangGraph history, and ownership is all
+        // that stands between a socket and that history.
+        if (session.userId !== (conn.ctx.user?.id ?? null)) {
             logger.warn(
                 `Rejecting prompt: session ${sessionId} belongs to another user`,
             );
@@ -216,9 +234,9 @@ async function handlePrompt(
             sessionId,
             options.turnTimeoutMs,
         );
+        store.touchSession(sessionId);
     } finally {
         threadLocks.delete(sessionId);
-        store.touchSession(sessionId);
     }
 }
 
@@ -249,6 +267,7 @@ async function handleAuth(
         return;
     }
     conn.ctx = { user: identity.user, device: identity.device };
+    conn.tokenHash = hashDeviceToken(token);
     store.touchDevice(identity.device.id);
     logger.info(
         `Socket authenticated as ${identity.user.username} (device: ${identity.device.name})`,
@@ -266,11 +285,14 @@ async function handleAuth(
  * `{"done": true}`, or an error frame followed by `done` if the agent fails,
  * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`.
  *
- * The timeout error is emitted by the timer itself (the in-flight generator
- * gets `return()`d shortly after). Draining is **best-effort on a hung model**:
- * `return()` only takes effect once the generator's in-flight LLM await
- * settles, so the per-thread lock can outlive the error frame until that read
- * resolves. The lock always eventually releases.
+ * The timeout error is emitted by the timer itself; the in-flight generator is
+ * `return()`d shortly after, which drains when its current await settles.
+ * Draining is **best-effort on a hung model**: `return()` cannot interrupt a
+ * TCP-stalled model read, so while that read is stuck the generator never
+ * settles, `runAgent` never returns, and the per-thread lock stays held. Real
+ * cancellation (an AbortController threaded down to the model call) is a
+ * follow-up; for every settling model the lock drains as soon as the read
+ * resolves.
  */
 async function streamEventsToSocket(
     socket: WebSocket,

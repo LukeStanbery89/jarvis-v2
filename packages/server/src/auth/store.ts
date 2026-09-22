@@ -99,10 +99,6 @@ export interface AppStore {
         },
     ): { session: AppSession; created: boolean };
     getSessionByThread(threadId: string): AppSession | null;
-    setSessionOwner(
-        threadId: string,
-        owner: { userId: number; deviceId: number | null },
-    ): AppSession;
     /** Bumps a thread's `last_active_at`; called at the end of every turn. */
     touchSession(threadId: string): void;
     /** Removes a session row (guest cleanup on socket close, or explicit REST delete). */
@@ -219,7 +215,6 @@ export class SqliteAppStore implements AppStore {
         deleteDevice: Database.Statement;
         updateDeviceLastSeen: Database.Statement;
         insertSession: Database.Statement;
-        adoptSession: Database.Statement;
         selectSessionByThread: Database.Statement;
         updateSessionLastActive: Database.Statement;
         deleteSession: Database.Statement;
@@ -274,9 +269,6 @@ export class SqliteAppStore implements AppStore {
             insertSession: db.prepare(
                 "INSERT INTO sessions (thread_id, user_id, device_id, kind, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING",
             ),
-            adoptSession: db.prepare(
-                "UPDATE sessions SET user_id = ?, device_id = ? WHERE thread_id = ? AND user_id IS NULL",
-            ),
             selectSessionByThread: db.prepare(
                 "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE thread_id = ?",
             ),
@@ -303,7 +295,10 @@ export class SqliteAppStore implements AppStore {
             ) {
                 const message =
                     err instanceof Error ? err.message : String(err);
-                if (message.includes("users.role")) {
+                if (
+                    message.includes("users.role") ||
+                    message.includes("idx_users_single_owner")
+                ) {
                     // The partial single-owner index fired: two owners is the
                     // one account the system forbids (also the atomic backstop
                     // for a concurrent double-bootstrap).
@@ -525,26 +520,6 @@ export class SqliteAppStore implements AppStore {
         );
         const session = this.getSessionByThread(threadId)!;
         return { session, created: result.changes > 0 };
-    }
-
-    /**
-     * Re-parents a **guest-owned** session to an authenticated user.
-     *
-     * Only meaningful (and only executed) when the existing row has
-     * `user_id IS NULL`; an owned session is never silently re-assigned. The
-     * `WHERE user_id IS NULL` makes the guard in-where-statement. Returns the
-     * session afterwards.
-     */
-    setSessionOwner(
-        threadId: string,
-        owner: { userId: number; deviceId: number | null },
-    ): AppSession {
-        this.statements.adoptSession.run(
-            owner.userId,
-            owner.deviceId,
-            threadId,
-        );
-        return this.getSessionByThread(threadId)!;
     }
 
     getSessionByThread(threadId: string): AppSession | null {

@@ -39,8 +39,11 @@ Ideas worth keeping on the list; each becomes its own issue when it moves up.
   as guest vs. prefs vs. destructive ops) and encode it in the route metadata
   so new endpoints default to the safe side.
 - **Mid-session onboarding / guest re-parenting.** Convert a live guest thread
-  into an owned, persistent session when the user authenticates mid-chat — the
-  approved "owner text persists" lifecycle needs this to be seamless.
+  into an owned, persistent session when the user authenticates mid-chat. ⚠️
+  Scoping constraint from the auth hardening review: a socket's identity is
+  fixed at its first frame, so a _different_ principal claiming a guest's
+  thread is a confidentiality break (ship only as a same-principal re-parent,
+  e.g. a claim challenge owned by the guest's own account).
 - **Voice-idle guest TTL.** Guest voice threads delete on socket close today;
   add a short idle timer so a dropped mic doesn't hold a thread forever.
 - **Turn suspension / resumption.** The per-turn timeout in #22 aborts

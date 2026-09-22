@@ -62,12 +62,13 @@ re-declares frames.
 - Server → Client per prompt: `tool`/`toolResult` frames while the agent calls tools, then `chunk` frames, then
   `{ "done": true }`. Errors: `{ "error": "<message>" }` + `{ "done": true }`.
 - Rejections: a prompt while a previous turn is streaming, a concurrent turn on the same thread across sockets
-  (per-thread lock), and a `sessionId` owned by another account (`session belongs to another user`). Authenticated
-  sockets may adopt guest-owned threads.
+  (per-thread lock), and a `sessionId` owned by a different principal (`session belongs to another user` — knowing a
+  session id alone is never enough to read someone else's conversation).
 
 Every prompt claims its `sessionId` in the session ledger (`AppStore.claimSession`). Guest sockets' claimed
-sessions are deleted on socket close (unless adopted); owned sessions persist. Turns are hard-capped by
-`JARVIS_TURN_TIMEOUT_MS` (default `120000`); draining is best-effort on a hung model.
+sessions are deleted on socket close; owned sessions persist. Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS`
+(default `120000`); draining is best-effort on a hung model. Authenticated sockets are re-checked against the
+store on every prompt so a revoked device is cut off immediately.
 
 ## Source layout
 
@@ -79,7 +80,8 @@ sessions are deleted on socket close (unless adopted); owned sessions persist. T
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).
 - `src/auth/` — app database + credential crypto (see `src/auth/README.md`): `store.ts` (backed by
   `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`), `crypto.ts`, `errors.ts`, `types.ts`.
-- `src/ws.ts` — the `/ws` endpoint: auth handshake, session claiming/adoption, per-thread lock, turn timeout.
+- `src/ws.ts` — the `/ws` endpoint: auth handshake, session claiming + ownership guard, per-thread lock, turn
+  timeout.
 - `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer.
 - `src/transport.ts` — `AgentEvent → ServerFrame` mapping.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
