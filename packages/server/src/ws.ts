@@ -12,6 +12,8 @@ import { WebSocket, WebSocketServer } from "ws";
 import { parseRequest, serializeFrame } from "@lukestanbery/jarvis-protocol";
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { runAgent } from "./agent";
+import type { AgentEvent } from "./agent";
+import { toServerFrame } from "./transport";
 import { logger } from "./logger";
 
 /**
@@ -88,27 +90,8 @@ async function streamEventsToSocket(
             if (socket.readyState !== WebSocket.OPEN) {
                 return;
             }
-            switch (event.type) {
-                case "token":
-                    logger.sensitiveDebug("LLM token", event.text);
-                    sendFrame(socket, { chunk: event.text });
-                    break;
-                case "tool":
-                    logger.info(`Agent calling tool ${event.name}`);
-                    sendFrame(socket, {
-                        tool: { name: event.name, args: event.args },
-                    });
-                    break;
-                case "toolResult":
-                    logger.debug(`Tool ${event.name} returned`);
-                    sendFrame(socket, {
-                        toolResult: {
-                            name: event.name,
-                            output: event.output,
-                        },
-                    });
-                    break;
-            }
+            logAgentEvent(event);
+            sendFrame(socket, toServerFrame(event));
         }
         logger.debug("Agent stream complete");
         if (socket.readyState !== WebSocket.OPEN) {
@@ -120,6 +103,26 @@ async function streamEventsToSocket(
             `LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         sendError(socket, "model request failed");
+    }
+}
+
+/**
+ * Emits the per-event stream diagnostics while a turn is forwarded.
+ *
+ * Kept separate from `toServerFrame` (which is a pure mapping) so the
+ * transport's logging side effects stay visible in one small helper.
+ */
+function logAgentEvent(event: AgentEvent): void {
+    switch (event.type) {
+        case "token":
+            logger.sensitiveDebug("LLM token", event.text);
+            break;
+        case "tool":
+            logger.info(`Agent calling tool ${event.name}`);
+            break;
+        case "toolResult":
+            logger.debug(`Tool ${event.name} returned`);
+            break;
     }
 }
 
