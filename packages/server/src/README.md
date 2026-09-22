@@ -14,6 +14,13 @@ src/
 ├── agent.ts       # runAgent — owns the compiled graph + checkpointer (seam)
 ├── transport.ts   # toServerFrame — pure AgentEvent → wire-frame mapping
 ├── ws.ts          # /ws chat endpoint (server ↔ client transport)
+├── auth/
+│   ├── index.ts   # auth module exports (store + crypto + types + errors)
+│   ├── store.ts   # AppStore seam + SqliteAppStore (app database ~/.jarvis/jarvis.sqlite)
+│   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing
+│   ├── types.ts   # AppUser/AppDevice/AuthContext/ResolvedIdentity
+│   ├── errors.ts  # AuthError
+│   └── README.md  # auth module guide
 ├── llm/
 │   ├── chatModel.ts   # createChatModel — the ONE @langchain/openai import site
 │   ├── agentGraph.ts  # createAgentGraph + streamAgentTurn (the LangGraph loop)
@@ -27,18 +34,19 @@ src/
 
 ## File map
 
-| File                | Responsibility                                                                                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `index.ts`          | Entry point: bootstraps the agent graph (`initAgentGraph()` — creates `~/.jarvis` + the checkpoint store), builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                    |
-| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port                                                                                         |
-| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getServerPort()` → the listening port (default `54321`), all from env                                                                    |
-| `agent.ts`          | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph` |
-| `transport.ts`      | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                      |
-| `ws.ts`             | `attachChatServer(httpServer)` → the `/ws` chat endpoint; validates frames, forwards events through `toServerFrame`, emits the terminal `done` frame                                                                                       |
-| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                |
-| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                           |
-| `llm/event.ts`      | The `AgentEvent` union (`token`/`tool`/`toolResult`) — one turn's streamed output shape; also re-exported from the `agentGraph` and `agent` layers                                                                                         |
-| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                                                                                                        |
+| File                | Responsibility                                                                                                                                                                                                                               |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`          | Entry point: bootstraps the agent graph (`initAgentGraph()` — creates `~/.jarvis` + the checkpoint store), builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                      |
+| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port                                                                                           |
+| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getAppConfig()` → app database path, turn timeout, bootstrap token; `getServerPort()` → the listening port (default `54321`), all from env |
+| `agent.ts`          | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`   |
+| `transport.ts`      | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                        |
+| `ws.ts`             | `attachChatServer(httpServer)` → the `/ws` chat endpoint; validates frames, forwards events through `toServerFrame`, emits the terminal `done` frame                                                                                         |
+| `auth/*`            | Accounts, device credentials, and the app database: `AppStore` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                    |
+| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                  |
+| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                             |
+| `llm/event.ts`      | The `AgentEvent` union (`token`/`tool`/`toolResult`) — one turn's streamed output shape; also re-exported from the `agentGraph` and `agent` layers                                                                                           |
+| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                                                                                                          |
 
 ## Data flow
 

@@ -1,0 +1,308 @@
+/**
+ * The app store: SQLite-backed ledger of users, devices, sessions, and prefs.
+ *
+ * This is the `AppStore` seam from the auth design: an {@link AppStore}
+ * interface plus {@link SqliteAppStore}, its better-sqlite3 implementation,
+ * so a future portal can swap storage or the package can grow a second
+ * backend without churning the REST/WS layers. `openAppStore(path)` creates
+ * the parent directory and runs schema migrations; tests construct
+ * `SqliteAppStore` over `:memory:` directly.
+ *
+ * Device tokens are persisted only as SHA-256 hashes (see `crypto.ts`); raw
+ * secrets never touch the database.
+ */
+import Database from "better-sqlite3";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { AuthError } from "./errors";
+import type { AppDevice, AppUser, ResolvedIdentity, Role } from "./types";
+
+const SCHEMA_VERSION = 1;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS devices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    secret_hash  TEXT NOT NULL,
+    prefix       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    last_seen_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id      TEXT NOT NULL UNIQUE,
+    user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+    kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+    created_at     TEXT NOT NULL,
+    last_active_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS prefs (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
+`;
+
+/**
+ * Accounts, devices, and (later) session/pref ledger access.
+ *
+ * Methods throw {@link AuthError} where a domain rule is broken
+ * (`USERNAME_TAKEN`) and return `null` where a row simply does not exist.
+ */
+export interface AppStore {
+    createUser(username: string, passwordHash: string, role: Role): AppUser;
+    getUserByUsername(username: string): AppUser | null;
+    getUserById(id: number): AppUser | null;
+    hasOwner(): boolean;
+    createDevice(
+        userId: number,
+        name: string,
+        secretHash: string,
+        prefix: string,
+    ): AppDevice;
+    getDeviceById(id: number): AppDevice | null;
+    revokeDevice(id: number): void;
+    touchDevice(id: number): void;
+    resolveToken(tokenHash: string): ResolvedIdentity | null;
+    close(): void;
+}
+
+function now(): string {
+    return new Date().toISOString();
+}
+
+function mapUser(row: {
+    id: number;
+    username: string;
+    role: Role;
+    createdAt: string;
+}): AppUser {
+    return {
+        id: row.id,
+        username: row.username,
+        role: row.role,
+        createdAt: row.createdAt,
+    };
+}
+
+function mapDevice(row: {
+    id: number;
+    userId: number;
+    name: string;
+    prefix: string;
+    createdAt: string;
+    lastSeenAt: string | null;
+}): AppDevice {
+    return {
+        id: row.id,
+        userId: row.userId,
+        name: row.name,
+        prefix: row.prefix,
+        createdAt: row.createdAt,
+        lastSeenAt: row.lastSeenAt,
+    };
+}
+
+function migrate(db: Database.Database): void {
+    const version = db.pragma("user_version", { simple: true }) as number;
+    if (version < 1) {
+        db.exec(SCHEMA);
+        db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    }
+}
+
+export function openAppStore(dbPath: string): AppStore {
+    mkdirSync(dirname(dbPath), { recursive: true });
+    return new SqliteAppStore(new Database(dbPath));
+}
+
+export class SqliteAppStore implements AppStore {
+    private readonly db: Database.Database;
+    private readonly statements: {
+        insertUser: Database.Statement;
+        selectUserByUsername: Database.Statement;
+        selectUserById: Database.Statement;
+        selectOwnerCount: Database.Statement;
+        insertDevice: Database.Statement;
+        selectDeviceById: Database.Statement;
+        selectDeviceByHash: Database.Statement;
+        deleteDevice: Database.Statement;
+        updateDeviceLastSeen: Database.Statement;
+    };
+
+    constructor(db: Database.Database) {
+        this.db = db;
+        db.pragma("foreign_keys = ON");
+        migrate(db);
+        this.statements = {
+            insertUser: db.prepare(
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            ),
+            selectUserByUsername: db.prepare(
+                "SELECT id, username, role, created_at AS createdAt FROM users WHERE username = ?",
+            ),
+            selectUserById: db.prepare(
+                "SELECT id, username, role, created_at AS createdAt FROM users WHERE id = ?",
+            ),
+            selectOwnerCount: db.prepare(
+                "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'",
+            ),
+            insertDevice: db.prepare(
+                "INSERT INTO devices (user_id, name, secret_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?)",
+            ),
+            selectDeviceById: db.prepare(
+                "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE id = ?",
+            ),
+            selectDeviceByHash: db.prepare(
+                "SELECT d.id AS deviceId, d.user_id AS deviceUserId, d.name AS deviceName, d.prefix AS devicePrefix, d.created_at AS deviceCreatedAt, d.last_seen_at AS deviceLastSeenAt, u.id AS userId, u.username AS username, u.role AS role, u.created_at AS userCreatedAt FROM devices d JOIN users u ON u.id = d.user_id WHERE d.secret_hash = ?",
+            ),
+            deleteDevice: db.prepare("DELETE FROM devices WHERE id = ?"),
+            updateDeviceLastSeen: db.prepare(
+                "UPDATE devices SET last_seen_at = ? WHERE id = ?",
+            ),
+        };
+    }
+
+    createUser(username: string, passwordHash: string, role: Role): AppUser {
+        try {
+            this.statements.insertUser.run(username, passwordHash, role, now());
+        } catch (err: unknown) {
+            if (
+                typeof err === "object" &&
+                err !== null &&
+                (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+            ) {
+                throw new AuthError(
+                    "USERNAME_TAKEN",
+                    `the username '${username}' is already taken`,
+                );
+            }
+            throw err;
+        }
+        const row = this.statements.selectUserByUsername.get(username) as {
+            id: number;
+            username: string;
+            role: Role;
+            createdAt: string;
+        };
+        return mapUser(row);
+    }
+
+    getUserByUsername(username: string): AppUser | null {
+        const row = this.statements.selectUserByUsername.get(username) as
+            | {
+                  id: number;
+                  username: string;
+                  role: Role;
+                  createdAt: string;
+              }
+            | undefined;
+        return row ? mapUser(row) : null;
+    }
+
+    getUserById(id: number): AppUser | null {
+        const row = this.statements.selectUserById.get(id) as
+            | {
+                  id: number;
+                  username: string;
+                  role: Role;
+                  createdAt: string;
+              }
+            | undefined;
+        return row ? mapUser(row) : null;
+    }
+
+    hasOwner(): boolean {
+        const row = this.statements.selectOwnerCount.get() as { n: number };
+        return row.n > 0;
+    }
+
+    createDevice(
+        userId: number,
+        name: string,
+        secretHash: string,
+        prefix: string,
+    ): AppDevice {
+        const result = this.statements.insertDevice.run(
+            userId,
+            name,
+            secretHash,
+            prefix,
+            now(),
+        );
+        return this.getDeviceById(Number(result.lastInsertRowid))!;
+    }
+
+    getDeviceById(id: number): AppDevice | null {
+        const row = this.statements.selectDeviceById.get(id) as
+            | {
+                  id: number;
+                  userId: number;
+                  name: string;
+                  prefix: string;
+                  createdAt: string;
+                  lastSeenAt: string | null;
+              }
+            | undefined;
+        return row ? mapDevice(row) : null;
+    }
+
+    revokeDevice(id: number): void {
+        this.statements.deleteDevice.run(id);
+    }
+
+    touchDevice(id: number): void {
+        this.statements.updateDeviceLastSeen.run(now(), id);
+    }
+
+    resolveToken(tokenHash: string): ResolvedIdentity | null {
+        const row = this.statements.selectDeviceByHash.get(tokenHash) as
+            | {
+                  deviceId: number;
+                  deviceUserId: number;
+                  deviceName: string;
+                  devicePrefix: string;
+                  deviceCreatedAt: string;
+                  deviceLastSeenAt: string | null;
+                  userId: number;
+                  username: string;
+                  role: Role;
+                  userCreatedAt: string;
+              }
+            | undefined;
+        if (!row) {
+            return null;
+        }
+        return {
+            user: {
+                id: row.userId,
+                username: row.username,
+                role: row.role,
+                createdAt: row.userCreatedAt,
+            },
+            device: {
+                id: row.deviceId,
+                userId: row.deviceUserId,
+                name: row.deviceName,
+                prefix: row.devicePrefix,
+                createdAt: row.deviceCreatedAt,
+                lastSeenAt: row.deviceLastSeenAt,
+            },
+        };
+    }
+
+    close(): void {
+        this.db.close();
+    }
+}

@@ -26,6 +26,19 @@ export function defaultCheckpointPath(): string {
     return `${homedir()}/.jarvis/checkpoints.sqlite`;
 }
 
+/**
+ * Default location of the app database (users, devices, sessions, prefs).
+ *
+ * Separate from the LangGraph checkpoint store; holds the account and
+ * session ledger in `~/.jarvis/jarvis.sqlite`.
+ */
+export function defaultAppDbPath(): string {
+    return `${homedir()}/.jarvis/jarvis.sqlite`;
+}
+
+/** Default hard cap for one agent turn before it is aborted. */
+export const DEFAULT_TURN_TIMEOUT_MS = 120_000;
+
 /** Default persona the assistant is primed with on every conversation thread. */
 export const DEFAULT_SYSTEM_PROMPT =
     "You are J.A.R.V.I.S., a helpful, personal AI assistant. " +
@@ -78,5 +91,33 @@ export function getLlmConfig(): LlmConfig {
         ),
         checkpointPath:
             process.env.JARVIS_CHECKPOINT_PATH ?? defaultCheckpointPath(),
+    };
+}
+
+/**
+ * App-level settings (accounts, sessions, and resource control).
+ *
+ * These are operator/account concerns rather than LLM configuration, so they
+ * are resolved separately from `getLlmConfig`. `bootstrapToken` is
+ * deliberately `undefined` by default: first-owner setup stays disabled until
+ * the operator sets the environment variable, so a fresh server never races an
+ * anonymous admin.
+ */
+export interface AppConfig {
+    /** Path of the app database (`JARVIS_DB_PATH`). */
+    appDbPath: string;
+    /** Hard cap for one agent turn before the server aborts it. */
+    turnTimeoutMs: number;
+    /** One-time token permitting first-owner bootstrap; disabled when unset. */
+    bootstrapToken: string | undefined;
+}
+
+export function getAppConfig(): AppConfig {
+    return {
+        appDbPath: process.env.JARVIS_DB_PATH ?? defaultAppDbPath(),
+        turnTimeoutMs: Number(
+            process.env.JARVIS_TURN_TIMEOUT_MS ?? DEFAULT_TURN_TIMEOUT_MS,
+        ),
+        bootstrapToken: process.env.JARVIS_BOOTSTRAP_TOKEN || undefined,
     };
 }
