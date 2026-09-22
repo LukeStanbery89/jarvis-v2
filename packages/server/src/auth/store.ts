@@ -194,8 +194,8 @@ function migrate(db: Database.Database): void {
 export function openAppStore(dbPath: string): AppStore {
     ensurePrivateStorage(dbPath);
     const store = new SqliteAppStore(new Database(dbPath));
-    // better-sqlite3 creates the file as 0644; re-tighten now that it exists
-    // so account hashes aren't world-readable.
+    // Belt-and-suspenders chmod: the file was pre-created at 0600, but a
+    // library migration that reopens it stays safe even on odd filesystems.
     ensurePrivateFile(dbPath);
     return store;
 }

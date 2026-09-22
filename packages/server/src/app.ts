@@ -41,7 +41,11 @@ export function createApp(store: AppStore, appConfig: AppConfig) {
 export function createHttpsRedirectApp(httpsPort: number) {
     const app = express();
     app.use((req, res) => {
-        const host = (req.headers.host ?? "localhost").split(":")[0];
+        // URL.parse → .hostname strips the port AND keeps IPv6 brackets
+        // (`[::1]:54321` → `[::1]`), which a naive split(":") would mangle.
+        const host =
+            new URL(`http://${req.headers.host ?? "localhost"}`).hostname ??
+            "localhost";
         res.redirect(302, `https://${host}:${httpsPort}${req.originalUrl}`);
     });
     return app;

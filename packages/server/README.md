@@ -61,9 +61,9 @@ variables:
 | `JARVIS_TLS_CERT`             | unset                                                                           | PEM certificate path — enables HTTPS serving               |
 | `JARVIS_TLS_KEY`              | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`) |
 | `JARVIS_HTTP_REDIRECT_PORT`   | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)           |
-| `JARVIS_RATE_WINDOW_MS`       | `900000` (15 min)                                                               | Failure-accumulation window for login/bootstrap            |
-| `JARVIS_RATE_MAX_FAILURES`    | `10`                                                                            | Failures per `(ip, username)` before a lockout             |
-| `JARVIS_RATE_MAX_IP_FAILURES` | `100`                                                                           | Aggregate failures per IP before a lockout                 |
+| `JARVIS_RATE_WINDOW_MS`       | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap            |
+| `JARVIS_RATE_MAX_FAILURES`    | `10`                                                                            | Attempts per `(ip, username)` before a lockout             |
+| `JARVIS_RATE_MAX_IP_FAILURES` | `100`                                                                           | Aggregate attempts per IP before a lockout                 |
 | `JARVIS_RATE_LOCKOUT_MS`      | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)        |
 | `JARVIS_LOG_LEVEL`            | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`      |
 | `JARVIS_LOG_SENSITIVE`        | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`      |
@@ -94,11 +94,13 @@ device name rotates the token (the old one stops working); use distinct
 `deviceName`s for distinct clients. A failed login is indistinguishable from an
 unknown username (same error, uniform response time), so account existence
 can't be probed. Login and bootstrap are rate-limited per
-`(ip, username)` and per `ip`: after `JARVIS_RATE_MAX_FAILURES` misses (or
+`(ip, username)` and per `ip`: after `JARVIS_RATE_MAX_FAILURES` attempts (or
 `JARVIS_RATE_MAX_IP_FAILURES` across usernames) within
 `JARVIS_RATE_WINDOW_MS`, the client is locked out for
 `JARVIS_RATE_LOCKOUT_MS` (doubling on repeat violations) and receives
-`429 too many attempts; try again later`. A successful login resets the
+`429 too many attempts; try again later`. Every attempt — right or wrong — is
+counted at admission (before the expensive scrypt verify), so a burst of
+concurrent guesses can't race past the budget; a successful login resets the
 counter. The limiter is in-memory per process and trusts `req.ip` — set
 `app.set("trust proxy", …)` if you ever front the server with a reverse proxy.
 

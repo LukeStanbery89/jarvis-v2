@@ -81,7 +81,7 @@ export function createAuthRouter(
                 );
             }
             const ipKey = `${BOOTSTRAP_KEY_PREFIX}${req.ip ?? "unknown"}`;
-            const blocked = limiter.check(ipKey);
+            const blocked = limiter.admit(ipKey);
             if (blocked) {
                 throw new AuthError(
                     "RATE_LIMITED",
@@ -90,7 +90,6 @@ export function createAuthRouter(
             }
             const bootstrap = bootstrapTokenFrom(req);
             if (!constantTimeMatches(bootstrap, appConfig.bootstrapToken)) {
-                limiter.recordFailure(ipKey);
                 throw new AuthError(
                     "BAD_BOOTSTRAP_TOKEN",
                     "bootstrap token mismatch",
@@ -148,7 +147,7 @@ export function createAuthRouter(
             const ip = req.ip ?? "unknown";
             const userKey = `${LOGIN_KEY_PREFIX}${ip}:${username}`;
             const ipKey = `${LOGIN_KEY_PREFIX}${ip}`;
-            const blocked = limiter.check(userKey) ?? limiter.check(ipKey);
+            const blocked = limiter.admit(userKey) ?? limiter.admit(ipKey);
             if (blocked) {
                 throw new AuthError(
                     "RATE_LIMITED",
@@ -158,8 +157,6 @@ export function createAuthRouter(
             const storedHash =
                 store.getPasswordHash(username) ?? (await dummyHash());
             if (!(await verifyPassword(password, storedHash))) {
-                limiter.recordFailure(userKey);
-                limiter.recordFailure(ipKey);
                 throw new AuthError(
                     "INVALID_CREDENTIALS",
                     "invalid username or password",
