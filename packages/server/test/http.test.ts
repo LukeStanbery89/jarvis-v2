@@ -12,6 +12,9 @@ const FAST: AppConfig & { bootstrapToken: string } = {
     bootstrapToken: "s3cret-bootstrap",
 };
 
+/** Fresh bootstrap secret, immune to the single-use token mutation on FAST. */
+const BOOTSTRAP = "s3cret-bootstrap";
+
 const store = new SqliteAppStore(new Database(":memory:")) as AppStore;
 
 const app = createApp(store, FAST);
@@ -66,17 +69,23 @@ describe("bootstrap", () => {
     });
 
     it("rejects a missing or wrong bootstrap token", async () => {
-        const missing = await request(app).post("/api/bootstrap").send({
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshApp = createApp(freshStore, {
+            ...FAST,
+            bootstrapToken: BOOTSTRAP,
+        });
+        const missing = await request(freshApp).post("/api/bootstrap").send({
             username: "intruder",
             password: "x",
         });
         expect(missing.status).toBe(403);
 
-        const wrong = await request(app)
+        const wrong = await request(freshApp)
             .post("/api/bootstrap")
             .set("x-bootstrap-token", "wrong")
             .send({ username: "intruder", password: "x" });
         expect(wrong.status).toBe(403);
+        freshStore.close();
     });
 
     it("creates the owner and returns a working device token", async () => {
@@ -103,22 +112,170 @@ describe("bootstrap", () => {
     });
 
     it("rejects a second bootstrap once an owner exists", async () => {
-        const again = await request(app)
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshApp = createApp(freshStore, {
+            ...FAST,
+            bootstrapToken: BOOTSTRAP,
+        });
+        const first = await request(freshApp)
             .post("/api/bootstrap")
-            .set("x-bootstrap-token", FAST.bootstrapToken)
+            .set("x-bootstrap-token", BOOTSTRAP)
+            .send({ username: "first-owner", password: "x-hunter2pw" });
+        expect(first.status).toBe(201);
+
+        const again = await request(freshApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", BOOTSTRAP)
             .send({ username: "second-owner", password: "x" });
         expect(again.status).toBe(409);
-        expect(again.body.error).toMatch(/owner already exists/);
+        expect(again.body.error).toMatch(/owner already exists|disabled/i);
+        freshStore.close();
     });
 
     it("ignores a bootstrap token supplied in the body (header only)", async () => {
-        const res = await request(app).post("/api/bootstrap").send({
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const freshApp = createApp(freshStore, {
+            ...FAST,
+            bootstrapToken: BOOTSTRAP,
+        });
+        const res = await request(freshApp).post("/api/bootstrap").send({
             username: "body-hacker",
             password: "secretpass",
-            bootstrapToken: FAST.bootstrapToken,
+            bootstrapToken: BOOTSTRAP,
         });
         expect(res.status).toBe(403);
         expect(res.body.error).toMatch(/bootstrap token mismatch/);
+        freshStore.close();
+    });
+
+    it("zeroes the single-use token after a successful bootstrap", async () => {
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const cfg: AppConfig & { bootstrapToken: string } = {
+            ...FAST,
+            appDbPath: ":memory:",
+            bootstrapToken: "once-only",
+        };
+        const freshApp = createApp(freshStore, cfg);
+        const ok = await request(freshApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", "once-only")
+            .send({ username: "first-guy", password: "hunter2pw" });
+        expect(ok.status).toBe(201);
+        // The token is consumed even though it stays in the process env;
+        // a second bootstrap must now be refused outright.
+        expect(cfg.bootstrapToken).toBeUndefined();
+        const again = await request(freshApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", "once-only")
+            .send({ username: "second-guy", password: "hunter2pw" });
+        expect(again.status).toBe(409);
+        expect(again.body.error).toMatch(/disabled|owner already exists/i);
+        freshStore.close();
+    });
+
+    it("throttles login attempts past the per-key limit", async () => {
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const limiterConfig = { maxFailures: 3 } as const;
+        const cfg: AppConfig & { bootstrapToken: string } = {
+            ...FAST,
+            appDbPath: ":memory:",
+            bootstrapToken: BOOTSTRAP,
+            loginRateLimit: {
+                windowMs: 60_000,
+                maxFailures: limiterConfig.maxFailures,
+                lockoutMs: 60_000,
+                maxIpFailures: 100,
+            },
+        };
+        const freshApp = createApp(freshStore, cfg);
+        await request(freshApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", cfg.bootstrapToken)
+            .send({ username: "throttled", password: "hunter2pw" });
+
+        for (let i = 0; i < limiterConfig.maxFailures; i += 1) {
+            const bad = await request(freshApp)
+                .post("/api/auth/login")
+                .send({ username: "throttled", password: "wrong-pass" });
+            expect(bad.status).toBe(401);
+        }
+        const blocked = await request(freshApp)
+            .post("/api/auth/login")
+            .send({ username: "throttled", password: "wrong-pass" });
+        expect(blocked.status).toBe(429);
+        expect(blocked.body.error).toMatch(/too many attempts/);
+        freshStore.close();
+    });
+
+    it("resets the failure count on a successful login", async () => {
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const cfg: AppConfig & { bootstrapToken: string } = {
+            ...FAST,
+            appDbPath: ":memory:",
+            bootstrapToken: BOOTSTRAP,
+            loginRateLimit: {
+                windowMs: 60_000,
+                maxFailures: 3,
+                lockoutMs: 60_000,
+                maxIpFailures: 100,
+            },
+        };
+        const freshApp = createApp(freshStore, cfg);
+        await request(freshApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", cfg.bootstrapToken)
+            .send({ username: "resettable", password: "hunter2pw" });
+
+        const wrong = async () =>
+            (
+                await request(freshApp)
+                    .post("/api/auth/login")
+                    .send({ username: "resettable", password: "wrong-pass" })
+            ).status;
+        expect(await wrong()).toBe(401);
+        expect(await wrong()).toBe(401);
+        const ok = await request(freshApp)
+            .post("/api/auth/login")
+            .send({ username: "resettable", password: "hunter2pw" });
+        expect(ok.status).toBe(200);
+        // Two fresh failures now slide back onto a clean count.
+        expect(await wrong()).toBe(401);
+        expect(await wrong()).toBe(401);
+        const res = await request(freshApp)
+            .post("/api/auth/login")
+            .send({ username: "resettable", password: "wrong-pass" });
+        expect(res.status).toBe(401);
+        freshStore.close();
+    });
+
+    it("throttles bootstrap guesses by IP", async () => {
+        const freshStore = new SqliteAppStore(new Database(":memory:"));
+        const cfg: AppConfig & { bootstrapToken: string } = {
+            ...FAST,
+            appDbPath: ":memory:",
+            bootstrapToken: BOOTSTRAP,
+            loginRateLimit: {
+                windowMs: 60_000,
+                maxFailures: 3,
+                lockoutMs: 60_000,
+                maxIpFailures: 100,
+            },
+        };
+        const freshApp = createApp(freshStore, cfg);
+        for (let i = 0; i < 3; i += 1) {
+            const bad = await request(freshApp)
+                .post("/api/bootstrap")
+                .set("x-bootstrap-token", "nope")
+                .send({ username: `guesser-${i}`, password: "hunter2pw" });
+            expect(bad.status).toBe(403);
+        }
+        const blocked = await request(freshApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", cfg.bootstrapToken)
+            .send({ username: "guesser-3", password: "hunter2pw" });
+        expect(blocked.status).toBe(429);
+        expect(blocked.body.error).toMatch(/too many attempts/);
+        freshStore.close();
     });
 });
 

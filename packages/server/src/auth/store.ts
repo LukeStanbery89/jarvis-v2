@@ -12,8 +12,7 @@
  * secrets never touch the database.
  */
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { ensurePrivateFile, ensurePrivateStorage } from "../fs";
 import { AuthError } from "./errors";
 import type {
     AppDevice,
@@ -193,8 +192,12 @@ function migrate(db: Database.Database): void {
 }
 
 export function openAppStore(dbPath: string): AppStore {
-    mkdirSync(dirname(dbPath), { recursive: true });
-    return new SqliteAppStore(new Database(dbPath));
+    ensurePrivateStorage(dbPath);
+    const store = new SqliteAppStore(new Database(dbPath));
+    // better-sqlite3 creates the file as 0644; re-tighten now that it exists
+    // so account hashes aren't world-readable.
+    ensurePrivateFile(dbPath);
+    return store;
 }
 
 export class SqliteAppStore implements AppStore {

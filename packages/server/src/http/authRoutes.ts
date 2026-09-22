@@ -20,11 +20,17 @@ import {
 import type { AppStore } from "../auth";
 import type { AppConfig } from "../config";
 import { AuthedRequest, requireAuth, requireOwner } from "./middleware";
+import { DEFAULT_RATE_LIMIT_CONFIG, RateLimiter } from "./rateLimit";
 
 const USERNAME_MAX = 64;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 1024;
 const DEVICE_NAME_MAX = 64;
+
+/** Long enough that a single attempt can't be meaningfully throttled; a rate
+ * check keying on username requires the body to parse first. */
+const BOOTSTRAP_KEY_PREFIX = "bootstrap:";
+const LOGIN_KEY_PREFIX = "login:";
 
 /** Cached dummy hash so a missing username costs the same scrypt as a real one. */
 let dummyPasswordHash: Promise<string> | null = null;
@@ -43,6 +49,7 @@ const AUTH_ERROR_STATUS: Record<string, number> = {
     OWNER_EXISTS: 409,
     BOOTSTRAP_DISABLED: 409,
     BAD_BOOTSTRAP_TOKEN: 403,
+    RATE_LIMITED: 429,
     NOT_FOUND: 404,
     NOT_AUTHORIZED: 403,
     MALFORMED_HASH: 500,
@@ -53,12 +60,17 @@ const AUTH_ERROR_STATUS: Record<string, number> = {
  *
  * `store` backs every ledger query; `appConfig` supplies the bootstrap token
  * gate. Passwords are hashed at the default scrypt cost (`DEFAULT_SCRYPT_PARAMS`).
+ * Credential endpoints are throttled per `(ip, username)` and per `ip` by the
+ * limiter built from `appConfig.loginRateLimit`.
  */
 export function createAuthRouter(
     store: AppStore,
     appConfig: AppConfig,
 ): Router {
     const router = Router();
+    const limiter = new RateLimiter(
+        appConfig.loginRateLimit ?? DEFAULT_RATE_LIMIT_CONFIG,
+    );
 
     router.post("/bootstrap", async (req, res) => {
         try {
@@ -68,8 +80,17 @@ export function createAuthRouter(
                     "first-owner setup is disabled; set JARVIS_BOOTSTRAP_TOKEN to enable it",
                 );
             }
+            const ipKey = `${BOOTSTRAP_KEY_PREFIX}${req.ip ?? "unknown"}`;
+            const blocked = limiter.check(ipKey);
+            if (blocked) {
+                throw new AuthError(
+                    "RATE_LIMITED",
+                    "too many attempts; try again later",
+                );
+            }
             const bootstrap = bootstrapTokenFrom(req);
             if (!constantTimeMatches(bootstrap, appConfig.bootstrapToken)) {
+                limiter.recordFailure(ipKey);
                 throw new AuthError(
                     "BAD_BOOTSTRAP_TOKEN",
                     "bootstrap token mismatch",
@@ -87,6 +108,9 @@ export function createAuthRouter(
                 await hashPassword(password),
                 "owner",
             );
+            // Single-use: the operator's secret is gone once setup succeeds,
+            // so a leaked/leftover env value can't bootstrap a duplicate owner.
+            appConfig.bootstrapToken = undefined;
             const material = generateDeviceToken();
             const device = store.provisionDevice(
                 owner.id,
@@ -121,14 +145,28 @@ export function createAuthRouter(
                 );
             }
             const { username, password, deviceName } = credentialBody(req);
+            const ip = req.ip ?? "unknown";
+            const userKey = `${LOGIN_KEY_PREFIX}${ip}:${username}`;
+            const ipKey = `${LOGIN_KEY_PREFIX}${ip}`;
+            const blocked = limiter.check(userKey) ?? limiter.check(ipKey);
+            if (blocked) {
+                throw new AuthError(
+                    "RATE_LIMITED",
+                    "too many attempts; try again later",
+                );
+            }
             const storedHash =
                 store.getPasswordHash(username) ?? (await dummyHash());
             if (!(await verifyPassword(password, storedHash))) {
+                limiter.recordFailure(userKey);
+                limiter.recordFailure(ipKey);
                 throw new AuthError(
                     "INVALID_CREDENTIALS",
                     "invalid username or password",
                 );
             }
+            limiter.recordSuccess(userKey);
+            limiter.recordSuccess(ipKey);
             const user = store.getUserByUsername(username)!;
             const material = generateDeviceToken();
             const device = store.provisionDevice(

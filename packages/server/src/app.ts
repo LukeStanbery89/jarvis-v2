@@ -27,6 +27,26 @@ export function createApp(store: AppStore, appConfig: AppConfig) {
     return app;
 }
 
+/**
+ * Creates the plain-HTTP upgrade-off app used when TLS is enabled.
+ *
+ * While the server speaks HTTPS on `PORT`, this app runs on the
+ * `JARVIS_HTTP_REDIRECT_PORT` (default `PORT + 1`) and bounces every request
+ * to the HTTPS origin with a 302, so an old `http://` bookmark or an
+ * autodiscovered cleartext URL still reaches the encrypted server instead of
+ * silently staying on cleartext. The target hostname comes from each request's
+ * `Host` header (dropping its port), so LAN clients are redirected to their own
+ * address rather than `localhost`.
+ */
+export function createHttpsRedirectApp(httpsPort: number) {
+    const app = express();
+    app.use((req, res) => {
+        const host = (req.headers.host ?? "localhost").split(":")[0];
+        res.redirect(302, `https://${host}:${httpsPort}${req.originalUrl}`);
+    });
+    return app;
+}
+
 /** Returns JSON `{ "error" }` for bad HTTP bodies instead of the HTML page. */
 const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
     if (

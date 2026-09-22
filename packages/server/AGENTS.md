@@ -70,14 +70,22 @@ sessions are deleted on socket close; owned sessions persist. Turns are hard-cap
 (default `120000`); draining is best-effort on a hung model. Authenticated sockets are re-checked against the
 store on every prompt so a revoked device is cut off immediately.
 
+`POST /api/auth/login` and `POST /api/bootstrap` are RateLimited (per `(ip, username)` plus an aggregate per `ip`,
+exponential backoff) by `src/http/rateLimit.ts`. The bootstrap token is single-use — `authRoutes` zeroes it in the
+config object after a successful bootstrap. TLS is optional in-node (`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS
+mode the main listener is HTTPS and a cleartext redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`)
+upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its database files to `0600` on open.
+
 ## Source layout
 
-- `src/index.ts` — process entry: config, `openAppStore`, `createApp`, `attachChatServer`, listen.
+- `src/index.ts` — process entry: config, `openAppStore`, `createApp`, `attachChatServer`, listen (HTTPS + redirect when TLS enabled).
 - `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`).
+- `src/fs.ts` — `ensurePrivateStorage`/`ensurePrivateFile`: tightens `~/.jarvis` to `0700`/`0600`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
-- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, mounts `/api`.
+- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, mounts `/api`; `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer → `req.jarv`) and `requireOwner`.
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).
+- `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
 - `src/auth/` — app database + credential crypto (see `src/auth/README.md`): `store.ts` (backed by
   `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`), `crypto.ts`, `errors.ts`, `types.ts`.
 - `src/ws.ts` — the `/ws` endpoint: auth handshake, session claiming + ownership guard, per-thread lock, turn

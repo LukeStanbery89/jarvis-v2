@@ -19,8 +19,7 @@ import {
 import { tools } from "./llm/tools";
 import { getLlmConfig } from "./config";
 import { logger } from "./logger";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { ensurePrivateFile, ensurePrivateStorage } from "./fs";
 
 export type { AgentEvent, AgentGraph } from "./llm/agentGraph";
 
@@ -40,9 +39,10 @@ export function initAgentGraph(): AgentGraph {
         return graph;
     }
     const { checkpointPath, agentMaxTurns } = getLlmConfig();
-    mkdirSync(dirname(checkpointPath), { recursive: true });
+    ensurePrivateStorage(checkpointPath);
     logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
     const saver = new SqliteSaver(new Database(checkpointPath));
+    ensurePrivateFile(checkpointPath);
     graph = createAgentGraph({
         model: createChatModel(),
         tools,

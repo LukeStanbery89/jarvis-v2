@@ -46,19 +46,27 @@ The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
 variables:
 
-| Variable                 | Default                                                                         | Description                                             |
-| ------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `LLM_BASE_URL`           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                              |
-| `LLM_MODEL`              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                              |
-| `LLM_TEMPERATURE`        | `0`                                                                             | Sampling temperature                                    |
-| `LLM_SYSTEM_PROMPT`      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread        |
-| `JARVIS_AGENT_MAX_TURNS` | `10`                                                                            | Max agent loop steps per turn (tools + model calls)     |
-| `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence     |
-| `JARVIS_DB_PATH`         | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs           |
-| `JARVIS_TURN_TIMEOUT_MS` | `120000`                                                                        | Hard cap for one agent turn before it is aborted        |
-| `JARVIS_BOOTSTRAP_TOKEN` | unset                                                                           | Optional bootstrap credential; see `src/auth/README.md` |
-| `JARVIS_LOG_LEVEL`       | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`   |
-| `JARVIS_LOG_SENSITIVE`   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`   |
+| Variable                      | Default                                                                         | Description                                                |
+| ----------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `LLM_BASE_URL`                | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                 |
+| `LLM_MODEL`                   | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                 |
+| `LLM_TEMPERATURE`             | `0`                                                                             | Sampling temperature                                       |
+| `LLM_SYSTEM_PROMPT`           | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread           |
+| `JARVIS_AGENT_MAX_TURNS`      | `10`                                                                            | Max agent loop steps per turn (tools + model calls)        |
+| `JARVIS_CHECKPOINT_PATH`      | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence        |
+| `JARVIS_DB_PATH`              | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs              |
+| `JARVIS_TURN_TIMEOUT_MS`      | `120000`                                                                        | Hard cap for one agent turn before it is aborted           |
+| `JARVIS_BOOTSTRAP_TOKEN`      | unset                                                                           | One-time setup credential; see `src/auth/README.md`        |
+| `JARVIS_HOST`                 | `0.0.0.0`                                                                       | Bind address (all interfaces = LAN posture)                |
+| `JARVIS_TLS_CERT`             | unset                                                                           | PEM certificate path — enables HTTPS serving               |
+| `JARVIS_TLS_KEY`              | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`) |
+| `JARVIS_HTTP_REDIRECT_PORT`   | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)           |
+| `JARVIS_RATE_WINDOW_MS`       | `900000` (15 min)                                                               | Failure-accumulation window for login/bootstrap            |
+| `JARVIS_RATE_MAX_FAILURES`    | `10`                                                                            | Failures per `(ip, username)` before a lockout             |
+| `JARVIS_RATE_MAX_IP_FAILURES` | `100`                                                                           | Aggregate failures per IP before a lockout                 |
+| `JARVIS_RATE_LOCKOUT_MS`      | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)        |
+| `JARVIS_LOG_LEVEL`            | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`      |
+| `JARVIS_LOG_SENSITIVE`        | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`      |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev
@@ -75,14 +83,37 @@ curl -X POST http://localhost:54321/api/bootstrap \
 
 The response's `device.token` is your admin credential. Passwords must be at
 least 8 characters, and the bootstrap token is read **only** from the
-`x-bootstrap-token` header (never the JSON body). Later, log in again
+`x-bootstrap-token` header (never the JSON body). The bootstrap token is
+single-use: once bootstrap succeeds it is zeroed in memory, so rerunning with
+the same env value cannot mint a second owner — restart the process with a new
+token if you truly need to re-bootstrap. Later, log in again
 from any client with `POST /api/auth/login` to receive a fresh token, then use
 it as `Authorization: Bearer <token>` (for the `/api` routes) or as the
 `{ "type": "auth", "token" }` first frame on `/ws`. Re-login on the same
 device name rotates the token (the old one stops working); use distinct
 `deviceName`s for distinct clients. A failed login is indistinguishable from an
 unknown username (same error, uniform response time), so account existence
-can't be probed.
+can't be probed. Login and bootstrap are rate-limited per
+`(ip, username)` and per `ip`: after `JARVIS_RATE_MAX_FAILURES` misses (or
+`JARVIS_RATE_MAX_IP_FAILURES` across usernames) within
+`JARVIS_RATE_WINDOW_MS`, the client is locked out for
+`JARVIS_RATE_LOCKOUT_MS` (doubling on repeat violations) and receives
+`429 too many attempts; try again later`. A successful login resets the
+counter. The limiter is in-memory per process and trusts `req.ip` — set
+`app.set("trust proxy", …)` if you ever front the server with a reverse proxy.
+
+### Transport security
+
+By default the server is plain HTTP (the LAN posture) and binds
+`0.0.0.0` (`JARVIS_HOST` to narrow). When the server will face anything less
+trusted than a known LAN, enable TLS in-node with `JARVIS_TLS_CERT` +
+`JARVIS_TLS_KEY` (PEM files). TLS mode keeps serving on `PORT` as HTTPS and
+starts a cleartext listener on `JARVIS_HTTP_REDIRECT_PORT` (default
+`PORT + 1`) that 302-upgrades every request to the HTTPS origin. The WebSocket
+endpoint inherits whichever transport the HTTP server uses, so `/ws` is
+`wss://` under TLS. Local state under `~/.jarvis` is tightened on startup: the
+directory becomes `0700` and each SQLite database `0600`, so account hashes
+and conversation checkpoints aren't world-readable on a shared machine.
 
 ### Logging
 

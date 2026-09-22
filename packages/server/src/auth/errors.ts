@@ -12,6 +12,7 @@ export type AuthErrorCode =
     | "OWNER_EXISTS"
     | "BOOTSTRAP_DISABLED"
     | "BAD_BOOTSTRAP_TOKEN"
+    | "RATE_LIMITED"
     | "NOT_FOUND"
     | "NOT_AUTHORIZED"
     | "BAD_REQUEST"

@@ -1,10 +1,14 @@
 /** Default base URL of the local LM Studio OpenAI-compatible server. */
 import { homedir } from "node:os";
+import type { RateLimitConfig } from "./http/rateLimit";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
 /** Default HTTP port the server listens on. */
 export const DEFAULT_PORT = 54321;
+
+/** Default bind address. `0.0.0.0` keeps LAN reachability (the intended LAN posture). */
+export const DEFAULT_HOST = "0.0.0.0";
 
 /** Default model served by the local inference server. */
 export const DEFAULT_LLM_MODEL = "qwen/qwen3-4b-2507";
@@ -101,7 +105,9 @@ export function getLlmConfig(): LlmConfig {
  * are resolved separately from `getLlmConfig`. `bootstrapToken` is
  * deliberately `undefined` by default: first-owner setup stays disabled until
  * the operator sets the environment variable, so a fresh server never races an
- * anonymous admin.
+ * anonymous admin. `host`, `tlsCertPath`, `tlsKeyPath`, and `loginRateLimit`
+ * are optional so hand-built configs (tests) can omit them; `getAppConfig`
+ * always fills them in, and consumers fall back to defaults when absent.
  */
 export interface AppConfig {
     /** Path of the app database (`JARVIS_DB_PATH`). */
@@ -110,14 +116,38 @@ export interface AppConfig {
     turnTimeoutMs: number;
     /** One-time token permitting first-owner bootstrap; disabled when unset. */
     bootstrapToken: string | undefined;
+    /** Bind address for the listener (`JARVIS_HOST`), default all interfaces. */
+    host?: string;
+    /** Path to a PEM certificate to serve HTTPS (`JARVIS_TLS_CERT`). */
+    tlsCertPath?: string;
+    /** Path to the matching PEM private key (`JARVIS_TLS_KEY`). */
+    tlsKeyPath?: string;
+    /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
+    loginRateLimit?: RateLimitConfig;
 }
 
 export function getAppConfig(): AppConfig {
+    const numberOr = (raw: string | undefined, fallback: number): number => {
+        const value = Number(raw);
+        return Number.isFinite(value) && value > 0 ? value : fallback;
+    };
     return {
         appDbPath: process.env.JARVIS_DB_PATH ?? defaultAppDbPath(),
         turnTimeoutMs: Number(
             process.env.JARVIS_TURN_TIMEOUT_MS ?? DEFAULT_TURN_TIMEOUT_MS,
         ),
         bootstrapToken: process.env.JARVIS_BOOTSTRAP_TOKEN || undefined,
+        host: process.env.JARVIS_HOST ?? DEFAULT_HOST,
+        tlsCertPath: process.env.JARVIS_TLS_CERT || undefined,
+        tlsKeyPath: process.env.JARVIS_TLS_KEY || undefined,
+        loginRateLimit: {
+            windowMs: numberOr(process.env.JARVIS_RATE_WINDOW_MS, 15 * 60_000),
+            maxFailures: numberOr(process.env.JARVIS_RATE_MAX_FAILURES, 10),
+            lockoutMs: numberOr(process.env.JARVIS_RATE_LOCKOUT_MS, 60_000),
+            maxIpFailures: numberOr(
+                process.env.JARVIS_RATE_MAX_IP_FAILURES,
+                100,
+            ),
+        },
     };
 }

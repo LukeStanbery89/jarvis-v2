@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -228,6 +228,19 @@ describe("openAppStore", () => {
             const second = openAppStore(path);
             expect(second.getUserByUsername("luke")?.role).toBe("owner");
             second.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("tightens the data directory to 0700 and the database to 0600", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            const first = openAppStore(path);
+            expect(statSync(dir).mode & 0o777).toBe(0o700);
+            expect(statSync(path).mode & 0o777).toBe(0o600);
+            first.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
