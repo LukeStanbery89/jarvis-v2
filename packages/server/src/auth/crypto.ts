@@ -24,6 +24,9 @@ export interface ScryptParams {
 /** Baseline scrypt cost for a household server (roughly 50-100ms hashing). */
 export const DEFAULT_SCRYPT_PARAMS: ScryptParams = { N: 16384, r: 8, p: 1 };
 
+/** Cost-broken params for tests only — DO NOT use for real credentials. */
+export const FAST_SCRYPT_PARAMS: ScryptParams = { N: 4, r: 1, p: 1 };
+
 const SALT_LENGTH = 16;
 const PASSWORD_KEY_LENGTH = 64;
 const TOKEN_BYTES = 32;

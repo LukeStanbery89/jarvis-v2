@@ -13,6 +13,10 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 | `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                   |
 | `README.md` | this file                                                                                                                                    |
 
+The REST layer lives outside this module in `src/http/` (`middleware.ts` =
+`requireAuth`/`requireOwner` filling `req.jarv`; `authRoutes.ts` = the `/api`
+router) — it consumes these seams and never touches SQL.
+
 ## Credential model
 
 - **Passwords** → scrypt; parameters are embedded in the stored string, so

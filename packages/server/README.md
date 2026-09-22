@@ -64,6 +64,22 @@ variables:
 LLM_MODEL=some-other-model npm run dev
 ```
 
+First-run setup (once the server is up and `JARVIS_BOOTSTRAP_TOKEN` is set):
+
+```sh
+curl -X POST http://localhost:54321/api/bootstrap \
+  -H 'x-bootstrap-token: <JARVIS_BOOTSTRAP_TOKEN>' \
+  -H 'content-type: application/json' \
+  -d '{"username":"luke","password":"<choose-a-strong-password>"}'
+```
+
+The response's `device.token` is your admin credential. Later, log in again
+from any client with `POST /api/auth/login` to receive a fresh token, then use
+it as `Authorization: Bearer <token>` (for the `/api` routes) or as the
+`{ "type": "auth", "token" }` first frame on `/ws`. Re-login on the same
+device name rotates the token (the old one stops working); use distinct
+`deviceName`s for distinct clients.
+
 ### Logging
 
 Log lines look like
@@ -80,10 +96,21 @@ option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDeb
 
 ### Endpoints
 
-| Method | Path  | Description                         |
-| ------ | ----- | ----------------------------------- |
-| `GET`  | `/`   | Health-check, returns `Hello World` |
-| `WS`   | `/ws` | Chat endpoint (WebSocket)           |
+| Method   | Path                      | Auth                                | Description                                         |
+| -------- | ------------------------- | ----------------------------------- | --------------------------------------------------- |
+| `GET`    | `/`                       | none                                | Health-check, returns `Hello World`                 |
+| `WS`     | `/ws`                     | optional device token (first frame) | Chat endpoint (WebSocket)                           |
+| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`            | Create the first (owner) account + device token     |
+| `POST`   | `/api/auth/login`         | none                                | Username + password → a (rotating) device token     |
+| `GET`    | `/api/me`                 | device token                        | Current user + their devices                        |
+| `POST`   | `/api/devices`            | device token                        | Provision a new device token for the caller         |
+| `DELETE` | `/api/devices/:id`        | device token                        | Revoke a device (own, or any as owner)              |
+| `GET`    | `/api/users`              | device token (owner)                | List accounts                                       |
+| `POST`   | `/api/users`              | device token (owner)                | Create an account (`role` optional, default `user`) |
+| `GET`    | `/api/sessions`           | device token                        | List the caller's owned sessions                    |
+| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete one of the caller's owned sessions           |
+
+"Device token" auth is `Authorization: Bearer <token>`.
 
 ### Chat protocol
 

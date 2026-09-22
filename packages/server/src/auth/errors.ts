@@ -14,6 +14,7 @@ export type AuthErrorCode =
     | "BAD_BOOTSTRAP_TOKEN"
     | "NOT_FOUND"
     | "NOT_AUTHORIZED"
+    | "BAD_REQUEST"
     | "MALFORMED_HASH";
 
 export class AuthError extends Error {

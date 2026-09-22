@@ -24,8 +24,6 @@ import type {
     SessionKind,
 } from "./types";
 
-const SCHEMA_VERSION = 1;
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +39,8 @@ CREATE TABLE IF NOT EXISTS devices (
     secret_hash  TEXT NOT NULL,
     prefix       TEXT NOT NULL,
     created_at   TEXT NOT NULL,
-    last_seen_at TEXT
+    last_seen_at TEXT,
+    UNIQUE (user_id, name)
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +69,7 @@ CREATE TABLE IF NOT EXISTS prefs (
 export interface AppStore {
     createUser(username: string, passwordHash: string, role: Role): AppUser;
     getUserByUsername(username: string): AppUser | null;
+    getPasswordHash(username: string): string | null;
     getUserById(id: number): AppUser | null;
     hasOwner(): boolean;
     createDevice(
@@ -78,7 +78,15 @@ export interface AppStore {
         secretHash: string,
         prefix: string,
     ): AppDevice;
+    provisionDevice(
+        userId: number,
+        name: string,
+        secretHash: string,
+        prefix: string,
+    ): AppDevice;
     getDeviceById(id: number): AppDevice | null;
+    listDevicesByUser(userId: number): AppDevice[];
+    listUsers(): AppUser[];
     revokeDevice(id: number): void;
     touchDevice(id: number): void;
     resolveToken(tokenHash: string): ResolvedIdentity | null;
@@ -157,7 +165,15 @@ function migrate(db: Database.Database): void {
     const version = db.pragma("user_version", { simple: true }) as number;
     if (version < 1) {
         db.exec(SCHEMA);
-        db.pragma(`user_version = ${SCHEMA_VERSION}`);
+        db.pragma("user_version = 1");
+    }
+    if (version < 2) {
+        // v2: one device row per (user, name) so re-login re-issues rather
+        // than growing the device list endlessly.
+        db.exec(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_user_name ON devices (user_id, name)",
+        );
+        db.pragma("user_version = 2");
     }
 }
 
@@ -171,11 +187,16 @@ export class SqliteAppStore implements AppStore {
     private readonly statements: {
         insertUser: Database.Statement;
         selectUserByUsername: Database.Statement;
+        selectUserPasswordHash: Database.Statement;
         selectUserById: Database.Statement;
         selectOwnerCount: Database.Statement;
         insertDevice: Database.Statement;
+        upsertDevice: Database.Statement;
         selectDeviceById: Database.Statement;
+        selectDeviceByUserAndName: Database.Statement;
         selectDeviceByHash: Database.Statement;
+        listDevicesByUser: Database.Statement;
+        listUsers: Database.Statement;
         deleteDevice: Database.Statement;
         updateDeviceLastSeen: Database.Statement;
         insertSession: Database.Statement;
@@ -196,6 +217,9 @@ export class SqliteAppStore implements AppStore {
             selectUserByUsername: db.prepare(
                 "SELECT id, username, role, created_at AS createdAt FROM users WHERE username = ?",
             ),
+            selectUserPasswordHash: db.prepare(
+                "SELECT password_hash AS passwordHash FROM users WHERE username = ?",
+            ),
             selectUserById: db.prepare(
                 "SELECT id, username, role, created_at AS createdAt FROM users WHERE id = ?",
             ),
@@ -205,11 +229,23 @@ export class SqliteAppStore implements AppStore {
             insertDevice: db.prepare(
                 "INSERT INTO devices (user_id, name, secret_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?)",
             ),
+            upsertDevice: db.prepare(
+                "INSERT INTO devices (user_id, name, secret_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, name) DO UPDATE SET secret_hash = excluded.secret_hash, prefix = excluded.prefix, created_at = excluded.created_at, last_seen_at = NULL",
+            ),
             selectDeviceById: db.prepare(
                 "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE id = ?",
             ),
+            selectDeviceByUserAndName: db.prepare(
+                "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE user_id = ? AND name = ?",
+            ),
             selectDeviceByHash: db.prepare(
                 "SELECT d.id AS deviceId, d.user_id AS deviceUserId, d.name AS deviceName, d.prefix AS devicePrefix, d.created_at AS deviceCreatedAt, d.last_seen_at AS deviceLastSeenAt, u.id AS userId, u.username AS username, u.role AS role, u.created_at AS userCreatedAt FROM devices d JOIN users u ON u.id = d.user_id WHERE d.secret_hash = ?",
+            ),
+            listDevicesByUser: db.prepare(
+                "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE user_id = ? ORDER BY created_at DESC",
+            ),
+            listUsers: db.prepare(
+                "SELECT id, username, role, created_at AS createdAt FROM users ORDER BY id ASC",
             ),
             deleteDevice: db.prepare("DELETE FROM devices WHERE id = ?"),
             updateDeviceLastSeen: db.prepare(
@@ -270,6 +306,18 @@ export class SqliteAppStore implements AppStore {
         return row ? mapUser(row) : null;
     }
 
+    /**
+     * Returns a user's stored password hash (for verification).
+     *
+     * Deliberately not part of {@link AppUser}: the hash is a credential, so
+     * API/WS layers request it only in the login flow.
+     */
+    getPasswordHash(username: string): string | null {
+        const row = this.statements.selectUserPasswordHash.get(username) as
+            { passwordHash: string } | undefined;
+        return row?.passwordHash ?? null;
+    }
+
     getUserById(id: number): AppUser | null {
         const row = this.statements.selectUserById.get(id) as
             | {
@@ -315,6 +363,70 @@ export class SqliteAppStore implements AppStore {
               }
             | undefined;
         return row ? mapDevice(row) : null;
+    }
+
+    /**
+     * Re-issues a named device credential for a user.
+     *
+     * Crucially different from `createDevice`: the row is keyed by
+     * `(user_id, name)`, so logging in again on the same device name rotates
+     * the secret instead of accumulating orphan rows. The previous token is
+     * immediately invalid.
+     */
+    provisionDevice(
+        userId: number,
+        name: string,
+        secretHash: string,
+        prefix: string,
+    ): AppDevice {
+        this.statements.upsertDevice.run(
+            userId,
+            name,
+            secretHash,
+            prefix,
+            now(),
+        );
+        const rows = this.statements.selectDeviceByUserAndName.all(
+            userId,
+            name,
+        ) as {
+            id: number;
+            userId: number;
+            name: string;
+            prefix: string;
+            createdAt: string;
+            lastSeenAt: string | null;
+        }[];
+        const row = rows[0];
+        if (!row) {
+            throw new AuthError(
+                "NOT_FOUND",
+                "device row vanished after provisioning",
+            );
+        }
+        return mapDevice(row);
+    }
+
+    listDevicesByUser(userId: number): AppDevice[] {
+        const rows = this.statements.listDevicesByUser.all(userId) as {
+            id: number;
+            userId: number;
+            name: string;
+            prefix: string;
+            createdAt: string;
+            lastSeenAt: string | null;
+        }[];
+        return rows.map(mapDevice);
+    }
+
+    listUsers(): AppUser[] {
+        const rows = this.statements.listUsers.all() as {
+            id: number;
+            username: string;
+            role: Role;
+            createdAt: string;
+        }[];
+        return rows.map(mapUser);
     }
 
     revokeDevice(id: number): void {

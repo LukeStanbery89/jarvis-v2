@@ -7,13 +7,16 @@ commitment — re-verify the current code before trusting an old plan here.
 
 ## Today
 
-A single-user assistant: one WS chat endpoint (`/ws`) streams LangGraph agent
-turns to a CLI/REPL (and, soon, voice clients), backed by durable SQLite
-checkpoints per `sessionId`. One persona, one checkpoint store, no per-human
-identity. Transport internals were recentered in
-[#13](https://github.com/LukeStanbery89/jarvis-v2/issues/13) (closed): a pure
-`toServerFrame` adapter in the server, named render handlers in the CLI, and
-`TurnOptions` for the agent loop.
+A small multi-user assistant: one WS chat endpoint (`/ws`) streams LangGraph
+agent turns to a CLI/REPL (and, soon, voice clients), backed by durable SQLite
+checkpoints per `sessionId`. Auth from
+[#22](https://github.com/LukeStanbery89/jarvis-v2/issues/22) is landing: a
+device-token handshake on `/ws`, an account/session ledger in the app
+database, per-thread locks + turn timeout, and a `/api` REST layer
+(bootstrap, login, devices, users, sessions). Transport internals were
+recentered in [#13](https://github.com/LukeStanbery89/jarvis-v2/issues/13)
+(closed): a pure `toServerFrame` adapter in the server, named render handlers
+in the CLI, and `TurnOptions` for the agent loop.
 
 ## Near term
 

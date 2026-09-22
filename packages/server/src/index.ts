@@ -19,7 +19,7 @@ const appConfig = getAppConfig();
 initAgentGraph();
 const store = openAppStore(appConfig.appDbPath);
 
-const server = createApp().listen(port, () => {
+const server = createApp(store, appConfig).listen(port, () => {
     logger.info(`J.A.R.V.I.S. server listening on http://localhost:${port}`);
 });
 

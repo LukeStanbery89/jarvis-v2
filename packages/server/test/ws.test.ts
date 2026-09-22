@@ -34,10 +34,16 @@ vi.mock("../src/agent", () => ({
 }));
 
 const store = new SqliteAppStore(new Database(":memory:"));
-const server = createApp().listen(0);
+const appConfig = {
+    appDbPath: ":memory:",
+    turnTimeoutMs: 30_000,
+    bootstrapToken: undefined,
+} as const;
+
+const server = createApp(store, appConfig).listen(0);
 attachChatServer(server, store);
 
-const timeoutServer = createApp().listen(0);
+const timeoutServer = createApp(store, appConfig).listen(0);
 attachChatServer(timeoutServer, store, { turnTimeoutMs: 30 });
 
 let url: string;
@@ -50,9 +56,12 @@ beforeAll(() => {
     timeoutUrl = `ws://localhost:${timeoutAddress?.port ?? 0}/ws`;
 });
 
-afterAll(() => {
+afterAll(async () => {
     server.close();
     timeoutServer.close();
+    // Let pending server-side socket-close handlers (guest-session cleanup)
+    // flush before the store is shut down.
+    await settle();
     store.close();
 });
 
