@@ -6,11 +6,20 @@
  * `@lukestanbery/jarvis-server` (`src/ws.ts`) and `@lukestanbery/jarvis-cli` (`src/client.ts`); see the
  * package README for the canonical protocol specification.
  */
-export type { ChatPrompt, ServerFrame } from "./types";
-export { MAX_SESSION_ID_LENGTH } from "./types";
+export type {
+    AuthRequest,
+    AuthResult,
+    AuthResultFrame,
+    ChatPrompt,
+    ClientFrame,
+    ServerFrame,
+} from "./types";
+export { MAX_SESSION_ID_LENGTH, MAX_TOKEN_LENGTH } from "./types";
 export {
+    parseClientMessage,
     parseFrame,
     parseRequest,
+    serializeAuth,
     serializeFrame,
     serializeRequest,
 } from "./frame";

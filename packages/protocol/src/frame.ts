@@ -11,8 +11,16 @@
  * the error message wording is user-facing (the CLI surfaces it verbatim) so
  * it must not drift.
  */
-import { MAX_SESSION_ID_LENGTH } from "./types";
-import type { ChatPrompt, ServerFrame } from "./types";
+import { MAX_SESSION_ID_LENGTH, MAX_TOKEN_LENGTH } from "./types";
+import type {
+    AuthRequest,
+    ChatPrompt,
+    ClientFrame,
+    ServerFrame,
+} from "./types";
+
+/** User-facing wording for a malformed JSON payload; must not drift. */
+const MALFORMED_JSON = "malformed request; expected a JSON object";
 
 /**
  * Parses one raw server frame into a typed {@link ServerFrame}.
@@ -27,13 +35,13 @@ export function parseFrame(raw: string): ServerFrame {
     } catch {
         throw new Error("received a malformed message from the server");
     }
-
     const frame = parsed as {
         chunk?: unknown;
         done?: unknown;
         error?: unknown;
         tool?: { name?: unknown; args?: unknown };
         toolResult?: { name?: unknown; output?: unknown };
+        authResult?: { user?: unknown; device?: unknown };
     };
     if (typeof frame.chunk === "string") {
         return { chunk: frame.chunk };
@@ -55,25 +63,45 @@ export function parseFrame(raw: string): ServerFrame {
     if (typeof frame.error === "string") {
         return { error: frame.error };
     }
+    if (
+        frame.authResult &&
+        typeof frame.authResult.user === "string" &&
+        typeof frame.authResult.device === "string"
+    ) {
+        return {
+            authResult: {
+                user: frame.authResult.user,
+                device: frame.authResult.device,
+            },
+        };
+    }
     throw new Error("received an unrecognized message from the server");
 }
 
-/**
- * Parses one raw client request into a validated {@link ChatPrompt}.
- *
- * Throws if the payload is not valid JSON, if `prompt` or `sessionId` are not
- * non-empty trimmed strings, or if `sessionId` exceeds
- * {@link MAX_SESSION_ID_LENGTH} characters.
- */
-export function parseRequest(raw: string): ChatPrompt {
+/** Parses raw wire text into a plain object, or throws the shared wording. */
+function parseJson(raw: string): Record<string, unknown> {
     let parsed: unknown;
     try {
         parsed = JSON.parse(raw);
     } catch {
-        throw new Error("malformed request; expected a JSON object");
+        throw new Error(MALFORMED_JSON);
     }
+    if (typeof parsed !== "object" || parsed === null) {
+        throw new Error(MALFORMED_JSON);
+    }
+    return parsed as Record<string, unknown>;
+}
 
-    const request = parsed as { prompt?: unknown; sessionId?: unknown };
+/**
+ * Parses + validates a ChatPrompt-shaped object.
+ *
+ * Throws if `prompt` or `sessionId` are not non-empty trimmed strings, or if
+ * `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters.
+ */
+function validateChatPrompt(request: {
+    prompt?: unknown;
+    sessionId?: unknown;
+}): ChatPrompt {
     if (typeof request.prompt !== "string" || request.prompt.trim() === "") {
         throw new Error("expected a non-empty string field 'prompt'");
     }
@@ -91,6 +119,55 @@ export function parseRequest(raw: string): ChatPrompt {
     return { prompt: request.prompt, sessionId: request.sessionId };
 }
 
+/**
+ * Validates an `auth` handshake object.
+ *
+ * Throws if `token` is not a non-empty trimmed string or exceeds
+ * {@link MAX_TOKEN_LENGTH} characters.
+ */
+function validateAuthRequest(request: { token?: unknown }): AuthRequest {
+    if (typeof request.token !== "string" || request.token.trim() === "") {
+        throw new Error("expected a non-empty string field 'token'");
+    }
+    if (request.token.length > MAX_TOKEN_LENGTH) {
+        throw new Error(`token must be at most ${MAX_TOKEN_LENGTH} characters`);
+    }
+    return { type: "auth", token: request.token };
+}
+
+/**
+ * Parses one raw client message into a typed {@link ClientFrame}.
+ *
+ * A `type: "auth"` message is validated as the first-frame handshake; anything
+ * else is validated as a legacy {@link ChatPrompt}. Throws on malformed JSON
+ * (or a non-object) or shape violations; the thrown message is surfaced to
+ * users by the server's error frames and must not drift.
+ */
+export function parseClientMessage(raw: string): ClientFrame {
+    const msg = parseJson(raw) as {
+        type?: unknown;
+        token?: unknown;
+        prompt?: unknown;
+        sessionId?: unknown;
+    };
+    if (msg.type === "auth") {
+        return validateAuthRequest({ token: msg.token });
+    }
+    return validateChatPrompt(msg);
+}
+
+/**
+ * Parses one raw client request into a validated {@link ChatPrompt}.
+ *
+ * Kept for callers that chat (and maybe authenticate): identical to the
+ * prompt branch of {@link parseClientMessage}. Throws if the payload is not
+ * valid JSON, if `prompt` or `sessionId` are not non-empty trimmed strings, or
+ * if `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters.
+ */
+export function parseRequest(raw: string): ChatPrompt {
+    return validateChatPrompt(parseJson(raw));
+}
+
 /** Serializes a server frame to its wire JSON text. */
 export function serializeFrame(frame: ServerFrame): string {
     return JSON.stringify(frame);
@@ -99,4 +176,9 @@ export function serializeFrame(frame: ServerFrame): string {
 /** Serializes a client chat request to its wire JSON text. */
 export function serializeRequest(prompt: string, sessionId: string): string {
     return JSON.stringify({ prompt, sessionId });
+}
+
+/** Serializes the `auth` handshake frame to its wire JSON text. */
+export function serializeAuth(token: string): string {
+    return JSON.stringify({ type: "auth", token } satisfies AuthRequest);
 }

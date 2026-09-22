@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
     MAX_SESSION_ID_LENGTH,
+    MAX_TOKEN_LENGTH,
+    parseClientMessage,
     parseFrame,
     parseRequest,
+    serializeAuth,
     serializeFrame,
     serializeRequest,
 } from "../src/index";
@@ -43,6 +46,12 @@ describe("parseFrame", () => {
         });
     });
 
+    it("parses an authResult frame", () => {
+        expect(
+            parseFrame('{"authResult":{"user":"luke","device":"macbook"}}'),
+        ).toEqual({ authResult: { user: "luke", device: "macbook" } });
+    });
+
     it("throws on non-JSON payloads", () => {
         expect(() => parseFrame("{not json")).toThrow(/malformed/);
     });
@@ -53,6 +62,9 @@ describe("parseFrame", () => {
         expect(() => parseFrame('{"tool":{"name":7}}')).toThrow(/unrecognized/);
         expect(() => parseFrame('{"done":"yes"}')).toThrow(/unrecognized/);
         expect(() => parseFrame('{"error":true}')).toThrow(/unrecognized/);
+        expect(() => parseFrame('{"authResult":{"user":"luke"}}')).toThrow(
+            /unrecognized/,
+        );
     });
 });
 
@@ -64,6 +76,7 @@ describe("serializeFrame round-trips", () => {
         { toolResult: { name: "search", output: "results" } },
         { done: true },
         { error: "boom" },
+        { authResult: { user: "luke", device: "macbook" } },
     ];
     for (const frame of frames) {
         it(`round-trips ${Object.keys(frame)[0]} frames`, () => {
@@ -118,6 +131,70 @@ describe("serializeRequest", () => {
         expect(JSON.parse(serializeRequest("hi", "abc"))).toEqual({
             prompt: "hi",
             sessionId: "abc",
+        });
+    });
+});
+
+describe("parseClientMessage", () => {
+    it("parses an auth handshake", () => {
+        expect(parseClientMessage('{"type":"auth","token":"abc123"}')).toEqual({
+            type: "auth",
+            token: "abc123",
+        });
+    });
+
+    it("rejects an auth handshake without a token", () => {
+        expect(() => parseClientMessage('{"type":"auth"}')).toThrow(/token/);
+    });
+
+    it("rejects an auth handshake with an empty token", () => {
+        expect(() =>
+            parseClientMessage('{"type":"auth","token":"  "}'),
+        ).toThrow(/token/);
+    });
+
+    it("rejects an over-long token", () => {
+        const token = "x".repeat(MAX_TOKEN_LENGTH + 1);
+        expect(() =>
+            parseClientMessage(JSON.stringify({ type: "auth", token })),
+        ).toThrow(/at most/);
+    });
+
+    it("accepts a token of exactly MAX_TOKEN_LENGTH", () => {
+        const token = "x".repeat(MAX_TOKEN_LENGTH);
+        expect(
+            parseClientMessage(JSON.stringify({ type: "auth", token })),
+        ).toEqual({ type: "auth", token });
+    });
+
+    it("parses a legacy prompt frame", () => {
+        expect(parseClientMessage('{"prompt":"hi","sessionId":"abc"}')).toEqual(
+            { prompt: "hi", sessionId: "abc" },
+        );
+    });
+
+    it("rejects a prompt-shaped message with an invalid prompt field", () => {
+        expect(() => parseClientMessage('{"sessionId":"abc"}')).toThrow(
+            /prompt/,
+        );
+    });
+
+    it("rejects a prompt-shaped message with an invalid sessionId field", () => {
+        expect(() => parseClientMessage('{"prompt":"hi"}')).toThrow(
+            /sessionId/,
+        );
+    });
+
+    it("throws on non-JSON payloads", () => {
+        expect(() => parseClientMessage("nope")).toThrow(/malformed/);
+    });
+});
+
+describe("serializeAuth", () => {
+    it("round-trips through parseClientMessage", () => {
+        expect(parseClientMessage(serializeAuth("secret-abc"))).toEqual({
+            type: "auth",
+            token: "secret-abc",
         });
     });
 });
