@@ -1,0 +1,2 @@
+echo "▸ running pre-push gate: npm run check"
+npm run check
