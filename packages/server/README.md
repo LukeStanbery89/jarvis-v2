@@ -88,9 +88,15 @@ The wire protocol (frames, limits, and parse/serialize logic) is defined once
 in the shared `@lukestanbery/jarvis-protocol` package; connect a WebSocket client to `/ws`
 and exchange JSON text frames:
 
-- Client → Server: `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
-  `sessionId` names the conversation thread. Reuse it to continue an earlier
-  conversation (bounded to 128 characters); each distinct id is isolated.
+- Client → Server:
+    - **Optional, first frame only:** `{ "type": "auth", "token": "<device token>" }`
+      — authenticates as an account. The server replies with one
+      `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. Never
+      authenticate → the socket is a **guest** (ephemeral, identity-independent
+      chats).
+    - `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
+      `sessionId` names the conversation thread. Reuse it to continue an earlier
+      conversation (bounded to 128 characters); each distinct id is isolated.
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).

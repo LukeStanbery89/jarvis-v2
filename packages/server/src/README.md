@@ -41,7 +41,7 @@ src/
 | `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getAppConfig()` → app database path, turn timeout, bootstrap token; `getServerPort()` → the listening port (default `54321`), all from env |
 | `agent.ts`          | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`   |
 | `transport.ts`      | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                        |
-| `ws.ts`             | `attachChatServer(httpServer)` → the `/ws` chat endpoint; validates frames, forwards events through `toServerFrame`, emits the terminal `done` frame                                                                                         |
+| `ws.ts`             | `attachChatServer(httpServer, store)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, forwards events through `toServerFrame`, emits the terminal `done` frame      |
 | `auth/*`            | Accounts, device credentials, and the app database: `AppStore` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                    |
 | `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                  |
 | `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                             |
@@ -52,10 +52,11 @@ src/
 
 ```
 CLI / WebSocket client
-      │  {"prompt": "...", "sessionId": "..."}
+      │  first frame?  {"type":"auth","token":...} → authResult (or error + guest)
+      │  then          {"prompt": "...", "sessionId": "..."}
       ▼
-ws.ts  handleMessage/watch   (parse + validate prompt + sessionId via @lukestanbery/jarvis-protocol)
-      │  prompt, sessionId
+ws.ts  handleMessage/watch   (resolve handshake via store; parse + validate prompt via @lukestanbery/jarvis-protocol)
+      │  prompt, sessionId + AuthContext (user/device or guest)
       ▼
 agent.ts runAgent            (the brain seam: graph + checkpointer)
       │  AgentEvents: token | tool | toolResult
@@ -96,3 +97,8 @@ without a live model.
 - **One active response per connection.** A second prompt arriving while a
   response is streaming is rejected with an error frame (see protocol in the
   package README); `active` lives per-connection inside `attachChatServer`.
+- **Auth is a first-frame handshake.** A client may authenticate with a device
+  token on its first frame (`{ type: "auth", token }` → one `authResult`
+  frame); any other first frame, or none, runs the socket as a guest. The
+  token is hashed (`SHA-256`) before `AppStore.resolveToken` compares it — no
+  raw secret is ever logged or persisted.

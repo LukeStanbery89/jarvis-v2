@@ -1,8 +1,10 @@
 import type { AddressInfo } from "net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
+import Database from "better-sqlite3";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
+import { SqliteAppStore, generateDeviceToken } from "../src/auth";
 import type { AgentEvent } from "../src/llm/agentGraph";
 
 vi.mock("../src/agent", () => ({
@@ -27,8 +29,9 @@ vi.mock("../src/agent", () => ({
     }),
 }));
 
+const store = new SqliteAppStore(new Database(":memory:"));
 const server = createApp().listen(0);
-attachChatServer(server);
+attachChatServer(server, store);
 
 let url: string;
 
@@ -39,6 +42,7 @@ beforeAll(() => {
 
 afterAll(() => {
     server.close();
+    store.close();
 });
 
 const SESSION_ID = "test-session";
@@ -104,6 +108,69 @@ describe("chat websocket", () => {
         expect(result.chunks.join("")).toBe("Hello, World!");
         expect(result.errors.join(";")).toMatch(/in progress/);
         expect(result.dones).toBe(2);
+    });
+});
+
+describe("auth handshake", () => {
+    it("authenticates a valid device token on the first frame", async () => {
+        const user = store.createUser("luke", "unused", "owner");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const { frames } = await collectFrames(
+            [{ type: "auth", token: material.token }],
+            { until: "authResult" },
+        );
+        expect(frames).toContainEqual({
+            authResult: { user: "luke", device: "macbook" },
+        });
+        expect(frames.some((f) => typeof f.error === "string")).toBe(false);
+    });
+
+    it("rejects an unknown device token with an error frame", async () => {
+        const { frames } = await collectFrames(
+            [{ type: "auth", token: "not-a-real-token" }],
+            { until: "done" },
+        );
+        expect(frames).toContainEqual({ error: "invalid device token" });
+        expect(frames.some((f) => f.authResult !== undefined)).toBe(false);
+    });
+
+    it("rejects an auth frame once the handshake slot is consumed", async () => {
+        const user = store.createUser("lateauth", "unused", "owner");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const { frames, again } = await twoPhase(
+            [{ type: "auth", token: material.token }],
+            "authResult",
+            [{ type: "auth", token: material.token }],
+        );
+        expect(frames).toContainEqual({
+            authResult: { user: "lateauth", device: "macbook" },
+        });
+        expect(again).toContainEqual({
+            error: "auth handshake must be the first frame",
+        });
+    });
+
+    it("still chats as a guest when the first frame is a prompt", async () => {
+        const { frames } = await collectFrames(
+            [{ prompt: "hi", sessionId: SESSION_ID }],
+            { until: "done" },
+        );
+        expect(frames[frames.length - 1]).toEqual({ done: true });
+        expect(frames.some((f) => f.authResult !== undefined)).toBe(false);
     });
 });
 
@@ -183,6 +250,85 @@ function exchangeMany(
                 if (dones === expectedDones) {
                     ws.close();
                     resolve({ chunks, errors, dones });
+                }
+            }
+        });
+        ws.on("error", reject);
+    });
+}
+
+/**
+ * Sends every payload in order on one socket, collecting raw frames until
+ * `count` frames of the chosen stop-key (default `done`) arrive.
+ */
+function collectFrames(
+    payloads: unknown[],
+    opts: { until?: "done" | "authResult"; count?: number } = {},
+): Promise<{ frames: Record<string, unknown>[] }> {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        const frames: Record<string, unknown>[] = [];
+        const key = opts.until ?? "done";
+        const stopAfter = opts.count ?? 1;
+        let stops = 0;
+
+        ws.on("open", () => {
+            for (const payload of payloads) {
+                ws.send(JSON.stringify(payload));
+            }
+        });
+        ws.on("message", (data) => {
+            const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+            frames.push(msg);
+            if (msg[key] !== undefined) {
+                stops += 1;
+                if (stops >= stopAfter) {
+                    ws.close();
+                    resolve({ frames });
+                }
+            }
+        });
+        ws.on("error", reject);
+    });
+}
+
+/**
+ * Two-phase helper: sends `first`, waits for a `firstKey` frame, then sends
+ * `second` and collects until `done`. Returns both phases.
+ */
+function twoPhase(
+    first: unknown[],
+    firstKey: "done" | "authResult",
+    second: unknown[],
+): Promise<{
+    frames: Record<string, unknown>[];
+    again: Record<string, unknown>[];
+}> {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(url);
+        const frames: Record<string, unknown>[] = [];
+        const again: Record<string, unknown>[] = [];
+        let phase: 1 | 2 = 1;
+        ws.on("open", () => {
+            for (const p of first) {
+                ws.send(JSON.stringify(p));
+            }
+        });
+        ws.on("message", (data) => {
+            const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+            if (phase === 1) {
+                frames.push(msg);
+                if (msg[firstKey] !== undefined) {
+                    phase = 2;
+                    for (const p of second) {
+                        ws.send(JSON.stringify(p));
+                    }
+                }
+            } else {
+                again.push(msg);
+                if (msg.done !== undefined) {
+                    ws.close();
+                    resolve({ frames, again });
                 }
             }
         });
