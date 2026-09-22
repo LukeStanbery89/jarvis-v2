@@ -13,11 +13,10 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import {
     AuthError,
+    createCredentialVerifier,
     generateDeviceToken,
-    hashPassword,
-    verifyPassword,
 } from "../auth";
-import type { AppDatabase } from "../auth";
+import type { AppDatabase, CredentialVerifier } from "../auth";
 import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
 import { authed, requireAuth, requireOwner } from "./middleware";
 import { RateLimiter } from "./rateLimit";
@@ -67,15 +66,6 @@ class BootstrapGate {
 const BOOTSTRAP_KEY_PREFIX = "bootstrap:";
 const LOGIN_KEY_PREFIX = "login:";
 
-/** Cached dummy hash so a missing username costs the same scrypt as a real one. */
-let dummyPasswordHash: Promise<string> | null = null;
-function dummyHash(): Promise<string> {
-    // Any password; never actually verified against, only the *cost* must
-    // match the real path so usernames can't be enumerated by response time.
-    dummyPasswordHash ??= hashPassword("definitely-not-a-real-password");
-    return dummyPasswordHash;
-}
-
 /** Maps a stable AuthError code to an HTTP status. */
 const AUTH_ERROR_STATUS: Record<string, number> = {
     USERNAME_TAKEN: 409,
@@ -94,13 +84,17 @@ const AUTH_ERROR_STATUS: Record<string, number> = {
  * Builds the `/api` router.
  *
  * `store` backs every ledger query; `appConfig` supplies the bootstrap token
- * gate. Passwords are hashed at the default scrypt cost (`DEFAULT_SCRYPT_PARAMS`).
- * Credential endpoints are throttled per `(ip, username)` and per `ip` by the
- * limiter built from `appConfig.loginRateLimit`.
+ * gate. `credentials` is the hashing/verification seam (default: scrypt at
+ * `DEFAULT_SCRYPT_PARAMS`, with the timing-equalized dummy-hash for unknown
+ * usernames) — injectable so tests can substitute a fake and a future
+ * biometric credential (#25) can plug in. Credential endpoints are throttled
+ * per `(ip, username)` and per `ip` by the limiter built from
+ * `appConfig.loginRateLimit`.
  */
 export function createAuthRouter(
     store: AppDatabase,
     appConfig: AppConfig,
+    credentials: CredentialVerifier = createCredentialVerifier(),
 ): Router {
     const router = Router();
     const limiter = new RateLimiter(
@@ -140,7 +134,7 @@ export function createAuthRouter(
             const { username, password, deviceName } = credentialBody(req);
             const owner = store.createUser(
                 username,
-                await hashPassword(password),
+                await credentials.hash(password),
                 "owner",
             );
             // Single-use: the operator's secret is gone once setup succeeds,
@@ -190,9 +184,8 @@ export function createAuthRouter(
                     "too many attempts; try again later",
                 );
             }
-            const storedHash =
-                store.getPasswordHash(username) ?? (await dummyHash());
-            if (!(await verifyPassword(password, storedHash))) {
+            const storedHash = store.getPasswordHash(username);
+            if (!(await credentials.verify(password, storedHash))) {
                 throw new AuthError(
                     "INVALID_CREDENTIALS",
                     "invalid username or password",
@@ -200,7 +193,17 @@ export function createAuthRouter(
             }
             limiter.recordSuccess(userKey);
             limiter.recordSuccess(ipKey);
-            const user = store.getUserByUsername(username)!;
+            // Re-read by username (not the hash lookup) and guard anyway: the
+            // only way this flips after a pass is a presented password that
+            // equals the dummy literal — a degenerate-but-not-impossible
+            // collision — which should read as invalid credentials, not a 500.
+            const user = store.getUserByUsername(username);
+            if (!user) {
+                throw new AuthError(
+                    "INVALID_CREDENTIALS",
+                    "invalid username or password",
+                );
+            }
             const material = generateDeviceToken();
             const device = store.provisionDevice(
                 user.id,
@@ -305,7 +308,7 @@ export function createAuthRouter(
                 const role = roleFrom(req.body);
                 const user = store.createUser(
                     username,
-                    await hashPassword(password),
+                    await credentials.hash(password),
                     role,
                 );
                 res.status(201).json({

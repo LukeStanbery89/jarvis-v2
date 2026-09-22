@@ -5,13 +5,14 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 
 ## Files
 
-| File        | Responsibility                                                                                                                                                                                                                   |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`  | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`) |
-| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                            |
-| `store.ts`  | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger                                                                               |
-| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
-| `README.md` | this file                                                                                                                                                                                                                        |
+| File            | Responsibility                                                                                                                                                                                                                   |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`) |
+| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                        |
+| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                            |
+| `store.ts`      | `AppDatabase` seam + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger                                                                               |
+| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
+| `README.md`     | this file                                                                                                                                                                                                                        |
 
 The REST layer lives outside this module in `src/http/` (`middleware.ts` =
 `requireAuth`/`requireOwner` filling `req.jarv`; `authRoutes.ts` = the `/api`
@@ -25,17 +26,18 @@ router) — it consumes these seams and never touches SQL.
 - **Device tokens** → 32 random bytes (base64url). Only their SHA-256 hash and
   an 8-char display `prefix` are persisted (`crypto.ts`). A leaked DB never
   leaks a usable token; a support listing never shows one.
-- **Verifier seam.** Password verification happens in exactly one place —
-  `src/http/authRoutes.ts`: `getPasswordHash(username)` then
-  `verifyPassword(password, hash)`. A username with no row verifies against a
-  cached same-cost dummy hash so account existence can't be inferred from
-  response time. Device tokens are the credential for everything else:
-  the presented token is run through `hashDeviceToken` and looked up by exact
-  `secret_hash` in `store.resolveTokenHash`. Nothing outside the REST/WS layers
-  compares credentials, and the store only ever seats hash-versus-hash
-  equality. Biometric auth (issue #25) slots in at the login seam — replace
-  the password step with a biometric challenge and still provision a device
-  token afterwards.
+- **Verifier seam.** Password hashing + verification happens in exactly one
+  place — `src/auth/credential.ts`, the `CredentialVerifier` used by
+  `authRoutes.ts`: `getPasswordHash(username)` then
+  `verify(username, storedHash)`. A username with no row (a `null` hash)
+  verifies against a cached same-cost dummy hash so account existence can't be
+  inferred from response time. Device tokens are the credential for everything
+  else: the presented token is run through `hashDeviceToken` and looked up by
+  exact `secret_hash` in `store.resolveTokenHash`. Nothing outside the
+  credential seam ever hashes or compares secrets, and the store only ever
+  seats hash-versus-hash equality. Biometric auth (issue #25) slots in at the
+  login seam — replace the password step with a biometric challenge and still
+  provision a device token afterwards.
 
 ## App database
 
@@ -62,6 +64,7 @@ router) — it consumes these seams and never touches SQL.
 - Guests (`kind: "guest"` — no user/device) may reach identity-independent
   actions only. The lifecycle matrix and ownership checks live at the
   WS/REST layers, not in the store.
-- The store never hashes or compares secrets — that is `crypto.ts`'s job;
-  the REST/WS layers that received a presented token call `hashDeviceToken`
+- The store never hashes or compares secrets — that is `crypto.ts`'s job, and
+  the REST layer reaches it only through the `CredentialVerifier` seam. The
+  REST/WS layers that received a presented token call `hashDeviceToken`
   before any `resolveTokenHash` lookup.

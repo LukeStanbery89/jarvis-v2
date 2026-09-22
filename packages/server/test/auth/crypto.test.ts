@@ -3,10 +3,12 @@ import {
     AuthError,
     generateDeviceToken,
     hashDeviceToken,
+} from "../../src/auth";
+import {
     hashPassword,
     verifyPassword,
     type ScryptParams,
-} from "../../src/auth";
+} from "../../src/auth/crypto";
 
 /** Test scrypt cost: fast enough to hash many times, still scrypt. */
 const FAST_SCRYPT: ScryptParams = { N: 4, r: 1, p: 1 };

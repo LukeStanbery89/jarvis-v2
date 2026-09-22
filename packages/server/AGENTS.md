@@ -89,7 +89,8 @@ database files to `0600` on open.
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
 - `src/auth/` — app database + credential crypto (see `src/auth/README.md`): `store.ts` (backed by
-  `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`), `crypto.ts`, `errors.ts`, `types.ts`.
+  `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`), `crypto.ts` (the primitives), `credential.ts` (the
+  `CredentialVerifier` seam the REST layer codes against), `errors.ts`, `types.ts`.
 - `src/ws.ts` — the `/ws` endpoint: auth handshake, session claiming + ownership guard, per-thread lock, turn
   timeout.
 - `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer.
@@ -100,7 +101,8 @@ database files to `0600` on open.
 - `test/` — Vitest suites: `app.test.ts`, `ws.test.ts`, `http.test.ts`, `auth/*`.
 
 `src/ws.ts` is the only module that touches the agent seam; `src/llm/chatModel.ts` is the only module that knows
-`@langchain/openai`; nothing outside `src/auth/crypto.ts` hashes or compares secrets.
+`@langchain/openai`; nothing outside `src/auth/` hashes or compares secrets (within it, only `crypto.ts`
+holds the primitives — the REST layer reaches password crypto solely through the `credential.ts` seam).
 
 ## Logging
 

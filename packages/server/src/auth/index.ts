@@ -8,14 +8,10 @@
  */
 export { AuthError } from "./errors";
 export type { AuthErrorCode } from "./errors";
-export {
-    DEFAULT_SCRYPT_PARAMS,
-    generateDeviceToken,
-    hashDeviceToken,
-    hashPassword,
-    verifyPassword,
-} from "./crypto";
-export type { DeviceTokenMaterial, ScryptParams } from "./crypto";
+export { generateDeviceToken, hashDeviceToken } from "./crypto";
+export type { DeviceTokenMaterial } from "./crypto";
+export { createCredentialVerifier } from "./credential";
+export type { CredentialVerifier } from "./credential";
 export { openAppDatabase, SqliteAppDatabase } from "./store";
 export type { AppDatabase } from "./store";
 export type {

@@ -19,9 +19,10 @@ src/
 │   ├── middleware.ts   # requireAuth / requireOwner — fill req.jarv from a bearer token
 │   └── authRoutes.ts   # createAuthRouter — the /api management router
 ├── auth/
-│   ├── index.ts   # auth module exports (store + crypto + types + errors)
+│   ├── index.ts   # auth module exports (store + crypto + credential + types + errors)
 │   ├── store.ts   # AppDatabase seam + SqliteAppDatabase (app database ~/.jarvis/jarvis.sqlite)
-│   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing
+│   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing (the primitives)
+│   ├── credential.ts  # CredentialVerifier seam — hash/verify + dummy-hash timing equalization
 │   ├── types.ts   # AppUser/AppDevice/AuthContext (guest|authed union)/ResolvedIdentity/AppSession/SessionKind
 │   ├── errors.ts  # AuthError
 │   └── README.md  # auth module guide
@@ -47,9 +48,9 @@ src/
 | `agent.ts`           | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`                                                                                              |
 | `transport.ts`       | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                                                                                                                   |
 | `ws.ts`              | `attachChatServer(httpServer, store, options)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, claims sessions in the ledger, enforces the per-thread lock + turn timeout, forwards events through `toServerFrame`, emits the terminal `done` frame            |
-| `auth/*`             | Accounts, device credentials, and the app database: `AppDatabase` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                                                                                                            |
+| `auth/*`             | Accounts, device credentials, and the app database: `AppDatabase` (SQLite) + the `CredentialVerifier` seam (scrypt/token crypto) + `AuthError`. The REST middleware, credential endpoints, and WS auth handshake resolve tokens through these seams                                                                                     |
 | `http/middleware.ts` | `requireAuth(store)` (Bearer device token → `req.jarv`, 401 otherwise) + `requireOwner` (403 for non-owners); `AuthedRequest` derives from the `AuthContext` union so `authed(req).jarv` is the guaranteed non-null identity                                                                                                            |
-| `http/authRoutes.ts` | `createAuthRouter(store, appConfig)` → the `/api` router: `bootstrap`, `auth/login`, `me`, `devices`, `users`, `sessions`; maps `AuthError` codes to HTTP statuses                                                                                                                                                                      |
+| `http/authRoutes.ts` | `createAuthRouter(store, appConfig, credentials?)` → the `/api` router: `bootstrap`, `auth/login`, `me`, `devices`, `users`, `sessions`; maps `AuthError` codes to HTTP statuses; `credentials` defaults to the scrypt-backed `CredentialVerifier` seam                                                                                 |
 | `llm/chatModel.ts`   | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                                                                                                             |
 | `llm/agentGraph.ts`  | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                                                                                                                        |
 | `llm/event.ts`       | The `AgentEvent` union (`token`/`tool`/`toolResult`) — one turn's streamed output shape; also re-exported from the `agentGraph` and `agent` layers                                                                                                                                                                                      |
