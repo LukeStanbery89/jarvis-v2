@@ -78,10 +78,11 @@ upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its database fil
 
 ## Source layout
 
-- `src/index.ts` — process entry: config, `openAppDatabase`, `createApp`, `attachChatServer`, listen (HTTPS + redirect when TLS enabled).
+- `src/index.ts` — process entry: config, `openAppDatabase`, `createApp`, `attachChatServer` — hands the app to the listener seam.
 - `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`).
 - `src/fs.ts` — `ensurePrivateStorage`/`ensurePrivateFile`: tightens `~/.jarvis` to `0700`/`0600`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
+- `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, mounts `/api`; `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer → `req.jarv`) and `requireOwner`.
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).

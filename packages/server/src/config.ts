@@ -105,9 +105,10 @@ export function getLlmConfig(): LlmConfig {
  * are resolved separately from `getLlmConfig`. `bootstrapToken` is
  * deliberately `undefined` by default: first-owner setup stays disabled until
  * the operator sets the environment variable, so a fresh server never races an
- * anonymous admin. `host`, `tlsCertPath`, `tlsKeyPath`, and `loginRateLimit`
- * are optional so hand-built configs (tests) can omit them; `getAppConfig`
- * always fills them in, and consumers fall back to defaults when absent.
+ * anonymous admin. `host`, `tlsCertPath`, `tlsKeyPath`, `httpRedirectPort`,
+ * and `loginRateLimit` are optional so hand-built configs (tests) can omit
+ * them; `getAppConfig` always fills them in, and consumers fall back to
+ * defaults when absent.
  */
 export interface AppConfig {
     /** Path of the app database (`JARVIS_DB_PATH`). */
@@ -122,6 +123,11 @@ export interface AppConfig {
     tlsCertPath?: string;
     /** Path to the matching PEM private key (`JARVIS_TLS_KEY`). */
     tlsKeyPath?: string;
+    /**
+     * Cleartext upgrade port used when TLS is enabled
+     * (`JARVIS_HTTP_REDIRECT_PORT`); defaults to `port + 1` when unset.
+     */
+    httpRedirectPort?: number;
     /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
     loginRateLimit?: RateLimitConfig;
 }
@@ -140,6 +146,9 @@ export function getAppConfig(): AppConfig {
         host: process.env.JARVIS_HOST ?? DEFAULT_HOST,
         tlsCertPath: process.env.JARVIS_TLS_CERT || undefined,
         tlsKeyPath: process.env.JARVIS_TLS_KEY || undefined,
+        httpRedirectPort: process.env.JARVIS_HTTP_REDIRECT_PORT
+            ? numberOr(process.env.JARVIS_HTTP_REDIRECT_PORT, 0) || undefined
+            : undefined,
         loginRateLimit: {
             windowMs: numberOr(process.env.JARVIS_RATE_WINDOW_MS, 15 * 60_000),
             maxFailures: numberOr(process.env.JARVIS_RATE_MAX_FAILURES, 10),
