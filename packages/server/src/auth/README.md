@@ -5,13 +5,13 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 
 ## Files
 
-| File        | Responsibility                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `types.ts`  | `AppUser`/`AppDevice` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` (what `req.jarv` / the WS ctx carry)     |
-| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing    |
-| `store.ts`  | `AppStore` seam + `SqliteAppStore` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations |
-| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                               |
-| `README.md` | this file                                                                                                                |
+| File        | Responsibility                                                                                                                               |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`  | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` (what `req.jarv` / the WS ctx carry)            |
+| `crypto.ts` | Password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                        |
+| `store.ts`  | `AppStore` seam + `SqliteAppStore` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
+| `errors.ts` | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                   |
+| `README.md` | this file                                                                                                                                    |
 
 ## Credential model
 
@@ -36,7 +36,11 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 - `devices` — per-credential rows keyed to a user; `secret_hash` + `prefix`.
 - `sessions` — the WS-turn ledger: one row per `thread_id` (unique), owned by
   a user/device or `NULL` (guest), with `kind` (`text`/`voice`) for the
-  lifecycle matrix.
+  lifecycle matrix. `claimSession` claims atomically
+  (`INSERT … ON CONFLICT DO NOTHING`, returning `created`); `touchSession`
+  maintains `last_active_at`; `deleteSession` and `listOwnedSessions` back the
+  REST management API and guest cleanup. The WS layer decides _when_ rows are
+  deleted (guest sockets on close), not the store.
 - `prefs` — per-user integration prefs (JSON values); LLM settings stay in
   the environment.
 

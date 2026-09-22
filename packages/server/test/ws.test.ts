@@ -23,6 +23,10 @@ vi.mock("../src/agent", () => ({
                 output: "2026-09-20T00:00:00.000Z",
             };
         }
+        if (prompt === "slow") {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            yield { type: "token", text: "slow" };
+        }
         await new Promise((resolve) => setTimeout(resolve, 25));
         yield { type: "token", text: "Hello," };
         yield { type: "token", text: " World!" };
@@ -33,15 +37,22 @@ const store = new SqliteAppStore(new Database(":memory:"));
 const server = createApp().listen(0);
 attachChatServer(server, store);
 
+const timeoutServer = createApp().listen(0);
+attachChatServer(timeoutServer, store, { turnTimeoutMs: 30 });
+
 let url: string;
+let timeoutUrl: string;
 
 beforeAll(() => {
     const address = server.address() as AddressInfo | null;
     url = `ws://localhost:${address?.port ?? 0}/ws`;
+    const timeoutAddress = timeoutServer.address() as AddressInfo | null;
+    timeoutUrl = `ws://localhost:${timeoutAddress?.port ?? 0}/ws`;
 });
 
 afterAll(() => {
     server.close();
+    timeoutServer.close();
     store.close();
 });
 
@@ -173,6 +184,108 @@ describe("auth handshake", () => {
         expect(frames.some((f) => f.authResult !== undefined)).toBe(false);
     });
 });
+
+describe("session ledger", () => {
+    it("deletes a guest session when the socket closes", async () => {
+        const threadId = "guest-ledger-session";
+        const { error } = await exchange({
+            prompt: "hi",
+            sessionId: threadId,
+        });
+        expect(error).toBeNull();
+        await settle();
+
+        expect(store.getSessionByThread(threadId)).toBeNull();
+    });
+
+    it("keeps an owned session alive after the socket closes", async () => {
+        const user = store.createUser("ledger-owner", "unused", "owner");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+        const threadId = "owned-ledger-session";
+
+        const { frames } = await twoPhase(
+            [{ type: "auth", token: material.token }],
+            "authResult",
+            [{ prompt: "hi", sessionId: threadId }],
+        );
+        expect(frames.some((f) => f.authResult !== undefined)).toBe(true);
+        await settle();
+
+        const session = store.getSessionByThread(threadId);
+        expect(session).not.toBeNull();
+        expect(session!.userId).toBe(user.id);
+    });
+
+    it("rejects a concurrent turn on the same thread across sockets", async () => {
+        const first = chat("lock-thread");
+        const second = chat("lock-thread");
+        const [a, b] = await Promise.all([first, second]);
+
+        expect(a.error ?? b.error).not.toBeNull();
+        const errored = [a, b].find((r) => r.error !== null)!;
+        const streamed = [a, b].find((r) => r.error === null)!;
+        expect(errored.error).toMatch(/in progress/);
+        expect(streamed.chunks.join("")).toBe("Hello, World!");
+    });
+
+    it("aborts a turn that exceeds the configured timeout", async () => {
+        const result = await chatOn(
+            { prompt: "slow", sessionId: "timeout-thread" },
+            { url: timeoutUrl },
+        );
+        expect(result.error).toMatch(/timed out/);
+        expect(result.chunks).toEqual([]);
+    });
+});
+
+/** Sends a prompt on a fresh socket at `url`, resolving when the reply ends. */
+function chat(
+    sessionId: string,
+): Promise<{ chunks: string[]; error: string | null }> {
+    return chatOn({ prompt: "hi", sessionId });
+}
+
+/**
+ * Sends one payload on a fresh socket (optionally not `url`), resolving when
+ * the reply ends with `done`.
+ */
+function chatOn(
+    payload: unknown,
+    opts: { url?: string } = {},
+): Promise<{ chunks: string[]; error: string | null }> {
+    const target = opts.url ?? url;
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(target);
+        const chunks: string[] = [];
+        let error: string | null = null;
+        ws.on("open", () => ws.send(JSON.stringify(payload)));
+        ws.on("message", (data) => {
+            const msg = JSON.parse(data.toString());
+            if (typeof msg.chunk === "string") {
+                chunks.push(msg.chunk);
+            }
+            if (typeof msg.error === "string") {
+                error = msg.error;
+            }
+            if (msg.done === true) {
+                ws.close();
+                resolve({ chunks, error });
+            }
+        });
+        ws.on("error", reject);
+    });
+}
+
+/** Waits a beat so the server-side socket-close handler runs. */
+function settle(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 40));
+}
 
 function exchange(payload: unknown): Promise<{
     chunks: string[];

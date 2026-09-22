@@ -46,16 +46,19 @@ The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
 variables:
 
-| Variable                 | Default                                                                         | Description                                           |
-| ------------------------ | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `LLM_BASE_URL`           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                            |
-| `LLM_MODEL`              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                            |
-| `LLM_TEMPERATURE`        | `0`                                                                             | Sampling temperature                                  |
-| `LLM_SYSTEM_PROMPT`      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread      |
-| `JARVIS_AGENT_MAX_TURNS` | `10`                                                                            | Max agent loop steps per turn (tools + model calls)   |
-| `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence   |
-| `JARVIS_LOG_LEVEL`       | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
-| `JARVIS_LOG_SENSITIVE`   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted` |
+| Variable                 | Default                                                                         | Description                                             |
+| ------------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `LLM_BASE_URL`           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                              |
+| `LLM_MODEL`              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                              |
+| `LLM_TEMPERATURE`        | `0`                                                                             | Sampling temperature                                    |
+| `LLM_SYSTEM_PROMPT`      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread        |
+| `JARVIS_AGENT_MAX_TURNS` | `10`                                                                            | Max agent loop steps per turn (tools + model calls)     |
+| `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence     |
+| `JARVIS_DB_PATH`         | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs           |
+| `JARVIS_TURN_TIMEOUT_MS` | `120000`                                                                        | Hard cap for one agent turn before it is aborted        |
+| `JARVIS_BOOTSTRAP_TOKEN` | unset                                                                           | Optional bootstrap credential; see `src/auth/README.md` |
+| `JARVIS_LOG_LEVEL`       | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`   |
+| `JARVIS_LOG_SENSITIVE`   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`   |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev
@@ -104,8 +107,18 @@ and exchange JSON text frames:
     - zero or more `{ "chunk": "<text>" }` frames — the streamed answer.
     - `{ "done": true }` — the response is complete.
 - On invalid input or model failure: `{ "error": "<message>" }`, followed by `{ "done": true }`
-- Sending a new prompt while a response is still streaming is rejected with an
-  `in progress` error frame.
+- Sending a new prompt while a response is still streaming — or while another
+  socket is running a concurrent turn on the same `sessionId` (per-thread lock)
+  — is rejected with an `in progress` error frame.
+- Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS` (default `120000`): a turn
+  that exceeds it is aborted and the client receives a `turn timed out` error
+  frame, so the per-thread lock always drains.
+
+Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
+`~/.jarvis/jarvis.sqlite`): `sessionId` is claimed atomically as a
+**session** tagged `guest`/`owned` and `text`/`voice`. Guest sessions are
+deleted when their socket closes; owned sessions persist and can be listed or
+deleted via the REST management API.
 
 Concatenate the `chunk` payloads verbatim to reconstruct the full response. A
 single prompt may loop through `tool`/`toolResult` pairs several times before

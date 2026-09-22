@@ -18,7 +18,7 @@ src/
 │   ├── index.ts   # auth module exports (store + crypto + types + errors)
 │   ├── store.ts   # AppStore seam + SqliteAppStore (app database ~/.jarvis/jarvis.sqlite)
 │   ├── crypto.ts  # scrypt password hashing + device-token generation/hashing
-│   ├── types.ts   # AppUser/AppDevice/AuthContext/ResolvedIdentity
+│   ├── types.ts   # AppUser/AppDevice/AuthContext/ResolvedIdentity/AppSession/SessionKind
 │   ├── errors.ts  # AuthError
 │   └── README.md  # auth module guide
 ├── llm/
@@ -34,19 +34,19 @@ src/
 
 ## File map
 
-| File                | Responsibility                                                                                                                                                                                                                               |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`          | Entry point: bootstraps the agent graph (`initAgentGraph()` — creates `~/.jarvis` + the checkpoint store), builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                      |
-| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port                                                                                           |
-| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getAppConfig()` → app database path, turn timeout, bootstrap token; `getServerPort()` → the listening port (default `54321`), all from env |
-| `agent.ts`          | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`   |
-| `transport.ts`      | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                        |
-| `ws.ts`             | `attachChatServer(httpServer, store)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, forwards events through `toServerFrame`, emits the terminal `done` frame      |
-| `auth/*`            | Accounts, device credentials, and the app database: `AppStore` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                    |
-| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                  |
-| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                             |
-| `llm/event.ts`      | The `AgentEvent` union (`token`/`tool`/`toolResult`) — one turn's streamed output shape; also re-exported from the `agentGraph` and `agent` layers                                                                                           |
-| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                                                                                                          |
+| File                | Responsibility                                                                                                                                                                                                                                                                                                               |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`          | Entry point: bootstraps the agent graph (`initAgentGraph()` — creates `~/.jarvis` + the checkpoint store), builds the Express app, attaches the WS chat server, and listens on `PORT` (default `54321`)                                                                                                                      |
+| `app.ts`            | `createApp()` factory → the Express app serving `GET /` health check. Kept as a factory so tests can mount it via supertest without binding a port                                                                                                                                                                           |
+| `config.ts`         | `getLlmConfig()` → base URL, model, temperature, system prompt, turn limit, and checkpoint path; `getAppConfig()` → app database path, turn timeout, bootstrap token; `getServerPort()` → the listening port (default `54321`), all from env                                                                                 |
+| `agent.ts`          | `initAgentGraph()` (eager, idempotent — called once at startup) builds the singleton graph + SQLite checkpointer; `runAgent(prompt, sessionId)` streams `AgentEvent`s. The only seam `ws.ts` imports; re-exports `AgentEvent`/`AgentGraph`                                                                                   |
+| `transport.ts`      | `toServerFrame(event)` → a pure, exhaustive `AgentEvent → ServerFrame` mapping so transports never see how the agent reports progress                                                                                                                                                                                        |
+| `ws.ts`             | `attachChatServer(httpServer, store, options)` → the `/ws` chat endpoint; resolves the optional first-frame `auth` handshake (guest fallback), validates prompt frames, claims sessions in the ledger, enforces the per-thread lock + turn timeout, forwards events through `toServerFrame`, emits the terminal `done` frame |
+| `auth/*`            | Accounts, device credentials, and the app database: `AppStore` (SQLite) + scrypt/token crypto + `AuthError`. The REST middleware and WS auth handshake resolve tokens through these seams                                                                                                                                    |
+| `llm/chatModel.ts`  | `createChatModel()` → the `ChatOpenAI` instance. Only module that knows `@langchain/openai`                                                                                                                                                                                                                                  |
+| `llm/agentGraph.ts` | `createAgentGraph()` → the `model ⇄ tools` StateGraph; `streamAgentTurn()` → runs one thread turn with a recursion limit, yielding `AgentEvent`s                                                                                                                                                                             |
+| `llm/event.ts`      | The `AgentEvent` union (`token`/`tool`/`toolResult`) — one turn's streamed output shape; also re-exported from the `agentGraph` and `agent` layers                                                                                                                                                                           |
+| `llm/tools/*`       | `tool()`-defined tools + the `tools` registry, bound by the model node and executed by the ToolNode                                                                                                                                                                                                                          |
 
 ## Data flow
 
@@ -55,7 +55,8 @@ CLI / WebSocket client
       │  first frame?  {"type":"auth","token":...} → authResult (or error + guest)
       │  then          {"prompt": "...", "sessionId": "..."}
       ▼
-ws.ts  handleMessage/watch   (resolve handshake via store; parse + validate prompt via @lukestanbery/jarvis-protocol)
+ws.ts  handleMessage/watch   (resolve handshake via store; parse + validate prompt via @lukestanbery/jarvis-protocol;
+      │                       claim session in ledger, take per-thread lock, arm turn timer)
       │  prompt, sessionId + AuthContext (user/device or guest)
       ▼
 agent.ts runAgent            (the brain seam: graph + checkpointer)
@@ -96,7 +97,19 @@ without a live model.
   so transports never see graph internals.
 - **One active response per connection.** A second prompt arriving while a
   response is streaming is rejected with an error frame (see protocol in the
-  package README); `active` lives per-connection inside `attachChatServer`.
+  package README); `active` lives per-connection inside `attachChatServer`. On
+  top of that, a **per-thread lock** rejects concurrent turns on the same
+  `sessionId` across sockets, and every turn runs under a hard **turn
+  timeout** (`options.turnTimeoutMs`, default `DEFAULT_TURN_TIMEOUT_MS`) so the
+  lock always drains — the timeout error is emitted by the timer and the
+  in-flight generator is `return()`d.
+- **Sessions are a ledger, not just threads.** Each prompt claims its
+  `sessionId` in the app database (`AppStore.claimSession`, atomic
+  `INSERT … ON CONFLICT DO NOTHING`) tagging it guest vs owned and
+  `text`/`voice`. Guest sockets' claimed sessions are deleted when the socket
+  closes (`guestThreads` tracked per connection); owned sessions persist for
+  the REST layer to list/delete. `touchSession` keeps `last_active_at` current;
+  `threadId` is unique so a session maps one-to-one onto a checkpoint thread.
 - **Auth is a first-frame handshake.** A client may authenticate with a device
   token on its first frame (`{ type: "auth", token }` → one `authResult`
   frame); any other first frame, or none, runs the socket as a guest. The

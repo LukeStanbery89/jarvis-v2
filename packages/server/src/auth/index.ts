@@ -21,8 +21,10 @@ export { openAppStore, SqliteAppStore } from "./store";
 export type { AppStore } from "./store";
 export type {
     AppDevice,
+    AppSession,
     AppUser,
     AuthContext,
     ResolvedIdentity,
     Role,
+    SessionKind,
 } from "./types";

@@ -15,7 +15,14 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { AuthError } from "./errors";
-import type { AppDevice, AppUser, ResolvedIdentity, Role } from "./types";
+import type {
+    AppDevice,
+    AppSession,
+    AppUser,
+    ResolvedIdentity,
+    Role,
+    SessionKind,
+} from "./types";
 
 const SCHEMA_VERSION = 1;
 
@@ -55,7 +62,7 @@ CREATE TABLE IF NOT EXISTS prefs (
 `;
 
 /**
- * Accounts, devices, and (later) session/pref ledger access.
+ * Accounts, devices, sessions, and prefs ledger access.
  *
  * Methods throw {@link AuthError} where a domain rule is broken
  * (`USERNAME_TAKEN`) and return `null` where a row simply does not exist.
@@ -75,6 +82,18 @@ export interface AppStore {
     revokeDevice(id: number): void;
     touchDevice(id: number): void;
     resolveToken(tokenHash: string): ResolvedIdentity | null;
+    claimSession(
+        threadId: string,
+        opts: {
+            userId: number | null;
+            deviceId: number | null;
+            kind: SessionKind;
+        },
+    ): { session: AppSession; created: boolean };
+    getSessionByThread(threadId: string): AppSession | null;
+    touchSession(threadId: string): void;
+    deleteSession(threadId: string): void;
+    listOwnedSessions(userId: number): AppSession[];
     close(): void;
 }
 
@@ -114,6 +133,26 @@ function mapDevice(row: {
     };
 }
 
+function mapSession(row: {
+    id: number;
+    threadId: string;
+    userId: number | null;
+    deviceId: number | null;
+    kind: SessionKind;
+    createdAt: string;
+    lastActiveAt: string;
+}): AppSession {
+    return {
+        id: row.id,
+        threadId: row.threadId,
+        userId: row.userId,
+        deviceId: row.deviceId,
+        kind: row.kind,
+        createdAt: row.createdAt,
+        lastActiveAt: row.lastActiveAt,
+    };
+}
+
 function migrate(db: Database.Database): void {
     const version = db.pragma("user_version", { simple: true }) as number;
     if (version < 1) {
@@ -139,6 +178,11 @@ export class SqliteAppStore implements AppStore {
         selectDeviceByHash: Database.Statement;
         deleteDevice: Database.Statement;
         updateDeviceLastSeen: Database.Statement;
+        insertSession: Database.Statement;
+        selectSessionByThread: Database.Statement;
+        updateSessionLastActive: Database.Statement;
+        deleteSession: Database.Statement;
+        listSessionsByUser: Database.Statement;
     };
 
     constructor(db: Database.Database) {
@@ -170,6 +214,21 @@ export class SqliteAppStore implements AppStore {
             deleteDevice: db.prepare("DELETE FROM devices WHERE id = ?"),
             updateDeviceLastSeen: db.prepare(
                 "UPDATE devices SET last_seen_at = ? WHERE id = ?",
+            ),
+            insertSession: db.prepare(
+                "INSERT INTO sessions (thread_id, user_id, device_id, kind, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING",
+            ),
+            selectSessionByThread: db.prepare(
+                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE thread_id = ?",
+            ),
+            updateSessionLastActive: db.prepare(
+                "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
+            ),
+            deleteSession: db.prepare(
+                "DELETE FROM sessions WHERE thread_id = ?",
+            ),
+            listSessionsByUser: db.prepare(
+                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE user_id = ? ORDER BY last_active_at DESC",
             ),
         };
     }
@@ -300,6 +359,62 @@ export class SqliteAppStore implements AppStore {
                 lastSeenAt: row.deviceLastSeenAt,
             },
         };
+    }
+
+    claimSession(
+        threadId: string,
+        opts: {
+            userId: number | null;
+            deviceId: number | null;
+            kind: SessionKind;
+        },
+    ): { session: AppSession; created: boolean } {
+        const result = this.statements.insertSession.run(
+            threadId,
+            opts.userId,
+            opts.deviceId,
+            opts.kind,
+            now(),
+            now(),
+        );
+        const session = this.getSessionByThread(threadId)!;
+        return { session, created: result.changes > 0 };
+    }
+
+    getSessionByThread(threadId: string): AppSession | null {
+        const row = this.statements.selectSessionByThread.get(threadId) as
+            | {
+                  id: number;
+                  threadId: string;
+                  userId: number | null;
+                  deviceId: number | null;
+                  kind: SessionKind;
+                  createdAt: string;
+                  lastActiveAt: string;
+              }
+            | undefined;
+        return row ? mapSession(row) : null;
+    }
+
+    touchSession(threadId: string): void {
+        this.statements.updateSessionLastActive.run(now(), threadId);
+    }
+
+    deleteSession(threadId: string): void {
+        this.statements.deleteSession.run(threadId);
+    }
+
+    listOwnedSessions(userId: number): AppSession[] {
+        const rows = this.statements.listSessionsByUser.all(userId) as {
+            id: number;
+            threadId: string;
+            userId: number | null;
+            deviceId: number | null;
+            kind: SessionKind;
+            createdAt: string;
+            lastActiveAt: string;
+        }[];
+        return rows.map(mapSession);
     }
 
     close(): void {

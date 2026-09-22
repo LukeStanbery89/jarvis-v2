@@ -44,3 +44,23 @@ export interface AuthContext {
     user: AppUser | null;
     device: AppDevice | null;
 }
+
+/** Input modality of a chat session. */
+export type SessionKind = "text" | "voice";
+
+/**
+ * One chat session: a nexus between the WS-turn ledger and a LangGraph thread.
+ *
+ * `threadId` is unique — a session maps one-to-one onto a checkpoint thread.
+ * `userId`/`deviceId` are `NULL` for guest (ephemeral) sessions; `kind`
+ * (`text`/`voice`) drives the lifecycle-deletion policy.
+ */
+export interface AppSession {
+    id: number;
+    threadId: string;
+    userId: number | null;
+    deviceId: number | null;
+    kind: SessionKind;
+    createdAt: string;
+    lastActiveAt: string;
+}

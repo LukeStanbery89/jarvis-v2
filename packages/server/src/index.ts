@@ -23,4 +23,6 @@ const server = createApp().listen(port, () => {
     logger.info(`J.A.R.V.I.S. server listening on http://localhost:${port}`);
 });
 
-attachChatServer(server, store);
+attachChatServer(server, store, {
+    turnTimeoutMs: appConfig.turnTimeoutMs,
+});

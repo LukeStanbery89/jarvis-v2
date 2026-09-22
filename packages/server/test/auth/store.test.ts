@@ -123,6 +123,99 @@ describe("devices", () => {
     });
 });
 
+describe("sessions", () => {
+    it("claims a session on first use, then returns the existing row", () => {
+        const owner = store.createUser("luke", "hash", "owner");
+        const material = generateDeviceToken();
+        const device = store.createDevice(
+            owner.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const first = store.claimSession("thread-a", {
+            userId: owner.id,
+            deviceId: device.id,
+            kind: "text",
+        });
+        expect(first.created).toBe(true);
+        expect(first.session.threadId).toBe("thread-a");
+        expect(first.session.userId).toBe(owner.id);
+        expect(first.session.deviceId).toBe(device.id);
+        expect(first.session.kind).toBe("text");
+
+        const second = store.claimSession("thread-a", {
+            userId: owner.id,
+            deviceId: device.id,
+            kind: "text",
+        });
+        expect(second.created).toBe(false);
+        expect(second.session.id).toBe(first.session.id);
+    });
+
+    it("records guest sessions and owned sessions separately", () => {
+        const owner = store.createUser("luke", "hash", "owner");
+        const guest = store.claimSession("guest-thread", {
+            userId: null,
+            deviceId: null,
+            kind: "text",
+        });
+        expect(guest.created).toBe(true);
+        expect(guest.session.userId).toBeNull();
+
+        store.claimSession("owned-thread", {
+            userId: owner.id,
+            deviceId: null,
+            kind: "voice",
+        });
+        expect(store.getSessionByThread("owned-thread")?.kind).toBe("voice");
+    });
+
+    it("updates last-active on touch and lists owned sessions newest-first", () => {
+        const owner = store.createUser("luke", "hash", "owner");
+        store.claimSession("owned-a", {
+            userId: owner.id,
+            deviceId: null,
+            kind: "text",
+        });
+        store.claimSession("owned-b", {
+            userId: owner.id,
+            deviceId: null,
+            kind: "text",
+        });
+        store.claimSession("guest", {
+            userId: null,
+            deviceId: null,
+            kind: "text",
+        });
+
+        store.touchSession("owned-a");
+        store.touchSession("owned-b");
+        expect(
+            store.getSessionByThread("owned-a")?.lastActiveAt,
+        ).not.toBeNull();
+
+        const sessions = store.listOwnedSessions(owner.id);
+        expect(sessions.map((s) => s.threadId)).toContain("owned-a");
+        expect(sessions.map((s) => s.threadId)).toContain("owned-b");
+        expect(sessions.length).toBe(2);
+    });
+
+    it("deletes a session by thread id and reports null afterwards", () => {
+        store.claimSession("gone", {
+            userId: null,
+            deviceId: null,
+            kind: "text",
+        });
+        expect(store.getSessionByThread("gone")).not.toBeNull();
+
+        store.deleteSession("gone");
+        expect(store.getSessionByThread("gone")).toBeNull();
+        store.deleteSession("never-existed");
+    });
+});
+
 describe("openAppStore", () => {
     it("reopens an existing database without error (migration is idempotent)", () => {
         const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
