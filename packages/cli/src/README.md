@@ -9,6 +9,7 @@ guide — see the package `README.md` for install and usage instructions.
 src/
 ├── index.ts   # entry point (readline REPL loop)
 ├── client.ts  # ChatClient (WebSocket chat client)
+├── render.ts  # renderHandlers — prints the streamed response
 ├── config.ts  # server URL + session-file path from environment
 ├── session.ts # persistent conversation session id (~/.jarvis/session-id)
 └── README.md  # this file
@@ -18,8 +19,9 @@ src/
 
 | File         | Responsibility                                                                                                               |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`   | Entry point: readline REPL loop; forwards each line to the chat client and prints the streamed response as it arrives        |
+| `index.ts`   | Entry point: readline REPL loop; forwards each line to the chat client, delegating stream rendering to `renderHandlers`      |
 | `client.ts`  | `ChatClient` — the WebSocket chat client: connects to the server, sends prompts, and emits typed events as frames stream in  |
+| `render.ts`  | `renderHandlers` — the named `PromptHandlers` for a text session: chunks to stdout, tool calls/results as stderr diagnostics |
 | `config.ts`  | `getServerUrl()` → `JARVIS_SERVER_URL` (default `ws://localhost:54321/ws`); `getSessionFilePath()` → `JARVIS_SESSION_FILE`   |
 | `session.ts` | `loadOrCreateSessionId()` → the id sent as `sessionId` on every prompt, persisted so the same thread resumes across restarts |
 
@@ -33,8 +35,8 @@ client.ts ChatClient.prompt(text, sessionId, handlers)
       │  {"prompt": "...", "sessionId": "..."}  over WebSocket → @lukestanbery/jarvis-server /ws
       │  {"chunk": ...} / {"tool": ...} / {"toolResult": ...} frames … then {"done": true}
       ▼
-index.ts onChunk → process.stdout.write(chunk)   (prints as it streams)
-          onTool / onToolResult → logger to stderr (diagnostics, never stdout)
+render.ts renderHandlers  onChunk → process.stdout.write(chunk)   (prints as it streams)
+                          onTool / onToolResult → logger to stderr (diagnostics, never stdout)
 ```
 
 ## Key decisions

@@ -11,6 +11,7 @@ import { ChatClient } from "./client";
 import { getServerUrl } from "./config";
 import { loadOrCreateSessionId } from "./session";
 import { logger } from "./logger";
+import { renderHandlers } from "./render";
 
 const serverUrl = getServerUrl();
 const sessionId = loadOrCreateSessionId();
@@ -48,19 +49,7 @@ rl.on("line", (line) => {
 
     inflight = (async () => {
         try {
-            await client.prompt(prompt, sessionId, {
-                onChunk: (chunk) => {
-                    process.stdout.write(chunk);
-                },
-                onTool: (name, args) => {
-                    logger.info(
-                        `Agent calling tool ${name}${describeArgs(args)}`,
-                    );
-                },
-                onToolResult: (name, output) => {
-                    logger.debug(`Tool ${name} returned: ${summarize(output)}`);
-                },
-            });
+            await client.prompt(prompt, sessionId, renderHandlers);
             process.stdout.write("\n");
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -75,25 +64,3 @@ rl.on("close", async () => {
     await inflight;
     process.exit(0);
 });
-
-/** Renders tool args compactly for the stderr diagnostic. */
-function describeArgs(args: unknown): string {
-    if (args === undefined) {
-        return "";
-    }
-    try {
-        return ` ${JSON.stringify(args)}`;
-    } catch {
-        return " (unprintable args)";
-    }
-}
-
-/** Truncates a tool result for the stderr diagnostic. */
-function summarize(output: unknown): string {
-    const rendered =
-        typeof output === "string" ? output : JSON.stringify(output);
-    if (rendered === undefined || rendered.length <= 120) {
-        return rendered ?? "no output";
-    }
-    return `${rendered.slice(0, 117)}...`;
-}
