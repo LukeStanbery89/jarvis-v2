@@ -102,6 +102,16 @@ export class ChatClient {
         }
     }
 
+    /**
+     * Returns whether a prompt is currently streaming on this client.
+     *
+     * The REPL uses this to refuse `login`/`logout` mid-response instead of
+     * reporting a confusing failure from inside `prompt()`.
+     */
+    isBusy(): boolean {
+        return this.active;
+    }
+
     /** Returns the open socket, connecting to the server first if needed. */
     private async ensureConnected(): Promise<WebSocket> {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {

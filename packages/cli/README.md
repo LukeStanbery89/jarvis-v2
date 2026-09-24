@@ -50,6 +50,33 @@ in. When the agent calls a tool, the CLI prints a diagnostic line to **stderr**
 (e.g. `Agent calling tool getCurrentTime`) and keeps the streamed answer on
 stdout. Type `exit` or `quit`, or press `Ctrl+C`/`Ctrl+D`, to quit.
 
+### Logging in
+
+Without credentials the CLI runs as a **guest** — the server keeps guest
+conversations in ephemeral threads that are deleted when the connection
+closes. To use a persistent, owned conversation, log in:
+
+```sh
+login                      # prompts for username, password, and device name
+login luke                 # pre-fills the username
+```
+
+The password is prompted with echo suppressed. On success the CLI stores the
+server-issued per-device **token** in `~/.jarvis/credentials.json` (mode
+`0600`), closes the current connection, and starts a fresh conversation
+thread — the server never re-parents a thread across identities. Logging in
+again with the same device name **rotates** the token; the previous token for
+that device stops working. Errors map directly from the server: bad
+credentials (`401`), rate limiting with lockout (`429`), and a server with no
+owner yet (`404` — bootstrap it first, see `@lukestanbery/jarvis-server`).
+
+Log out with `logout` — the stored token is removed and the next prompt runs
+as a guest again. Persisted conversations stay on the server; logout changes
+this machine's identity, not the account.
+
+Tokens are keyed by **server origin**, so logging into a dev server does not
+clobber the token for a LAN server.
+
 ### Configuration
 
 The server URL defaults to `ws://localhost:54321/ws`. Override it with the
@@ -64,6 +91,10 @@ with `JARVIS_SESSION_FILE`). The id is sent as `sessionId` with every prompt,
 so the server continues the same conversation thread across CLI restarts;
 delete the file (or set `JARVIS_SESSION_FILE` to a fresh path) to start a new
 conversation.
+
+Login tokens are kept in `~/.jarvis/credentials.json` (override the path with
+`JARVIS_CREDENTIALS_FILE`), one entry per server origin, written atomically at
+mode `0600`. The file holds real credentials — treat it like a private key.
 
 If the server is unreachable, the CLI prints the error and keeps running — just
 try again once the server is up.

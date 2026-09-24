@@ -26,13 +26,27 @@ Run from `packages/cli`:
 
 The server URL defaults to `ws://localhost:54321/ws`, overridable via the
 `JARVIS_SERVER_URL` environment variable; the session-id file defaults to
-`~/.jarvis/session-id`, overridable via `JARVIS_SESSION_FILE` (`src/config.ts`).
-`loadOrCreateSessionId()` (`src/session.ts`) loads or creates that file and is
-sent as `sessionId` with every prompt so the CLI resumes the server-side
-conversation thread across restarts. The chat wire protocol is defined in the
-shared `@lukestanbery/jarvis-protocol` package (parsing via `parseFrame`, serialization via
+`~/.jarvis/session-id`, overridable via `JARVIS_SESSION_FILE`, and the
+credentials file defaults to `~/.jarvis/credentials.json`, overridable via
+`JARVIS_CREDENTIALS_FILE` (`src/config.ts`). `loadOrCreateSessionId()`
+(`src/session.ts`) loads or creates that file and is sent as `sessionId` with
+every prompt so the CLI resumes the server-side conversation thread across
+restarts. The chat wire protocol is defined in the shared
+`@lukestanbery/jarvis-protocol` package (parsing via `parseFrame`, serialization via
 `serializeRequest`); tool and toolResult frames are surfaced to the REPL's
 stderr diagnostics via the `onTool`/`onToolResult` callbacks (`src/client.ts`).
+
+## Login/logout
+
+The REPL's `login [username]` / `logout` commands manage the local device
+credential (`src/credentials.ts`, `src/login.ts`): `login` exchanges
+username + password (echo suppressed) + device name for a per-device token at
+`POST /api/auth/login`, stores it in `~/.jarvis/credentials.json` (0600,
+atomic write, keyed by server origin), closes the socket, and rotates the
+session id — the server's strict ownership policy never re-parents a thread
+across identities. The token and password are secrets: never log them, and
+keep the password's echo suppression intact (the REPL's output stream is a
+suppressible wrapper; see `askHidden` in `src/index.ts`).
 
 ## Logging
 
@@ -44,4 +58,5 @@ the reply. Default level is `info`; set `JARVIS_LOG_LEVEL`
 
 ## Exit commands
 
-Type `exit` or `quit`, or press `Ctrl+C`/`Ctrl+D`, to quit.
+Type `exit` or `quit`, or press `Ctrl+C`/`Ctrl+D`, to quit (also honored while
+a login is in progress).

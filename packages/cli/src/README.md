@@ -7,29 +7,35 @@ guide — see the package `README.md` for install and usage instructions.
 
 ```
 src/
-├── index.ts   # entry point (readline REPL loop)
-├── client.ts  # ChatClient (WebSocket chat client)
-├── render.ts  # renderHandlers — prints the streamed response
-├── config.ts  # server URL + session-file path from environment
-├── session.ts # persistent conversation session id (~/.jarvis/session-id)
-└── README.md  # this file
+├── index.ts        # entry point (readline REPL loop, login/logout commands)
+├── client.ts       # ChatClient (WebSocket chat client)
+├── render.ts       # renderHandlers — prints the streamed response
+├── config.ts       # server URL + state-file paths + origin key from environment
+├── session.ts      # persistent conversation session id (~/.jarvis/session-id)
+├── credentials.ts  # per-origin login tokens (~/.jarvis/credentials.json, 0600)
+├── login.ts        # REST login + interactive credential prompts
+├── privateFs.ts    # local 0700/0600 filesystem helpers (mirror of server fs.ts)
+└── README.md       # this file
 ```
 
 ## File map
 
-| File         | Responsibility                                                                                                               |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`   | Entry point: readline REPL loop; forwards each line to the chat client, delegating stream rendering to `renderHandlers`      |
-| `client.ts`  | `ChatClient` — the WebSocket chat client: connects to the server, sends prompts, and emits typed events as frames stream in  |
-| `render.ts`  | `renderHandlers` — the named `PromptHandlers` for a text session: chunks to stdout, tool calls/results as stderr diagnostics |
-| `config.ts`  | `getServerUrl()` → `JARVIS_SERVER_URL` (default `ws://localhost:54321/ws`); `getSessionFilePath()` → `JARVIS_SESSION_FILE`   |
-| `session.ts` | `loadOrCreateSessionId()` → the id sent as `sessionId` on every prompt, persisted so the same thread resumes across restarts |
+| File             | Responsibility                                                                                                                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`       | Entry point: readline REPL loop; forwards each line to the chat client, delegating stream rendering to `renderHandlers`; owns the `login`/`logout` commands and the echo-suppressed password prompt |
+| `client.ts`      | `ChatClient` — the WebSocket chat client: connects to the server, sends prompts, and emits typed events as frames stream in                                                                         |
+| `render.ts`      | `renderHandlers` — the named `PromptHandlers` for a text session: chunks to stdout, tool calls/results as stderr diagnostics                                                                        |
+| `config.ts`      | `getServerUrl()` → `JARVIS_SERVER_URL`; `getSessionFilePath()` → `JARVIS_SESSION_FILE`; `getCredentialsFilePath()` → `JARVIS_CREDENTIALS_FILE`; `serverOrigin()` → the stable per-server key        |
+| `session.ts`     | `loadOrCreateSessionId()` → the id sent as `sessionId` on every prompt; `rotateSessionId()` for identity changes                                                                                    |
+| `credentials.ts` | `load/save/clearCredentials(origin)` — the per-origin device-token store, written atomically at `0600`                                                                                              |
+| `login.ts`       | `loginRequest()` — `POST /api/auth/login` over REST with mapped error messages; `askLoginDetails()` — interactive prompts                                                                           |
+| `privateFs.ts`   | `ensurePrivateDir()` — tightens dirs this process creates to `0700` (local mirror of the server package's `fs.ts` semantics)                                                                        |
 
 ## Data flow
 
 ```
 readline REPL (index.ts)
-      │  line of text
+      │  line of text (or a login/logout command)
       ▼
 client.ts ChatClient.prompt(text, sessionId, handlers)
       │  {"prompt": "...", "sessionId": "..."}  over WebSocket → @lukestanbery/jarvis-server /ws
@@ -37,6 +43,15 @@ client.ts ChatClient.prompt(text, sessionId, handlers)
       ▼
 render.ts renderHandlers  onChunk → process.stdout.write(chunk)   (prints as it streams)
                           onTool / onToolResult → logger to stderr (diagnostics, never stdout)
+
+login command (index.ts → login.ts)
+      │  username + password (echo suppressed) + device name
+      ▼
+login.ts loginRequest → POST {origin}/api/auth/login → { user, device, token }
+      ▼
+credentials.ts saveCredentials(origin, …) → ~/.jarvis/credentials.json (0600, atomic write)
+      ▼
+index.ts closes the socket + rotates the session id (strict ownership: new identity → new thread)
 ```
 
 ## Key decisions
@@ -55,7 +70,13 @@ render.ts renderHandlers  onChunk → process.stdout.write(chunk)   (prints as i
   frame handlers.
 - **One conversation, persisted.** `sessionId` comes from `session.ts`, which
   loads or creates `~/.jarvis/session-id`; deleting that file starts a fresh
-  server-side thread.
+  server-side thread. Login/logout rotate the id — the server's strict
+  ownership policy never re-parents a thread across identities.
+- **Credentials live locally, keyed per server.** `credentials.ts` stores one
+  device token per server origin in a single JSON file written atomically
+  (temp file + rename) at mode `0600`, inside a directory tightened to `0700`
+  when this process creates it. A malformed file is ignored (warn + null),
+  never fatal. The token is never logged.
 - **Errors are user-facing text only.** Server error frames are surfaced as
   `Error: <message>` lines; the CLI never prints the server's `[INFO]`/`[DEBUG]`
   tracing logs.

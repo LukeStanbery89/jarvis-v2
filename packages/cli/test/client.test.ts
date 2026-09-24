@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ChatClient } from "../src/client";
-import { getServerUrl, getSessionFilePath } from "../src/config";
+import { getServerUrl, getSessionFilePath, serverOrigin } from "../src/config";
 import { loadOrCreateSessionId } from "../src/session";
 
 /**
@@ -154,6 +154,51 @@ describe("getServerUrl", () => {
     it("reads JARVIS_SERVER_URL", () => {
         process.env.JARVIS_SERVER_URL = "ws://example.test/ws";
         expect(getServerUrl()).toBe("ws://example.test/ws");
+    });
+});
+
+describe("serverOrigin", () => {
+    it("converts the ws scheme to http and drops the path", () => {
+        expect(serverOrigin("ws://localhost:54321/ws")).toBe(
+            "http://localhost:54321",
+        );
+    });
+
+    it("treats URLs that differ only by path as the same origin", () => {
+        expect(serverOrigin("ws://localhost:54321")).toBe(
+            serverOrigin("ws://localhost:54321/ws"),
+        );
+    });
+
+    it("converts wss to https", () => {
+        expect(serverOrigin("wss://jarvis.example/ws")).toBe(
+            "https://jarvis.example",
+        );
+    });
+
+    it("passes http(s) URLs through", () => {
+        expect(serverOrigin("http://localhost:54321/api")).toBe(
+            "http://localhost:54321",
+        );
+        expect(serverOrigin("https://jarvis.example/api")).toBe(
+            "https://jarvis.example",
+        );
+    });
+
+    it("keeps non-default ports", () => {
+        expect(serverOrigin("ws://192.168.1.10:8080/ws")).toBe(
+            "http://192.168.1.10:8080",
+        );
+    });
+
+    it("throws on an invalid URL", () => {
+        expect(() => serverOrigin("not a url")).toThrow(/invalid server URL/);
+    });
+
+    it("throws on an unsupported scheme", () => {
+        expect(() => serverOrigin("ftp://jarvis.example/files")).toThrow(
+            /unsupported server URL scheme/,
+        );
     });
 });
 
