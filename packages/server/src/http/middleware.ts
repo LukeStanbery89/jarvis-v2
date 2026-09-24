@@ -12,8 +12,11 @@
  */
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { MAX_TOKEN_LENGTH } from "@lukestanbery/jarvis-protocol";
-import { hashDeviceToken } from "../auth";
-import type { AppDatabase, AuthenticatedContext } from "../auth";
+import { hashDeviceToken } from "@lukestanbery/jarvis-auth";
+import type {
+    AppDatabase,
+    AuthenticatedContext,
+} from "@lukestanbery/jarvis-auth";
 
 /**
  * Request augmented with the identity resolved by {@link requireAuth}.

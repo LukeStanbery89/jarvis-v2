@@ -46,27 +46,27 @@ The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
 variables:
 
-| Variable                      | Default                                                                         | Description                                                |
-| ----------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `LLM_BASE_URL`                | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                 |
-| `LLM_MODEL`                   | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                 |
-| `LLM_TEMPERATURE`             | `0`                                                                             | Sampling temperature                                       |
-| `LLM_SYSTEM_PROMPT`           | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread           |
-| `JARVIS_AGENT_MAX_TURNS`      | `10`                                                                            | Max agent loop steps per turn (tools + model calls)        |
-| `JARVIS_CHECKPOINT_PATH`      | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence        |
-| `JARVIS_DB_PATH`              | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs              |
-| `JARVIS_TURN_TIMEOUT_MS`      | `120000`                                                                        | Hard cap for one agent turn before it is aborted           |
-| `JARVIS_BOOTSTRAP_TOKEN`      | unset                                                                           | One-time setup credential; see `src/auth/README.md`        |
-| `JARVIS_HOST`                 | `0.0.0.0`                                                                       | Bind address (all interfaces = LAN posture)                |
-| `JARVIS_TLS_CERT`             | unset                                                                           | PEM certificate path — enables HTTPS serving               |
-| `JARVIS_TLS_KEY`              | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`) |
-| `JARVIS_HTTP_REDIRECT_PORT`   | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)           |
-| `JARVIS_RATE_WINDOW_MS`       | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap            |
-| `JARVIS_RATE_MAX_FAILURES`    | `10`                                                                            | Attempts per `(ip, username)` before a lockout             |
-| `JARVIS_RATE_MAX_IP_FAILURES` | `100`                                                                           | Aggregate attempts per IP before a lockout                 |
-| `JARVIS_RATE_LOCKOUT_MS`      | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)        |
-| `JARVIS_LOG_LEVEL`            | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`      |
-| `JARVIS_LOG_SENSITIVE`        | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`      |
+| Variable                      | Default                                                                         | Description                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `LLM_BASE_URL`                | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                            |
+| `LLM_MODEL`                   | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                            |
+| `LLM_TEMPERATURE`             | `0`                                                                             | Sampling temperature                                                  |
+| `LLM_SYSTEM_PROMPT`           | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread                      |
+| `JARVIS_AGENT_MAX_TURNS`      | `10`                                                                            | Max agent loop steps per turn (tools + model calls)                   |
+| `JARVIS_CHECKPOINT_PATH`      | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence                   |
+| `JARVIS_DB_PATH`              | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs                         |
+| `JARVIS_TURN_TIMEOUT_MS`      | `120000`                                                                        | Hard cap for one agent turn before it is aborted                      |
+| `JARVIS_BOOTSTRAP_TOKEN`      | unset                                                                           | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
+| `JARVIS_HOST`                 | `0.0.0.0`                                                                       | Bind address (all interfaces = LAN posture)                           |
+| `JARVIS_TLS_CERT`             | unset                                                                           | PEM certificate path — enables HTTPS serving                          |
+| `JARVIS_TLS_KEY`              | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`)            |
+| `JARVIS_HTTP_REDIRECT_PORT`   | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)                      |
+| `JARVIS_RATE_WINDOW_MS`       | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap                       |
+| `JARVIS_RATE_MAX_FAILURES`    | `10`                                                                            | Attempts per `(ip, username)` before a lockout                        |
+| `JARVIS_RATE_MAX_IP_FAILURES` | `100`                                                                           | Aggregate attempts per IP before a lockout                            |
+| `JARVIS_RATE_LOCKOUT_MS`      | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)                   |
+| `JARVIS_LOG_LEVEL`            | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`                 |
+| `JARVIS_LOG_SENSITIVE`        | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`                 |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev

@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-    AuthError,
-    generateDeviceToken,
-    hashDeviceToken,
-} from "../../src/auth";
-import {
-    hashPassword,
-    verifyPassword,
-    type ScryptParams,
-} from "../../src/auth/crypto";
+import { AuthError, generateDeviceToken, hashDeviceToken } from "../src";
+import { hashPassword, verifyPassword, type ScryptParams } from "../src/crypto";
 
 /** Test scrypt cost: fast enough to hash many times, still scrypt. */
 const FAST_SCRYPT: ScryptParams = { N: 4, r: 1, p: 1 };

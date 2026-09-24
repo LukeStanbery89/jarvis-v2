@@ -1,7 +1,13 @@
-# server/src/auth — accounts, devices, and the app database
+# @lukestanbery/jarvis-auth — accounts, devices, sessions, and the app database
 
-This README explains how the auth module is organized. It shares one file per
-concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
+The auth core for J.A.R.V.I.S.: the account/device/credential seams and the
+better-sqlite3 app database every authenticated endpoint and WebSocket turn
+runs against. Extracted from the original `packages/server/src/auth/` so the
+server's REST management API, its `/ws` chat handshake, and — once the cookie
+web portal (#24) lands — its browser sessions all share one implementation.
+
+This README is the module guide for how the package is organized: one file per
+concern so consumers depend on narrow seams, never raw SQL.
 
 ## Files
 
@@ -13,11 +19,15 @@ concern so the REST and WebSocket layers consume narrow seams, never raw SQL.
 | `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                       |
 | `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & SessionLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
 | `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
+| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                           |
 | `README.md`     | this file                                                                                                                                                                                                                        |
 
-The REST layer lives outside this module in `src/http/` (`middleware.ts` =
-`requireAuth`/`requireOwner` filling `req.jarv`; `authRoutes.ts` = the `/api`
-router) — it consumes these seams and never touches SQL.
+The REST layer lives outside this package in the server's `src/http/`
+(`middleware.ts` = `requireAuth`/`requireOwner` filling `req.jarv`;
+`authRoutes.ts` = the `/api` router) — it consumes these seams and never
+touches SQL. The `/ws` handshake (`src/ws.ts`) resolves device tokens through
+the same store. #24 will add a cookie-session provider here so the browser
+portal and the CLI/device-token path share the ledger.
 
 ## Ledger roles
 
@@ -29,12 +39,12 @@ on only the surface they call:
 - `DeviceLedger` — device credentials and token resolution: presented tokens
   run through `hashDeviceToken` (crypto) before `DeviceLedger.resolveTokenHash`.
 - `SessionLedger` — the WS chat sessions (`claimSession` / get-by-thread /
-  touch / delete / list-owned). `SessionManager` (in `../sessionManager.ts`)
-  is typed against exactly this role.
+  touch / delete / list-owned). The server's `SessionManager`
+  (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
 
-`createApp`/`attachChatServer` are the composition roots; the REST router and
-middleware span all three ledgers and therefore take the full `AppDatabase`,
-while `createSessionManager` narrows to `SessionLedger`.
+The server's `createApp`/`attachChatServer` are the composition roots; the REST
+router and middleware span all three ledgers and therefore take the full
+`AppDatabase`, while `createSessionManager` narrows to `SessionLedger`.
 
 ## Credential model
 
@@ -45,17 +55,17 @@ while `createSessionManager` narrows to `SessionLedger`.
   an 8-char display `prefix` are persisted (`crypto.ts`). A leaked DB never
   leaks a usable token; a support listing never shows one.
 - **Verifier seam.** Password hashing + verification happens in exactly one
-  place — `src/auth/credential.ts`, the `CredentialVerifier` used by
+  place — `credential.ts`, the `CredentialVerifier` used by the server's
   `authRoutes.ts`: `getPasswordHash(username)` then
   `verify(username, storedHash)`. A username with no row (a `null` hash)
   verifies against a cached same-cost dummy hash so account existence can't be
   inferred from response time. Device tokens are the credential for everything
   else: the presented token is run through `hashDeviceToken` and looked up by
-  exact `secret_hash` in `store.resolveTokenHash`. Nothing outside the
-  credential seam ever hashes or compares secrets, and the store only ever
-  seats hash-versus-hash equality. Biometric auth (issue #25) slots in at the
-  login seam — replace the password step with a biometric challenge and still
-  provision a device token afterwards.
+  exact `secret_hash` in `store.resolveTokenHash`. Nothing outside this
+  package's credential seam ever hashes or compares secrets, and the store only
+  ever seats hash-versus-hash equality. Biometric auth (issue #25) slots in at
+  the login seam — replace the password step with a biometric challenge and
+  still provision a device token afterwards.
 
 ## App database
 
@@ -78,6 +88,11 @@ while `createSessionManager` narrows to `SessionLedger`.
   integration state once the web portal (roadmap #24) lands; until a consumer
   arrives, its shape can only drift from this README, not from dead code.
 
+`openAppDatabase(path)` creates + pre-narrows the file's directory (via
+`fs.ts`) before SQLite touches it, so the world-readable window SQLite's
+default `0644` creation would open is closed up front. Tests construct
+`SqliteAppDatabase` over `":memory:"` directly.
+
 ## Rules for callers
 
 - Owned data (sessions, prefs) is always resolved _relative to the identity_
@@ -86,8 +101,8 @@ while `createSessionManager` narrows to `SessionLedger`.
 - Guests (`kind: "guest"` — no user/device) may reach identity-independent
   actions only. Row ownership is decided by the shared policy in
   `ownership.ts` (`ownsRow` for the WS chat path, `canManage` for REST) — the
-  lifecycle matrix lives in the WS/REST + `sessionManager.ts` layers, not in
-  the store.
+  lifecycle matrix lives in the server's WS/REST + `sessionManager.ts` layers,
+  not in the store.
 - The store never hashes or compares secrets — that is `crypto.ts`'s job, and
   the REST layer reaches it only through the `CredentialVerifier` seam. The
   REST/WS layers that received a presented token call `hashDeviceToken`

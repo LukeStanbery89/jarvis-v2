@@ -16,8 +16,11 @@ import {
     canManage,
     createCredentialVerifier,
     generateDeviceToken,
-} from "../auth";
-import type { AppDatabase, CredentialVerifier } from "../auth";
+} from "@lukestanbery/jarvis-auth";
+import type {
+    AppDatabase,
+    CredentialVerifier,
+} from "@lukestanbery/jarvis-auth";
 import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
 import { authed, requireAuth, requireOwner } from "./middleware";
 import { RateLimiter } from "./rateLimit";

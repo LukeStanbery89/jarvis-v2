@@ -9,7 +9,7 @@ import {
     generateDeviceToken,
     openAppDatabase,
     type AppDatabase,
-} from "../../src/auth";
+} from "../src";
 
 let store: AppDatabase;
 let db: Database.Database;

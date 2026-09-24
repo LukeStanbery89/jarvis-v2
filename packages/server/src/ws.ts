@@ -29,8 +29,8 @@ import {
     type ClientFrame,
 } from "@lukestanbery/jarvis-protocol";
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
-import { hashDeviceToken } from "./auth";
-import type { AppDatabase, AuthContext } from "./auth";
+import { hashDeviceToken } from "@lukestanbery/jarvis-auth";
+import type { AppDatabase, AuthContext } from "@lukestanbery/jarvis-auth";
 import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
 import { createSessionManager } from "./sessionManager";
 import type { SessionManager, TurnOutcome } from "./sessionManager";

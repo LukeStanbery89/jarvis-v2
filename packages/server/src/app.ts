@@ -1,7 +1,7 @@
 import express from "express";
 import type { ErrorRequestHandler } from "express";
 import type { AppConfig } from "./config";
-import type { AppDatabase } from "./auth";
+import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import { createAuthRouter } from "./http/authRoutes";
 
 /**

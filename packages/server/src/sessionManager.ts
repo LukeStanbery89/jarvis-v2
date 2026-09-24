@@ -15,8 +15,8 @@
  * package (voice, another chat endpoint) ever mounts a second manager over the
  * same ledger, the lock must move to a store-level key instead.
  */
-import type { AuthContext, SessionLedger } from "./auth";
-import { ownsRow } from "./auth";
+import type { AuthContext, SessionLedger } from "@lukestanbery/jarvis-auth";
+import { ownsRow } from "@lukestanbery/jarvis-auth";
 
 /** How a turn resolved; the caller decides the user-facing message. */
 export type TurnOutcome = "completed" | "busy" | "not-owned";

@@ -12,7 +12,7 @@ import { createApp } from "./app";
 import { getAppConfig, getServerPort, DEFAULT_HOST } from "./config";
 import { attachChatServer } from "./ws";
 import { initAgentGraph } from "./agent";
-import { openAppDatabase } from "./auth";
+import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 
 const port = getServerPort();

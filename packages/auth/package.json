@@ -1,0 +1,36 @@
+{
+    "name": "@lukestanbery/jarvis-auth",
+    "version": "0.1.0",
+    "description": "J.A.R.V.I.S. auth core: the app database and account/device/credential seams",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit -p tsconfig.test.json",
+        "test": "vitest run",
+        "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/LukeStanbery89/jarvis-v2.git",
+        "directory": "packages/auth"
+    },
+    "bugs": {
+        "url": "https://github.com/LukeStanbery89/jarvis-v2/issues"
+    },
+    "homepage": "https://github.com/LukeStanbery89/jarvis-v2/tree/main/packages/auth#readme",
+    "license": "MIT",
+    "type": "commonjs",
+    "dependencies": {
+        "better-sqlite3": "^12.11.1"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^9.6.0",
+        "@types/node": "^26.6.2",
+        "typescript": "^7.0.2",
+        "vitest": "^5.0.1"
+    }
+}

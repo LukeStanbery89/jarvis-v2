@@ -7,7 +7,7 @@ import {
     type AppDevice,
     type AppUser,
     type AuthContext,
-} from "../src/auth";
+} from "@lukestanbery/jarvis-auth";
 import { createSessionManager } from "../src/sessionManager";
 import type { SessionManager } from "../src/sessionManager";
 

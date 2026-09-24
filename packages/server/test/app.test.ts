@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { createApp, createHttpsRedirectApp } from "../src/app";
-import { SqliteAppDatabase } from "../src/auth";
+import { SqliteAppDatabase } from "@lukestanbery/jarvis-auth";
 
 const store = new SqliteAppDatabase(new Database(":memory:"));
 

@@ -13,7 +13,7 @@
  * secrets never touch the database.
  */
 import Database from "better-sqlite3";
-import { ensurePrivateFile, ensurePrivateStorage } from "../fs";
+import { ensurePrivateFile, ensurePrivateStorage } from "./fs";
 import { AuthError } from "./errors";
 import type {
     AppDevice,

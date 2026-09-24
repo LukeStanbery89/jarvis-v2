@@ -2,8 +2,11 @@ import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app";
-import { SqliteAppDatabase, generateDeviceToken } from "../src/auth";
-import type { AppDatabase } from "../src/auth";
+import {
+    SqliteAppDatabase,
+    generateDeviceToken,
+} from "@lukestanbery/jarvis-auth";
+import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { AppConfig } from "../src/config";
 
 const FAST: AppConfig & { bootstrapToken: string } = {

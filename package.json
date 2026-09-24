@@ -7,7 +7,7 @@
         "packages/*"
     ],
     "scripts": {
-        "build": "npm run build -w @lukestanbery/jarvis-protocol -w @lukestanbery/jarvis-logger && npm run build -w @lukestanbery/jarvis-cli -w @lukestanbery/jarvis-server",
+        "build": "npm run build -w @lukestanbery/jarvis-protocol -w @lukestanbery/jarvis-logger -w @lukestanbery/jarvis-auth -w @lukestanbery/jarvis-cli -w @lukestanbery/jarvis-server",
         "check": "npm run build && npm run typecheck && npm test && npm run format:check",
         "format": "prettier --write .",
         "format:check": "prettier --check .",

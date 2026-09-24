@@ -12,7 +12,8 @@ accepts prompts and streams back a response.
 - Express 5 + `ws` for WebSocket server
 - LangChain (`@langchain/core` + `@langchain/openai`) for the model stack
 - LangGraph (`@langchain/langgraph`) + SQLite checkpoints for the agent loop
-- better-sqlite3 for the app database (`users`/`devices`/`sessions`) — see `src/auth/`
+- The app database (`users`/`devices`/`sessions`) + password/device-token crypto live in the shared
+  `@lukestanbery/jarvis-auth` package (better-sqlite3; see its README) — the server only consumes its seams
 - Logging via `@lukestanbery/jarvis-logger` (see `src/logger.ts`)
 - Tests via Vitest + supertest
 
@@ -75,24 +76,23 @@ exponential backoff) by `src/http/rateLimit.ts`. The bootstrap token is single-u
 `authRoutes` consumes it after a successful bootstrap, leaving the config object untouched. TLS is optional in-node
 (`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS mode the main listener is HTTPS and a cleartext redirect app
 (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its
-database files to `0600` on open.
+database files to `0600` on open (via the `fs.ts` helpers exported by `@lukestanbery/jarvis-auth`).
 
 ## Source layout
 
-- `src/index.ts` — process entry: config, `openAppDatabase`, `createApp`, `attachChatServer` — hands the app to the listener seam.
+- `src/index.ts` — process entry: config, `openAppDatabase` (from `@lukestanbery/jarvis-auth`), `createApp`, `attachChatServer` — hands the app to the listener seam.
 - `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`).
-- `src/fs.ts` — `ensurePrivateStorage`/`ensurePrivateFile`: tightens `~/.jarvis` to `0700`/`0600`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, mounts `/api`; `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer → `req.jarv`) and `requireOwner`.
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
-- `src/auth/` — app database + credential crypto (see `src/auth/README.md`): `store.ts` (backed by
-  `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`) exposes `AppDatabase` as the intersection of three role
+- `@lukestanbery/jarvis-auth` (workspace dep) — app database + credential crypto (see its README): `openAppDatabase`
+  (backed by `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`) exposes `AppDatabase` as the intersection of three role
   interfaces — `UserLedger`/`DeviceLedger`/`SessionLedger`; `crypto.ts` (the primitives), `credential.ts` (the
   `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
-  shared row-ownership policy), `errors.ts`, `types.ts`.
+  shared row-ownership policy), `errors.ts`, `types.ts`, `fs.ts`.
 - `src/ws.ts` — the `/ws` endpoint: auth handshake + prompt framing. The session lifecycle (claim, ownership
   guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`.
 - `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer.
@@ -100,11 +100,11 @@ database files to `0600` on open.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
 - `src/llm/chatModel.ts` — the only module that knows `@langchain/openai`.
 - `src/llm/tools/` — the tool implementations.
-- `test/` — Vitest suites: `app.test.ts`, `ws.test.ts`, `http.test.ts`, `auth/*`.
+- `test/` — Vitest suites: `app.test.ts`, `ws.test.ts`, `http.test.ts`, `sessionManager.test.ts`.
 
 `src/ws.ts` is the only module that touches the agent seam; `src/llm/chatModel.ts` is the only module that knows
-`@langchain/openai`; nothing outside `src/auth/` hashes or compares secrets (within it, only `crypto.ts`
-holds the primitives — the REST layer reaches password crypto solely through the `credential.ts` seam).
+`@langchain/openai`; nothing outside `@lukestanbery/jarvis-auth` hashes or compares secrets (within it, only
+`crypto.ts` holds the primitives — the REST layer reaches password crypto solely through the `credential.ts` seam).
 
 ## Logging
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCredentialVerifier } from "../../src/auth";
-import * as crypto from "../../src/auth/crypto";
+import { createCredentialVerifier } from "../src";
+import * as crypto from "../src/crypto";
 
 describe("CredentialVerifier", () => {
     it("hashes a password and verifies it (correct vs wrong)", async () => {

@@ -4,7 +4,10 @@ import { WebSocket } from "ws";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
-import { SqliteAppDatabase, generateDeviceToken } from "../src/auth";
+import {
+    SqliteAppDatabase,
+    generateDeviceToken,
+} from "@lukestanbery/jarvis-auth";
 import type { AgentEvent } from "../src/llm/agentGraph";
 
 vi.mock("../src/agent", () => ({

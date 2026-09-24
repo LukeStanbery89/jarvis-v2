@@ -19,7 +19,10 @@ import {
 import { tools } from "./llm/tools";
 import { getLlmConfig } from "./config";
 import { logger } from "./logger";
-import { ensurePrivateFile, ensurePrivateStorage } from "./fs";
+import {
+    ensurePrivateFile,
+    ensurePrivateStorage,
+} from "@lukestanbery/jarvis-auth";
 
 export type { AgentEvent, AgentGraph } from "./llm/agentGraph";
 
