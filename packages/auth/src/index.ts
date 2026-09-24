@@ -13,6 +13,12 @@ export type { DeviceTokenMaterial } from "./crypto";
 export { createCredentialVerifier } from "./credential";
 export type { CredentialVerifier } from "./credential";
 export { canManage, ownsRow } from "./ownership";
+export { createCookieSessionProvider, DEFAULT_SESSION_TTL_MS } from "./cookie";
+export type {
+    CookieSessionMaterial,
+    CookieSessionOptions,
+    CookieSessionProvider,
+} from "./cookie";
 export {
     ensurePrivateDir,
     ensurePrivateFile,
@@ -22,8 +28,10 @@ export { openAppDatabase, SqliteAppDatabase } from "./store";
 export type {
     AppDatabase,
     DeviceLedger,
+    PrefLedger,
     SessionLedger,
     UserLedger,
+    WebSessionLedger,
 } from "./store";
 export type {
     AppDevice,
@@ -35,4 +43,5 @@ export type {
     ResolvedIdentity,
     Role,
     SessionKind,
+    WebSessionRow,
 } from "./types";

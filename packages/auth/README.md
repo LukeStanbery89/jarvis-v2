@@ -11,23 +11,25 @@ concern so consumers depend on narrow seams, never raw SQL.
 
 ## Files
 
-| File            | Responsibility                                                                                                                                                                                                                   |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`) |
-| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                        |
-| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                            |
-| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                       |
-| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & SessionLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session ledger |
-| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                       |
-| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                           |
-| `README.md`     | this file                                                                                                                                                                                                                        |
+| File            | Responsibility                                                                                                                                                                                                                                                                                 |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`)                                                               |
+| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                      |
+| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                          |
+| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                     |
+| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session ledgers |
+| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                       |
+| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                     |
+| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                         |
+| `README.md`     | this file                                                                                                                                                                                                                                                                                      |
 
 The REST layer lives outside this package in the server's `src/http/`
 (`middleware.ts` = `requireAuth`/`requireOwner` filling `req.jarv`;
 `authRoutes.ts` = the `/api` router) — it consumes these seams and never
 touches SQL. The `/ws` handshake (`src/ws.ts`) resolves device tokens through
-the same store. #24 will add a cookie-session provider here so the browser
-portal and the CLI/device-token path share the ledger.
+the same store. The cookie-session provider (`cookie.ts`) is what the browser
+portal (#24) authenticates through, so the cookie provider and the
+CLI/device-token path share one ledger.
 
 ## Ledger roles
 
@@ -35,9 +37,19 @@ portal and the CLI/device-token path share the ledger.
 on only the surface they call:
 
 - `UserLedger` — account rows + stored password hashes (`getPasswordHash` is
-  for the credential-verifier seam only).
+  for the credential-verifier seam only); role promotion/demotion
+  (`setUserRole`, `OWNER_EXISTS` on a second owner) and disable/re-enable
+  (`setUserDisabled`).
 - `DeviceLedger` — device credentials and token resolution: presented tokens
   run through `hashDeviceToken` (crypto) before `DeviceLedger.resolveTokenHash`.
+  `renameDevice` renames a device (a name already used by the same user throws
+  `BAD_REQUEST`). Token resolution excludes **disabled** accounts, so disabling
+  a user revokes every kept credential instantly.
+- `WebSessionLedger` — browser cookie sessions (`CookieSessionProvider`):
+  hash-keyed rows over the `web_sessions` table; issue/get/delete + delete-all.
+- `PrefLedger` — per-user integration prefs over the `prefs` table:
+  `getPrefs`/`setPrefs` (upsert) / `deletePrefKeys`, JSON values round-tripped
+  through `value_json`.
 - `SessionLedger` — the WS chat sessions (`claimSession` / get-by-thread /
   touch / delete / list-owned). The server's `SessionManager`
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
@@ -54,6 +66,10 @@ router and middleware span all three ledgers and therefore take the full
 - **Device tokens** → 32 random bytes (base64url). Only their SHA-256 hash and
   an 8-char display `prefix` are persisted (`crypto.ts`). A leaked DB never
   leaks a usable token; a support listing never shows one.
+- **Cookie sessions** → the same shape for browsers (`cookie.ts`): a 32-byte
+  base64url token that rides an HttpOnly cookie, stored only as a SHA-256 hash,
+  plus a per-session CSRF nonce the portal echoes in an `x-csrf-token` header.
+  Absolute expiry (`DEFAULT_SESSION_TTL_MS`, 30 days); revoke deletes the row.
 - **Verifier seam.** Password hashing + verification happens in exactly one
   place — `credential.ts`, the `CredentialVerifier` used by the server's
   `authRoutes.ts`: `getPasswordHash(username)` then
@@ -73,8 +89,12 @@ router and middleware span all three ledgers and therefore take the full
 `PRAGMA user_version`:
 
 - `users` — `username` (unique, case-insensitive), `password_hash`, `role`
-  (`owner`/`user`).
+  (`owner`/`user`), `disabled` (revoke-by-disable: a disabled account's stored
+  device tokens stop resolving).
 - `devices` — per-credential rows keyed to a user; `secret_hash` + `prefix`.
+- `web_sessions` — browser cookie sessions: hash-keyed rows (`secret_hash`
+  UNIQUE) with a per-session `csrf_token` and `expires_at`; cascade-deleted
+  with their user. Managed by the `CookieSessionProvider` + `WebSessionLedger`.
 - `sessions` — the WS-turn ledger: one row per `thread_id` (unique), owned by
   a user/device or `NULL` (guest), with `kind` (`text`/`voice`) for the
   lifecycle matrix. `claimSession` claims atomically
@@ -82,11 +102,10 @@ router and middleware span all three ledgers and therefore take the full
   maintains `last_active_at`; `deleteSession` and `listOwnedSessions` back the
   REST management API and guest cleanup. The WS layer decides _when_ rows are
   deleted (guest sockets on close), not the store.
-- `prefs` — per-user integration prefs (JSON values); LLM settings stay in
-  the environment. **Kept-but-unused:** the table exists in the schema but has
-  no `AppDatabase` accessor yet — it is the reserved home for per-user
-  integration state once the web portal (roadmap #24) lands; until a consumer
-  arrives, its shape can only drift from this README, not from dead code.
+- `prefs` — per-user integration prefs (JSON values in `value_json`); LLM
+  settings stay in the environment. Reached through the `PrefLedger` accessors
+  — the reserved home for the per-user integration state the web portal (#24)
+  manages, from a consumer (v4 schema, planning-complete) onward.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's
@@ -96,7 +115,7 @@ default `0644` creation would open is closed up front. Tests construct
 ## Rules for callers
 
 - Owned data (sessions, prefs) is always resolved _relative to the identity_
-  in `AuthContext` (prefs once #24 lands); never trust a client-supplied
+  in `AuthContext`; never trust a client-supplied
   owner id.
 - Guests (`kind: "guest"` — no user/device) may reach identity-independent
   actions only. Row ownership is decided by the shared policy in

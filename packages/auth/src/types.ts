@@ -15,6 +15,9 @@ export interface AppUser {
     id: number;
     username: string;
     role: Role;
+    /** Whether the account is disabled; disabled users can't log in and no
+     *  kept credential resolves to them (see the store's `resolveTokenHash`). */
+    disabled: boolean;
     createdAt: string;
 }
 
@@ -58,6 +61,23 @@ export interface AuthenticatedContext extends ResolvedIdentity {
 
 /** Input modality of a chat session. */
 export type SessionKind = "text" | "voice";
+
+/**
+ * One row of the web-session ledger: a browser cookie session.
+ *
+ * Created by {@link CookieSessionProvider}. `secretHash` is the SHA-256 of the
+ * cookie's raw token (hash-at-rest, exactly like device tokens); `csrfToken`
+ * is the per-session nonce the browser echoes in an `x-csrf-token` header on
+ * state-changing requests. `user_id` is the account the session belongs to.
+ */
+export interface WebSessionRow {
+    id: number;
+    userId: number;
+    secretHash: string;
+    csrfToken: string;
+    createdAt: string;
+    expiresAt: string;
+}
 
 /**
  * One chat session: a nexus between the WS-turn ledger and a LangGraph thread.

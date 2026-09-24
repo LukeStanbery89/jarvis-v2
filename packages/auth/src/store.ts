@@ -22,6 +22,7 @@ import type {
     ResolvedIdentity,
     Role,
     SessionKind,
+    WebSessionRow,
 } from "./types";
 
 const SCHEMA = `
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
     role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+    disabled      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS devices (
@@ -58,6 +60,14 @@ CREATE TABLE IF NOT EXISTS prefs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
+CREATE TABLE IF NOT EXISTS web_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    secret_hash TEXT NOT NULL UNIQUE,
+    csrf_token  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
 `;
 
 /**
@@ -76,6 +86,13 @@ export interface UserLedger {
     getPasswordHash(username: string): string | null;
     getUserById(id: number): AppUser | null;
     hasOwner(): boolean;
+    /**
+     * Re-role an account promoted/demoted by an owner. Creating a second owner
+     * violates the partial single-owner index and throws `OWNER_EXISTS`.
+     */
+    setUserRole(id: number, role: Role): void;
+    /** Flag an account disabled (revoked-by-disable) or re-enable it. */
+    setUserDisabled(id: number, disabled: boolean): void;
     listUsers(): AppUser[];
 }
 
@@ -102,7 +119,50 @@ export interface DeviceLedger {
     listDevicesByUser(userId: number): AppDevice[];
     revokeDevice(id: number): void;
     touchDevice(id: number): void;
+    /**
+     * Renames a device and returns the updated row. A name already used by
+     * another of the same user's devices (`(user_id, name)` UNIQUE) throws
+     * `BAD_REQUEST`; a missing id throws `NOT_FOUND`.
+     */
+    renameDevice(id: number, name: string): AppDevice;
     resolveTokenHash(tokenHash: string): ResolvedIdentity | null;
+}
+
+/**
+ * Browser cookie-session ledger.
+ *
+ * Created by the server's `CookieSessionProvider` — one row per issued cookie,
+ * keyed by the SHA-256 hash of the cookie's raw token (hash-at-rest, like
+ * device credentials). The store serves lookups and deletion only; expiry and
+ * token generation live in the provider (`cookie.ts`).
+ */
+export interface WebSessionLedger {
+    createWebSession(
+        userId: number,
+        secretHash: string,
+        csrfToken: string,
+        expiresAt: string,
+    ): void;
+    getWebSessionByHash(secretHash: string): WebSessionRow | null;
+    deleteWebSession(secretHash: string): void;
+    /** Deletes every session for a user (disable / sign-out-everywhere). */
+    deleteWebSessionsForUser(userId: number): void;
+}
+
+/**
+ * Per-user integration-prefs ledger over the `prefs` table.
+ *
+ * Values are arbitrary JSON, validated by the REST layer (`zod`) before they
+ * reach the store; the ledger only round-trips `value_json`. The home for the
+ * per-user integration state the web portal (#24) manages.
+ */
+export interface PrefLedger {
+    /** All keys + parsed JSON values for a user (empty object when none). */
+    getPrefs(userId: number): Record<string, unknown>;
+    /** Upsert the given key/value pairs (existing keys keep their row, update value). */
+    setPrefs(userId: number, records: { key: string; value: unknown }[]): void;
+    /** Delete the given keys for a user (missing keys are silently ignored). */
+    deletePrefKeys(userId: number, keys: string[]): void;
 }
 
 /**
@@ -135,6 +195,8 @@ export interface SessionLedger {
  */
 export type AppDatabase = UserLedger &
     DeviceLedger &
+    WebSessionLedger &
+    PrefLedger &
     SessionLedger & {
         /** Releases the underlying connection. */
         close(): void;
@@ -148,12 +210,14 @@ function mapUser(row: {
     id: number;
     username: string;
     role: Role;
+    disabled: number;
     createdAt: string;
 }): AppUser {
     return {
         id: row.id,
         username: row.username,
         role: row.role,
+        disabled: row.disabled === 1,
         createdAt: row.createdAt,
     };
 }
@@ -222,6 +286,22 @@ function migrate(db: Database.Database): void {
         `);
         db.pragma("user_version = 3");
     }
+    if (version < 4) {
+        // v4: the web-cookie session ledger plus the account `disabled` flag
+        // used by the portal's user management. The column ALTER is guarded so
+        // both fresh databases (which already have it via SCHEMA) and existing
+        // v1-v3 stores (which don't) converge on the same v4 shape.
+        const columns = db.pragma("table_info(users)") as { name: string }[];
+        if (!columns.some((c) => c.name === "disabled")) {
+            db.exec(
+                "ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0",
+            );
+        }
+        db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id)",
+        );
+        db.pragma("user_version = 4");
+    }
 }
 
 export function openAppDatabase(dbPath: string): AppDatabase {
@@ -255,6 +335,16 @@ export class SqliteAppDatabase implements AppDatabase {
         updateSessionLastActive: Database.Statement;
         deleteSession: Database.Statement;
         listSessionsByUser: Database.Statement;
+        updateUserRole: Database.Statement;
+        updateUserDisabled: Database.Statement;
+        updateDeviceName: Database.Statement;
+        insertWebSession: Database.Statement;
+        selectWebSessionByHash: Database.Statement;
+        deleteWebSession: Database.Statement;
+        deleteWebSessionsForUser: Database.Statement;
+        upsertPref: Database.Statement;
+        selectPrefs: Database.Statement;
+        deletePrefKey: Database.Statement;
     };
 
     constructor(db: Database.Database) {
@@ -266,13 +356,13 @@ export class SqliteAppDatabase implements AppDatabase {
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
             ),
             selectUserByUsername: db.prepare(
-                "SELECT id, username, role, created_at AS createdAt FROM users WHERE username = ?",
+                "SELECT id, username, role, disabled, created_at AS createdAt FROM users WHERE username = ?",
             ),
             selectUserPasswordHash: db.prepare(
                 "SELECT password_hash AS passwordHash FROM users WHERE username = ?",
             ),
             selectUserById: db.prepare(
-                "SELECT id, username, role, created_at AS createdAt FROM users WHERE id = ?",
+                "SELECT id, username, role, disabled, created_at AS createdAt FROM users WHERE id = ?",
             ),
             selectOwnerCount: db.prepare(
                 "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'",
@@ -290,13 +380,13 @@ export class SqliteAppDatabase implements AppDatabase {
                 "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE user_id = ? AND name = ?",
             ),
             selectDeviceByHash: db.prepare(
-                "SELECT d.id AS deviceId, d.user_id AS deviceUserId, d.name AS deviceName, d.prefix AS devicePrefix, d.created_at AS deviceCreatedAt, d.last_seen_at AS deviceLastSeenAt, u.id AS userId, u.username AS username, u.role AS role, u.created_at AS userCreatedAt FROM devices d JOIN users u ON u.id = d.user_id WHERE d.secret_hash = ?",
+                "SELECT d.id AS deviceId, d.user_id AS deviceUserId, d.name AS deviceName, d.prefix AS devicePrefix, d.created_at AS deviceCreatedAt, d.last_seen_at AS deviceLastSeenAt, u.id AS userId, u.username AS username, u.role AS role, u.disabled AS userDisabled, u.created_at AS userCreatedAt FROM devices d JOIN users u ON u.id = d.user_id WHERE d.secret_hash = ? AND u.disabled = 0",
             ),
             listDevicesByUser: db.prepare(
                 "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE user_id = ? ORDER BY created_at DESC",
             ),
             listUsers: db.prepare(
-                "SELECT id, username, role, created_at AS createdAt FROM users ORDER BY id ASC",
+                "SELECT id, username, role, disabled, created_at AS createdAt FROM users ORDER BY id ASC",
             ),
             deleteDevice: db.prepare("DELETE FROM devices WHERE id = ?"),
             updateDeviceLastSeen: db.prepare(
@@ -316,6 +406,36 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             listSessionsByUser: db.prepare(
                 "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE user_id = ? ORDER BY last_active_at DESC",
+            ),
+            updateUserRole: db.prepare(
+                "UPDATE users SET role = ? WHERE id = ?",
+            ),
+            updateUserDisabled: db.prepare(
+                "UPDATE users SET disabled = ? WHERE id = ?",
+            ),
+            updateDeviceName: db.prepare(
+                "UPDATE devices SET name = ? WHERE id = ?",
+            ),
+            insertWebSession: db.prepare(
+                "INSERT INTO web_sessions (user_id, secret_hash, csrf_token, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            ),
+            selectWebSessionByHash: db.prepare(
+                "SELECT id, user_id AS userId, secret_hash AS secretHash, csrf_token AS csrfToken, created_at AS createdAt, expires_at AS expiresAt FROM web_sessions WHERE secret_hash = ?",
+            ),
+            deleteWebSession: db.prepare(
+                "DELETE FROM web_sessions WHERE secret_hash = ?",
+            ),
+            deleteWebSessionsForUser: db.prepare(
+                "DELETE FROM web_sessions WHERE user_id = ?",
+            ),
+            upsertPref: db.prepare(
+                "INSERT INTO prefs (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            ),
+            selectPrefs: db.prepare(
+                "SELECT key, value_json AS valueJson FROM prefs WHERE user_id = ?",
+            ),
+            deletePrefKey: db.prepare(
+                "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
         };
     }
@@ -355,6 +475,7 @@ export class SqliteAppDatabase implements AppDatabase {
             id: number;
             username: string;
             role: Role;
+            disabled: number;
             createdAt: string;
         };
         return mapUser(row);
@@ -366,6 +487,7 @@ export class SqliteAppDatabase implements AppDatabase {
                   id: number;
                   username: string;
                   role: Role;
+                  disabled: number;
                   createdAt: string;
               }
             | undefined;
@@ -390,6 +512,7 @@ export class SqliteAppDatabase implements AppDatabase {
                   id: number;
                   username: string;
                   role: Role;
+                  disabled: number;
                   createdAt: string;
               }
             | undefined;
@@ -490,6 +613,7 @@ export class SqliteAppDatabase implements AppDatabase {
             id: number;
             username: string;
             role: Role;
+            disabled: number;
             createdAt: string;
         }[];
         return rows.map(mapUser);
@@ -501,6 +625,131 @@ export class SqliteAppDatabase implements AppDatabase {
 
     touchDevice(id: number): void {
         this.statements.updateDeviceLastSeen.run(now(), id);
+    }
+
+    renameDevice(id: number, name: string): AppDevice {
+        try {
+            const result = this.statements.updateDeviceName.run(name, id);
+            if (result.changes === 0) {
+                throw new AuthError("NOT_FOUND", "device not found");
+            }
+        } catch (err: unknown) {
+            if (
+                typeof err === "object" &&
+                err !== null &&
+                (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+            ) {
+                throw new AuthError(
+                    "BAD_REQUEST",
+                    `a device named '${name}' already exists for this user`,
+                );
+            }
+            throw err;
+        }
+        return this.getDeviceById(id)!;
+    }
+
+    setUserRole(id: number, role: Role): void {
+        try {
+            this.statements.updateUserRole.run(role, id);
+        } catch (err: unknown) {
+            if (
+                typeof err === "object" &&
+                err !== null &&
+                (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+            ) {
+                // The partial single-owner index rejected a second `owner` row.
+                throw new AuthError(
+                    "OWNER_EXISTS",
+                    "an owner already exists; only one owner account is allowed",
+                );
+            }
+            throw err;
+        }
+    }
+
+    setUserDisabled(id: number, disabled: boolean): void {
+        this.statements.updateUserDisabled.run(disabled ? 1 : 0, id);
+    }
+
+    createWebSession(
+        userId: number,
+        secretHash: string,
+        csrfToken: string,
+        expiresAt: string,
+    ): void {
+        this.statements.insertWebSession.run(
+            userId,
+            secretHash,
+            csrfToken,
+            now(),
+            expiresAt,
+        );
+    }
+
+    getWebSessionByHash(secretHash: string): WebSessionRow | null {
+        const row = this.statements.selectWebSessionByHash.get(secretHash) as
+            | {
+                  id: number;
+                  userId: number;
+                  secretHash: string;
+                  csrfToken: string;
+                  createdAt: string;
+                  expiresAt: string;
+              }
+            | undefined;
+        return row ?? null;
+    }
+
+    deleteWebSession(secretHash: string): void {
+        this.statements.deleteWebSession.run(secretHash);
+    }
+
+    deleteWebSessionsForUser(userId: number): void {
+        this.statements.deleteWebSessionsForUser.run(userId);
+    }
+
+    getPrefs(userId: number): Record<string, unknown> {
+        const rows = this.statements.selectPrefs.all(userId) as {
+            key: string;
+            valueJson: string;
+        }[];
+        const prefs: Record<string, unknown> = {};
+        for (const row of rows) {
+            try {
+                prefs[row.key] = JSON.parse(row.valueJson);
+            } catch {
+                // A corrupt stored value survives as its raw string rather
+                // than vanishing silently; the REST layer validates on write.
+                prefs[row.key] = row.valueJson;
+            }
+        }
+        return prefs;
+    }
+
+    setPrefs(userId: number, records: { key: string; value: unknown }[]): void {
+        const tx = this.db.transaction(
+            (entries: { key: string; value: unknown }[]) => {
+                for (const { key, value } of entries) {
+                    this.statements.upsertPref.run(
+                        userId,
+                        key,
+                        JSON.stringify(value),
+                        now(),
+                    );
+                }
+            },
+        );
+        tx(records);
+    }
+
+    deletePrefKeys(userId: number, keys: string[]): void {
+        const tx = this.db.transaction((entries: string[]) => {
+            for (const key of entries) {
+                this.statements.deletePrefKey.run(userId, key);
+            }
+        });
+        tx(keys);
     }
 
     resolveTokenHash(tokenHash: string): ResolvedIdentity | null {
@@ -515,6 +764,7 @@ export class SqliteAppDatabase implements AppDatabase {
                   userId: number;
                   username: string;
                   role: Role;
+                  userDisabled: number;
                   userCreatedAt: string;
               }
             | undefined;
@@ -526,6 +776,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 id: row.userId,
                 username: row.username,
                 role: row.role,
+                disabled: row.userDisabled === 1,
                 createdAt: row.userCreatedAt,
             },
             device: {
