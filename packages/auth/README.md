@@ -13,7 +13,7 @@ concern so consumers depend on narrow seams, never raw SQL.
 
 | File            | Responsibility                                                                                                                                                                                                                                                                                 |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`)                                                               |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)               |
 | `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                      |
 | `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                          |
 | `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                     |
@@ -23,18 +23,16 @@ concern so consumers depend on narrow seams, never raw SQL.
 | `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                         |
 | `README.md`     | this file                                                                                                                                                                                                                                                                                      |
 
-The REST layer lives outside this package in the server's `src/http/`
-(`middleware.ts` = `requireAuth`/`requireOwner` filling `req.jarv`;
-`authRoutes.ts` = the `/api` router) — it consumes these seams and never
-touches SQL. The `/ws` handshake (`src/ws.ts`) resolves device tokens through
-the same store. The cookie-session provider (`cookie.ts`) is what the browser
-portal (#24) authenticates through, so the cookie provider and the
-CLI/device-token path share one ledger.
+The REST layer lives outside this package in the server's `src/http/` (`middleware.ts` = `requireAuth`
+[bearer-then-cookie fallback]/`requireOwner`/`requireCsrf` filling `req.jarv`; `cookies.ts` = the web-session
+cookie; `authRoutes.ts` = the `/api` router) — it consumes these seams and never touches SQL. The `/ws` handshake
+(`src/ws.ts`) resolves device tokens through the same store. The cookie-session provider (`cookie.ts`) is what the
+browser portal (#24) authenticates through, so the cookie provider and the CLI/device-token path share one ledger.
 
 ## Ledger roles
 
-`AppDatabase` is an intersection of three narrower roles, so consumers depend
-on only the surface they call:
+`AppDatabase` is an intersection of five narrower roles, so consumers depend on
+only the surface they call:
 
 - `UserLedger` — account rows + stored password hashes (`getPasswordHash` is
   for the credential-verifier seam only); role promotion/demotion
@@ -51,11 +49,12 @@ on only the surface they call:
   `getPrefs`/`setPrefs` (upsert) / `deletePrefKeys`, JSON values round-tripped
   through `value_json`.
 - `SessionLedger` — the WS chat sessions (`claimSession` / get-by-thread /
-  touch / delete / list-owned). The server's `SessionManager`
+  touch / delete / `listOwnedSessions` / `listAllSessions` [owner-wide]).
+  The server's `SessionManager`
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
 
 The server's `createApp`/`attachChatServer` are the composition roots; the REST
-router and middleware span all three ledgers and therefore take the full
+router and middleware span all five ledgers and therefore take the full
 `AppDatabase`, while `createSessionManager` narrows to `SessionLedger`.
 
 ## Credential model

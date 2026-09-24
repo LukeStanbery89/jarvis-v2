@@ -1,5 +1,6 @@
 /** Default base URL of the local LM Studio OpenAI-compatible server. */
 import { homedir } from "node:os";
+import { DEFAULT_SESSION_TTL_MS } from "@lukestanbery/jarvis-auth";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
@@ -142,6 +143,12 @@ export interface AppConfig {
     readonly turnTimeoutMs: number;
     /** One-time token permitting first-owner bootstrap; disabled when unset. */
     readonly bootstrapToken: string | undefined;
+    /**
+     * Browser cookie-session lifetime (`JARVIS_SESSION_TTL_MS`), defaulting to
+     * the auth package's 30-day absolute expiry. Optional so hand-built configs
+     * (tests) can omit it; `getAppConfig` always fills it in.
+     */
+    readonly sessionTtlMs?: number;
     /** Bind address for the listener (`JARVIS_HOST`), default all interfaces. */
     readonly host?: string;
     /** Path to a PEM certificate to serve HTTPS (`JARVIS_TLS_CERT`). */
@@ -168,6 +175,10 @@ export function getAppConfig(): AppConfig {
             process.env.JARVIS_TURN_TIMEOUT_MS ?? DEFAULT_TURN_TIMEOUT_MS,
         ),
         bootstrapToken: process.env.JARVIS_BOOTSTRAP_TOKEN || undefined,
+        sessionTtlMs: numberOr(
+            process.env.JARVIS_SESSION_TTL_MS,
+            DEFAULT_SESSION_TTL_MS,
+        ),
         host: process.env.JARVIS_HOST ?? DEFAULT_HOST,
         tlsCertPath: process.env.JARVIS_TLS_CERT || undefined,
         tlsKeyPath: process.env.JARVIS_TLS_KEY || undefined,

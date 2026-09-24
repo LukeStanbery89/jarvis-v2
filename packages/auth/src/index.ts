@@ -42,6 +42,7 @@ export type {
     GuestContext,
     ResolvedIdentity,
     Role,
+    SessionContext,
     SessionKind,
     WebSessionRow,
 } from "./types";

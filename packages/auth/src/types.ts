@@ -45,7 +45,7 @@ export interface ResolvedIdentity {
  * identity; an authed context carries both user and device (the shape of
  * {@link ResolvedIdentity}), so narrowing by `kind` yields non-null fields.
  */
-export type AuthContext = GuestContext | AuthenticatedContext;
+export type AuthContext = GuestContext | AuthenticatedContext | SessionContext;
 
 /** A request/socket with no resolved identity. */
 export interface GuestContext {
@@ -57,6 +57,20 @@ export interface GuestContext {
  */
 export interface AuthenticatedContext extends ResolvedIdentity {
     kind: "authed";
+}
+
+/**
+ * A request authenticated through a browser cookie session (no device).
+ *
+ * Built by the server's `requireAuth` when a valid `web_sessions` cookie is
+ * presented. Carries the per-session CSRF nonce, which the server's
+ * `requireCsrf` middleware compares (timing-safe) on state-changing requests,
+ * and which the REST layer hands to the SPA at login time.
+ */
+export interface SessionContext {
+    kind: "session";
+    user: AppUser;
+    csrfToken: string;
 }
 
 /** Input modality of a chat session. */

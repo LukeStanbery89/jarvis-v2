@@ -1,5 +1,5 @@
 import request from "supertest";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app";
 import {
@@ -509,5 +509,539 @@ describe("sessions", () => {
             .set("authorization", await ownerHeader());
         expect(res.status).toBe(204);
         expect(store.getSessionByThread("pepper-again")).toBeNull();
+    });
+});
+
+/** The `name=value` pair of the session cookie from a Set-Cookie response. */
+function sessionCookiePair(res: request.Response, secure = false): string {
+    const prefix = secure ? "__Host-jarvis_session=" : "jarvis_session=";
+    const header = (
+        (res.headers["set-cookie"] as unknown as string[]) ?? []
+    ).find((c) => c.startsWith(prefix));
+    expect(header).toBeTruthy();
+    return header!.split(";")[0];
+}
+
+describe("cookie sessions", () => {
+    it("logs in via cookie and uses it for the API", async () => {
+        const login = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        expect(login.status).toBe(201);
+        expect(login.body.csrfToken).toBeTruthy();
+        expect(login.body.user.username).toBe("pepper");
+        const cookie = sessionCookiePair(login);
+
+        const me = await request(app).get("/api/me").set("Cookie", cookie);
+        expect(me.status).toBe(200);
+        expect(me.body.user.username).toBe("pepper");
+    });
+
+    it("reports the session user via GET /api/session", async () => {
+        const login = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        const cookie = sessionCookiePair(login);
+
+        const session = await request(app)
+            .get("/api/session")
+            .set("Cookie", cookie);
+        expect(session.status).toBe(200);
+        expect(session.body.user.username).toBe("pepper");
+        expect(session.body.user.id).toBe(
+            store.getUserByUsername("pepper")!.id,
+        );
+
+        const unauth = await request(app).get("/api/session");
+        expect(unauth.status).toBe(401);
+    });
+
+    it("rejects an unknown or malformed cookie", async () => {
+        const unknown = await request(app)
+            .get("/api/me")
+            .set("Cookie", "jarvis_session=not-a-real-token");
+        expect(unknown.status).toBe(401);
+
+        const absent = await request(app).get("/api/me");
+        expect(absent.status).toBe(401);
+    });
+
+    it("logs out by revoking the cookie", async () => {
+        const login = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        const cookie = sessionCookiePair(login);
+
+        const logout = await request(app)
+            .delete("/api/session")
+            .set("Cookie", cookie)
+            .set("x-csrf-token", login.body.csrfToken);
+        expect(logout.status).toBe(204);
+        expect(
+            ((logout.headers["set-cookie"] as unknown as string[]) ?? []).join(
+                "; ",
+            ),
+        ).toContain("jarvis_session=;");
+
+        const me = await request(app).get("/api/me").set("Cookie", cookie);
+        expect(me.status).toBe(401);
+    });
+
+    it("lets a cookie session manage its own device with the CSRF nonce", async () => {
+        const login = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        const cookie = sessionCookiePair(login);
+
+        const created = await request(app)
+            .post("/api/devices")
+            .set("Cookie", cookie)
+            .set("x-csrf-token", login.body.csrfToken)
+            .send({ deviceName: "portal-phone" });
+        expect(created.status).toBe(201);
+
+        const revoked = await request(app)
+            .delete(`/api/devices/${created.body.device.id}`)
+            .set("Cookie", cookie)
+            .set("x-csrf-token", login.body.csrfToken);
+        expect(revoked.status).toBe(204);
+    });
+});
+
+describe("CSRF protection", () => {
+    it("requires the nonce for cookie-authed mutations", async () => {
+        const login = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        const cookie = sessionCookiePair(login);
+
+        const missing = await request(app)
+            .put("/api/prefs")
+            .set("Cookie", cookie)
+            .send({ theme: "dark" });
+        expect(missing.status).toBe(403);
+        expect(missing.body.error).toMatch(/csrf token/i);
+
+        const wrong = await request(app)
+            .put("/api/prefs")
+            .set("Cookie", cookie)
+            .set("x-csrf-token", "not-the-nonce")
+            .send({ theme: "dark" });
+        expect(wrong.status).toBe(403);
+        expect(wrong.body.error).toMatch(/invalid csrf/i);
+
+        const ok = await request(app)
+            .put("/api/prefs")
+            .set("Cookie", cookie)
+            .set("x-csrf-token", login.body.csrfToken)
+            .send({ theme: "dark" });
+        expect(ok.status).toBe(200);
+    });
+
+    it("exempts bearer-authenticated mutations", async () => {
+        const token = await passwordLogin("pepper", "pwd-1234");
+        const res = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send({ bearerPref: true });
+        expect(res.status).toBe(200);
+    });
+});
+
+describe("prefs", () => {
+    /** Creates a throwaway user (isolated prefs) and returns a bearer token. */
+    async function prefsUser(username: string): Promise<string> {
+        await request(app)
+            .post("/api/users")
+            .set("authorization", await ownerHeader())
+            .send({ username, password: "pwd-1234" });
+        return passwordLogin(username, "pwd-1234");
+    }
+
+    it("round-trips typed values per user", async () => {
+        const token = await prefsUser("prefs-roundtrip");
+        const cookieLogin = await request(app).post("/api/session").send({
+            username: "prefs-roundtrip",
+            password: "pwd-1234",
+        });
+
+        const empty = await request(app)
+            .get("/api/prefs")
+            .set("authorization", `Bearer ${token}`);
+        expect(empty.status).toBe(200);
+        expect(empty.body).toEqual({});
+
+        const value = { layout: { panels: ["a", "b"] }, volume: 7.5, on: true };
+        const put = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send(value);
+        expect(put.status).toBe(200);
+        expect(put.body).toEqual(value);
+
+        const got = await request(app)
+            .get("/api/prefs")
+            .set("Cookie", sessionCookiePair(cookieLogin));
+        expect(got.status).toBe(200);
+        expect(got.body).toEqual(value);
+    });
+
+    it("isolates prefs between users; the owner can read/write any user's", async () => {
+        const ownerToken = await ownerHeader();
+        const guestToken = await prefsUser("prefs-guest");
+        const guestId = store.getUserByUsername("prefs-guest")!.id;
+        const guestValue = { accent: "blue", layout: "grid" };
+
+        const set = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${guestToken}`)
+            .send(guestValue);
+        expect(set.status).toBe(200);
+
+        const ownerRead = await request(app)
+            .get(`/api/users/${guestId}/prefs`)
+            .set("authorization", ownerToken);
+        expect(ownerRead.status).toBe(200);
+        expect(ownerRead.body).toEqual(guestValue);
+
+        const put = await request(app)
+            .put(`/api/users/${guestId}/prefs`)
+            .set("authorization", ownerToken)
+            .send({ ownerSet: "yes" });
+        expect(put.status).toBe(200);
+        expect(put.body).toEqual({ ...guestValue, ownerSet: "yes" });
+
+        // The owner's own prefs are NOT the guest's.
+        const own = await request(app)
+            .get("/api/prefs")
+            .set("authorization", ownerToken);
+        expect(own.body).not.toHaveProperty("ownerSet");
+    });
+
+    it("lets the owner view prefs but a non-owner cannot", async () => {
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
+        const ownerId = store.getUserByUsername("luke")!.id;
+        const denied = await request(app)
+            .get(`/api/users/${ownerId}/prefs`)
+            .set("authorization", `Bearer ${pepperToken}`);
+        expect(denied.status).toBe(403);
+    });
+
+    it("rejects invalid prefs bodies", async () => {
+        const token = await prefsUser("prefs-invalid");
+        const tooMany = Object.fromEntries(
+            Array.from({ length: 65 }, (_, i) => [`key-${i}`, i]),
+        );
+        const res = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send(tooMany);
+        expect(res.status).toBe(400);
+
+        const notObject = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send([{ key: "a", value: 1 }]);
+        expect(notObject.status).toBe(400);
+
+        const nonJson = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send({ exploding: undefined });
+        expect(nonJson.status).toBe(400);
+    });
+});
+
+describe("user role + disabled management", () => {
+    afterEach(() => {
+        // Pepper ended the flagged tests in an enabled state so the shared app
+        // stays usable by later suites regardless of which test ran last.
+        const pepper = store.getUserByUsername("pepper");
+        if (pepper) {
+            store.setUserDisabled(pepper.id, false);
+        }
+    });
+
+    it("rejects a second owner and demotes the owner (fresh app)", async () => {
+        const fresh = new SqliteAppDatabase(new Database(":memory:"));
+        try {
+            const freshApp = createApp(fresh, {
+                ...FAST,
+                appDbPath: ":memory:",
+                bootstrapToken: BOOTSTRAP,
+            });
+            const boot = await request(freshApp)
+                .post("/api/bootstrap")
+                .set("x-bootstrap-token", BOOTSTRAP)
+                .send({ username: "first-guy", password: "hunter2pw" });
+            const ownerToken = boot.body.device.token;
+            const second = await request(freshApp)
+                .post("/api/users")
+                .set("authorization", `Bearer ${ownerToken}`)
+                .send({ username: "second-guy", password: "hunter2pw" });
+            expect(second.status).toBe(201);
+
+            // A second owner is rejected while one exists.
+            const clash = await request(freshApp)
+                .patch(`/api/users/${second.body.user.id}`)
+                .set("authorization", `Bearer ${ownerToken}`)
+                .send({ role: "owner" });
+            expect(clash.status).toBe(409);
+            expect(clash.body.error).toMatch(/owner already exists/i);
+
+            // The sole owner may demote themselves (the store allows a zero-
+            // owner state, though re-promotion needs a re-bootstrap).
+            const demote = await request(freshApp)
+                .patch(`/api/users/${boot.body.user.id}`)
+                .set("authorization", `Bearer ${ownerToken}`)
+                .send({ role: "user" });
+            expect(demote.status).toBe(200);
+            expect(demote.body.user.role).toBe("user");
+        } finally {
+            fresh.close();
+        }
+    });
+
+    it("disabling a user revokes their credentials instantly; re-enable restores", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
+        expect(
+            (
+                await request(app)
+                    .get("/api/me")
+                    .set("authorization", `Bearer ${pepperToken}`)
+            ).status,
+        ).toBe(200);
+
+        const disable = await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: true });
+        expect(disable.status).toBe(200);
+        expect(disable.body.user.disabled).toBe(true);
+
+        const stale = await request(app)
+            .get("/api/me")
+            .set("authorization", `Bearer ${pepperToken}`);
+        expect(stale.status).toBe(401);
+
+        const enable = await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: false });
+        expect(enable.status).toBe(200);
+        const restored = await request(app)
+            .get("/api/me")
+            .set("authorization", `Bearer ${pepperToken}`);
+        expect(restored.status).toBe(200);
+    });
+
+    it("rejects a disabled account at both login endpoints", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: true });
+
+        const session = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        expect(session.status).toBe(403);
+        expect(session.body.error).toMatch(/disabled/i);
+
+        const device = await request(app).post("/api/auth/login").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        expect(device.status).toBe(403);
+        expect(device.body.error).toMatch(/disabled/i);
+    });
+
+    it("rejects disabling your own account", async () => {
+        const lukeId = store.getUserByUsername("luke")!.id;
+        const res = await request(app)
+            .patch(`/api/users/${lukeId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: true });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/own account/i);
+        expect(store.getUserById(lukeId)?.disabled).toBe(false);
+    });
+
+    it("requires role/disabled and validates them", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        const none = await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({});
+        expect(none.status).toBe(400);
+
+        const badRole = await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ role: "superuser" });
+        expect(badRole.status).toBe(400);
+
+        const badDisabled = await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: "yes" });
+        expect(badDisabled.status).toBe(400);
+    });
+});
+
+describe("device rename", () => {
+    it("renames an owned device and rejects cross-user renames", async () => {
+        const lukeId = store.getUserByUsername("luke")!.id;
+        const ownerDevice = store.createDevice(
+            lukeId,
+            "owner-laptop",
+            "hash-a",
+            "aaaa1234",
+        );
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
+
+        const denied = await request(app)
+            .patch(`/api/devices/${ownerDevice.id}`)
+            .set("authorization", `Bearer ${pepperToken}`)
+            .send({ name: "stolen" });
+        expect(denied.status).toBe(403);
+
+        const own = await request(app)
+            .patch(`/api/devices/${ownerDevice.id}`)
+            .set("authorization", await ownerHeader())
+            .send({ name: "owner-macbook" });
+        expect(own.status).toBe(200);
+        expect(own.body.device.name).toBe("owner-macbook");
+        expect(store.getDeviceById(ownerDevice.id)?.name).toBe("owner-macbook");
+        store.revokeDevice(ownerDevice.id);
+    });
+
+    it("rejects a rename clashing with a same-user device name", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        store.createDevice(pepperId, "phone", "hash-a", "aaaa1234");
+        const tablet = store.createDevice(
+            pepperId,
+            "tablet",
+            "hash-b",
+            "bbbb1234",
+        );
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
+
+        const clash = await request(app)
+            .patch(`/api/devices/${tablet.id}`)
+            .set("authorization", `Bearer ${pepperToken}`)
+            .send({ name: "phone" });
+        expect(clash.status).toBe(400);
+    });
+});
+
+describe("sessions (owner-wide)", () => {
+    it("shows the owner every session with its userId", async () => {
+        // A throwaway user (isolated state) for the non-owner view.
+        await request(app)
+            .post("/api/users")
+            .set("authorization", await ownerHeader())
+            .send({ username: "sessions-viewer", password: "pwd-1234" });
+        const viewerId = store.getUserByUsername("sessions-viewer")!.id;
+        const viewer = await passwordLogin("sessions-viewer", "pwd-1234");
+
+        const lukeId = store.getUserByUsername("luke")!.id;
+        store.claimSession("owner-wide-a", {
+            userId: lukeId,
+            deviceId: null,
+            kind: "text",
+        });
+        store.claimSession("owner-wide-b", {
+            userId: viewerId,
+            deviceId: null,
+            kind: "text",
+        });
+
+        const ownerView = await request(app)
+            .get("/api/sessions")
+            .set("authorization", await ownerHeader());
+        expect(ownerView.status).toBe(200);
+        const all = ownerView.body as {
+            threadId: string;
+            userId: number | null;
+        }[];
+        const byThread = new Map(all.map((s) => [s.threadId, s.userId]));
+        expect(byThread.get("owner-wide-a")).toBe(lukeId);
+        expect(byThread.get("owner-wide-b")).toBe(viewerId);
+
+        const viewerView = await request(app)
+            .get("/api/sessions")
+            .set("authorization", `Bearer ${viewer}`);
+        expect(viewerView.status).toBe(200);
+        expect(Array.isArray(viewerView.body)).toBe(true);
+        const viewerThreads = (viewerView.body as { threadId: string }[]).map(
+            (s) => s.threadId,
+        );
+        expect(viewerThreads).toContain("owner-wide-b");
+        expect(viewerThreads).not.toContain("owner-wide-a");
+
+        store.deleteSession("owner-wide-a");
+        store.deleteSession("owner-wide-b");
+    });
+});
+
+describe("cookie attributes", () => {
+    it("uses a plain cookie without Secure on plain HTTP", async () => {
+        const fresh = new SqliteAppDatabase(new Database(":memory:"));
+        try {
+            const freshApp = createApp(fresh, FAST);
+            await request(freshApp)
+                .post("/api/bootstrap")
+                .set("x-bootstrap-token", BOOTSTRAP)
+                .send({ username: "plain-owner", password: "hunter2pw" });
+            const login = await request(freshApp).post("/api/session").send({
+                username: "plain-owner",
+                password: "hunter2pw",
+            });
+            const header = (
+                login.headers["set-cookie"] as unknown as string[]
+            )[0];
+            expect(header).toContain("jarvis_session=");
+            expect(header).not.toContain("__Host-");
+            expect(header).not.toContain("Secure");
+            expect(header).toContain("HttpOnly");
+            expect(header).toContain("SameSite=Strict");
+        } finally {
+            fresh.close();
+        }
+    });
+
+    it("uses a __Host- cookie with Secure under TLS", async () => {
+        const fresh = new SqliteAppDatabase(new Database(":memory:"));
+        try {
+            const tls: AppConfig & { bootstrapToken: string } = {
+                ...FAST,
+                tlsCertPath: "/tmp/fake-cert.pem",
+                tlsKeyPath: "/tmp/fake-key.pem",
+            };
+            const freshApp = createApp(fresh, tls);
+            await request(freshApp)
+                .post("/api/bootstrap")
+                .set("x-bootstrap-token", BOOTSTRAP)
+                .send({ username: "tls-owner", password: "hunter2pw" });
+            const login = await request(freshApp).post("/api/session").send({
+                username: "tls-owner",
+                password: "hunter2pw",
+            });
+            const header = (
+                login.headers["set-cookie"] as unknown as string[]
+            )[0];
+            expect(header).toContain("__Host-jarvis_session=");
+            expect(header).toContain("Secure");
+        } finally {
+            fresh.close();
+        }
     });
 });

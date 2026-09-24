@@ -3,8 +3,8 @@
 ## Purpose
 
 `@lukestanbery/jarvis-server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /` health
-check, a REST management API (`/api` for accounts/devices/sessions), and a WebSocket chat endpoint (`/ws`) that
-accepts prompts and streams back a response.
+check, a REST management API (`/api` for accounts/devices/sessions/prefs — device-token **or** cookie auth with
+CSRF), and a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response.
 
 ## Stack
 
@@ -31,22 +31,34 @@ Run from `packages/server`:
 
 ## Endpoints
 
-| Method   | Path                      | Auth                                | Description                                         |
-| -------- | ------------------------- | ----------------------------------- | --------------------------------------------------- |
-| `GET`    | `/`                       | none                                | Health-check, returns `Hello World`                 |
-| `WS`     | `/ws`                     | optional device token (first frame) | Chat endpoint (WebSocket)                           |
-| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`            | Create the first (owner) account + device token     |
-| `POST`   | `/api/auth/login`         | none                                | Username + password → a (rotating) device token     |
-| `GET`    | `/api/me`                 | device token                        | Current user + their devices                        |
-| `POST`   | `/api/devices`            | device token                        | Provision a new device token for the caller         |
-| `DELETE` | `/api/devices/:id`        | device token                        | Revoke a device (own, or any as owner)              |
-| `GET`    | `/api/users`              | device token (owner)                | List accounts                                       |
-| `POST`   | `/api/users`              | device token (owner)                | Create an account (`role` optional, default `user`) |
-| `GET`    | `/api/sessions`           | device token                        | List the caller's owned sessions                    |
-| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete the caller's owned session (owner: any)      |
+| Method   | Path                      | Auth                                  | Description                                         |
+| -------- | ------------------------- | ------------------------------------- | --------------------------------------------------- |
+| `GET`    | `/`                       | none                                  | Health-check, returns `Hello World`                 |
+| `WS`     | `/ws`                     | optional device token (first frame)   | Chat endpoint (WebSocket)                           |
+| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`              | Create the first (owner) account + device token     |
+| `POST`   | `/api/auth/login`         | none                                  | Username + password → a (rotating) device token     |
+| `POST`   | `/api/session`            | none                                  | Username + password → session cookie + CSRF token   |
+| `GET`    | `/api/session`            | session cookie                        | Current session user                                |
+| `DELETE` | `/api/session`            | session cookie (+ CSRF)               | Sign out: revoke the session + clear the cookie     |
+| `GET`    | `/api/me`                 | device token or session               | Current user + their devices                        |
+| `POST`   | `/api/devices`            | device token or session (+ CSRF)      | Provision a new device token for the caller         |
+| `PATCH`  | `/api/devices/:id`        | device token or session (+ CSRF)      | Rename an owned device                              |
+| `DELETE` | `/api/devices/:id`        | device token or session (+ CSRF)      | Revoke a device (own, or any as owner)              |
+| `GET`    | `/api/users`              | device token or session (owner)       | List accounts                                       |
+| `POST`   | `/api/users`              | device token or session (owner, CSRF) | Create an account (`role` optional, default `user`) |
+| `PATCH`  | `/api/users/:id`          | device token or session (owner, CSRF) | Update `role`/`disabled` (self-disable → 400)       |
+| `GET`    | `/api/users/:id/prefs`    | device token or session (owner)       | Read any account's preferences                      |
+| `PUT`    | `/api/users/:id/prefs`    | device token or session (owner, CSRF) | Upsert any account's preferences                    |
+| `GET`    | `/api/prefs`              | device token or session               | Read the caller's preferences                       |
+| `PUT`    | `/api/prefs`              | device token or session (+ CSRF)      | Upsert the caller's preferences                     |
+| `GET`    | `/api/sessions`           | device token or session               | List sessions (owner sees all, with `userId`)       |
+| `DELETE` | `/api/sessions/:threadId` | device token or session (+ CSRF)      | Delete the caller's owned session (owner: any)      |
 
-The server listens on port `54321` by default, overridable via `PORT`. Device-token auth is
-`Authorization: Bearer <token>` (see `src/http/middleware.ts`).
+The server listens on port `54321` by default, overridable via `PORT`. REST auth is
+`Authorization: Bearer <device-token>` **or** the `jarvis_session` cookie (see `src/http/middleware.ts`):
+`requireAuth` tries the bearer first and falls back to the cookie; cookie-authenticated requests must send
+`x-csrf-token` on state-changing methods (`POST`/`PATCH`/`DELETE`/`PUT`) via `requireCsrf`. The session cookie is
+`HttpOnly`/`SameSite=Strict`, gets the `Secure` + `__Host-` prefix under TLS, and carries the device-echoed success. Session TTL defaults to `DEFAULT_SESSION_TTL_MS` (24h), overridable via `JARVIS_SESSION_TTL_MS`.
 
 ## Chat protocol
 
@@ -71,12 +83,13 @@ sessions are deleted on socket close; owned sessions persist. Turns are hard-cap
 (default `120000`); draining is best-effort on a hung model. Authenticated sockets are re-checked against the
 store on every prompt so a revoked device is cut off immediately.
 
-`POST /api/auth/login` and `POST /api/bootstrap` are RateLimited (per `(ip, username)` plus an aggregate per `ip`,
-exponential backoff) by `src/http/rateLimit.ts`. The bootstrap token is single-use — a `BootstrapGate` in
-`authRoutes` consumes it after a successful bootstrap, leaving the config object untouched. TLS is optional in-node
-(`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS mode the main listener is HTTPS and a cleartext redirect app
-(port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `src/fs.ts` chmods `~/.jarvis` to `0700` and its
-database files to `0600` on open (via the `fs.ts` helpers exported by `@lukestanbery/jarvis-auth`).
+`POST /api/auth/login` and `POST /api/session` are RateLimited against the **same** `login:` quota (per
+`(ip, username)` plus an aggregate per `ip`, exponential backoff) by `src/http/rateLimit.ts`, and both reject
+disabled accounts with 403. `POST /api/bootstrap` is rate-limited separately. The bootstrap token is single-use — a
+`BootstrapGate` in `authRoutes` consumes it after a successful bootstrap, leaving the config object untouched. TLS
+is optional in-node (`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS mode the main listener is HTTPS and a cleartext
+redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `src/fs.ts` chmods `~/.jarvis` to
+`0700` and its database files to `0600` on open (via the `fs.ts` helpers exported by `@lukestanbery/jarvis-auth`).
 
 ## Source layout
 
@@ -85,8 +98,10 @@ database files to `0600` on open (via the `fs.ts` helpers exported by `@lukestan
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, mounts `/api`; `createHttpsRedirectApp`.
-- `src/http/middleware.ts` — `requireAuth` (Bearer → `req.jarv`) and `requireOwner`.
-- `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, me, devices, users, sessions).
+- `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
+  `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls).
+- `src/http/cookies.ts` — cookie parsing + the `jarvis_session` cookie name/attributes (`__Host-` under TLS).
+- `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, session, me, devices, users, sessions, prefs).
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
 - `@lukestanbery/jarvis-auth` (workspace dep) — app database + credential crypto (see its README): `openAppDatabase`
   (backed by `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`) exposes `AppDatabase` as the intersection of three role

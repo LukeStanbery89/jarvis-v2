@@ -184,6 +184,8 @@ export interface SessionLedger {
     deleteSession(threadId: string): void;
     /** Owned sessions for a user, newest-active first (powers `GET /api/sessions`). */
     listOwnedSessions(userId: number): AppSession[];
+    /** Every session across all users, newest-active first (owner-wide admin view). */
+    listAllSessions(): AppSession[];
 }
 
 /**
@@ -335,6 +337,7 @@ export class SqliteAppDatabase implements AppDatabase {
         updateSessionLastActive: Database.Statement;
         deleteSession: Database.Statement;
         listSessionsByUser: Database.Statement;
+        listAllSessions: Database.Statement;
         updateUserRole: Database.Statement;
         updateUserDisabled: Database.Statement;
         updateDeviceName: Database.Statement;
@@ -406,6 +409,9 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             listSessionsByUser: db.prepare(
                 "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE user_id = ? ORDER BY last_active_at DESC",
+            ),
+            listAllSessions: db.prepare(
+                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions ORDER BY last_active_at DESC",
             ),
             updateUserRole: db.prepare(
                 "UPDATE users SET role = ? WHERE id = ?",
@@ -835,6 +841,19 @@ export class SqliteAppDatabase implements AppDatabase {
 
     listOwnedSessions(userId: number): AppSession[] {
         const rows = this.statements.listSessionsByUser.all(userId) as {
+            id: number;
+            threadId: string;
+            userId: number | null;
+            deviceId: number | null;
+            kind: SessionKind;
+            createdAt: string;
+            lastActiveAt: string;
+        }[];
+        return rows.map(mapSession);
+    }
+
+    listAllSessions(): AppSession[] {
+        const rows = this.statements.listAllSessions.all() as {
             id: number;
             threadId: string;
             userId: number | null;
