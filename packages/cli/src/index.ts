@@ -42,7 +42,24 @@ function resolveOrigin(): string {
 
 const origin = resolveOrigin();
 let sessionId = loadOrCreateSessionId();
-const client = new ChatClient(serverUrl);
+const storedCreds = loadCredentials(origin);
+const client = new ChatClient(serverUrl, storedCreds?.token, (reason) => {
+    try {
+        clearCredentials(origin);
+    } catch (err) {
+        logger.warn(
+            `Could not clear stored credentials: ${err instanceof Error ? err.message : String(err)} — run 'logout' after reconnecting.`,
+        );
+    }
+    // The in-memory session may point at an owned thread; running it as a
+    // guest would hit "session belongs to another user", so start fresh.
+    sessionId = rotateSessionId();
+    logger.warn(
+        reason === "revoked"
+            ? "Device token revoked by the server — credentials cleared; the next prompt runs as a guest."
+            : "Stored device token was rejected by the server — credentials cleared; the next prompt runs as a guest.",
+    );
+});
 
 // The REPL's terminal output, with echo suppression for secret entry.
 // `askHidden` mutes it while the password is typed; terminal mode makes
@@ -93,11 +110,10 @@ const askHidden: AskHidden = (question) =>
 
 /** Logs the startup banner, including the identity implied by stored credentials. */
 function printBanner(): void {
-    const stored = loadCredentials(origin);
     logger.info(`J.A.R.V.I.S. CLI — server ${serverUrl}`);
-    if (stored) {
+    if (storedCreds) {
         logger.info(
-            `Credentials stored for ${stored.user} (device: ${stored.device})`,
+            `Credentials stored for ${storedCreds.user} (device: ${storedCreds.device})`,
         );
     } else {
         logger.info("No stored credentials — running as a guest");
@@ -126,8 +142,8 @@ let loginActive = false;
  * `POST /api/auth/login`, and stores the token under the server's origin.
  * On success the socket is closed and the session id rotated: the server's
  * strict ownership policy never re-parents a thread across identities, so
- * the next prompt reconnects — as an authenticated principal, in phase 2 —
- * on a fresh conversation thread.
+ * the next prompt reconnects and authenticates on the socket's first frame
+ * (see `ChatClient`) on a fresh conversation thread.
  */
 async function handleLogin(usernameArg: string): Promise<void> {
     if (client.isBusy()) {

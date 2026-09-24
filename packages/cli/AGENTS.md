@@ -44,8 +44,14 @@ username + password (echo suppressed) + device name for a per-device token at
 `POST /api/auth/login`, stores it in `~/.jarvis/credentials.json` (0600,
 atomic write, keyed by server origin), closes the socket, and rotates the
 session id — the server's strict ownership policy never re-parents a thread
-across identities. The token and password are secrets: never log them, and
-keep the password's echo suppression intact (the REPL's output stream is a
+across identities. On the next connect the stored token is sent as the
+socket's first frame and authenticated before the first prompt
+(`src/client.ts`); a token the server rejects ("invalid device token" at
+connect, "device token revoked" mid-prompt) self-heals to a guest: the entry
+point clears the stored credential and rotates the session id. A handshake
+that times out keeps the stored token on disk but stops re-sending it on that
+socket. The token and password are secrets: never log them, and keep the
+password's echo suppression intact (the REPL's output stream is a
 suppressible wrapper; see `askHidden` in `src/index.ts`).
 
 ## Logging

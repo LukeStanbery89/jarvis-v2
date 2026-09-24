@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
-import { ChatClient } from "../src/client";
+import { ChatClient, type AuthRejection } from "../src/client";
 import { getServerUrl, getSessionFilePath, serverOrigin } from "../src/config";
 import { loadOrCreateSessionId } from "../src/session";
 
@@ -139,6 +139,183 @@ describe("ChatClient", () => {
             const client = new ChatClient(url);
             await client.prompt("one", "s", { onChunk: () => {} });
             await client.prompt("two", "s", { onChunk: () => {} });
+        } finally {
+            close();
+        }
+    });
+
+    it("sends the auth frame first, then prompts, and records the identity", async () => {
+        const frames: unknown[] = [];
+        const { url, close } = await withSocketServer((raw, socket) => {
+            frames.push(JSON.parse(String(raw)));
+            if (frames.length === 1) {
+                socket.send(
+                    JSON.stringify({
+                        authResult: { user: "luke", device: "macbook" },
+                    }),
+                );
+            } else {
+                socket.send(JSON.stringify({ chunk: "hi!" }));
+                socket.send(JSON.stringify({ done: true }));
+            }
+        });
+        try {
+            const client = new ChatClient(url, "tok-1");
+            const chunks: string[] = [];
+            await client.prompt("hi", "s", { onChunk: (c) => chunks.push(c) });
+            expect(frames).toEqual([
+                { type: "auth", token: "tok-1" },
+                { prompt: "hi", sessionId: "s" },
+            ]);
+            expect(chunks.join("")).toBe("hi!");
+            expect(client.getIdentity()).toEqual({
+                user: "luke",
+                device: "macbook",
+            });
+            client.close();
+        } finally {
+            close();
+        }
+    });
+
+    it("does not send an auth frame when no token is provided", async () => {
+        const frames: unknown[] = [];
+        const { url, close } = await withSocketServer((raw, socket) => {
+            frames.push(JSON.parse(String(raw)));
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url);
+            await client.prompt("hi", "s", { onChunk: () => {} });
+            expect(frames).toEqual([{ prompt: "hi", sessionId: "s" }]);
+            expect(client.getIdentity()).toBeNull();
+        } finally {
+            close();
+        }
+    });
+
+    it("falls back to a guest socket and reports an invalid token", async () => {
+        const frames: unknown[] = [];
+        const rejections: AuthRejection[] = [];
+        const { url, close } = await withSocketServer((raw, socket) => {
+            frames.push(JSON.parse(String(raw)));
+            if (frames.length === 1) {
+                socket.send(JSON.stringify({ error: "invalid device token" }));
+                socket.send(JSON.stringify({ done: true }));
+            } else {
+                socket.send(JSON.stringify({ done: true }));
+            }
+        });
+        try {
+            const client = new ChatClient(url, "tok-1", (r) =>
+                rejections.push(r),
+            );
+            await client.prompt("one", "s", { onChunk: () => {} });
+            await client.prompt("two", "s", { onChunk: () => {} });
+            expect(rejections).toEqual(["invalid"]);
+            expect(frames).toEqual([
+                { type: "auth", token: "tok-1" },
+                { prompt: "one", sessionId: "s" },
+                { prompt: "two", sessionId: "s" },
+            ]);
+            expect(client.getIdentity()).toBeNull();
+        } finally {
+            close();
+        }
+    });
+
+    it("reports a revoked token mid-prompt and rejects the stream", async () => {
+        const rejections: AuthRejection[] = [];
+        const frames: unknown[] = [];
+        const { url, close } = await withSocketServer((raw, socket) => {
+            frames.push(JSON.parse(String(raw)));
+            if (frames.length === 1) {
+                socket.send(
+                    JSON.stringify({
+                        authResult: { user: "luke", device: "macbook" },
+                    }),
+                );
+            } else {
+                socket.send(JSON.stringify({ chunk: "partial" }));
+                socket.send(
+                    JSON.stringify({
+                        error: "device token revoked; reconnect to re-authenticate",
+                    }),
+                );
+            }
+        });
+        try {
+            const client = new ChatClient(url, "tok-1", (r) =>
+                rejections.push(r),
+            );
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(/device token revoked/);
+            expect(rejections).toEqual(["revoked"]);
+        } finally {
+            close();
+        }
+    });
+
+    it("treats a socket dying during the handshake as an invalid token", async () => {
+        const rejections: AuthRejection[] = [];
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            socket.close();
+        });
+        try {
+            const client = new ChatClient(url, "tok-1", (r) =>
+                rejections.push(r),
+            );
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(/closed during setup/);
+            expect(rejections).toEqual(["invalid"]);
+        } finally {
+            close();
+        }
+    });
+
+    it("continues as a guest when the server never answers the handshake", async () => {
+        const frames: unknown[] = [];
+        const rejections: AuthRejection[] = [];
+        const { url, close } = await withSocketServer((raw, socket) => {
+            frames.push(JSON.parse(String(raw)));
+            if (frames.length > 1) {
+                socket.send(JSON.stringify({ done: true }));
+            }
+        });
+        try {
+            const client = new ChatClient(
+                url,
+                "tok-1",
+                (r) => rejections.push(r),
+                50,
+            );
+            await client.prompt("hi", "s", { onChunk: () => {} });
+            expect(rejections).toEqual([]);
+            expect(frames).toEqual([
+                { type: "auth", token: "tok-1" },
+                { prompt: "hi", sessionId: "s" },
+            ]);
+            expect(client.getIdentity()).toBeNull();
+        } finally {
+            close();
+        }
+    });
+
+    it("rejects a stray authResult arriving during a prompt", async () => {
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            socket.send(
+                JSON.stringify({
+                    authResult: { user: "luke", device: "macbook" },
+                }),
+            );
+        });
+        try {
+            const client = new ChatClient(url);
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(/unexpected authResult during a prompt/);
         } finally {
             close();
         }

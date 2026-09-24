@@ -74,6 +74,14 @@ Log out with `logout` — the stored token is removed and the next prompt runs
 as a guest again. Persisted conversations stay on the server; logout changes
 this machine's identity, not the account.
 
+The stored token is used on every connect: the CLI sends it as the socket's
+**first frame** and authenticates before the first prompt (the banner confirms
+`Credentials stored for …`, and the first connect prints `Authenticated as …`).
+If the server rejects the token because it was rotated elsewhere or revoked,
+the CLI warns, clears the credential, rotates the conversation thread, and
+continues as a guest — re-run `login` to re-authenticate. The token itself is
+never logged.
+
 Tokens are keyed by **server origin**, so logging into a dev server does not
 clobber the token for a LAN server.
 
