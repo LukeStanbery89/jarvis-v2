@@ -193,7 +193,8 @@ option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDeb
 ### Chat protocol
 
 The wire protocol (frames, limits, and parse/serialize logic) is defined once
-in the shared `@lukestanbery/jarvis-protocol` package; connect a WebSocket client to `/ws`
+in the shared `@lukestanbery/jarvis-protocol` package (machine-readable mirror:
+`packages/contracts/spec/asyncapi.yaml`); connect a WebSocket client to `/ws`
 and exchange JSON text frames:
 
 - Client → Server:

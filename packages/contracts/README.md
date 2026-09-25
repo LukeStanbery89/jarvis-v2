@@ -16,7 +16,8 @@ and the WebSocket chat endpoint (`/ws`).
 
 The `/ws` frame shapes mirror `@lukestanbery/jarvis-protocol` (the TypeScript
 single source of truth for the wire format); the two must evolve in lockstep.
-Conformance tests in a later phase enforce that automatically.
+Conformance tests enforce that automatically: they parse this spec and
+validate representative real frames against each message payload.
 
 ## REST spec inventory (`spec/openapi.yaml`)
 
@@ -85,3 +86,18 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
   under `JARVIS_API_CONTRACT=verify`. Keep the spec truthful — a spec that
   overstates request requirements (e.g. hard-requiring an auth header that is
   really a policy outcome) will 400 requests before the router can answer.
+
+## WS spec inventory (`spec/asyncapi.yaml`)
+
+One channel (`/ws`), two operations, eight messages — one per frame, mirroring
+`@lukestanbery/jarvis-protocol`'s types:
+
+| Operation            | Direction     | Messages                                                         |
+| -------------------- | ------------- | ---------------------------------------------------------------- |
+| `sendClientFrame`    | client→server | `authHandshake` (optional first frame), `chatPrompt`             |
+| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error` |
+
+Payloads are strict (`additionalProperties: false`) and encode the protocol's
+bounds: non-empty-after-trim strings (`pattern: \S`) and the ≤128-char
+`sessionId`/`token` caps. The server object documents the default cleartext
+`ws://localhost:54321/ws` (TLS deployments serve `wss` at the same path).
