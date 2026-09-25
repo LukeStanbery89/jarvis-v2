@@ -5,8 +5,11 @@
  *
  * Starts a readline REPL that forwards each line to the server over
  * WebSocket and prints the streamed response as it arrives. The REPL also
- * handles the `login` / `logout` commands, which manage the local device
- * credential (see `src/credentials.ts` and `src/login.ts`).
+ * handles the `login` / `logout` / `new` commands: `login` and `logout` manage
+ * the local device credential (see `src/credentials.ts` and `src/login.ts`)
+ * and switch the active conversation to the remembered per-identity thread
+ * (see `src/session.ts`), while `new` starts a fresh conversation on the
+ * current identity.
  */
 import * as readline from "node:readline";
 import { Writable } from "node:stream";
@@ -18,7 +21,13 @@ import {
     saveCredentials,
 } from "./credentials";
 import { askLoginDetails, loginRequest, type AskHidden } from "./login";
-import { loadOrCreateSessionId, rotateSessionId } from "./session";
+import {
+    loadSessionIds,
+    rotateActiveSession,
+    saveSessionIds,
+    sessionIdFor,
+    type SessionIdentity,
+} from "./session";
 import { logger } from "./logger";
 import { renderHandlers } from "./render";
 
@@ -41,8 +50,14 @@ function resolveOrigin(): string {
 }
 
 const origin = resolveOrigin();
-let sessionId = loadOrCreateSessionId();
 const storedCreds = loadCredentials(origin);
+// Per-identity conversation threads: login/logout switch slots (resuming the
+// remembered thread) instead of minting fresh ones; `new` rotates on purpose.
+const sessionIds = loadSessionIds();
+let identity: SessionIdentity = storedCreds
+    ? { kind: "user", username: storedCreds.user }
+    : { kind: "guest" };
+let sessionId = sessionIdFor(sessionIds, identity);
 const client = new ChatClient(serverUrl, storedCreds?.token, (reason) => {
     try {
         clearCredentials(origin);
@@ -51,9 +66,11 @@ const client = new ChatClient(serverUrl, storedCreds?.token, (reason) => {
             `Could not clear stored credentials: ${err instanceof Error ? err.message : String(err)} — run 'logout' after reconnecting.`,
         );
     }
-    // The in-memory session may point at an owned thread; running it as a
-    // guest would hit "session belongs to another user", so start fresh.
-    sessionId = rotateSessionId();
+    // The token is gone, so this process is a guest from here on. Drop to the
+    // guest thread slot (never rotate the account's slot — it stays owned by
+    // the account, so a later login can resume it as the same user).
+    identity = { kind: "guest" };
+    sessionId = sessionIdFor(sessionIds, identity);
     logger.warn(
         reason === "revoked"
             ? "Device token revoked by the server — credentials cleared; the next prompt runs as a guest."
@@ -120,7 +137,7 @@ function printBanner(): void {
     }
     logger.info(`Conversation session: ${sessionId}`);
     logger.info(
-        "Type a prompt and press Enter. Commands: login, logout, exit.",
+        "Type a prompt and press Enter. Commands: login, logout, new, exit.",
     );
 }
 
@@ -140,10 +157,10 @@ let loginActive = false;
  * Collects credentials (username pre-filled from `usernameArg`, hidden
  * password, device name), exchanges them for a device token at the server's
  * `POST /api/auth/login`, and stores the token under the server's origin.
- * On success the socket is closed and the session id rotated: the server's
- * strict ownership policy never re-parents a thread across identities, so
- * the next prompt reconnects and authenticates on the socket's first frame
- * (see `ChatClient`) on a fresh conversation thread.
+ * On success the identity becomes that user and the active conversation
+ * switches to the user's *remembered* thread (resumed across logins; see
+ * `src/session.ts`). The socket is closed so the next prompt reconnects and
+ * authenticates on the socket's first frame (see `ChatClient`).
  */
 async function handleLogin(usernameArg: string): Promise<void> {
     if (client.isBusy()) {
@@ -172,11 +189,15 @@ async function handleLogin(usernameArg: string): Promise<void> {
             savedAt: new Date().toISOString(),
         });
         client.close();
-        sessionId = rotateSessionId();
+        // The login resumes this user's remembered thread — no rotation — so
+        // history from a previous login is picked up where it stopped instead
+        // of fragmenting into a fresh, orphaned thread.
+        identity = { kind: "user", username: result.user };
+        sessionId = sessionIdFor(sessionIds, identity);
         logger.info(
             `Logged in as ${result.user} (device: ${result.device}) — credentials stored.`,
         );
-        logger.info(`Fresh conversation session: ${sessionId}`);
+        logger.info(`Resumed conversation session: ${sessionId}`);
     } catch (err) {
         logger.error(
             `Login failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -191,8 +212,9 @@ async function handleLogin(usernameArg: string): Promise<void> {
  * Runs the `logout` command.
  *
  * Removes the stored credential for this server, closes the socket, and
- * rotates the session id so the next prompt runs as a guest on a fresh
- * thread. Persisted owned sessions are kept server-side — logout changes
+ * switches the active conversation to the guest's remembered thread. The
+ * account's thread stays in the session store, so a later `login` resumes
+ * it; owned sessions kept server-side are untouched too — logout changes
  * this machine's identity, not the account.
  */
 function handleLogout(): void {
@@ -219,8 +241,30 @@ function handleLogout(): void {
         return;
     }
     client.close();
-    sessionId = rotateSessionId();
+    identity = { kind: "guest" };
+    sessionId = sessionIdFor(sessionIds, identity);
     logger.info("Logged out — the next prompt runs as a guest.");
+    rl.prompt();
+}
+
+/**
+ * Runs the `new` command.
+ *
+ * Starts a fresh conversation on the *current* identity: the active thread
+ * slot is rotated and persisted, so the next prompt claims a new thread.
+ * Unlike `login`/`logout`, identity does not change — the socket stays
+ * connected and authenticated.
+ */
+function handleNew(): void {
+    if (client.isBusy()) {
+        logger.error(
+            "A response is still streaming — wait for it, then run 'new' again.",
+        );
+        rl.prompt();
+        return;
+    }
+    sessionId = rotateActiveSession(sessionIds, identity);
+    logger.info(`Fresh conversation session: ${sessionId}`);
     rl.prompt();
 }
 
@@ -251,6 +295,10 @@ rl.on("line", (line) => {
     }
     if (prompt === "logout") {
         handleLogout();
+        return;
+    }
+    if (prompt === "new") {
+        handleNew();
         return;
     }
 

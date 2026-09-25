@@ -28,10 +28,12 @@ The server URL defaults to `ws://localhost:54321/ws`, overridable via the
 `JARVIS_SERVER_URL` environment variable; the session-id file defaults to
 `~/.jarvis/session-id`, overridable via `JARVIS_SESSION_FILE`, and the
 credentials file defaults to `~/.jarvis/credentials.json`, overridable via
-`JARVIS_CREDENTIALS_FILE` (`src/config.ts`). `loadOrCreateSessionId()`
-(`src/session.ts`) loads or creates that file and is sent as `sessionId` with
-every prompt so the CLI resumes the server-side conversation thread across
-restarts. The chat wire protocol is defined in the shared
+`JARVIS_CREDENTIALS_FILE` (`src/config.ts`). `src/session.ts` keeps one
+conversation thread **per identity** — a `guest` slot plus one per logged-in
+account — so the active `sessionId` sent with every prompt resumes the _right_
+server-side thread across restarts (`loadSessionIds` / `sessionIdFor`
+/`rotateActiveSession`; a legacy bare-id file is adopted as the guest slot).
+The chat wire protocol is defined in the shared
 `@lukestanbery/jarvis-protocol` package (parsing via `parseFrame`, serialization via
 `serializeRequest`); tool and toolResult frames are surfaced to the REPL's
 stderr diagnostics via the `onTool`/`onToolResult` callbacks (`src/client.ts`).
@@ -42,15 +44,20 @@ The REPL's `login [username]` / `logout` commands manage the local device
 credential (`src/credentials.ts`, `src/login.ts`): `login` exchanges
 username + password (echo suppressed) + device name for a per-device token at
 `POST /api/auth/login`, stores it in `~/.jarvis/credentials.json` (0600,
-atomic write, keyed by server origin), closes the socket, and rotates the
-session id — the server's strict ownership policy never re-parents a thread
-across identities. On the next connect the stored token is sent as the
-socket's first frame and authenticated before the first prompt
+atomic write, keyed by server origin), and closes the socket. Because the
+server's strict ownership policy never re-parents a thread across identities,
+login/logout **switch the active thread slot** (`sessionIdFor`) instead of
+rotating — logging in resumes that account's remembered conversation, logging
+out returns to the guest thread, and neither mints a fresh id. A deliberate
+fresh start is the `new` command (`rotateActiveSession`), which rotates the
+_current_ identity's slot and persists. On the next connect the stored token
+is sent as the socket's first frame and authenticated before the first prompt
 (`src/client.ts`); a token the server rejects ("invalid device token" at
 connect, "device token revoked" mid-prompt) self-heals to a guest: the entry
-point clears the stored credential and rotates the session id. A handshake
-that times out keeps the stored token on disk but stops re-sending it on that
-socket. The token and password are secrets: never log them, and keep the
+point clears the stored credential and drops to the remembered guest slot (the
+account's slot is left intact for the next login). A handshake that times out
+keeps the stored token on disk but stops re-sending it on that socket. The
+token and password are secrets: never log them, and keep the
 password's echo suppression intact (the REPL's output stream is a
 suppressible wrapper; see `askHidden` in `src/index.ts`).
 

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ChatClient, type AuthRejection } from "../src/client";
 import { getServerUrl, getSessionFilePath, serverOrigin } from "../src/config";
-import { loadOrCreateSessionId } from "../src/session";
+import { loadSessionIds, sessionIdFor } from "../src/session";
 
 /**
  * Starts an ephemeral HTTP server with a WebSocket endpoint wired to
@@ -398,11 +398,11 @@ describe("sessions", () => {
         const path = join(dir, "session-id");
         process.env.JARVIS_SESSION_FILE = path;
 
-        const first = loadOrCreateSessionId();
+        const first = sessionIdFor(loadSessionIds(), { kind: "guest" });
         expect(first.length).toBeGreaterThan(0);
-        expect(readFileSync(path, "utf8").trim()).toBe(first);
+        expect(readFileSync(path, "utf8")).toContain("guest");
 
-        const second = loadOrCreateSessionId();
+        const second = sessionIdFor(loadSessionIds(), { kind: "guest" });
         expect(second).toBe(first);
     });
 });

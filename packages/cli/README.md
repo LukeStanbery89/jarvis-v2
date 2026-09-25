@@ -63,24 +63,30 @@ login luke                 # pre-fills the username
 
 The password is prompted with echo suppressed. On success the CLI stores the
 server-issued per-device **token** in `~/.jarvis/credentials.json` (mode
-`0600`), closes the current connection, and starts a fresh conversation
-thread — the server never re-parents a thread across identities. Logging in
-again with the same device name **rotates** the token; the previous token for
-that device stops working. Errors map directly from the server: bad
-credentials (`401`), rate limiting with lockout (`429`), and a server with no
-owner yet (`404` — bootstrap it first, see `@lukestanbery/jarvis-server`).
+`0600`), closes the current connection, and **resumes the account's remembered
+conversation thread** — the server never re-parents a thread across identities,
+so the CLI keeps one thread per identity (`guest` plus one per logged-in
+account) and _switches_ (not rotates) on login/logout. Logging in again with
+the same device name **rotates** the token; the previous token for that device
+stops working. Errors map directly from the server: bad credentials (`401`),
+rate limiting with lockout (`429`), and a server with no owner yet (`404` —
+bootstrap it first, see `@lukestanbery/jarvis-server`).
 
-Log out with `logout` — the stored token is removed and the next prompt runs
-as a guest again. Persisted conversations stay on the server; logout changes
-this machine's identity, not the account.
+Log out with `logout` — the stored token is removed and the CLI switches back
+to the guest conversation thread. Persisted conversations stay on the server;
+logout changes this machine's identity, not the account, and a later `login`
+resumes the account's thread where it left off.
+
+Type `new` to start a **fresh conversation** on the current identity (a
+deliberate rotation — login/logout never rotate on their own).
 
 The stored token is used on every connect: the CLI sends it as the socket's
 **first frame** and authenticates before the first prompt (the banner confirms
 `Credentials stored for …`, and the first connect prints `Authenticated as …`).
 If the server rejects the token because it was rotated elsewhere or revoked,
-the CLI warns, clears the credential, rotates the conversation thread, and
-continues as a guest — re-run `login` to re-authenticate. The token itself is
-never logged.
+the CLI warns, clears the credential, drops to the guest conversation thread,
+and continues as a guest — re-run `login` to re-authenticate. The token itself
+is never logged.
 
 Tokens are keyed by **server origin**, so logging into a dev server does not
 clobber the token for a LAN server.
@@ -94,11 +100,13 @@ The server URL defaults to `ws://localhost:54321/ws`. Override it with the
 JARVIS_SERVER_URL=ws://localhost:9000/ws jarvis
 ```
 
-The CLI keeps a conversation id in `~/.jarvis/session-id` (override the path
-with `JARVIS_SESSION_FILE`). The id is sent as `sessionId` with every prompt,
-so the server continues the same conversation thread across CLI restarts;
-delete the file (or set `JARVIS_SESSION_FILE` to a fresh path) to start a new
-conversation.
+The CLI keeps one conversation-thread id **per identity** — `guest` plus one
+per logged-in account — in `~/.jarvis/session-id` (override the path with
+`JARVIS_SESSION_FILE`). The active id is sent as `sessionId` with every
+prompt, so each identity continues its own conversation thread across CLI
+restarts; login/logout switch between slots and `new` rotates the active one.
+Delete the file (or set `JARVIS_SESSION_FILE` to a fresh path) to reset every
+thread.
 
 Login tokens are kept in `~/.jarvis/credentials.json` (override the path with
 `JARVIS_CREDENTIALS_FILE`), one entry per server origin, written atomically at
