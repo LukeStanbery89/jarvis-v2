@@ -488,23 +488,12 @@ export interface operations {
                     };
                 };
             };
-            /** @description Unknown path or method on the server (any non-GET to `/health`). */
+            /** @description Non-GET requests answered by Express's default 404. The body is an HTML error page (not modeled); a JSON 404 handler lands with the runtime-validation phase. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected server error. */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
+                content?: never;
             };
         };
     };
@@ -706,6 +695,8 @@ export interface operations {
             /** @description Session established; the `Set-Cookie` header carries the session cookie. */
             201: {
                 headers: {
+                    /** @description The `jarvis_session` cookie (renamed `__Host-jarvis_session` under TLS), `HttpOnly`, `SameSite=Strict`. */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content: {
