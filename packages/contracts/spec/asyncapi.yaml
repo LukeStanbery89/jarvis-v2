@@ -40,8 +40,8 @@ channels:
         description: >-
             The single chat channel. Exactly one JSON frame per text message;
             anything that is not a JSON object or matches no known frame
-            shape is answered with an `error` frame (and the turn is not
-            started).
+            shape is answered with an `error` frame followed by a terminal
+            `done`, and the turn is not started.
         messages:
             authHandshake:
                 $ref: "#/components/messages/authHandshake"
@@ -84,12 +84,14 @@ operations:
         summary: Streamed agent events, terminal `done`, or errors
         description: >-
             Reply to a successful handshake: exactly one `authResult` frame
-            (a bad token answers `error` instead and the socket continues as
-            a guest). Per prompt turn: `toolCall` / `toolResult` notices while
-            the agent works, then `chunk` tokens, then `done`. Failures answer
-            `error` followed by `done`; rejections before the turn starts
-            (busy thread, foreign session, bad first frame) answer `error`
-            only.
+            (a bad token answers `error` + terminal `done` instead, and the
+            socket continues as a guest). Per prompt turn, `toolCall` /
+            `toolResult` notices and `chunk` tokens interleave while the
+            agent works (chunks concatenate in arrival order into the reply
+            text), and a terminal `done` ends the turn. Failures and
+            pre-turn rejections (busy thread, foreign session, bad first
+            frame, bad token) each answer `error` followed by a terminal
+            `done`: the turn either never starts or does not continue.
         messages:
             - $ref: "#/channels/ws/messages/authResult"
             - $ref: "#/channels/ws/messages/chunk"
@@ -105,7 +107,8 @@ components:
             description: >-
                 Binding the socket to an account. Only valid as the first
                 frame; the server answers with one `authResult` on success or
-                an `error` (and a guest socket) on a bad token. `token` is
+                an `error` + terminal `done` (and a guest socket) on a bad
+                token. `token` is
                 1–128 characters, non-empty after trimming.
             payload:
                 type: object
@@ -245,9 +248,9 @@ components:
             summary: User-facing failure message
             description: >-
                 Answers malformed frames, auth failures, busy threads,
-                foreign session ids, and model/stream failures. Followed by
-                `done` when it interrupts a turn; standalone for rejections
-                before a turn starts.
+                foreign session ids, and model/stream failures. Always
+                followed by a terminal `done` frame: the turn either never
+                starts or does not continue.
             payload:
                 type: object
                 additionalProperties: false
