@@ -95,18 +95,25 @@ export function contractErrorResponse(err: unknown): {
 } | null {
     const errors = (err as { errors?: { message?: unknown }[] } | null)?.errors;
     const status = (err as { status?: unknown } | null)?.status;
-    if (!Array.isArray(errors) || errors.length === 0) {
+    // A numeric status is part of the validator's error contract; requiring it
+    // keeps unrelated `errors`-carrying errors (e.g. AggregateError) on the
+    // default `next(err)` path.
+    if (
+        !Array.isArray(errors) ||
+        errors.length === 0 ||
+        typeof status !== "number"
+    ) {
         return null;
     }
     const first = errors.find((e) => typeof e?.message === "string")?.message;
-    if (typeof status === "number" && status >= 500) {
+    if (status >= 500) {
         logger.error(
             `REST contract violated by this response: ${first ?? "unknown"}`,
         );
         return { status: 500, error: "internal server error" };
     }
     return {
-        status: typeof status === "number" ? status : 400,
+        status,
         error: typeof first === "string" ? first : "request failed validation",
     };
 }

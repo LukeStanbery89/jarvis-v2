@@ -132,8 +132,10 @@ counter. The limiter is in-memory per process and trusts `req.ip` — set
 The server enforces the OpenAPI contract at runtime: `express-openapi-validator`
 runs ahead of `/api` (and `/health`) with the spec from
 `@lukestanbery/jarvis-contracts` (bundled artifact when built, else the source
-YAML). Request shapes are always validated — a body that violates the spec is
-rejected with `400 { "error": … }` before any route logic. Response shapes are
+YAML — if neither resolves, the server logs a warning and keeps serving
+unvalidated rather than refusing requests). Request shapes are always
+validated — a body that violates the spec is rejected with `400 { "error": … }`
+before any route logic. Response shapes are
 checked only with `JARVIS_API_CONTRACT=verify` (set automatically by
 `npm run dev` and by the `test/contract.test.ts` suite): a server response that
 drifts from the spec fails loudly (logged 500) instead of silently mismatching

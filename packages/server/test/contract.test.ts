@@ -5,9 +5,10 @@
  * ahead of `/api` checks request AND response shapes against
  * `@lukestanbery/jarvis-contracts`' `spec/openapi.yaml`. If a real payload
  * ever drifts from the spec, its documented status flips to a 500 and these
- * tests fail — proving the runtime contract gate is wired up, not merely
- * installed. The other suites run with responses unverified on purpose: they
- * pin behavior, this one pins the contract.
+ * tests fail. A canary test tampers the store into serving a spec-invalid
+ * payload and expects the documented 500, so the suite also fails if the
+ * validator ever stops mounting. The other suites run with responses
+ * unverified on purpose: they pin behavior, this one pins the contract.
  */
 import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
@@ -156,5 +157,36 @@ describe("REST contract verification", () => {
             .send({ username: "luke" });
         expect(res.status).toBe(400);
         expect(typeof res.body.error).toBe("string");
+    });
+
+    it("fails loudly when a served payload violates the contract", async () => {
+        // Canary for the response-verification path: tamper the store into
+        // serving a user role the spec's enum does not allow. With the gate
+        // active this is answered 500 (validator, generic body); without it
+        // the bogus payload would sail out as 200.
+        const tampered = new SqliteAppDatabase(
+            new Database(":memory:"),
+        ) as AppDatabase;
+        const tamperedApp = createApp(tampered, VERIFY);
+        const boot = await request(tamperedApp)
+            .post("/api/bootstrap")
+            .set("x-bootstrap-token", VERIFY.bootstrapToken!)
+            .send({ username: "owner", password: "owner-password-1" });
+        expect(boot.status).toBe(201);
+
+        const listUsers = tampered.listUsers.bind(tampered);
+        (tampered as unknown as { listUsers: () => unknown }).listUsers = () =>
+            (listUsers() as { role: string }[]).map((u) => ({
+                ...u,
+                role: "bogus",
+            }));
+
+        const res = await request(tamperedApp)
+            .get("/api/users")
+            .set("authorization", `Bearer ${boot.body.device.token}`);
+        expect(res.status).toBe(500);
+        expect(res.body).toEqual({ error: "internal server error" });
+
+        tampered.close();
     });
 });
