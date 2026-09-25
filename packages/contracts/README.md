@@ -1,0 +1,51 @@
+# @lukestanbery/jarvis-contracts
+
+Machine-checkable API contracts for J.A.R.V.I.S.. This package is the home of
+the **contract-first** specifications that describe both API surfaces of
+`@lukestanbery/jarvis-server`, plus the tooling that validates them and turns
+them into TypeScript: the REST API (`/api` management routes + `GET /health`)
+and the WebSocket chat endpoint (`/ws`).
+
+## Specs
+
+| File                 | Concern                                                          | Tooling        |
+| -------------------- | ---------------------------------------------------------------- | -------------- |
+| `spec/openapi.yaml`  | OpenAPI 3.1 document for the REST API                            | typegen + lint |
+| `spec/asyncapi.yaml` | AsyncAPI 3.1 document for the `/ws` chat channel                 | validate       |
+| `src/generated/`     | TypeScript types generated from `openapi.yaml` (`npm run types`) | typegen        |
+
+The `/ws` frame shapes mirror `@lukestanbery/jarvis-protocol` (the TypeScript
+single source of truth for the wire format); the two must evolve in lockstep.
+Conformance tests in a later phase enforce that automatically.
+
+## Scripts
+
+| Script              | Description                                                        |
+| ------------------- | ------------------------------------------------------------------ |
+| `npm run build`     | Typegen → bundle → lint → validate → compile `src/` to `dist/`     |
+| `npm run types`     | Regenerate `src/generated/openapi.ts` from `spec/openapi.yaml`     |
+| `npm run bundle`    | Bundle `openapi.yaml` to `spec/.bundle/openapi.yaml` (single-file) |
+| `npm run lint`      | Redocly lint `spec/openapi.yaml`                                   |
+| `npm run validate`  | Validate `spec/asyncapi.yaml` (AsyncAPI CLI)                       |
+| `npm run typecheck` | Type-check src and tests (no emit)                                 |
+| `npm test`          | Run the Smoke tests (Vitest)                                       |
+
+## Editing a spec
+
+1. Edit the YAML under `spec/`.
+2. Run `npm run lint` / `npm run validate` until clean.
+3. If the OpenAPI shapes changed, run `npm run types` and commit the
+   regenerated `src/generated/openapi.ts` alongside the spec edit.
+4. Run the root `npm run check` (the workspace `build` chain runs typegen,
+   bundle, lint, and validate in dependency order).
+
+## Notes for maintainers
+
+- The package is deliberately **spec + tooling only**: no runtime
+  dependencies, no application code. Specs are hand-authored so they stay the
+  reviewable contract and double as the API reference for non-TypeScript
+  clients.
+- Dependents that want the generated REST types import them **type-only** from
+  this package's compiled `dist` output (same convention as
+  `@lukestanbery/jarvis-protocol` and `@lukestanbery/jarvis-logger`), so edit +
+  regenerate + rebuild (`npm run check`) before type-checking dependents.

@@ -1,0 +1,42 @@
+{
+    "name": "@lukestanbery/jarvis-contracts",
+    "version": "0.1.0",
+    "description": "J.A.R.V.I.S. API contracts: OpenAPI (REST) + AsyncAPI (WebSocket) specs, generated types, and spec-conformance tooling",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "files": [
+        "dist",
+        "spec"
+    ],
+    "scripts": {
+        "build": "npm run types && npm run bundle && npm run lint && npm run validate && tsc",
+        "types": "openapi-typescript spec/openapi.yaml --output src/generated/openapi.ts",
+        "bundle": "mkdir -p spec/.bundle && redocly bundle spec/openapi.yaml --output spec/.bundle/openapi.yaml",
+        "lint": "redocly lint spec/openapi.yaml",
+        "validate": "asyncapi validate spec/asyncapi.yaml",
+        "typecheck": "tsc --noEmit -p tsconfig.test.json",
+        "test": "vitest run",
+        "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/LukeStanbery89/jarvis-v2.git",
+        "directory": "packages/contracts"
+    },
+    "bugs": {
+        "url": "https://github.com/LukeStanbery89/jarvis-v2/issues"
+    },
+    "homepage": "https://github.com/LukeStanbery89/jarvis-v2/tree/main/packages/contracts#readme",
+    "license": "MIT",
+    "type": "commonjs",
+    "devDependencies": {
+        "@asyncapi/cli": "^6.2.0",
+        "@redocly/cli": "^2.54.2",
+        "@types/js-yaml": "^4.0.9",
+        "@types/node": "^26.6.2",
+        "js-yaml": "^5.4.2",
+        "openapi-typescript": "^7.13.0",
+        "typescript": "^7.0.2",
+        "vitest": "^5.0.1"
+    }
+}

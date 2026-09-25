@@ -1,0 +1,2 @@
+# Single-file bundles produced by `npm run bundle` (build artifacts).
+spec/.bundle/

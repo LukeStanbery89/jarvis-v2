@@ -4,14 +4,15 @@ AI-powered assistant monorepo.
 
 ## Packages
 
-| Package                                  | Description                                                                                          |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [packages/protocol](./packages/protocol) | Shared chat wire-protocol types + framing (`@lukestanbery/jarvis-protocol`)                          |
-| [packages/auth](./packages/auth)         | App database + credential crypto: users/devices/sessions/prefs ledgers (`@lukestanbery/jarvis-auth`) |
-| [packages/server](./packages/server)     | Express backend server with WebSocket chat + REST admin API (`@lukestanbery/jarvis-server`)          |
-| [packages/cli](./packages/cli)           | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                                              |
-| [packages/logger](./packages/logger)     | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)                                  |
-| [packages/portal](./packages/portal)     | React admin portal served by the server at `/` (`@lukestanbery/jarvis-portal`)                       |
+| Package                                    | Description                                                                                                          |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| [packages/protocol](./packages/protocol)   | Shared chat wire-protocol types + framing (`@lukestanbery/jarvis-protocol`)                                          |
+| [packages/auth](./packages/auth)           | App database + credential crypto: users/devices/sessions/prefs ledgers (`@lukestanbery/jarvis-auth`)                 |
+| [packages/server](./packages/server)       | Express backend server with WebSocket chat + REST admin API (`@lukestanbery/jarvis-server`)                          |
+| [packages/cli](./packages/cli)             | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                                                              |
+| [packages/logger](./packages/logger)       | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)                                                  |
+| [packages/portal](./packages/portal)       | React admin portal served by the server at `/` (`@lukestanbery/jarvis-portal`)                                       |
+| [packages/contracts](./packages/contracts) | Contract-first API specs: OpenAPI (REST) + AsyncAPI (WebSocket) + generated types (`@lukestanbery/jarvis-contracts`) |
 
 ## Getting started
 
