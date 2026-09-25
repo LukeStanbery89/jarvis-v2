@@ -9,7 +9,8 @@
         "spec"
     ],
     "scripts": {
-        "build": "npm run types && npm run bundle && npm run lint && npm run validate && tsc",
+        "build": "npm run check-generated && npm run bundle && npm run lint && npm run validate && tsc",
+        "check-generated": "npm run types && git diff --exit-code -- src/generated/openapi.ts",
         "types": "openapi-typescript spec/openapi.yaml --output src/generated/openapi.ts",
         "bundle": "mkdir -p spec/.bundle && redocly bundle spec/openapi.yaml --output spec/.bundle/openapi.yaml",
         "lint": "redocly lint spec/openapi.yaml",

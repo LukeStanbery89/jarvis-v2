@@ -46,24 +46,28 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
 
 ## Scripts
 
-| Script              | Description                                                        |
-| ------------------- | ------------------------------------------------------------------ |
-| `npm run build`     | Typegen → bundle → lint → validate → compile `src/` to `dist/`     |
-| `npm run types`     | Regenerate `src/generated/openapi.ts` from `spec/openapi.yaml`     |
-| `npm run bundle`    | Bundle `openapi.yaml` to `spec/.bundle/openapi.yaml` (single-file) |
-| `npm run lint`      | Redocly lint `spec/openapi.yaml`                                   |
-| `npm run validate`  | Validate `spec/asyncapi.yaml` (AsyncAPI CLI)                       |
-| `npm run typecheck` | Type-check src and tests (no emit)                                 |
-| `npm test`          | Run the Smoke tests (Vitest)                                       |
+| Script                    | Description                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| `npm run build`           | Check generated → bundle → lint → validate → compile `src/` to `dist/`                     |
+| `npm run check-generated` | Regenerate types and fail the build if diffing the committed file (`git diff --exit-code`) |
+| `npm run types`           | Regenerate `src/generated/openapi.ts` from `spec/openapi.yaml`                             |
+| `npm run bundle`          | Bundle `openapi.yaml` to `spec/.bundle/openapi.yaml` (single-file)                         |
+| `npm run lint`            | Redocly lint `spec/openapi.yaml`                                                           |
+| `npm run validate`        | Validate `spec/asyncapi.yaml` (AsyncAPI CLI)                                               |
+| `npm run typecheck`       | Type-check src and tests (no emit)                                                         |
+| `npm test`                | Run the Smoke tests (Vitest)                                                               |
 
 ## Editing a spec
 
 1. Edit the YAML under `spec/`.
 2. Run `npm run lint` / `npm run validate` until clean.
 3. If the OpenAPI shapes changed, run `npm run types` and commit the
-   regenerated `src/generated/openapi.ts` alongside the spec edit.
-4. Run the root `npm run check` (the workspace `build` chain runs typegen,
-   bundle, lint, and validate in dependency order).
+   regenerated `src/generated/openapi.ts` alongside the spec edit. The build
+   gates on this: `check-generated` regenerates the file and fails when it
+   differs from the committed version, so a stale typegen can never sail
+   through CI or the pre-push hook.
+4. Run the root `npm run check` (the workspace `build` chain runs the checked
+   typegen, bundle, lint, and validate in dependency order).
 
 ## Notes for maintainers
 

@@ -31,3 +31,12 @@ export const ASYNCAPI_SPEC = "spec/asyncapi.yaml";
 
 /** Path where `npm run types` writes the generated OpenAPI TypeScript types. */
 export const GENERATED_TYPES = "src/generated/openapi.ts";
+
+/**
+ * Generated TypeScript namespace for the REST API, derived from
+ * `spec/openapi.yaml` by `npm run types`. Consumers pick request/response
+ * shapes from `components` (e.g. `components["schemas"]["User"]`). The
+ * staleness gate (`npm run check-generated`) fails the build when this file
+ * drifts from the spec, so the committed types always match the YAML.
+ */
+export type { components } from "./generated/openapi";
