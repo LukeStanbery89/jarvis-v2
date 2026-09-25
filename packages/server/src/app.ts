@@ -10,6 +10,10 @@ import path from "node:path";
 import type { AppConfig } from "./config";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import { createAuthRouter } from "./http/authRoutes";
+import {
+    contractErrorResponse,
+    mountContractValidator,
+} from "./http/contractValidation";
 import { logger } from "./logger";
 
 /**
@@ -30,6 +34,10 @@ import { logger } from "./logger";
 export function createApp(store: AppDatabase, appConfig: AppConfig) {
     const app = express();
     app.use(express.json());
+
+    // Runtime contract gate: /api request shapes always, /api + /health
+    // response shapes only under JARVIS_API_CONTRACT=verify (see the module).
+    mountContractValidator(app, appConfig.apiContractVerify === true);
 
     app.get("/health", (req, res) => {
         res.status(200).json({ ok: true });
@@ -105,6 +113,11 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
             (err as { statusCode?: number }).statusCode === 413)
     ) {
         res.status(413).json({ error: "request body too large" });
+        return;
+    }
+    const contractError = contractErrorResponse(err);
+    if (contractError) {
+        res.status(contractError.status).json({ error: contractError.error });
         return;
     }
     next(err);

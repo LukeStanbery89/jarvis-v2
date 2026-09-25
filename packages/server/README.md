@@ -66,6 +66,7 @@ variables:
 | `JARVIS_RATE_MAX_IP_FAILURES` | `100` | Aggregate attempts per IP before a lockout |
 | `JARVIS_RATE_LOCKOUT_MS` | `60000` | Base lockout; doubles per repeat (backoff, ×32 cap) |
 | `JARVIS_SESSION_TTL_MS` | `2592000000` (30 days) | Absolute lifetime of a cookie session (no sliding) |
+| `JARVIS_API_CONTRACT` | unset | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated) |
 | `JARVIS_LOG_LEVEL` | `info` | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
 | `JARVIS_LOG_SENSITIVE` | `auto` | Force sensitive payload logging: `full` \| `redacted` |
 
@@ -125,6 +126,23 @@ counted at admission (before the expensive scrypt verify), so a burst of
 concurrent guesses can't race past the budget; a successful login resets the
 counter. The limiter is in-memory per process and trusts `req.ip` — set
 `app.set("trust proxy", …)` if you ever front the server with a reverse proxy.
+
+### REST contract validation
+
+The server enforces the OpenAPI contract at runtime: `express-openapi-validator`
+runs ahead of `/api` (and `/health`) with the spec from
+`@lukestanbery/jarvis-contracts` (bundled artifact when built, else the source
+YAML — if neither resolves, the server logs a warning and keeps serving
+unvalidated rather than refusing requests). Request shapes are always
+validated — a body that violates the spec is rejected with `400 { "error": … }`
+before any route logic. Response shapes are
+checked only with `JARVIS_API_CONTRACT=verify` (set automatically by
+`npm run dev` and by the `test/contract.test.ts` suite): a server response that
+drifts from the spec fails loudly (logged 500) instead of silently mismatching
+the documented contract. Security is deliberately **not** validated by the
+middleware (`validateSecurity: false`) — auth is OR-composed (bearer device
+token or session cookie) and stays owned by `src/http/middleware.ts`; shape
+validation is purely additive to the hand-rolled checks in `authRoutes.ts`.
 
 ### Transport security
 

@@ -79,3 +79,9 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
   this package's compiled `dist` output (same convention as
   `@lukestanbery/jarvis-protocol` and `@lukestanbery/jarvis-logger`), so edit +
   regenerate + rebuild (`npm run check`) before type-checking dependents.
+- The server is a runtime consumer too: it points `express-openapi-validator`
+  at the Redocly bundle (`spec/.bundle/openapi.yaml`, or the source YAML when
+  the bundle hasn't been built) to validate REST requests always and responses
+  under `JARVIS_API_CONTRACT=verify`. Keep the spec truthful — a spec that
+  overstates request requirements (e.g. hard-requiring an auth header that is
+  really a policy outcome) will 400 requests before the router can answer.

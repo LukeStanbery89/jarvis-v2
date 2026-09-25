@@ -22,6 +22,7 @@ afterEach(() => {
     delete process.env.JARVIS_RATE_MAX_FAILURES;
     delete process.env.JARVIS_RATE_LOCKOUT_MS;
     delete process.env.JARVIS_RATE_MAX_IP_FAILURES;
+    delete process.env.JARVIS_API_CONTRACT;
 });
 
 describe("getServerPort", () => {
@@ -97,5 +98,13 @@ describe("getAppConfig", () => {
             lockoutMs: 1000,
             windowMs: DEFAULT_RATE_LIMIT_CONFIG.windowMs,
         });
+    });
+
+    it("verifies REST responses only under JARVIS_API_CONTRACT=verify", () => {
+        expect(getAppConfig().apiContractVerify).toBe(false);
+        process.env.JARVIS_API_CONTRACT = "verify";
+        expect(getAppConfig().apiContractVerify).toBe(true);
+        process.env.JARVIS_API_CONTRACT = "off";
+        expect(getAppConfig().apiContractVerify).toBe(false);
     });
 });

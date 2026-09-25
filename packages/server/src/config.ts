@@ -183,6 +183,14 @@ export interface AppConfig {
     readonly portalDir?: string;
     /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
     readonly loginRateLimit?: RateLimitConfig;
+    /**
+     * Whether the server also verifies REST response bodies against the
+     * OpenAPI contract (`JARVIS_API_CONTRACT=verify`). Request shapes are
+     * always validated when the spec is available; response checking is
+     * opt-in so production latency and noise stay unchanged — local dev
+     * (`npm run dev`) and the contract tests turn it on.
+     */
+    readonly apiContractVerify?: boolean;
 }
 
 export function getAppConfig(): AppConfig {
@@ -219,5 +227,6 @@ export function getAppConfig(): AppConfig {
                 100,
             ),
         },
+        apiContractVerify: process.env.JARVIS_API_CONTRACT === "verify",
     };
 }
