@@ -8,6 +8,9 @@
  * Transport selection, TLS, the cert reads, and the HTTPS redirect listener
  * all live in `src/listener.ts`; this file is a thin composition root.
  */
+// Must stay the first import: dotenv loads `.env` into `process.env` before
+// `config.ts` reads it. Real environment variables always win over the file.
+import "dotenv/config";
 import { createApp } from "./app";
 import { getAppConfig, getServerPort, DEFAULT_HOST } from "./config";
 import { attachChatServer } from "./ws";

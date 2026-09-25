@@ -37,6 +37,7 @@
         "@langchain/langgraph": "^1.4.16",
         "@langchain/langgraph-checkpoint-sqlite": "^1.0.4",
         "@langchain/openai": "^1.5.13",
+        "dotenv": "^18.0.3",
         "express": "^5.2.1",
         "ws": "^8.21.3",
         "zod": "^4.6.5"
