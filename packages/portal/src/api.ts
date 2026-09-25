@@ -16,7 +16,9 @@ import type {
     ApiSession,
     ApiUser,
     DeviceLogin,
+    IssuedDevice,
     Prefs,
+    SessionLogin,
     SessionUser,
 } from "./types";
 
@@ -119,8 +121,8 @@ export const api = {
             { headers: { "x-bootstrap-token": token }, skipAuthRedirect: true },
         );
     },
-    login(username: string, password: string): Promise<SessionUser> {
-        return request<SessionUser>(
+    login(username: string, password: string): Promise<SessionLogin> {
+        return request<SessionLogin>(
             "POST",
             "/api/session",
             { username, password },
@@ -157,9 +159,7 @@ export const api = {
     listUserDevices(id: number): Promise<ApiDevice[]> {
         return request("GET", `/api/users/${id}/devices`);
     },
-    provisionDevice(name: string): Promise<{
-        device: { id: number; name: string; prefix: string; token: string };
-    }> {
+    provisionDevice(name: string): Promise<{ device: IssuedDevice }> {
         return request("POST", "/api/devices", { deviceName: name });
     },
     renameDevice(id: number, name: string): Promise<{ device: ApiDevice }> {
