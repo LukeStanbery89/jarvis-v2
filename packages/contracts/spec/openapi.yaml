@@ -1,24 +1,1270 @@
-# Skeleton OpenAPI 3.1 document for the J.A.R.V.I.S. REST API.
+# OpenAPI 3.1 document for the J.A.R.V.I.S. REST API.
 #
 # Contract-first: this file is the reviewable source of truth for the REST
 # surface (`/api` management routes + `GET /health`), consumed by
 # `npm run types` (TS type generation), `npm run lint` (Redocly), and
 # `npm run bundle` (single-file artifact for runtime validation).
 #
-# Phase 1: document header only. The individual paths/schemas are authored in
-# a later phase; this skeleton exists so the tooling is wired and exercised
-# from the start.
+# Phase 2: full spec. Every operation mirrors the handler in
+# `packages/server/src/http/authRoutes.ts` (shapes, statuses, and the
+# `AUTH_ERROR_STATUS` map — note the API has no 422). New phases consume this
+# file; edit it in lockstep with the server when the surface changes.
 openapi: 3.1.0
 info:
     title: J.A.R.V.I.S. REST API
     description: >-
-        Management API mounted at /api (plus GET /health) for the jarvis-v2
-        monorepo. Contract-first spec; shapes are generated into TypeScript
-        for consumers via `npm run types`.
-    version: 0.1.0
+        Management API mounted at `/api` (plus `GET /health`) for the jarvis-v2
+        monorepo. Authentication is a device-token bearer OR a cookie session
+        (`jarvis_session`), with explicit `x-csrf-token` on cookie-authenticated
+        state changes; cross-cutting logic (CSRF, owner checks) lives in server
+        middleware, so this document describes the wire contract, not the auth
+        policy. Errors are always `{ "error": "<message>" }`.
+    version: 0.2.0
     license:
         name: MIT
         identifier: MIT
 servers:
     - url: /
-paths: {}
+      description: >-
+          Relative to the origin serving this API document. The default local
+          development origin is `http://localhost:54321` (`PORT` overrides the
+          port); in production the server may be fronted by TLS, in which case
+          the `jarvis_session` cookie is renamed `__Host-jarvis_session` (see
+          the `session` security scheme).
+# No security by default: explicit EMPTY security array so Redocly's
+# `security-defined` rule is satisfied for the public operations; every
+# protected operation below overrides this at the operation level.
+security: []
+tags:
+    - name: Account
+      description: The current user (`GET /api/me`) — identity + owned devices.
+    - name: Authentication
+      description: Credential logins — device-token (`POST /api/auth/login`) and cookie (`POST /api/session`).
+    - name: Bootstrap
+      description: Single-use first-owner setup.
+    - name: ChatSessions
+      description: Chat-thread sessions (`/api/sessions`) — the LangGraph threads, not cookie sessions.
+    - name: Devices
+      description: Device tokens and their lifecycle.
+    - name: Health
+      description: Machine health checks.
+    - name: Preferences
+      description: Free-form per-user integration prefs.
+    - name: Session
+      description: The cookie login session lifecycle (`GET`/`DELETE /api/session`).
+    - name: Users
+      description: Account management (owner-only read/write).
+paths:
+    /health:
+        get:
+            operationId: healthCheck
+            summary: Machine health check
+            description: >-
+                Always answers `{ "ok": true }` when the server is up; used by
+                monitoring and availability probes and never depends on the
+                portal build.
+            tags: [Health]
+            responses:
+                "200":
+                    description: Server is up.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                required: [ok]
+                                properties:
+                                    ok:
+                                        type: boolean
+                "404":
+                    description: Unknown path or method on the server (any non-GET to `/health`).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "500":
+                    description: Unexpected server error.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/bootstrap:
+        post:
+            operationId: bootstrap
+            summary: Bootstrap the first-owner account
+            description: >-
+                Creates the initial owner account and returns a freshly issued
+                device token. Gated by the `JARVIS_BOOTSTRAP_TOKEN` env secret
+                (sent as `x-bootstrap-token`), which is consumed on success so a
+                leftover secret can never create a second owner. Rate-limited
+                per source IP.
+            tags: [Bootstrap]
+            parameters:
+                - $ref: "#/components/parameters/XBootstrapToken"
+            requestBody:
+                required: true
+                description: >-
+                    Owner username, password, and optional device name
+                    (default `cli`).
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/CredentialLogin"
+            responses:
+                "201":
+                    description: Owner account and device token created.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/AuthResult"
+                "400":
+                    description: Malformed or out-of-range request body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: The `x-bootstrap-token` secret did not match.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: >-
+                        An owner already exists, or first-owner setup is
+                        disabled (no `JARVIS_BOOTSTRAP_TOKEN` configured).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "429":
+                    description: Too many bootstrap attempts; try again later.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "500":
+                    description: Unexpected server error.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/auth/login:
+        post:
+            operationId: authLogin
+            summary: Log in with username and password for a device token
+            description: >-
+                Verifies credentials against the stored hash and provisions a
+                fresh device token (shown once). Disabled accounts are
+                rejected. Rate-limited per `(IP, username)` and per IP, sharing
+                one quota with the cookie login (`POST /api/session`).
+            tags: [Authentication]
+            requestBody:
+                required: true
+                description: >-
+                    Username, password, and optional device name (default
+                    `cli`).
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/CredentialLogin"
+            responses:
+                "200":
+                    description: Credentials verified; device token issued.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/AuthResult"
+                "400":
+                    description: Malformed or out-of-range request body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Invalid username or password.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: The account is disabled.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No owner configured yet; bootstrap first.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "429":
+                    description: Too many attempts; try again later.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "500":
+                    description: Unexpected server error (e.g. a corrupt stored password hash).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/session:
+        post:
+            operationId: sessionLogin
+            summary: Log in with username and password for a cookie session
+            description: >-
+                Verifies credentials, then sets a `jarvis_session` cookie
+                (`HttpOnly`/`SameSite=Strict`, `__Host-` prefixed under TLS) and
+                returns the user plus the CSRF token the portal must echo on
+                state-changing requests. Shares the login rate limit with
+                `POST /api/auth/login`.
+            tags: [Authentication]
+            requestBody:
+                required: true
+                description: Username and password (no device name for cookie login).
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/UsernamePassword"
+            responses:
+                "201":
+                    description: Session established; the `Set-Cookie` header carries the session cookie.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SessionLogin"
+                "400":
+                    description: Malformed or out-of-range request body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Invalid username or password.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: The account is disabled.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No owner configured yet; bootstrap first.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "429":
+                    description: Too many attempts; try again later.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "500":
+                    description: Unexpected server error (e.g. a corrupt stored password hash).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        get:
+            operationId: sessionGet
+            summary: Echo the current session identity
+            description: >-
+                Returns the authenticated user. `csrfToken` is present only for
+                cookie-authenticated callers (bearer callers omit it); the
+                portal uses it as its CSRF nonce.
+            tags: [Session]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: Current user and (for cookies) the CSRF token.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Session"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        delete:
+            operationId: sessionLogout
+            summary: End the current cookie session
+            description: >-
+                Revokes the present session and clears the cookie. Cookie-
+                authenticated callers must send `x-csrf-token`; bearer callers
+                pass without it.
+            tags: [Session]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            responses:
+                "204":
+                    description: Session revoked; cookie cleared.
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/me:
+        get:
+            operationId: meGet
+            summary: Current user and their devices
+            description: >-
+                The authenticated caller's account plus the devices they have
+                provisioned.
+            tags: [Account]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The caller's user row and device list.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/MeResult"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/devices:
+        post:
+            operationId: deviceProvision
+            summary: Provision a new device token
+            description: >-
+                Issues a fresh device token for the caller. The secret is shown
+                exactly once in the response; store it, it cannot be recovered
+                afterwards. Cookie-authenticated callers must send
+                `x-csrf-token`.
+            tags: [Devices]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: false
+                description: Optional device name (default `cli`).
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/ProvisionDevice"
+            responses:
+                "201":
+                    description: Device token issued (shown once).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceProvisionResult"
+                "400":
+                    description: Malformed or out-of-range request body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/devices/{id}:
+        patch:
+            operationId: deviceRename
+            summary: Rename a device
+            description: >-
+                Renames an owned device. The caller may only manage their own
+                devices (an owner may manage any). Cookie-authenticated callers
+                must send `x-csrf-token`.
+            tags: [Devices]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathDeviceId"
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/RenameDevice"
+            responses:
+                "200":
+                    description: Device renamed.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/DeviceResult"
+                "400":
+                    description: Malformed or out-of-range request body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        The device belongs to another user, or the
+                        `x-csrf-token` is missing/invalid for a cookie-
+                        authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such device.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        delete:
+            operationId: deviceRevoke
+            summary: Revoke a device
+            description: >-
+                Revokes a device token so it can no longer authenticate. The
+                caller may only manage their own devices (an owner may manage
+                any). Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Devices]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathDeviceId"
+                - $ref: "#/components/parameters/XCsrfToken"
+            responses:
+                "204":
+                    description: Device revoked.
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        The device belongs to another user, or the
+                        `x-csrf-token` is missing/invalid for a cookie-
+                        authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such device.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/users:
+        get:
+            operationId: usersList
+            summary: List accounts
+            description: Owner-only. Returns every account's public row.
+            tags: [Users]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: All accounts.
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: "#/components/schemas/User"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: The caller is not an owner.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        post:
+            operationId: userCreate
+            summary: Create an account
+            description: >-
+                Owner-only. Creates a user with an optional role (default
+                `user`). Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Users]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/CreateUser"
+            responses:
+                "201":
+                    description: Account created.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/UserResult"
+                "400":
+                    description: Malformed or out-of-range request body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        The caller is not an owner, or the `x-csrf-token` is
+                        missing/invalid for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: The username is already taken.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/users/{id}:
+        patch:
+            operationId: userUpdate
+            summary: Update an account role or disabled flag
+            description: >-
+                Owner-only. Provide at least one of `role` / `disabled`. A user
+                cannot disable their own account (400); demoting the last
+                *enabled* owner is refused with 409 `LAST_OWNER`.
+                Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Users]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathUserId"
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/UpdateUser"
+            responses:
+                "200":
+                    description: Updated account row.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/UserResult"
+                "400":
+                    description: Malformed or out-of-range request body (e.g. self-disable).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        The caller is not an owner, or the `x-csrf-token` is
+                        missing/invalid for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: Demoting the last enabled owner is refused.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/users/{id}/devices:
+        get:
+            operationId: userDevicesList
+            summary: List another account's devices
+            description: Owner-only. For management views of a specific account.
+            tags: [Devices]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathUserId"
+            responses:
+                "200":
+                    description: The target account's devices.
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: "#/components/schemas/Device"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: The caller is not an owner.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/users/{id}/prefs:
+        get:
+            operationId: userPrefsGet
+            summary: Read another account's preferences
+            description: Owner-only.
+            tags: [Preferences]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathUserId"
+            responses:
+                "200":
+                    description: The target account's prefs map (possibly empty).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Prefs"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: The caller is not an owner.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        put:
+            operationId: userPrefsSet
+            summary: Upsert another account's preferences
+            description: >-
+                Owner-only. Replaces the value of each given key; omitted keys
+                keep their value. The body must contain at least one key
+                (server-enforced). Cookie-authenticated callers must send
+                `x-csrf-token`.
+            tags: [Preferences]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathUserId"
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/Prefs"
+            responses:
+                "200":
+                    description: The updated prefs map.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Prefs"
+                "400":
+                    description: Malformed prefs body (not an object, empty, too many keys, or a key that is too long).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        The caller is not an owner, or the `x-csrf-token` is
+                        missing/invalid for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        delete:
+            operationId: userPrefsDelete
+            summary: Clear another account's preferences
+            description: >-
+                Owner-only. Removes every pref key for the account (a no-op 204
+                when there are none). Cookie-authenticated callers must send
+                `x-csrf-token`.
+            tags: [Preferences]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathUserId"
+                - $ref: "#/components/parameters/XCsrfToken"
+            responses:
+                "204":
+                    description: Prefs cleared.
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        The caller is not an owner, or the `x-csrf-token` is
+                        missing/invalid for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/prefs:
+        get:
+            operationId: prefsGet
+            summary: Read the caller's preferences
+            description: The caller's own free-form integration prefs map.
+            tags: [Preferences]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The caller's prefs map (possibly empty).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Prefs"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        put:
+            operationId: prefsSet
+            summary: Upsert the caller's preferences
+            description: >-
+                Replaces the value of each given key; omitted keys keep their
+                value. The body must contain at least one key (server-enforced).
+                Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Preferences]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/Prefs"
+            responses:
+                "200":
+                    description: The updated prefs map.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Prefs"
+                "400":
+                    description: Malformed prefs body (not an object, empty, too many keys, or a key that is too long).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        delete:
+            operationId: prefsDelete
+            summary: Clear the caller's preferences
+            description: >-
+                Removes every pref key for the caller (a no-op 204 when there
+                are none). Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Preferences]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            responses:
+                "204":
+                    description: Prefs cleared.
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/sessions:
+        get:
+            operationId: sessionsList
+            summary: List chat-thread sessions
+            description: >-
+                An owner sees every session (including the owning `userId`); a
+                non-owner sees only their own. These are the LangGraph chat
+                threads, not cookie login sessions.
+            tags: [ChatSessions]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: Session summaries.
+                    content:
+                        application/json:
+                            schema:
+                                type: array
+                                items:
+                                    $ref: "#/components/schemas/SessionSummary"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/sessions/{threadId}:
+        delete:
+            operationId: chatSessionDelete
+            summary: Delete a chat-thread session
+            description: >-
+                Deletes the caller's own thread (an owner may delete any).
+                Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [ChatSessions]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathThreadId"
+                - $ref: "#/components/parameters/XCsrfToken"
+            responses:
+                "204":
+                    description: Thread deleted.
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such session, or it belongs to another user.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+components:
+    securitySchemes:
+        bearerToken:
+            type: http
+            scheme: bearer
+            description: >-
+                An opaque device token issued by `POST /api/bootstrap`, `POST
+                /api/auth/login`, or `POST /api/devices`. It is shown exactly
+                once at issue time and cannot be recovered.
+        session:
+            type: apiKey
+            in: cookie
+            name: jarvis_session
+            description: >-
+                The login session cookie set by `POST /api/session`
+                (`HttpOnly`/`SameSite=Strict`). Under TLS it is renamed
+                `__Host-jarvis_session` and flagged `Secure`; the plain
+                `jarvis_session` name is used over cleartext HTTP. Cookie-
+                authenticated state-changing requests must also send
+                `x-csrf-token`.
+    parameters:
+        PathUserId:
+            name: id
+            in: path
+            required: true
+            description: The target account's integer row id.
+            schema:
+                type: integer
+        PathDeviceId:
+            name: id
+            in: path
+            required: true
+            description: The target device's integer row id.
+            schema:
+                type: integer
+        PathThreadId:
+            name: threadId
+            in: path
+            required: true
+            description: The chat-thread session id (at most 128 characters).
+            schema:
+                type: string
+                minLength: 1
+                maxLength: 128
+        XBootstrapToken:
+            name: x-bootstrap-token
+            in: header
+            required: true
+            description: The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup.
+            schema:
+                type: string
+        XCsrfToken:
+            name: x-csrf-token
+            in: header
+            required: false
+            description: >-
+                Required on cookie-authenticated state-changing requests —
+                echo the `csrfToken` from the session response. Bearer-token
+                callers omit it.
+            schema:
+                type: string
+    schemas:
+        Error:
+            type: object
+            description: User-safe error envelope returned by the JSON error handler.
+            required: [error]
+            properties:
+                error:
+                    type: string
+        User:
+            type: object
+            description: Public account row as exposed by the `/api` routes.
+            required: [id, username, role, disabled, createdAt]
+            properties:
+                id:
+                    type: integer
+                    readOnly: true
+                    description: Stable integer row id.
+                username:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                role:
+                    enum: [owner, user]
+                disabled:
+                    type: boolean
+                createdAt:
+                    type: string
+                    format: date-time
+                    readOnly: true
+        Device:
+            type: object
+            description: Public device credential row as exposed by the `/api` routes.
+            required: [id, name, prefix, createdAt, lastSeenAt]
+            properties:
+                id:
+                    type: integer
+                    readOnly: true
+                name:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                prefix:
+                    type: string
+                    readOnly: true
+                    description: Short opaque identifier prefix, never the token itself.
+                createdAt:
+                    type: string
+                    format: date-time
+                    readOnly: true
+                lastSeenAt:
+                    readOnly: true
+                    description: Last authenticated use, or null if never seen.
+                    type: [string, "null"]
+                    format: date-time
+        IssuedDevice:
+            type: object
+            description: >-
+                A freshly provisioned device credential: the persisted row plus
+                the one-time secret token that is never stored.
+            required: [id, name, prefix, token]
+            properties:
+                id:
+                    type: integer
+                    readOnly: true
+                name:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                prefix:
+                    type: string
+                    readOnly: true
+                token:
+                    type: string
+                    readOnly: true
+                    description: The one-time bearer secret; shown once and unrecoverable.
+        AuthResult:
+            type: object
+            description: Response of both device-token flows (`/api/bootstrap` and `/api/auth/login`).
+            required: [user, device]
+            properties:
+                user:
+                    $ref: "#/components/schemas/User"
+                device:
+                    $ref: "#/components/schemas/IssuedDevice"
+        Session:
+            type: object
+            description: >-
+                Session identity echo (`GET /api/session`). `csrfToken` is
+                omitted for bearer-authenticated callers, so it is optional.
+            required: [user]
+            properties:
+                user:
+                    $ref: "#/components/schemas/User"
+                csrfToken:
+                    type: string
+                    readOnly: true
+                    description: The CSRF nonce (cookie sessions only).
+        SessionLogin:
+            type: object
+            description: Response of `POST /api/session` (cookie login).
+            required: [user, csrfToken, expiresAt]
+            properties:
+                user:
+                    $ref: "#/components/schemas/User"
+                csrfToken:
+                    type: string
+                    readOnly: true
+                expiresAt:
+                    type: string
+                    format: date-time
+                    readOnly: true
+                    description: When the session expires (the cookie's `Max-Age` target).
+        MeResult:
+            type: object
+            description: Response of `GET /api/me`.
+            required: [user, devices]
+            properties:
+                user:
+                    $ref: "#/components/schemas/User"
+                devices:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/Device"
+        UserResult:
+            type: object
+            description: Singular user response (`POST /api/users`, `PATCH /api/users/{id}`).
+            required: [user]
+            properties:
+                user:
+                    $ref: "#/components/schemas/User"
+        DeviceResult:
+            type: object
+            description: Singular device response (`PATCH /api/devices/{id}`).
+            required: [device]
+            properties:
+                device:
+                    $ref: "#/components/schemas/Device"
+        DeviceProvisionResult:
+            type: object
+            description: Response of `POST /api/devices`.
+            required: [device]
+            properties:
+                device:
+                    $ref: "#/components/schemas/IssuedDevice"
+        SessionSummary:
+            type: object
+            description: >-
+                A chat-thread session row. `userId` is null for guest threads
+                (which are deleted on socket close) or may differ from the
+                caller for owner listings.
+            required: [threadId, kind, userId, createdAt, lastActiveAt]
+            properties:
+                threadId:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                    description: Matches the protocol's `sessionId` bound.
+                kind:
+                    enum: [text, voice]
+                userId:
+                    type: [integer, "null"]
+                createdAt:
+                    type: string
+                    format: date-time
+                lastActiveAt:
+                    type: string
+                    format: date-time
+        Prefs:
+            type: object
+            description: >-
+                Free-form per-user integration preferences: a map of string keys
+                (1–256 chars, at most 64 entries) to any JSON value. PUT bodies
+                must contain at least one key (server-enforced); a store may be
+                empty when read.
+            maxProperties: 64
+            propertyNames:
+                type: string
+                minLength: 1
+                maxLength: 256
+            additionalProperties: true
+        UsernamePassword:
+            type: object
+            description: Credentials for cookie login (`POST /api/session`).
+            required: [username, password]
+            properties:
+                username:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                password:
+                    type: string
+                    minLength: 8
+                    maxLength: 1024
+        CredentialLogin:
+            type: object
+            description: >-
+                Credentials for device-token flows (`POST /api/bootstrap` and
+                `POST /api/auth/login`). `deviceName` defaults to `cli`.
+            required: [username, password]
+            properties:
+                username:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                password:
+                    type: string
+                    minLength: 8
+                    maxLength: 1024
+                deviceName:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                    default: cli
+        ProvisionDevice:
+            type: object
+            description: Body of `POST /api/devices`. `deviceName` defaults to `cli`.
+            properties:
+                deviceName:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                    default: cli
+        CreateUser:
+            type: object
+            description: Body of `POST /api/users`. `role` defaults to `user`.
+            required: [username, password]
+            properties:
+                username:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                password:
+                    type: string
+                    minLength: 8
+                    maxLength: 1024
+                role:
+                    enum: [owner, user]
+                    default: user
+        UpdateUser:
+            type: object
+            description: >-
+                Body of `PATCH /api/users/{id}`. At least one of `role` /
+                `disabled` must be present.
+            minProperties: 1
+            properties:
+                role:
+                    enum: [owner, user]
+                disabled:
+                    type: boolean
+        RenameDevice:
+            type: object
+            description: Body of `PATCH /api/devices/{id}`.
+            required: [name]
+            properties:
+                name:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
