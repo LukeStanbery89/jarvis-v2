@@ -457,7 +457,7 @@ export interface components {
         PathDeviceId: number;
         /** @description The chat-thread session id (at most 128 characters). */
         PathThreadId: string;
-        /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. */
+        /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. Optional at the shape layer on purpose: a missing or mismatched secret is an authorization outcome (403, or 409 when setup is disabled), decided by the server — not a request-shape violation. */
         XBootstrapToken: string;
         /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
         XCsrfToken: string;
@@ -500,9 +500,9 @@ export interface operations {
     bootstrap: {
         parameters: {
             query?: never;
-            header: {
-                /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. */
-                "x-bootstrap-token": components["parameters"]["XBootstrapToken"];
+            header?: {
+                /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. Optional at the shape layer on purpose: a missing or mismatched secret is an authorization outcome (403, or 409 when setup is disabled), decided by the server — not a request-shape violation. */
+                "x-bootstrap-token"?: components["parameters"]["XBootstrapToken"];
             };
             path?: never;
             cookie?: never;

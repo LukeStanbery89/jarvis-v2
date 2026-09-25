@@ -114,7 +114,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 ## Source layout
 
 - `src/index.ts` — process entry: loads `.env` via `import "dotenv/config"` (first import, so `config.ts` sees the file; real env always wins), config, `openAppDatabase` (from `@lukestanbery/jarvis-auth`), `createApp`, `attachChatServer` — hands the app to the listener seam.
-- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`).
+- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, and the
@@ -122,6 +122,11 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
   `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls).
+- `src/http/contractValidation.ts` — runtime REST contract gate: resolves the OpenAPI spec from
+  `@lukestanbery/jarvis-contracts` (bundle, else source), mounts `express-openapi-validator` ahead of `/api` +
+  `/health` (requests always; responses under `JARVIS_API_CONTRACT=verify`; `validateSecurity: false` — auth stays
+  in `middleware.ts`), and maps validator errors onto the `{ error }` shape (client 400s; server-side violations
+  logged + generic 500).
 - `src/http/cookies.ts` — cookie parsing + the `jarvis_session` cookie name/attributes (`__Host-` under TLS).
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, session, me, devices, users, sessions, prefs).
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).

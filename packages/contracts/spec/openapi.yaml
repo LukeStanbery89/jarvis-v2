@@ -1000,8 +1000,13 @@ components:
         XBootstrapToken:
             name: x-bootstrap-token
             in: header
-            required: true
-            description: The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup.
+            required: false
+            description: >-
+                The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner
+                setup. Optional at the shape layer on purpose: a missing or
+                mismatched secret is an authorization outcome (403, or 409
+                when setup is disabled), decided by the server — not a
+                request-shape violation.
             schema:
                 type: string
         XCsrfToken:
