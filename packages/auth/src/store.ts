@@ -89,8 +89,11 @@ export interface UserLedger {
     getUserById(id: number): AppUser | null;
     hasOwner(): boolean;
     /**
-     * Re-role an account promoted/demoted by an owner. Creating a second owner
-     * violates the partial single-owner index and throws `OWNER_EXISTS`.
+     * Re-role an account. Promoting creates a *new* owner alongside any
+     * existing one (multiple owners may coexist); demoting an owner is refused
+     * with `LAST_OWNER` when no other **enabled** owner would remain (that
+     * invariant lives here since the v5 migration dropped the partial
+     * single-owner index).
      */
     setUserRole(id: number, role: Role): void;
     /** Flag an account disabled (revoked-by-disable) or re-enable it. */
@@ -309,6 +312,15 @@ function migrate(db: Database.Database): void {
 CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id);`);
         db.pragma("user_version = 4");
     }
+    if (version < 5) {
+        // v5: multiple owner accounts may coexist — an owner can promote a new
+        // owner (handover) and only demote an owner while another enabled one
+        // remains. The "at least one owner" invariant moves from this partial
+        // index into `setUserRole`'s LAST_OWNER guard, so existing single-
+        // owner stores and fresh databases converge on the same v5 shape.
+        db.exec("DROP INDEX IF EXISTS idx_users_single_owner");
+        db.pragma("user_version = 5");
+    }
 }
 
 export function openAppDatabase(dbPath: string): AppDatabase {
@@ -328,6 +340,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectUserPasswordHash: Database.Statement;
         selectUserById: Database.Statement;
         selectOwnerCount: Database.Statement;
+        selectOtherEnabledOwners: Database.Statement;
         insertDevice: Database.Statement;
         upsertDevice: Database.Statement;
         selectDeviceById: Database.Statement;
@@ -374,6 +387,9 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             selectOwnerCount: db.prepare(
                 "SELECT COUNT(*) AS n FROM users WHERE role = 'owner'",
+            ),
+            selectOtherEnabledOwners: db.prepare(
+                "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND disabled = 0 AND id != ?",
             ),
             insertDevice: db.prepare(
                 "INSERT INTO devices (user_id, name, secret_hash, prefix, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -460,24 +476,13 @@ export class SqliteAppDatabase implements AppDatabase {
                 err !== null &&
                 (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
             ) {
-                // Classify structurally instead of sniffing the (engine- and
-                // version-fragile) error message — a precedence policy, not an
-                // inference about which constraint SQLite reported: when a row
-                // for this username already exists, USERNAME_TAKEN is the more
-                // specific, caller-actionable error even if the conflicting
-                // insert was an owner and the owner index fired instead.
-                // Only when no such row exists could the failure be the
-                // partial single-owner index — the atomic backstop for a
-                // concurrent double-bootstrap — so that means OWNER_EXISTS.
-                if (this.getUserByUsername(username)) {
-                    throw new AuthError(
-                        "USERNAME_TAKEN",
-                        `the username '${username}' is already taken`,
-                    );
-                }
+                // The username column (UNIQUE COLLATE NOCASE) is the only
+                // remaining uniqueness constraint on users since v5 dropped
+                // the single-owner index — so a unique violation is a
+                // duplicate username, not a duplicate owner.
                 throw new AuthError(
-                    "OWNER_EXISTS",
-                    "an owner already exists; bootstrap is a one-time step",
+                    "USERNAME_TAKEN",
+                    `the username '${username}' is already taken`,
                 );
             }
             throw err;
@@ -661,22 +666,25 @@ export class SqliteAppDatabase implements AppDatabase {
     }
 
     setUserRole(id: number, role: Role): void {
-        try {
-            this.statements.updateUserRole.run(role, id);
-        } catch (err: unknown) {
-            if (
-                typeof err === "object" &&
-                err !== null &&
-                (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
-            ) {
-                // The partial single-owner index rejected a second `owner` row.
+        const target = this.getUserById(id);
+        if (!target) {
+            throw new AuthError("NOT_FOUND", "user not found");
+        }
+        // Demoting an owner must leave at least one other *enabled* owner — a
+        // disabled owner can't administer the server, so it can't be the
+        // remaining one. This keeps a zero-owner lockout unreachable.
+        if (target.role === "owner" && role !== "owner") {
+            const row = this.statements.selectOtherEnabledOwners.get(id) as {
+                n: number;
+            };
+            if (row.n === 0) {
                 throw new AuthError(
-                    "OWNER_EXISTS",
-                    "an owner already exists; only one owner account is allowed",
+                    "LAST_OWNER",
+                    "cannot demote the last enabled owner; promote another owner first",
                 );
             }
-            throw err;
         }
+        this.statements.updateUserRole.run(role, id);
     }
 
     setUserDisabled(id: number, disabled: boolean): void {

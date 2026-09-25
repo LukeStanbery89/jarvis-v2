@@ -53,16 +53,12 @@ describe("users", () => {
         expect(store.hasOwner()).toBe(true);
     });
 
-    it("rejects a second owner (distinct username) with OWNER_EXISTS", () => {
-        store.createUser("luke", "hash", "owner");
-        let caught: unknown = null;
-        try {
-            store.createUser("zoe", "hash", "owner");
-        } catch (err) {
-            caught = err;
-        }
-        expect(caught).toBeInstanceOf(AuthError);
-        expect((caught as AuthError).code).toBe("OWNER_EXISTS");
+    it("allows a second owner (multiple owners may coexist)", () => {
+        const luke = store.createUser("luke", "hash", "owner");
+        const zoe = store.createUser("zoe", "hash", "owner");
+        expect(store.getUserById(luke.id)?.role).toBe("owner");
+        expect(store.getUserById(zoe.id)?.role).toBe("owner");
+        expect(store.hasOwner()).toBe(true);
     });
 
     it("rejects a taken username inserted as owner with USERNAME_TAKEN", () => {
@@ -78,26 +74,49 @@ describe("users", () => {
         expect((caught as AuthError).code).toBe("USERNAME_TAKEN");
     });
 
-    it("promotes and demotes roles, keeping a single owner", () => {
+    it("promotes a second owner and demotes an owner only while another remains", () => {
         const luke = store.createUser("luke", "hash", "owner");
         const zoe = store.createUser("zoe", "hash", "user");
 
-        // A second owner is rejected while one exists.
+        // A second owner is promoted alongside the current one (handover).
+        store.setUserRole(zoe.id, "owner");
+        expect(store.getUserById(zoe.id)?.role).toBe("owner");
+        expect(store.getUserById(luke.id)?.role).toBe("owner");
+
+        // With zoe remaining, the first owner can be demoted (incl. self).
+        store.setUserRole(luke.id, "user");
+        expect(store.getUserById(luke.id)?.role).toBe("user");
+        expect(store.getUserById(zoe.id)?.role).toBe("owner");
+
+        // Demoting the last owner is refused: a zero-owner state is a lockout.
         let caught: unknown = null;
         try {
-            store.setUserRole(zoe.id, "owner");
+            store.setUserRole(zoe.id, "user");
         } catch (err) {
             caught = err;
         }
         expect(caught).toBeInstanceOf(AuthError);
-        expect((caught as AuthError).code).toBe("OWNER_EXISTS");
-
-        // Demoting the sole owner frees the role, then zoe can take it.
-        store.setUserRole(luke.id, "user");
-        store.setUserRole(zoe.id, "owner");
+        expect((caught as AuthError).code).toBe("LAST_OWNER");
         expect(store.getUserById(zoe.id)?.role).toBe("owner");
-        expect(store.getUserById(luke.id)?.role).toBe("user");
-        expect(store.hasOwner()).toBe(true);
+    });
+
+    it("refuses to demote the last owner when the co-owner is disabled", () => {
+        const luke = store.createUser("luke", "hash", "owner");
+        const zoe = store.createUser("zoe", "hash", "owner");
+        store.setUserDisabled(zoe.id, true);
+
+        // zoe is disabled, so luke is the only *enabled* owner — demoting an
+        // owner must stay impossible or the server is left with no one able
+        // to administer it.
+        let caught: unknown = null;
+        try {
+            store.setUserRole(luke.id, "user");
+        } catch (err) {
+            caught = err;
+        }
+        expect(caught).toBeInstanceOf(AuthError);
+        expect((caught as AuthError).code).toBe("LAST_OWNER");
+        expect(store.getUserById(luke.id)?.role).toBe("owner");
     });
 
     it("toggles the disabled flag and revokes a disabled user's tokens", () => {
@@ -511,13 +530,96 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(4);
+            expect(check.pragma("user_version", { simple: true })).toBe(5);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
             expect(
                 indexes.some((i) => i.name === "idx_web_sessions_user"),
             ).toBe(true);
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("upgrades a v3 database and drops the single-owner index", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            const old = new Database(path);
+            old.exec(`
+                CREATE TABLE users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+                    created_at    TEXT NOT NULL
+                );
+                CREATE TABLE devices (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    secret_hash  TEXT NOT NULL,
+                    prefix       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    UNIQUE (user_id, name)
+                );
+                CREATE TABLE sessions (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id      TEXT NOT NULL UNIQUE,
+                    user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                    kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+                    created_at     TEXT NOT NULL,
+                    last_active_at TEXT NOT NULL
+                );
+                CREATE TABLE prefs (
+                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    key        TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, key)
+                );
+                INSERT INTO users (username, password_hash, role, created_at)
+                    VALUES ('luke', 'hash', 'owner', '2026-01-01T00:00:00.000Z');
+                CREATE UNIQUE INDEX idx_users_single_owner
+                    ON users (role) WHERE role = 'owner';
+                PRAGMA user_version = 3;
+            `);
+            old.close();
+
+            const upgraded = openAppDatabase(path);
+            // The v5 migration dropped the single-owner index, so a second
+            // owner can now be promoted on an upgraded store.
+            upgraded.createUser("zoe", "hash", "owner");
+            const lukeId = upgraded.getUserByUsername("luke")!.id;
+            const zoeId = upgraded.getUserByUsername("zoe")!.id;
+            expect(upgraded.hasOwner()).toBe(true);
+
+            // With zoe remaining, luke's demotion succeeds…
+            upgraded.setUserRole(lukeId, "user");
+            expect(upgraded.getUserById(lukeId)?.role).toBe("user");
+            // …but the last owner is still protected.
+            let caught: unknown = null;
+            try {
+                upgraded.setUserRole(zoeId, "user");
+            } catch (err) {
+                caught = err;
+            }
+            expect(caught).toBeInstanceOf(AuthError);
+            expect((caught as AuthError).code).toBe("LAST_OWNER");
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(5);
+            const userIndexes = check.pragma("index_list(users)") as {
+                name: string;
+            }[];
+            expect(
+                userIndexes.some((i) => i.name === "idx_users_single_owner"),
+            ).toBe(false);
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });

@@ -36,8 +36,9 @@ only the surface they call:
 
 - `UserLedger` — account rows + stored password hashes (`getPasswordHash` is
   for the credential-verifier seam only); role promotion/demotion
-  (`setUserRole`, `OWNER_EXISTS` on a second owner) and disable/re-enable
-  (`setUserDisabled`).
+  (`setUserRole`: promoting adds an **owner** alongside any existing one,
+  demoting an owner throws `LAST_OWNER` unless another **enabled** owner
+  remains) and disable/re-enable (`setUserDisabled`).
 - `DeviceLedger` — device credentials and token resolution: presented tokens
   run through `hashDeviceToken` (crypto) before `DeviceLedger.resolveTokenHash`.
   `renameDevice` renames a device (a name already used by the same user throws

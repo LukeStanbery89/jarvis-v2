@@ -10,6 +10,7 @@ export type AuthErrorCode =
     | "USERNAME_TAKEN"
     | "INVALID_CREDENTIALS"
     | "OWNER_EXISTS"
+    | "LAST_OWNER"
     | "BOOTSTRAP_DISABLED"
     | "BAD_BOOTSTRAP_TOKEN"
     | "RATE_LIMITED"

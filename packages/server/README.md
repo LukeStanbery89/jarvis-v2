@@ -46,31 +46,52 @@ The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
 variables:
 
-| Variable                      | Default                                                                         | Description                                                           |
-| ----------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `LLM_BASE_URL`                | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                            |
-| `LLM_MODEL`                   | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                            |
-| `LLM_TEMPERATURE`             | `0`                                                                             | Sampling temperature                                                  |
-| `LLM_SYSTEM_PROMPT`           | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread                      |
-| `JARVIS_AGENT_MAX_TURNS`      | `10`                                                                            | Max agent loop steps per turn (tools + model calls)                   |
-| `JARVIS_CHECKPOINT_PATH`      | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence                   |
-| `JARVIS_DB_PATH`              | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs                         |
-| `JARVIS_TURN_TIMEOUT_MS`      | `120000`                                                                        | Hard cap for one agent turn before it is aborted                      |
-| `JARVIS_BOOTSTRAP_TOKEN`      | unset                                                                           | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
-| `JARVIS_HOST`                 | `0.0.0.0`                                                                       | Bind address (all interfaces = LAN posture)                           |
-| `JARVIS_TLS_CERT`             | unset                                                                           | PEM certificate path — enables HTTPS serving                          |
-| `JARVIS_TLS_KEY`              | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`)            |
-| `JARVIS_HTTP_REDIRECT_PORT`   | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)                      |
-| `JARVIS_RATE_WINDOW_MS`       | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap                       |
-| `JARVIS_RATE_MAX_FAILURES`    | `10`                                                                            | Attempts per `(ip, username)` before a lockout                        |
-| `JARVIS_RATE_MAX_IP_FAILURES` | `100`                                                                           | Aggregate attempts per IP before a lockout                            |
-| `JARVIS_RATE_LOCKOUT_MS`      | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)                   |
-| `JARVIS_LOG_LEVEL`            | `info`                                                                          | Log verbosity: `debug` \| `info` \| `warn` \| `error`                 |
-| `JARVIS_LOG_SENSITIVE`        | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`                 |
+| `PORT` | `54321` | HTTP listener port |
+| `LLM_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible base URL |
+| `LLM_MODEL` | `qwen/qwen3-4b-2507` | Model served by the server |
+| `LLM_TEMPERATURE` | `0` | Sampling temperature |
+| `LLM_SYSTEM_PROMPT` | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread |
+| `JARVIS_AGENT_MAX_TURNS` | `10` | Max agent loop steps per turn (tools + model calls) |
+| `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite` | SQLite checkpoint file for conversation persistence |
+| `JARVIS_DB_PATH` | `~/.jarvis/jarvis.sqlite` | App database: users, devices, sessions, prefs |
+| `JARVIS_TURN_TIMEOUT_MS` | `120000` | Hard cap for one agent turn before it is aborted |
+| `JARVIS_BOOTSTRAP_TOKEN` | unset | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
+| `JARVIS_HOST` | `0.0.0.0` | Bind address (all interfaces = LAN posture) |
+| `JARVIS_TLS_CERT` | unset | PEM certificate path — enables HTTPS serving |
+| `JARVIS_TLS_KEY` | unset | Matching PEM private key (required with `JARVIS_TLS_CERT`) |
+| `JARVIS_HTTP_REDIRECT_PORT`| `PORT + 1` | Cleartext port that upgrades to HTTPS (TLS mode) |
+| `JARVIS_PORTAL_DIR` | `packages/portal/dist` | Built portal SPA root served at `/`; empty string disables it |
+| `JARVIS_RATE_WINDOW_MS` | `900000` (15 min) | Attempt-accumulation window for login/bootstrap |
+| `JARVIS_RATE_MAX_FAILURES` | `10` | Attempts per `(ip, username)` before a lockout |
+| `JARVIS_RATE_MAX_IP_FAILURES` | `100` | Aggregate attempts per IP before a lockout |
+| `JARVIS_RATE_LOCKOUT_MS` | `60000` | Base lockout; doubles per repeat (backoff, ×32 cap) |
+| `JARVIS_SESSION_TTL_MS` | `2592000000` (30 days) | Absolute lifetime of a cookie session (no sliding) |
+| `JARVIS_LOG_LEVEL` | `info` | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
+| `JARVIS_LOG_SENSITIVE` | `auto` | Force sensitive payload logging: `full` \| `redacted` |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev
 ```
+
+#### `.env` file
+
+Copy the example and edit it instead of prefixing every command:
+
+```sh
+cp .env.example .env
+```
+
+`packages/server/.env` is loaded automatically at startup (both `npm run dev`
+and `npm start`) by `import "dotenv/config"` in `src/index.ts`. Rules:
+
+- It is **gitignored — never commit it**; it can hold secrets such as
+  `JARVIS_BOOTSTRAP_TOKEN`. `.env.example` holds placeholders only, so it can
+  be shared.
+- **Real environment variables always win** over `.env` (dotenv's default), so
+  a value set for one run via `VAR=… npm start` overrides the file, and CI /
+  systemd environments are unaffected by it.
+- It is read once at process start; editing it does not hot-reload under
+  `tsx watch`.
 
 First-run setup (once the server is up and `JARVIS_BOOTSTRAP_TOKEN` is set):
 
@@ -134,19 +155,20 @@ option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDeb
 
 ### Endpoints
 
-| Method   | Path                      | Auth                                | Description                                         |
-| -------- | ------------------------- | ----------------------------------- | --------------------------------------------------- |
-| `GET`    | `/`                       | none                                | Health-check, returns `Hello World`                 |
-| `WS`     | `/ws`                     | optional device token (first frame) | Chat endpoint (WebSocket)                           |
-| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`            | Create the first (owner) account + device token     |
-| `POST`   | `/api/auth/login`         | none                                | Username + password → a (rotating) device token     |
-| `GET`    | `/api/me`                 | device token                        | Current user + their devices                        |
-| `POST`   | `/api/devices`            | device token                        | Provision a new device token for the caller         |
-| `DELETE` | `/api/devices/:id`        | device token                        | Revoke a device (own, or any as owner)              |
-| `GET`    | `/api/users`              | device token (owner)                | List accounts                                       |
-| `POST`   | `/api/users`              | device token (owner)                | Create an account (`role` optional, default `user`) |
-| `GET`    | `/api/sessions`           | device token                        | List the caller's owned sessions                    |
-| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete the caller's owned session (owner: any)      |
+| Method   | Path                      | Auth                                | Description                                                                              |
+| -------- | ------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`    | `/`                       | none                                | Health-check, returns `Hello World`                                                      |
+| `WS`     | `/ws`                     | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
+| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`            | Create the first (owner) account + device token                                          |
+| `POST`   | `/api/auth/login`         | none                                | Username + password → a (rotating) device token                                          |
+| `GET`    | `/api/me`                 | device token                        | Current user + their devices                                                             |
+| `POST`   | `/api/devices`            | device token                        | Provision a new device token for the caller                                              |
+| `DELETE` | `/api/devices/:id`        | device token                        | Revoke a device (own, or any as owner)                                                   |
+| `GET`    | `/api/users`              | device token (owner)                | List accounts                                                                            |
+| `POST`   | `/api/users`              | device token (owner)                | Create an account (`role` optional, default `user`)                                      |
+| `PATCH`  | `/api/users/:id`          | device token (owner)                | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409) |
+| `GET`    | `/api/sessions`           | device token                        | List the caller's owned sessions                                                         |
+| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete the caller's owned session (owner: any)                                           |
 
 "Device token" auth is `Authorization: Bearer <token>`.
 

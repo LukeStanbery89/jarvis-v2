@@ -796,7 +796,7 @@ describe("user role + disabled management", () => {
         }
     });
 
-    it("rejects a second owner and demotes the owner (fresh app)", async () => {
+    it("promotes a new owner and never allows a zero-owner state (fresh app)", async () => {
         const fresh = new SqliteAppDatabase(new Database(":memory:"));
         try {
             const freshApp = createApp(fresh, {
@@ -809,28 +809,50 @@ describe("user role + disabled management", () => {
                 .set("x-bootstrap-token", BOOTSTRAP)
                 .send({ username: "first-guy", password: "hunter2pw" });
             const ownerToken = boot.body.device.token;
+            const firstId = boot.body.user.id;
+
+            // The sole owner cannot demote themself — the zero-owner lockout
+            // that used to be reachable through the API is now refused.
+            const selfDemote = await request(freshApp)
+                .patch(`/api/users/${firstId}`)
+                .set("authorization", `Bearer ${ownerToken}`)
+                .send({ role: "user" });
+            expect(selfDemote.status).toBe(409);
+            expect(selfDemote.body.error).toMatch(/last/i);
+
             const second = await request(freshApp)
                 .post("/api/users")
                 .set("authorization", `Bearer ${ownerToken}`)
                 .send({ username: "second-guy", password: "hunter2pw" });
             expect(second.status).toBe(201);
 
-            // A second owner is rejected while one exists.
-            const clash = await request(freshApp)
+            // An owner promotes a second owner alongside the first, then steps
+            // down once another owner remains (the deliberate handover path).
+            const promote = await request(freshApp)
                 .patch(`/api/users/${second.body.user.id}`)
                 .set("authorization", `Bearer ${ownerToken}`)
                 .send({ role: "owner" });
-            expect(clash.status).toBe(409);
-            expect(clash.body.error).toMatch(/owner already exists/i);
+            expect(promote.status).toBe(200);
+            expect(promote.body.user.role).toBe("owner");
 
-            // The sole owner may demote themselves (the store allows a zero-
-            // owner state, though re-promotion needs a re-bootstrap).
-            const demote = await request(freshApp)
-                .patch(`/api/users/${boot.body.user.id}`)
+            const stepDown = await request(freshApp)
+                .patch(`/api/users/${firstId}`)
                 .set("authorization", `Bearer ${ownerToken}`)
                 .send({ role: "user" });
-            expect(demote.status).toBe(200);
-            expect(demote.body.user.role).toBe("user");
+            expect(stepDown.status).toBe(200);
+            expect(stepDown.body.user.role).toBe("user");
+
+            // The last remaining owner is refused the same demotion.
+            const secondLogin = await request(freshApp)
+                .post("/api/auth/login")
+                .send({ username: "second-guy", password: "hunter2pw" });
+            expect(secondLogin.status).toBe(200);
+            const lastDemote = await request(freshApp)
+                .patch(`/api/users/${second.body.user.id}`)
+                .set("authorization", `Bearer ${secondLogin.body.device.token}`)
+                .send({ role: "user" });
+            expect(lastDemote.status).toBe(409);
+            expect(lastDemote.body.error).toMatch(/last/i);
         } finally {
             fresh.close();
         }

@@ -4,8 +4,8 @@
  * Lists every account and offers the full lifecycle the REST API exposes —
  * create, role promote/demote, and disable/enable. The owner's own row cannot
  * be disabled (the server rejects it with 400, surfaced inline) and demoting
- * the last owner is deliberately left to the API's `OWNER_EXISTS` guard so the
- * zero-owner trap stays impossible to reach from the browser without a fresh
+ * the last **enabled** owner is refused by the API (`LAST_OWNER` → 409), so
+ * the zero-owner lockout stays unreachable from the browser without a fresh
  * store.
  */
 import { useCallback, useEffect, useState } from "react";
