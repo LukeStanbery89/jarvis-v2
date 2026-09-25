@@ -1,0 +1,20 @@
+# Skeleton AsyncAPI 3.1 document for the J.A.R.V.I.S. chat endpoint.
+#
+# Contract-first: this file describes the JSON frames exchanged over the /ws
+# WebSocket, mirroring the types in `@lukestanbery/jarvis-protocol` (the TS
+# source of truth). `npm run validate` checks it; later phase conformance
+# tests prove real frames still match it.
+#
+# Phase 1: document header only. The channel/operations/messages are authored
+# in a later phase; this skeleton exists so the tooling is wired and exercised
+# from the start.
+asyncapi: 3.1.0
+info:
+    title: J.A.R.V.I.S. Chat API
+    description: >-
+        WebSocket chat endpoint at /ws. Frame shapes mirror
+        @lukestanbery/jarvis-protocol and must be updated in lockstep with it
+        (enforced by conformance tests in a later phase).
+    version: 0.1.0
+channels: {}
+operations: {}

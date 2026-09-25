@@ -1,0 +1,24 @@
+# Skeleton OpenAPI 3.1 document for the J.A.R.V.I.S. REST API.
+#
+# Contract-first: this file is the reviewable source of truth for the REST
+# surface (`/api` management routes + `GET /health`), consumed by
+# `npm run types` (TS type generation), `npm run lint` (Redocly), and
+# `npm run bundle` (single-file artifact for runtime validation).
+#
+# Phase 1: document header only. The individual paths/schemas are authored in
+# a later phase; this skeleton exists so the tooling is wired and exercised
+# from the start.
+openapi: 3.1.0
+info:
+    title: J.A.R.V.I.S. REST API
+    description: >-
+        Management API mounted at /api (plus GET /health) for the jarvis-v2
+        monorepo. Contract-first spec; shapes are generated into TypeScript
+        for consumers via `npm run types`.
+    version: 0.1.0
+    license:
+        name: MIT
+        identifier: MIT
+servers:
+    - url: /
+paths: {}
