@@ -1,0 +1,26 @@
+{
+    "name": "@lukestanbery/jarvis-portal",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Web admin portal (SPA) for managing a J.A.R.V.I.S. server",
+    "type": "module",
+    "scripts": {
+        "build": "vite build",
+        "dev": "vite",
+        "preview": "vite preview",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0"
+    },
+    "devDependencies": {
+        "@types/react": "^19.1.0",
+        "@types/react-dom": "^19.1.0",
+        "@vitejs/plugin-react": "^5.0.0",
+        "typescript": "^7.0.2",
+        "vite": "^8.0.0",
+        "vitest": "^5.0.1"
+    }
+}

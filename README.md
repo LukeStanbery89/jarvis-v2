@@ -4,12 +4,14 @@ AI-powered assistant monorepo.
 
 ## Packages
 
-| Package                                  | Description                                                                 |
-| ---------------------------------------- | --------------------------------------------------------------------------- |
-| [packages/protocol](./packages/protocol) | Shared chat wire-protocol types + framing (`@lukestanbery/jarvis-protocol`) |
-| [packages/server](./packages/server)     | Express backend server with WebSocket chat (`@lukestanbery/jarvis-server`)  |
-| [packages/cli](./packages/cli)           | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                     |
-| [packages/logger](./packages/logger)     | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)         |
+| Package                                  | Description                                                                                          |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [packages/protocol](./packages/protocol) | Shared chat wire-protocol types + framing (`@lukestanbery/jarvis-protocol`)                          |
+| [packages/auth](./packages/auth)         | App database + credential crypto: users/devices/sessions/prefs ledgers (`@lukestanbery/jarvis-auth`) |
+| [packages/server](./packages/server)     | Express backend server with WebSocket chat + REST admin API (`@lukestanbery/jarvis-server`)          |
+| [packages/cli](./packages/cli)           | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                                              |
+| [packages/logger](./packages/logger)     | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)                                  |
+| [packages/portal](./packages/portal)     | React admin portal served by the server at `/` (`@lukestanbery/jarvis-portal`)                       |
 
 ## Getting started
 
@@ -28,6 +30,11 @@ is persisted to a SQLite checkpoint file. The CLI keeps its `sessionId` in
 `~/.jarvis/session-id`, so conversations survive both CLI and server restarts.
 The wire protocol those two packages speak over `/ws` is defined **once** in
 `@lukestanbery/jarvis-protocol`; see each package's README for details.
+
+Alongside the CLI, the server serves a browser **admin portal**
+(`packages/portal`) — a React SPA at `/` that manages accounts, devices,
+sessions, and prefs through the REST API, authenticating with a cookie session
+plus a per-session CSRF nonce rather than device tokens.
 
 During development the workspace packages resolve each other **through the
 workspace symlinks** npm creates in `node_modules` — edit source in

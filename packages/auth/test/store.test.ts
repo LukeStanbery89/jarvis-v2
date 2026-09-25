@@ -453,6 +453,77 @@ describe("openAppDatabase", () => {
         }
     });
 
+    it("upgrades a pre-v4 database (no web_sessions) in place", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            const old = new Database(path);
+            old.exec(`
+                CREATE TABLE users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+                    created_at    TEXT NOT NULL
+                );
+                CREATE TABLE devices (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    secret_hash  TEXT NOT NULL,
+                    prefix       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    UNIQUE (user_id, name)
+                );
+                CREATE TABLE sessions (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id      TEXT NOT NULL UNIQUE,
+                    user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                    kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+                    created_at     TEXT NOT NULL,
+                    last_active_at TEXT NOT NULL
+                );
+                CREATE TABLE prefs (
+                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    key        TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, key)
+                );
+                INSERT INTO users (username, password_hash, role, created_at)
+                    VALUES ('luke', 'hash', 'owner', '2026-01-01T00:00:00.000Z');
+                PRAGMA user_version = 3;
+            `);
+            old.close();
+
+            const upgraded = openAppDatabase(path);
+            expect(upgraded.getUserByUsername("luke")?.role).toBe("owner");
+            expect(upgraded.getUserByUsername("luke")?.disabled).toBe(false);
+            upgraded.createWebSession(
+                1,
+                "h",
+                "csrf",
+                "2999-01-01T00:00:00.000Z",
+            );
+            expect(upgraded.getWebSessionByHash("h")?.csrfToken).toBe("csrf");
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(4);
+            const indexes = check.pragma("index_list(web_sessions)") as {
+                name: string;
+            }[];
+            expect(
+                indexes.some((i) => i.name === "idx_web_sessions_user"),
+            ).toBe(true);
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it("tightens the data directory to 0700 and the database to 0600", () => {
         const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
         const path = join(dir, "app.sqlite");

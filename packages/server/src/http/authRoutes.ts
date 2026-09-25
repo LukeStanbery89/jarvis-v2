@@ -256,6 +256,13 @@ export function createAuthRouter(
 
     router.get("/session", authenticated, (req: Request, res: Response) => {
         const jarv = authed(req).jarv;
+        if (jarv.kind === "session") {
+            res.status(200).json({
+                user: userJson(jarv.user),
+                csrfToken: jarv.csrfToken,
+            });
+            return;
+        }
         res.status(200).json({ user: userJson(jarv.user) });
     });
 
@@ -455,10 +462,41 @@ export function createAuthRouter(
         }
     });
 
-    router.get("/users/:id/prefs", authenticated, requireOwner, (req, res) => {
-        const target = userParamOrThrow(store, req);
-        res.status(200).json(store.getPrefs(target.id));
+    router.delete("/prefs", authenticated, requireCsrf, (req, res) => {
+        const jarv = authed(req).jarv;
+        const keys = Object.keys(store.getPrefs(jarv.user.id));
+        if (keys.length > 0) {
+            store.deletePrefKeys(jarv.user.id, keys);
+        }
+        res.status(204).end();
     });
+
+    router.get("/users/:id/prefs", authenticated, requireOwner, (req, res) => {
+        try {
+            const target = userParamOrThrow(store, req);
+            res.status(200).json(store.getPrefs(target.id));
+        } catch (err) {
+            handleError(res, err);
+        }
+    });
+
+    router.get(
+        "/users/:id/devices",
+        authenticated,
+        requireOwner,
+        (req, res) => {
+            try {
+                const target = userParamOrThrow(store, req);
+                res.status(200).json(
+                    store
+                        .listDevicesByUser(target.id)
+                        .map((d) => deviceJson(d)),
+                );
+            } catch (err) {
+                handleError(res, err);
+            }
+        },
+    );
 
     router.put(
         "/users/:id/prefs",
@@ -470,6 +508,25 @@ export function createAuthRouter(
                 const target = userParamOrThrow(store, req);
                 store.setPrefs(target.id, prefsFrom(req.body));
                 res.status(200).json(store.getPrefs(target.id));
+            } catch (err) {
+                handleError(res, err);
+            }
+        },
+    );
+
+    router.delete(
+        "/users/:id/prefs",
+        authenticated,
+        requireOwner,
+        requireCsrf,
+        (req, res) => {
+            try {
+                const target = userParamOrThrow(store, req);
+                const keys = Object.keys(store.getPrefs(target.id));
+                if (keys.length > 0) {
+                    store.deletePrefKeys(target.id, keys);
+                }
+                res.status(204).end();
             } catch (err) {
                 handleError(res, err);
             }

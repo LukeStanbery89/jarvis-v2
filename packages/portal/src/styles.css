@@ -1,0 +1,322 @@
+/* JARVIS Admin portal — dark, compact management UI. */
+
+:root {
+    --bg: #10131a;
+    --panel: #181d27;
+    --panel-2: #1f2634;
+    --border: #2a3242;
+    --text: #e6e9f0;
+    --muted: #8a93a6;
+    --accent: #3d8bff;
+    --danger: #e5484d;
+    --ok: #30a46c;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font:
+        15px/1.5 -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        "Helvetica Neue",
+        sans-serif;
+}
+
+h1 {
+    font-size: 20px;
+    margin: 0 0 4px;
+}
+
+h2 {
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 12px;
+}
+
+.mono {
+    font-family: var(--mono);
+    font-size: 12px;
+}
+
+.muted {
+    color: var(--muted);
+}
+
+/* ---------- layout shell ---------- */
+
+.layout {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    min-height: 100vh;
+}
+
+.sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 20px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.brand {
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    font-size: 14px;
+    padding: 0 8px;
+}
+
+.sidebar nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.sidebar nav a {
+    color: var(--text);
+    text-decoration: none;
+    padding: 8px 10px;
+    border-radius: 6px;
+}
+
+.sidebar nav a:hover {
+    background: var(--panel-2);
+}
+
+.sidebar nav a.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.sidebar-footer {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 8px;
+}
+
+.user-line {
+    display: flex;
+    flex-direction: column;
+}
+
+.user-line em {
+    color: var(--muted);
+    font-size: 12px;
+    font-style: normal;
+}
+
+.content {
+    padding: 28px 32px;
+    max-width: 1100px;
+}
+
+.boot,
+.center {
+    display: grid;
+    place-items: center;
+    height: 100vh;
+}
+
+.center > div,
+.boot {
+    text-align: center;
+}
+
+/* ---------- cards & forms ---------- */
+
+.auth-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 32px;
+    width: min(360px, 90vw);
+    text-align: left;
+}
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 12px 0;
+}
+
+.field span,
+.field {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.field input,
+.field select,
+.inline {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font: inherit;
+}
+
+.inline {
+    width: 160px;
+}
+
+.inline.grow {
+    flex: 1;
+    width: auto;
+}
+
+.btn {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font: inherit;
+    cursor: pointer;
+    background: var(--panel-2);
+    color: var(--text);
+}
+
+.btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.btn.danger {
+    background: transparent;
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.btn.ghost {
+    background: transparent;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.banner {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 12px 0;
+    font-size: 13px;
+}
+
+.banner.error {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.banner.info {
+    color: var(--ok);
+    border-color: var(--ok);
+}
+
+pre,
+code {
+    font-family: var(--mono);
+}
+
+.copyable {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    border-radius: 6px;
+    margin: 8px 0;
+}
+
+.copyable span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    direction: rtl; /* show the tail of long tokens */
+    text-align: left;
+}
+
+.copyable button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+}
+
+/* ---------- tables & list rows ---------- */
+
+table.grid {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+table.grid th,
+table.grid td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    vertical-align: middle;
+}
+
+table.grid th {
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    background: var(--panel-2);
+    color: var(--muted);
+}
+
+.badge.ok {
+    color: var(--ok);
+}
+
+.badge.danger {
+    color: var(--danger);
+}
+
+.pref-row {
+    display: flex;
+    gap: 8px;
+    margin: 8px 0;
+    align-items: center;
+}

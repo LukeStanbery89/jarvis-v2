@@ -553,6 +553,7 @@ describe("cookie sessions", () => {
         expect(session.body.user.id).toBe(
             store.getUserByUsername("pepper")!.id,
         );
+        expect(session.body.csrfToken).toBe(login.body.csrfToken);
 
         const unauth = await request(app).get("/api/session");
         expect(unauth.status).toBe(401);
@@ -755,6 +756,34 @@ describe("prefs", () => {
             .send({ exploding: undefined });
         expect(nonJson.status).toBe(400);
     });
+
+    it("clears prefs over the ledger-backed DELETE routes", async () => {
+        const token = await prefsUser("prefs-cleared");
+        const clearedId = store.getUserByUsername("prefs-cleared")!.id;
+        store.setPrefs(clearedId, [{ key: "a", value: 1 }]);
+        store.setPrefs(clearedId, [{ key: "b", value: 2 }]);
+
+        const own = await request(app)
+            .delete("/api/prefs")
+            .set("authorization", `Bearer ${token}`);
+        expect(own.status).toBe(204);
+        expect(store.getPrefs(clearedId)).toEqual({});
+
+        const ownerId = store.getUserByUsername("luke")!.id;
+        store.setPrefs(ownerId, [{ key: "keep", value: "mine" }]);
+        store.setPrefs(clearedId, [{ key: "c", value: 3 }]);
+        const byOwner = await request(app)
+            .delete(`/api/users/${clearedId}/prefs`)
+            .set("authorization", await ownerHeader());
+        expect(byOwner.status).toBe(204);
+        expect(store.getPrefs(clearedId)).toEqual({});
+        expect(store.getPrefs(ownerId)).toEqual({ keep: "mine" });
+
+        const denied = await request(app)
+            .delete(`/api/users/${ownerId}/prefs`)
+            .set("authorization", `Bearer ${token}`);
+        expect(denied.status).toBe(403);
+    });
 });
 
 describe("user role + disabled management", () => {
@@ -939,6 +968,41 @@ describe("device rename", () => {
             .set("authorization", `Bearer ${pepperToken}`)
             .send({ name: "phone" });
         expect(clash.status).toBe(400);
+    });
+});
+
+describe("user devices (owner-wide view)", () => {
+    it("lets the owner list another user's devices for management", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        const device = store.createDevice(
+            pepperId,
+            "pepper-phone",
+            "hash-a",
+            "aaaa1234",
+        );
+        const res = await request(app)
+            .get(`/api/users/${pepperId}/devices`)
+            .set("authorization", await ownerHeader());
+        expect(res.status).toBe(200);
+        const devices = res.body as { id: number; name: string }[];
+        expect(devices.map((d) => d.name)).toContain("pepper-phone");
+        store.revokeDevice(device.id);
+    });
+
+    it("denies listing another user's devices to a non-owner", async () => {
+        const lukeId = store.getUserByUsername("luke")!.id;
+        const pepperToken = await passwordLogin("pepper", "pwd-1234");
+        const res = await request(app)
+            .get(`/api/users/${lukeId}/devices`)
+            .set("authorization", `Bearer ${pepperToken}`);
+        expect(res.status).toBe(403);
+    });
+
+    it("404s for an unknown user", async () => {
+        const res = await request(app)
+            .get("/api/users/999999/devices")
+            .set("authorization", await ownerHeader());
+        expect(res.status).toBe(404);
     });
 });
 

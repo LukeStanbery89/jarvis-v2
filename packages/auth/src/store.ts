@@ -25,6 +25,15 @@ import type {
     WebSessionRow,
 } from "./types";
 
+const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    secret_hash TEXT NOT NULL UNIQUE,
+    csrf_token  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,14 +69,7 @@ CREATE TABLE IF NOT EXISTS prefs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
-CREATE TABLE IF NOT EXISTS web_sessions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    secret_hash TEXT NOT NULL UNIQUE,
-    csrf_token  TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    expires_at  TEXT NOT NULL
-);
+${WEB_SESSIONS_SCHEMA}
 `;
 
 /**
@@ -299,9 +301,12 @@ function migrate(db: Database.Database): void {
                 "ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0",
             );
         }
-        db.exec(
-            "CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id)",
-        );
+        // The index below needs the ledger to exist. Fresh stores get the
+        // table from SCHEMA, but a pre-v4 database does not — `CREATE INDEX
+        // … ON web_sessions` would fail with "no such table" (IF NOT EXISTS
+        // only guards the index, not the table), so create the table first.
+        db.exec(`${WEB_SESSIONS_SCHEMA}
+CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id);`);
         db.pragma("user_version = 4");
     }
 }

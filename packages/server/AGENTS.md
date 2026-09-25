@@ -2,9 +2,10 @@
 
 ## Purpose
 
-`@lukestanbery/jarvis-server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /` health
-check, a REST management API (`/api` for accounts/devices/sessions/prefs — device-token **or** cookie auth with
-CSRF), and a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response.
+`@lukestanbery/jarvis-server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /health`
+health check, a REST management API (`/api` for accounts/devices/sessions/prefs — device-token **or** cookie auth with
+CSRF), a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response, and serves the web
+portal SPA at `/` when it has been built (see "Web portal" below).
 
 ## Stack
 
@@ -31,34 +32,53 @@ Run from `packages/server`:
 
 ## Endpoints
 
-| Method   | Path                      | Auth                                  | Description                                         |
-| -------- | ------------------------- | ------------------------------------- | --------------------------------------------------- |
-| `GET`    | `/`                       | none                                  | Health-check, returns `Hello World`                 |
-| `WS`     | `/ws`                     | optional device token (first frame)   | Chat endpoint (WebSocket)                           |
-| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`              | Create the first (owner) account + device token     |
-| `POST`   | `/api/auth/login`         | none                                  | Username + password → a (rotating) device token     |
-| `POST`   | `/api/session`            | none                                  | Username + password → session cookie + CSRF token   |
-| `GET`    | `/api/session`            | session cookie                        | Current session user                                |
-| `DELETE` | `/api/session`            | session cookie (+ CSRF)               | Sign out: revoke the session + clear the cookie     |
-| `GET`    | `/api/me`                 | device token or session               | Current user + their devices                        |
-| `POST`   | `/api/devices`            | device token or session (+ CSRF)      | Provision a new device token for the caller         |
-| `PATCH`  | `/api/devices/:id`        | device token or session (+ CSRF)      | Rename an owned device                              |
-| `DELETE` | `/api/devices/:id`        | device token or session (+ CSRF)      | Revoke a device (own, or any as owner)              |
-| `GET`    | `/api/users`              | device token or session (owner)       | List accounts                                       |
-| `POST`   | `/api/users`              | device token or session (owner, CSRF) | Create an account (`role` optional, default `user`) |
-| `PATCH`  | `/api/users/:id`          | device token or session (owner, CSRF) | Update `role`/`disabled` (self-disable → 400)       |
-| `GET`    | `/api/users/:id/prefs`    | device token or session (owner)       | Read any account's preferences                      |
-| `PUT`    | `/api/users/:id/prefs`    | device token or session (owner, CSRF) | Upsert any account's preferences                    |
-| `GET`    | `/api/prefs`              | device token or session               | Read the caller's preferences                       |
-| `PUT`    | `/api/prefs`              | device token or session (+ CSRF)      | Upsert the caller's preferences                     |
-| `GET`    | `/api/sessions`           | device token or session               | List sessions (owner sees all, with `userId`)       |
-| `DELETE` | `/api/sessions/:threadId` | device token or session (+ CSRF)      | Delete the caller's owned session (owner: any)      |
+| Method   | Path                      | Auth                                  | Description                                             |
+| -------- | ------------------------- | ------------------------------------- | ------------------------------------------------------- |
+| `GET`    | `/health`                 | none                                  | Machine health check → `{ "ok": true }`                 |
+| `GET`    | `/`                       | none                                  | Serves the built portal SPA ("Hello World" without one) |
+| `WS`     | `/ws`                     | optional device token (first frame)   | Chat endpoint (WebSocket)                               |
+| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`              | Create the first (owner) account + device token         |
+| `POST`   | `/api/auth/login`         | none                                  | Username + password → a (rotating) device token         |
+| `POST`   | `/api/session`            | none                                  | Username + password → session cookie + CSRF token       |
+| `GET`    | `/api/session`            | session cookie                        | Current session user (+ the `csrfToken` for cookies)    |
+| `DELETE` | `/api/session`            | session cookie (+ CSRF)               | Sign out: revoke the session + clear the cookie         |
+| `GET`    | `/api/me`                 | device token or session               | Current user + their devices                            |
+| `POST`   | `/api/devices`            | device token or session (+ CSRF)      | Provision a new device token for the caller             |
+| `PATCH`  | `/api/devices/:id`        | device token or session (+ CSRF)      | Rename an owned device                                  |
+| `DELETE` | `/api/devices/:id`        | device token or session (+ CSRF)      | Revoke a device (own, or any as owner)                  |
+| `GET`    | `/api/users`              | device token or session (owner)       | List accounts                                           |
+| `POST`   | `/api/users`              | device token or session (owner, CSRF) | Create an account (`role` optional, default `user`)     |
+| `PATCH`  | `/api/users/:id`          | device token or session (owner, CSRF) | Update `role`/`disabled` (self-disable → 400)           |
+| `GET`    | `/api/users/:id/devices`  | device token or session (owner)       | List another account's devices (for management)         |
+| `GET`    | `/api/users/:id/prefs`    | device token or session (owner)       | Read any account's preferences                          |
+| `PUT`    | `/api/users/:id/prefs`    | device token or session (owner, CSRF) | Upsert any account's preferences                        |
+| `DELETE` | `/api/users/:id/prefs`    | device token or session (owner, CSRF) | Clear any account's preferences                         |
+| `GET`    | `/api/prefs`              | device token or session               | Read the caller's preferences                           |
+| `PUT`    | `/api/prefs`              | device token or session (+ CSRF)      | Upsert the caller's preferences                         |
+| `DELETE` | `/api/prefs`              | device token or session (+ CSRF)      | Clear the caller's preferences                          |
+| `GET`    | `/api/sessions`           | device token or session               | List sessions (owner sees all, with `userId`)           |
+| `DELETE` | `/api/sessions/:threadId` | device token or session (+ CSRF)      | Delete the caller's owned session (owner: any)          |
 
 The server listens on port `54321` by default, overridable via `PORT`. REST auth is
 `Authorization: Bearer <device-token>` **or** the `jarvis_session` cookie (see `src/http/middleware.ts`):
 `requireAuth` tries the bearer first and falls back to the cookie; cookie-authenticated requests must send
 `x-csrf-token` on state-changing methods (`POST`/`PATCH`/`DELETE`/`PUT`) via `requireCsrf`. The session cookie is
-`HttpOnly`/`SameSite=Strict`, gets the `Secure` + `__Host-` prefix under TLS, and carries the device-echoed success. Session TTL defaults to `DEFAULT_SESSION_TTL_MS` (24h), overridable via `JARVIS_SESSION_TTL_MS`.
+`HttpOnly`/`SameSite=Strict`, gets the `Secure` + `__Host-` prefix under TLS, and carries the device-echoed success. Session TTL defaults to `DEFAULT_SESSION_TTL_MS` (30 days), overridable via `JARVIS_SESSION_TTL_MS`.
+
+## Web portal
+
+The server serves the built portal SPA (`@lukestanbery/jarvis-portal`) at `/` via `express.static` plus an SPA
+fallback that replays `index.html` for non-`/api` GET/HEAD requests. It is only mounted when the portal has been
+built and `index.html` exists at the configured directory; otherwise `GET /` returns `Hello World`.
+
+- The base directory is `JARVIS_PORTAL_DIR`, defaulting to `../../../portal/dist` resolved from `src/` (i.e.
+  `packages/portal/dist`, produced by `vite build`). An empty string disables portal serving. `AppConfig.portalDir`
+  mirrors the env var in tests.
+- Following Node best practice, the SPA is served with a strict CSP
+  (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+connect-src 'self'`) plus `X-Content-Type-Options: nosniff`. A `Cache-Control: no-cache` header keeps the
+  hash-routed shell fresh.
+- The `/api` namespace is untouched by the fallback, so REST, `/ws`, and `/health` keep working regardless.
 
 ## Chat protocol
 
@@ -97,7 +117,9 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`).
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
-- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, mounts `/api`; `createHttpsRedirectApp`.
+- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, and the
+  portal static serving + SPA fallback capped with a strict CSP (only when `portalDir` holds `index.html`);
+  `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
   `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls).
 - `src/http/cookies.ts` — cookie parsing + the `jarvis_session` cookie name/attributes (`__Host-` under TLS).
@@ -115,7 +137,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
 - `src/llm/chatModel.ts` — the only module that knows `@langchain/openai`.
 - `src/llm/tools/` — the tool implementations.
-- `test/` — Vitest suites: `app.test.ts`, `ws.test.ts`, `http.test.ts`, `sessionManager.test.ts`.
+- `test/` — Vitest suites: `app.test.ts` (health + portal serving), `ws.test.ts`, `http.test.ts`, `sessionManager.test.ts`.
 
 `src/ws.ts` is the only module that touches the agent seam; `src/llm/chatModel.ts` is the only module that knows
 `@langchain/openai`; nothing outside `@lukestanbery/jarvis-auth` hashes or compares secrets (within it, only

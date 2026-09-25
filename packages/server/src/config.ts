@@ -1,5 +1,6 @@
 /** Default base URL of the local LM Studio OpenAI-compatible server. */
 import { homedir } from "node:os";
+import path from "node:path";
 import { DEFAULT_SESSION_TTL_MS } from "@lukestanbery/jarvis-auth";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
@@ -42,6 +43,19 @@ export function defaultAppDbPath(): string {
 
 /** Default hard cap for one agent turn before it is aborted. */
 export const DEFAULT_TURN_TIMEOUT_MS = 120_000;
+
+/**
+ * Default location of the built web portal when none is configured.
+ *
+ * The portal package (`packages/portal`) compiles to `packages/portal/dist`;
+ * from the server's `src/` (tsx dev) *and* `dist/` (compiled) both resolve to
+ * `packages/portal/dist` via `../..`. `createApp` mounts the folder only when
+ * its `index.html` actually exists, so a server running without a portal build
+ * falls back to the plain "Hello World" root.
+ */
+export function defaultPortalDir(): string {
+    return path.resolve(__dirname, "../../portal/dist");
+}
 
 /** Default persona the assistant is primed with on every conversation thread. */
 export const DEFAULT_SYSTEM_PROMPT =
@@ -160,6 +174,13 @@ export interface AppConfig {
      * (`JARVIS_HTTP_REDIRECT_PORT`); defaults to `port + 1` when unset.
      */
     readonly httpRedirectPort?: number;
+    /**
+     * Directory of the built web portal to serve at `/` (`JARVIS_PORTAL_DIR`).
+     * When unset, `getAppConfig` resolves the workspace's `packages/portal/dist`
+     * and `createApp` mounts it only if `index.html` exists. Set to an explicit
+     * path to override, or to the empty string to disable portal serving.
+     */
+    readonly portalDir?: string;
     /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
     readonly loginRateLimit?: RateLimitConfig;
 }
@@ -185,6 +206,10 @@ export function getAppConfig(): AppConfig {
         httpRedirectPort: process.env.JARVIS_HTTP_REDIRECT_PORT
             ? numberOr(process.env.JARVIS_HTTP_REDIRECT_PORT, 0) || undefined
             : undefined,
+        portalDir:
+            process.env.JARVIS_PORTAL_DIR === ""
+                ? undefined
+                : process.env.JARVIS_PORTAL_DIR || defaultPortalDir(),
         loginRateLimit: {
             windowMs: numberOr(process.env.JARVIS_RATE_WINDOW_MS, 15 * 60_000),
             maxFailures: numberOr(process.env.JARVIS_RATE_MAX_FAILURES, 10),
