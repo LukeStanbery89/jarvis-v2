@@ -18,6 +18,32 @@ The `/ws` frame shapes mirror `@lukestanbery/jarvis-protocol` (the TypeScript
 single source of truth for the wire format); the two must evolve in lockstep.
 Conformance tests in a later phase enforce that automatically.
 
+## REST spec inventory (`spec/openapi.yaml`)
+
+22 operations covering `GET /health` and the 21 `/api` management routes,
+mirroring the handlers in `packages/server/src/http/authRoutes.ts`:
+
+| Tag              | Operations (operationId)                                                               |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| `Health`         | `GET /health` (`healthCheck`)                                                          |
+| `Bootstrap`      | `POST /api/bootstrap` (`bootstrap`)                                                    |
+| `Authentication` | `POST /api/auth/login` (`authLogin`), `POST /api/session` (`sessionLogin`)             |
+| `Session`        | `GET`/`DELETE /api/session` (`sessionGet`/`sessionLogout`)                             |
+| `Account`        | `GET /api/me` (`meGet`)                                                                |
+| `Devices`        | `POST /api/devices`, `PATCH`/`DELETE /api/devices/{id}`, `GET /api/users/{id}/devices` |
+| `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                       |
+| `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`            |
+| `ChatSessions`   | `GET /api/sessions`, `DELETE /api/sessions/{threadId}`                                 |
+
+Key shapes in `components.schemas`: `User`, `Device` (nullable `lastSeenAt`),
+`IssuedDevice` (one-time `token`), `AuthResult` (shared by bootstrap + device
+login), `Session` (optional `csrfToken` for cookie vs bearer), `SessionLogin`,
+`MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `Error`. Auth is a
+device-token bearer OR the `jarvis_session` cookie (`bearerToken` and `session`
+security schemes), with optional `x-csrf-token` on cookie-authenticated state
+changes and a required `x-bootstrap-token` on bootstrap. Error responses reuse
+the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
+
 ## Scripts
 
 | Script              | Description                                                        |
