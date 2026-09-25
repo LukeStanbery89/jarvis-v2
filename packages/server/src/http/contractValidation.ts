@@ -16,7 +16,7 @@ import type { Express } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import OpenApiValidator from "express-openapi-validator";
+import { middleware as openApiMiddleware } from "express-openapi-validator";
 import { logger } from "../logger";
 
 const contractRequire = createRequire(__filename);
@@ -67,7 +67,7 @@ export function mountContractValidator(
         return;
     }
     app.use(
-        OpenApiValidator.middleware({
+        openApiMiddleware({
             apiSpec,
             validateRequests: true,
             validateResponses: verifyResponses,
