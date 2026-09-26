@@ -34,8 +34,8 @@ const page = `<!doctype html>
         <h1>J.A.R.V.I.S. API reference</h1>
         <p>Generated from the contract-first specs in <code>packages/contracts/spec/</code>.</p>
         <ul>
-            <li><a href="/rest/">REST management API (OpenAPI)</a> — <code>/api</code> routes + <code>GET /health</code></li>
-            <li><a href="/ws/">WebSocket chat endpoint (AsyncAPI)</a> — <code>/ws</code> channel</li>
+            <li><a href="./rest/">REST management API (OpenAPI)</a> — <code>/api</code> routes + <code>GET /health</code></li>
+            <li><a href="./ws/">WebSocket chat endpoint (AsyncAPI)</a> — <code>/ws</code> channel</li>
         </ul>
         <p>Regenerate locally with <code>npm run docs:build -w @lukestanbery/jarvis-contracts</code>.</p>
     </body>
