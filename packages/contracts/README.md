@@ -6,6 +6,23 @@ the **contract-first** specifications that describe both API surfaces of
 them into TypeScript: the REST API (`/api` management routes + `GET /health`)
 and the WebSocket chat endpoint (`/ws`).
 
+## Generated docs
+
+The repository also keeps generated, spec-derived documentation here: endpoint
+tables (`docs/endpoints-rest.md` / `docs/endpoints-ws.md`, regenerated and
+gated by `check:endpoints`) and a static HTML reference (`npm run docs:build`
+→ gitignored `.docs/`, published to GitHub Pages by `.github/workflows/docs.yml`).
+
+| Output                   | What it is                                                                     | Regenerate               |
+| ------------------------ | ------------------------------------------------------------------------------ | ------------------------ |
+| `docs/endpoints-rest.md` | Markdown table of every REST path/method + auth from `openapi.yaml`            | `npm run docs:endpoints` |
+| `docs/endpoints-ws.md`   | Markdown table of the `/ws` channel operations + messages from `asyncapi.yaml` | `npm run docs:endpoints` |
+| `.docs/` (gitignored)    | Static HTML reference: ReDoc page for REST, AsyncAPI html-template for WS      | `npm run docs:build`     |
+
+`docs/endpoints-*.md` are committed and gated: `check:endpoints` regenerates
+them and fails the build when they drift from the specs (same mechanism as
+`check-generated`). `.docs/` is the GitHub Pages artifact (`.github/workflows/docs.yml`).
+
 ## Specs
 
 | File                 | Concern                                                          | Tooling        |
@@ -49,7 +66,7 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
 
 | Script                    | Description                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `npm run build`           | Check generated → bundle → lint → validate → compile `src/` to `dist/`                     |
+| `npm run build`           | Check generated → check endpoints → bundle → lint → validate → compile `src/` to `dist/`   |
 | `npm run check-generated` | Regenerate types and fail the build if diffing the committed file (`git diff --exit-code`) |
 | `npm run types`           | Regenerate `src/generated/openapi.ts` from `spec/openapi.yaml`                             |
 | `npm run bundle`          | Bundle `openapi.yaml` to `spec/.bundle/openapi.yaml` (single-file)                         |
@@ -57,6 +74,12 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
 | `npm run validate`        | Validate `spec/asyncapi.yaml` (AsyncAPI CLI)                                               |
 | `npm run typecheck`       | Type-check src and tests (no emit)                                                         |
 | `npm test`                | Run the Smoke + WS-conformance tests (Vitest)                                              |
+| `npm run docs:endpoints`  | Regenerate `docs/endpoints-rest.md` + `docs/endpoints-ws.md` from the specs                |
+| `npm run check:endpoints` | Regenerate the endpoint tables and fail if they differ from the committed files            |
+| `npm run docs:build`      | Build static HTML docs into `.docs/` (ReDoc for REST, AsyncAPI template for WS)            |
+| `npm run docs:rest`       | Build + serve the REST reference locally (http://localhost:4000)                           |
+| `npm run docs:ws`         | Build + serve the WebSocket reference locally (http://localhost:4000)                      |
+| `npm run docs:serve`      | Build + serve the combined docs (`/rest/index.html`, `/ws/index.html`)                     |
 
 ## Editing a spec
 
@@ -66,9 +89,11 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
    regenerated `src/generated/openapi.ts` alongside the spec edit. The build
    gates on this: `check-generated` regenerates the file and fails when it
    differs from the committed version, so a stale typegen can never sail
-   through CI or the pre-push hook.
+   through CI or the pre-push hook. Route listings changed? `npm run
+check:endpoints` regenerates the endpoint tables the same way (`build`
+   runs it too).
 4. Run the root `npm run check` (the workspace `build` chain runs the checked
-   typegen, bundle, lint, and validate in dependency order).
+   typegen, endpoint tables, bundle, lint, and validate in dependency order).
 
 ## Notes for maintainers
 

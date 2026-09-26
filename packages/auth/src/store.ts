@@ -157,9 +157,10 @@ export interface WebSessionLedger {
 /**
  * Per-user integration-prefs ledger over the `prefs` table.
  *
- * Values are arbitrary JSON, validated by the REST layer (`zod`) before they
- * reach the store; the ledger only round-trips `value_json`. The home for the
- * per-user integration state the web portal (#24) manages.
+ * Values are arbitrary JSON, validated by the REST layer's `prefsFrom`
+ * (`packages/server/src/http/authRoutes.ts`) before they reach the store;
+ * the ledger only round-trips `value_json`. The home for the per-user
+ * integration state the web portal (#24) manages.
  */
 export interface PrefLedger {
     /** All keys + parsed JSON values for a user (empty object when none). */

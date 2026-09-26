@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Vitest output
 .vitest/
+
+# Generated static API docs (built by `npm run docs:*` in @lukestanbery/jarvis-contracts)
+packages/contracts/.docs/
