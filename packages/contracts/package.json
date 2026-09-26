@@ -9,7 +9,7 @@
         "spec"
     ],
     "scripts": {
-        "build": "npm run check-generated && npm run bundle && npm run lint && npm run validate && tsc",
+        "build": "npm run check-generated && npm run check:endpoints && npm run bundle && npm run lint && npm run validate && tsc",
         "check-generated": "npm run types && git diff --exit-code -- src/generated/openapi.ts",
         "types": "openapi-typescript spec/openapi.yaml --output src/generated/openapi.ts",
         "bundle": "mkdir -p spec/.bundle && redocly bundle spec/openapi.yaml --output spec/.bundle/openapi.yaml",
@@ -17,6 +17,14 @@
         "validate": "asyncapi validate spec/asyncapi.yaml",
         "typecheck": "tsc --noEmit -p tsconfig.test.json",
         "test": "vitest run",
+        "docs:build": "node scripts/write-landing.mjs && npm run docs:build:rest && npm run docs:build:ws",
+        "docs:build:rest": "redocly build-docs spec/openapi.yaml -o .docs/rest/index.html",
+        "docs:build:ws": "asyncapi generate fromTemplate spec/asyncapi.yaml @asyncapi/html-template --no-interactive --output .docs/ws --force-write",
+        "docs:rest": "npm run docs:build:rest && node scripts/serve-static.mjs .docs/rest",
+        "docs:ws": "npm run docs:build:ws && node scripts/serve-static.mjs .docs/ws",
+        "docs:serve": "npm run docs:build && node scripts/serve-static.mjs .docs",
+        "docs:endpoints": "node scripts/generate-endpoint-tables.mjs",
+        "check:endpoints": "npm run docs:endpoints && git diff --exit-code -- docs",
         "prepublishOnly": "npm run build"
     },
     "repository": {

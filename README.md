@@ -56,6 +56,14 @@ a published tarball.
 | `npm run format`       | Auto-format all files with Prettier       |
 | `npm run format:check` | Verify formatting without modifying files |
 
+## API docs
+
+The API is specified contract-first (see `packages/contracts`): the REST and
+WebSocket surfaces are machine-checked against `openapi.yaml` / `asyncapi.yaml`
+(types, runtime validation, and conformance tests all derive from them).
+Browse the local references with `npm run docs:serve -w @lukestanbery/jarvis-contracts`
+(builds to `.docs/`; also published to GitHub Pages when the specs change).
+
 ## Code style
 
 Formatting is enforced with [Prettier](https://prettier.io) using the rules in
