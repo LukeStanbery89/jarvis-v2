@@ -56,7 +56,7 @@ the server's `AUTH_ERROR_STATUS` map — **no 422** in this API.
 | `npm run lint`            | Redocly lint `spec/openapi.yaml`                                                           |
 | `npm run validate`        | Validate `spec/asyncapi.yaml` (AsyncAPI CLI)                                               |
 | `npm run typecheck`       | Type-check src and tests (no emit)                                                         |
-| `npm test`                | Run the Smoke tests (Vitest)                                                               |
+| `npm test`                | Run the Smoke + WS-conformance tests (Vitest)                                              |
 
 ## Editing a spec
 
@@ -101,3 +101,11 @@ Payloads are strict (`additionalProperties: false`) and encode the protocol's
 bounds: non-empty-after-trim strings (`pattern: \S`) and the ≤128-char
 `sessionId`/`token` caps. The server object documents the default cleartext
 `ws://localhost:54321/ws` (TLS deployments serve `wss` at the same path).
+
+Conformance tests (`test/wsConformance.test.ts`) parse this spec with
+`@asyncapi/parser`, then ajv-check frames produced through the protocol's own
+serializers against each message payload — and each of the covered negative
+cases is asserted on both sides: the protocol parser rejects the frame _and_
+the spec schema rejects it. The spec is intentionally stricter than the
+parser (`additionalProperties: false`), and that strictness is pinned
+explicitly. A one-sided change to the protocol or the spec fails `npm test`.
