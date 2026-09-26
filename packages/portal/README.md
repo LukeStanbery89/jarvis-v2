@@ -70,12 +70,14 @@ src/
 ├── routes.ts        # tiny hash router (#/users #/devices #/sessions #/prefs #/setup #/login)
 ├── api.ts           # typed fetch client (CSRF header, 401 redirect, ApiError)
 ├── api.test.ts      # unit tests for the client
-├── types.ts         # JSON shapes mirroring the server's REST payloads
+├── types.ts         # API shape aliases into @lukestanbery/jarvis-contracts
 ├── styles.css
 ├── components/      # Layout (sidebar) + shared UI primitives
 └── views/           # Login, Setup, Users, Devices, Sessions, Prefs
 ```
 
-The `types.ts` shapes are the HTTP contract duplicated deliberately: the portal
-ships as static assets with no Node-side dependency on the server or auth
-packages, so the REST JSON payloads are the single source of truth.
+The `types.ts` shapes are type-only aliases into the generated OpenAPI types of
+`@lukestanbery/jarvis-contracts` (the REST spec is the single source of truth;
+see `packages/contracts`, whose `npm run types` regenerates them). They are `import type`-only
+and erased at compile time — the portal ships as static assets and its bundle
+carries no Node-side dependency on the server, auth, or contracts packages.

@@ -63,6 +63,13 @@ handshake from a prompt. Chunks concatenate verbatim to the full response. The
 error messages thrown by `parseFrame`/`parseClientMessage`/`parseRequest` are
 user-facing on the CLI side, so their wording must not drift.
 
+A machine-readable mirror of these frames lives in
+`packages/contracts/spec/asyncapi.yaml` (AsyncAPI 3.1). **Keep this package and
+that spec in lockstep**: any frame shape, rename, or bound change here must be
+applied to the spec in the same change, and vice versa. The contracts package's
+conformance tests parse the spec and validate representative real frames
+against it, so a one-sided edit fails `npm run check`.
+
 ## Notes for maintainers
 
 - Zero runtime dependencies and no I/O — this package is deliberately types +

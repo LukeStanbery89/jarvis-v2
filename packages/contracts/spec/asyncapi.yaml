@@ -1,0 +1,294 @@
+# AsyncAPI 3.1 document for the J.A.R.V.I.S. chat endpoint.
+#
+# Contract-first: this file describes the JSON frames exchanged over the /ws
+# WebSocket, mirroring the types in `@lukestanbery/jarvis-protocol` (the TS
+# source of truth). `npm run validate` checks it; the Phase 6 conformance
+# tests prove real frames still match it.
+#
+# Phase 5: full spec. One message per frame (`authHandshake`, `chatPrompt`,
+# `chunk`, `toolCall`, `toolResult`, `done`, `error`, `authResult`) so docs and
+# conformance tests can address each frame individually. Payloads are strict
+# (`additionalProperties: false`) and encode the protocol's value bounds
+# (`\S` non-empty-after-trim, 128-char `sessionId`/`token` caps). Edit it in
+# lockstep with `packages/protocol` — the conformance tests fail otherwise.
+asyncapi: 3.1.0
+info:
+    title: J.A.R.V.I.S. Chat API
+    description: >-
+        WebSocket chat endpoint at /ws. Clients send one JSON frame per
+        WebSocket text message: an optional first-frame `auth` handshake
+        binding the socket to a device token, then chat prompts. The server
+        streams the agent's progress back as `tool` / `toolResult` notices,
+        `chunk` tokens, and a terminal `done` (or `error` + `done`).
+        Frame shapes mirror @lukestanbery/jarvis-protocol and must be updated
+        in lockstep with it (enforced by the conformance tests).
+    version: 0.2.0
+defaultContentType: application/json
+servers:
+    chat:
+        host: localhost:54321
+        protocol: ws
+        pathname: /ws
+        description: >-
+            Cleartext by default; deployments with `JARVIS_TLS_CERT` /
+            `JARVIS_TLS_KEY` serve the same path over `wss`. There is no HTTP
+            upgrade-time authentication — identity travels in-band as the
+            optional first frame.
+channels:
+    ws:
+        address: /ws
+        description: >-
+            The single chat channel. Exactly one JSON frame per text message;
+            anything that is not a JSON object or matches no known frame
+            shape is answered with an `error` frame followed by a terminal
+            `done`, and the turn is not started.
+        messages:
+            authHandshake:
+                $ref: "#/components/messages/authHandshake"
+            chatPrompt:
+                $ref: "#/components/messages/chatPrompt"
+            authResult:
+                $ref: "#/components/messages/authResult"
+            chunk:
+                $ref: "#/components/messages/chunk"
+            toolCall:
+                $ref: "#/components/messages/toolCall"
+            toolResult:
+                $ref: "#/components/messages/toolResult"
+            done:
+                $ref: "#/components/messages/done"
+            error:
+                $ref: "#/components/messages/error"
+operations:
+    sendClientFrame:
+        action: send
+        channel:
+            $ref: "#/channels/ws"
+        title: Send a client frame
+        summary: Auth handshake (optional first frame) or chat prompt
+        description: >-
+            The client's first frame may be the `auth` handshake; skipping it
+            makes the socket a guest for its lifetime, and a later auth is
+            rejected. Every other frame is a chat prompt naming the LangGraph
+            thread (`sessionId`, ≤128 chars) to continue. One turn at a time:
+            a prompt while a previous turn is streaming — on this socket or
+            any other sharing the thread — is answered with an `error` frame.
+        messages:
+            - $ref: "#/channels/ws/messages/authHandshake"
+            - $ref: "#/channels/ws/messages/chatPrompt"
+    receiveServerFrame:
+        action: receive
+        channel:
+            $ref: "#/channels/ws"
+        title: Receive server frames
+        summary: Streamed agent events, terminal `done`, or errors
+        description: >-
+            Reply to a successful handshake: exactly one `authResult` frame
+            (a bad token answers `error` + terminal `done` instead, and the
+            socket continues as a guest). Per prompt turn, `toolCall` /
+            `toolResult` notices and `chunk` tokens interleave while the
+            agent works (chunks concatenate in arrival order into the reply
+            text), and a terminal `done` ends the turn. Failures and
+            pre-turn rejections (busy thread, foreign session, bad first
+            frame, bad token) each answer `error` followed by a terminal
+            `done`: the turn either never starts or does not continue.
+        messages:
+            - $ref: "#/channels/ws/messages/authResult"
+            - $ref: "#/channels/ws/messages/chunk"
+            - $ref: "#/channels/ws/messages/toolCall"
+            - $ref: "#/channels/ws/messages/toolResult"
+            - $ref: "#/channels/ws/messages/done"
+            - $ref: "#/channels/ws/messages/error"
+components:
+    messages:
+        authHandshake:
+            title: Auth handshake
+            summary: The client's optional first frame, presenting a device token
+            description: >-
+                Binding the socket to an account. Only valid as the first
+                frame; the server answers with one `authResult` on success or
+                an `error` + terminal `done` (and a guest socket) on a bad
+                token. `token` is
+                1–128 characters, non-empty after trimming.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - type
+                    - token
+                properties:
+                    type:
+                        const: auth
+                    token:
+                        type: string
+                        pattern: \S
+                        maxLength: 128
+            examples:
+                - payload:
+                      type: auth
+                      token: dvt_a1b2c3d4e5f6
+        chatPrompt:
+            title: Chat prompt
+            summary: Free-text prompt continuing a conversation thread
+            description: >-
+                `prompt` is non-empty after trimming (no upper bound);
+                `sessionId` names the LangGraph thread and is 1–128
+                characters after trimming. Sending this without authenticating
+                first makes the socket a guest whose claimed sessions are
+                deleted when it disconnects.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - prompt
+                    - sessionId
+                properties:
+                    prompt:
+                        type: string
+                        pattern: \S
+                    sessionId:
+                        type: string
+                        pattern: \S
+                        maxLength: 128
+            examples:
+                - payload:
+                      prompt: What's on my calendar today?
+                      sessionId: s-2026-09-25-morning
+        chunk:
+            title: Response chunk
+            summary: One streamed token of the assistant's reply
+            description: >-
+                Sent zero or more times per turn before the terminal `done`.
+                Chunks concatenate, in arrival order, into the full response
+                text.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - chunk
+                properties:
+                    chunk:
+                        type: string
+            examples:
+                - payload:
+                      chunk: Sure —
+        toolCall:
+            title: Tool call notice
+            summary: The agent is invoking a tool
+            description: >-
+                Emitted when the agent starts a tool call. `args` is the
+                tool's raw JSON input; it may be absent when the tool takes no
+                input.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - tool
+                properties:
+                    tool:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - name
+                        properties:
+                            name:
+                                type: string
+                            args: {}
+            examples:
+                - payload:
+                      tool:
+                          name: calculator
+                          args:
+                              expr: 2+2
+        toolResult:
+            title: Tool result notice
+            summary: The agent received a tool's output
+            description: >-
+                Emitted after a tool call finishes. `output` is the tool's
+                raw JSON result; it may be absent.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - toolResult
+                properties:
+                    toolResult:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - name
+                        properties:
+                            name:
+                                type: string
+                            output: {}
+            examples:
+                - payload:
+                      toolResult:
+                          name: calculator
+                          output: "4"
+        done:
+            title: Turn complete
+            summary: Terminal frame of a successful turn
+            description: >-
+                Always the last frame of a streamed turn. Failures stream
+                `error` first and still end with `done`.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - done
+                properties:
+                    done:
+                        const: true
+            examples:
+                - payload:
+                      done: true
+        error:
+            title: Error
+            summary: User-facing failure message
+            description: >-
+                Answers malformed frames, auth failures, busy threads,
+                foreign session ids, and model/stream failures. Always
+                followed by a terminal `done` frame: the turn either never
+                starts or does not continue.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - error
+                properties:
+                    error:
+                        type: string
+            examples:
+                - payload:
+                      error: another request is already in progress
+        authResult:
+            title: Auth result
+            summary: Acknowledgment of a successful handshake
+            description: >-
+                The only reply to a valid first-frame `auth` handshake:
+                `user` is the bound account's username and `device` the
+                authenticating device's name. Revoked devices are re-checked
+                on every subsequent prompt.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - authResult
+                properties:
+                    authResult:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - user
+                            - device
+                        properties:
+                            user:
+                                type: string
+                            device:
+                                type: string
+            examples:
+                - payload:
+                      authResult:
+                          user: luke
+                          device: cli

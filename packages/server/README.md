@@ -66,6 +66,7 @@ variables:
 | `JARVIS_RATE_MAX_IP_FAILURES` | `100` | Aggregate attempts per IP before a lockout |
 | `JARVIS_RATE_LOCKOUT_MS` | `60000` | Base lockout; doubles per repeat (backoff, ×32 cap) |
 | `JARVIS_SESSION_TTL_MS` | `2592000000` (30 days) | Absolute lifetime of a cookie session (no sliding) |
+| `JARVIS_API_CONTRACT` | unset | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated) |
 | `JARVIS_LOG_LEVEL` | `info` | Log verbosity: `debug` \| `info` \| `warn` \| `error` |
 | `JARVIS_LOG_SENSITIVE` | `auto` | Force sensitive payload logging: `full` \| `redacted` |
 
@@ -126,6 +127,23 @@ concurrent guesses can't race past the budget; a successful login resets the
 counter. The limiter is in-memory per process and trusts `req.ip` — set
 `app.set("trust proxy", …)` if you ever front the server with a reverse proxy.
 
+### REST contract validation
+
+The server enforces the OpenAPI contract at runtime: `express-openapi-validator`
+runs ahead of `/api` (and `/health`) with the spec from
+`@lukestanbery/jarvis-contracts` (bundled artifact when built, else the source
+YAML — if neither resolves, the server logs a warning and keeps serving
+unvalidated rather than refusing requests). Request shapes are always
+validated — a body that violates the spec is rejected with `400 { "error": … }`
+before any route logic. Response shapes are
+checked only with `JARVIS_API_CONTRACT=verify` (set automatically by
+`npm run dev` and by the `test/contract.test.ts` suite): a server response that
+drifts from the spec fails loudly (logged 500) instead of silently mismatching
+the documented contract. Security is deliberately **not** validated by the
+middleware (`validateSecurity: false`) — auth is OR-composed (bearer device
+token or session cookie) and stays owned by `src/http/middleware.ts`; shape
+validation is purely additive to the hand-rolled checks in `authRoutes.ts`.
+
 ### Transport security
 
 By default the server is plain HTTP (the LAN posture) and binds
@@ -155,27 +173,37 @@ option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDeb
 
 ### Endpoints
 
-| Method   | Path                      | Auth                                | Description                                                                              |
-| -------- | ------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET`    | `/`                       | none                                | Health-check, returns `Hello World`                                                      |
-| `WS`     | `/ws`                     | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
-| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`            | Create the first (owner) account + device token                                          |
-| `POST`   | `/api/auth/login`         | none                                | Username + password → a (rotating) device token                                          |
-| `GET`    | `/api/me`                 | device token                        | Current user + their devices                                                             |
-| `POST`   | `/api/devices`            | device token                        | Provision a new device token for the caller                                              |
-| `DELETE` | `/api/devices/:id`        | device token                        | Revoke a device (own, or any as owner)                                                   |
-| `GET`    | `/api/users`              | device token (owner)                | List accounts                                                                            |
-| `POST`   | `/api/users`              | device token (owner)                | Create an account (`role` optional, default `user`)                                      |
-| `PATCH`  | `/api/users/:id`          | device token (owner)                | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409) |
-| `GET`    | `/api/sessions`           | device token                        | List the caller's owned sessions                                                         |
-| `DELETE` | `/api/sessions/:threadId` | device token                        | Delete the caller's owned session (owner: any)                                           |
+Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
+the spec'd REST surface in [`docs/endpoints-rest.md`](../contracts/docs/endpoints-rest.md)
+(generated from `packages/contracts/spec/openapi.yaml`, enforced at runtime by
+`express-openapi-validator`) and the WebSocket channel in
+[`docs/endpoints-ws.md`](../contracts/docs/endpoints-ws.md). The rows below are
+the commonly-used subset for orientation (auth labels match the generated
+table — "web session" is the `jarvis_session` cookie):
 
-"Device token" auth is `Authorization: Bearer <token>`.
+| Method   | Path                       | Auth                                | Description                                                                              |
+| -------- | -------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `GET`    | `/`                        | none                                | Health-check, returns `Hello World`                                                      |
+| `WS`     | `/ws`                      | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
+| `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header          | Create the first (owner) account + device token                                          |
+| `POST`   | `/api/auth/login`          | none                                | Username + password → a (rotating) device token                                          |
+| `GET`    | `/api/me`                  | device token or web session         | Current user + their devices                                                             |
+| `POST`   | `/api/devices`             | device token or web session         | Provision a new device token for the caller                                              |
+| `DELETE` | `/api/devices/{id}`        | device token or web session         | Revoke a device (own, or any as owner)                                                   |
+| `GET`    | `/api/users`               | device token or web session (owner) | List accounts                                                                            |
+| `POST`   | `/api/users`               | device token or web session (owner) | Create an account (`role` optional, default `user`)                                      |
+| `PATCH`  | `/api/users/{id}`          | device token or web session (owner) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409) |
+| `GET`    | `/api/sessions`            | device token or web session         | List sessions (owner sees all, with `userId`)                                            |
+| `DELETE` | `/api/sessions/{threadId}` | device token or web session         | Delete the caller's owned session (owner: any)                                           |
+
+"Device token" auth is `Authorization: Bearer <token>`; the web session is the
+`jarvis_session` cookie (+ `x-csrf-token` on state changes).
 
 ### Chat protocol
 
 The wire protocol (frames, limits, and parse/serialize logic) is defined once
-in the shared `@lukestanbery/jarvis-protocol` package; connect a WebSocket client to `/ws`
+in the shared `@lukestanbery/jarvis-protocol` package (machine-readable mirror:
+`packages/contracts/spec/asyncapi.yaml`); connect a WebSocket client to `/ws`
 and exchange JSON text frames:
 
 - Client → Server:

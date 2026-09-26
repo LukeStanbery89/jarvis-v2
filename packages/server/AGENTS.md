@@ -32,32 +32,37 @@ Run from `packages/server`:
 
 ## Endpoints
 
-| Method   | Path                      | Auth                                  | Description                                                                                           |
-| -------- | ------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `GET`    | `/health`                 | none                                  | Machine health check → `{ "ok": true }`                                                               |
-| `GET`    | `/`                       | none                                  | Serves the built portal SPA ("Hello World" without one)                                               |
-| `WS`     | `/ws`                     | optional device token (first frame)   | Chat endpoint (WebSocket)                                                                             |
-| `POST`   | `/api/bootstrap`          | `JARVIS_BOOTSTRAP_TOKEN`              | Create the first (owner) account + device token                                                       |
-| `POST`   | `/api/auth/login`         | none                                  | Username + password → a (rotating) device token                                                       |
-| `POST`   | `/api/session`            | none                                  | Username + password → session cookie + CSRF token                                                     |
-| `GET`    | `/api/session`            | session cookie                        | Current session user (+ the `csrfToken` for cookies)                                                  |
-| `DELETE` | `/api/session`            | session cookie (+ CSRF)               | Sign out: revoke the session + clear the cookie                                                       |
-| `GET`    | `/api/me`                 | device token or session               | Current user + their devices                                                                          |
-| `POST`   | `/api/devices`            | device token or session (+ CSRF)      | Provision a new device token for the caller                                                           |
-| `PATCH`  | `/api/devices/:id`        | device token or session (+ CSRF)      | Rename an owned device                                                                                |
-| `DELETE` | `/api/devices/:id`        | device token or session (+ CSRF)      | Revoke a device (own, or any as owner)                                                                |
-| `GET`    | `/api/users`              | device token or session (owner)       | List accounts                                                                                         |
-| `POST`   | `/api/users`              | device token or session (owner, CSRF) | Create an account (`role` optional, default `user`)                                                   |
-| `PATCH`  | `/api/users/:id`          | device token or session (owner, CSRF) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409 `LAST_OWNER`) |
-| `GET`    | `/api/users/:id/devices`  | device token or session (owner)       | List another account's devices (for management)                                                       |
-| `GET`    | `/api/users/:id/prefs`    | device token or session (owner)       | Read any account's preferences                                                                        |
-| `PUT`    | `/api/users/:id/prefs`    | device token or session (owner, CSRF) | Upsert any account's preferences                                                                      |
-| `DELETE` | `/api/users/:id/prefs`    | device token or session (owner, CSRF) | Clear any account's preferences                                                                       |
-| `GET`    | `/api/prefs`              | device token or session               | Read the caller's preferences                                                                         |
-| `PUT`    | `/api/prefs`              | device token or session (+ CSRF)      | Upsert the caller's preferences                                                                       |
-| `DELETE` | `/api/prefs`              | device token or session (+ CSRF)      | Clear the caller's preferences                                                                        |
-| `GET`    | `/api/sessions`           | device token or session               | List sessions (owner sees all, with `userId`)                                                         |
-| `DELETE` | `/api/sessions/:threadId` | device token or session (+ CSRF)      | Delete the caller's owned session (owner: any)                                                        |
+Authoritative tables: `packages/contracts/docs/endpoints-rest.md` (REST) and
+`endpoints-ws.md` (WebSocket), generated from the OpenAPI/AsyncAPI specs in
+`packages/contracts/spec/`. The table below is the orientation subset; update
+the specs, not this table, when routes change.
+
+| Method   | Path                       | Auth                                  | Description                                                                                           |
+| -------- | -------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `GET`    | `/health`                  | none                                  | Machine health check → `{ "ok": true }`                                                               |
+| `GET`    | `/`                        | none                                  | Serves the built portal SPA ("Hello World" without one)                                               |
+| `WS`     | `/ws`                      | optional device token (first frame)   | Chat endpoint (WebSocket)                                                                             |
+| `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header            | Create the first (owner) account + device token                                                       |
+| `POST`   | `/api/auth/login`          | none                                  | Username + password → a (rotating) device token                                                       |
+| `POST`   | `/api/session`             | none                                  | Username + password → session cookie + CSRF token                                                     |
+| `GET`    | `/api/session`             | device token or session               | Current session user (+ the `csrfToken` for cookies)                                                  |
+| `DELETE` | `/api/session`             | device token or session (+ CSRF)      | Sign out: revoke the session + clear the cookie                                                       |
+| `GET`    | `/api/me`                  | device token or session               | Current user + their devices                                                                          |
+| `POST`   | `/api/devices`             | device token or session (+ CSRF)      | Provision a new device token for the caller                                                           |
+| `PATCH`  | `/api/devices/{id}`        | device token or session (+ CSRF)      | Rename an owned device                                                                                |
+| `DELETE` | `/api/devices/{id}`        | device token or session (+ CSRF)      | Revoke a device (own, or any as owner)                                                                |
+| `GET`    | `/api/users`               | device token or session (owner)       | List accounts                                                                                         |
+| `POST`   | `/api/users`               | device token or session (owner, CSRF) | Create an account (`role` optional, default `user`)                                                   |
+| `PATCH`  | `/api/users/{id}`          | device token or session (owner, CSRF) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409 `LAST_OWNER`) |
+| `GET`    | `/api/users/{id}/devices`  | device token or session (owner)       | List another account's devices (for management)                                                       |
+| `GET`    | `/api/users/{id}/prefs`    | device token or session (owner)       | Read any account's preferences                                                                        |
+| `PUT`    | `/api/users/{id}/prefs`    | device token or session (owner, CSRF) | Upsert any account's preferences                                                                      |
+| `DELETE` | `/api/users/{id}/prefs`    | device token or session (owner, CSRF) | Clear any account's preferences                                                                       |
+| `GET`    | `/api/prefs`               | device token or session               | Read the caller's preferences                                                                         |
+| `PUT`    | `/api/prefs`               | device token or session (+ CSRF)      | Upsert the caller's preferences                                                                       |
+| `DELETE` | `/api/prefs`               | device token or session (+ CSRF)      | Clear the caller's preferences                                                                        |
+| `GET`    | `/api/sessions`            | device token or session               | List sessions (owner sees all, with `userId`)                                                         |
+| `DELETE` | `/api/sessions/{threadId}` | device token or session (+ CSRF)      | Delete the caller's owned session (owner: any)                                                        |
 
 The server listens on port `54321` by default, overridable via `PORT`. REST auth is
 `Authorization: Bearer <device-token>` **or** the `jarvis_session` cookie (see `src/http/middleware.ts`):
@@ -114,7 +119,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 ## Source layout
 
 - `src/index.ts` — process entry: loads `.env` via `import "dotenv/config"` (first import, so `config.ts` sees the file; real env always wins), config, `openAppDatabase` (from `@lukestanbery/jarvis-auth`), `createApp`, `attachChatServer` — hands the app to the listener seam.
-- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`).
+- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, and the
@@ -122,6 +127,11 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
   `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls).
+- `src/http/contractValidation.ts` — runtime REST contract gate: resolves the OpenAPI spec from
+  `@lukestanbery/jarvis-contracts` (bundle, else source), mounts `express-openapi-validator` ahead of `/api` +
+  `/health` (requests always; responses under `JARVIS_API_CONTRACT=verify`; `validateSecurity: false` — auth stays
+  in `middleware.ts`), and maps validator errors onto the `{ error }` shape (client 400s; server-side violations
+  logged + generic 500).
 - `src/http/cookies.ts` — cookie parsing + the `jarvis_session` cookie name/attributes (`__Host-` under TLS).
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, session, me, devices, users, sessions, prefs).
 - `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).

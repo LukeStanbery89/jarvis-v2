@@ -65,7 +65,9 @@ describe("bootstrap", () => {
         });
         const res = await request(noBootstrap).post("/api/bootstrap").send({
             username: "ghost",
-            password: "x",
+            // Schema-valid credentials: this test pins the 409 policy status,
+            // which the contract validator would otherwise pre-empt (400).
+            password: "short-but-valid",
         });
         expect(res.status).toBe(409);
         expect(res.body.error).toMatch(/bootstrap/i);
@@ -79,14 +81,14 @@ describe("bootstrap", () => {
         });
         const missing = await request(freshApp).post("/api/bootstrap").send({
             username: "intruder",
-            password: "x",
+            password: "wrong-pass-1",
         });
         expect(missing.status).toBe(403);
 
         const wrong = await request(freshApp)
             .post("/api/bootstrap")
             .set("x-bootstrap-token", "wrong")
-            .send({ username: "intruder", password: "x" });
+            .send({ username: "intruder", password: "wrong-pass-1" });
         expect(wrong.status).toBe(403);
         freshStore.close();
     });
@@ -129,7 +131,7 @@ describe("bootstrap", () => {
         const again = await request(freshApp)
             .post("/api/bootstrap")
             .set("x-bootstrap-token", BOOTSTRAP)
-            .send({ username: "second-owner", password: "x" });
+            .send({ username: "second-owner", password: "second-pass-1" });
         expect(again.status).toBe(409);
         expect(again.body.error).toMatch(/owner already exists|disabled/i);
         freshStore.close();
@@ -363,14 +365,16 @@ describe("login + devices", () => {
             password: "hunter2",
         });
         expect(short.status).toBe(400);
-        expect(short.body.error).toMatch(/at least 8/);
+        // The spec's minLength is enforced by the contract validator ahead of
+        // the router, so the message is the validator's (not the router's).
+        expect(short.body.error).toMatch(/at least 8|fewer than 8/);
 
         const createShort = await request(app)
             .post("/api/users")
             .set("authorization", await ownerHeader())
             .send({ username: "shorty", password: "tiny" });
         expect(createShort.status).toBe(400);
-        expect(createShort.body.error).toMatch(/at least 8/);
+        expect(createShort.body.error).toMatch(/at least 8|fewer than 8/);
     });
 
     it("rejects login before an owner is bootstrapped", async () => {
@@ -378,7 +382,7 @@ describe("login + devices", () => {
         const freshApp = createApp(freshStore, FAST);
         const res = await request(freshApp).post("/api/auth/login").send({
             username: "anyone",
-            password: "x",
+            password: "wrong-pass-1",
         });
         expect(res.status).toBe(404);
         freshStore.close();
@@ -423,17 +427,19 @@ describe("login + devices", () => {
         expect(denied.status).toBe(403);
     });
 
-    it("answers 404 for a nonexistent or malformed device id", async () => {
+    it("answers 404 for a nonexistent id and 400 for a malformed one", async () => {
         const pepperToken = await passwordLogin("pepper", "pwd-1234");
         const missing = await request(app)
             .delete("/api/devices/999999")
             .set("authorization", `Bearer ${pepperToken}`);
         expect(missing.status).toBe(404);
 
+        // The spec types `:id` as an integer, so the contract validator owns
+        // malformed ids (400) ahead of the router's not-found answer.
         const bogus = await request(app)
             .delete("/api/devices/nope")
             .set("authorization", `Bearer ${pepperToken}`);
-        expect(bogus.status).toBe(404);
+        expect(bogus.status).toBe(400);
     });
 });
 
