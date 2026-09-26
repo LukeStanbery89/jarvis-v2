@@ -104,6 +104,8 @@ bounds: non-empty-after-trim strings (`pattern: \S`) and the ≤128-char
 
 Conformance tests (`test/wsConformance.test.ts`) parse this spec with
 `@asyncapi/parser`, then ajv-check frames produced through the protocol's own
-serializers against each message payload — and assert the spec rejects every
-frame the protocol parser rejects. A one-sided change to the protocol or the
-spec fails `npm test`.
+serializers against each message payload — and each of the covered negative
+cases is asserted on both sides: the protocol parser rejects the frame _and_
+the spec schema rejects it. The spec is intentionally stricter than the
+parser (`additionalProperties: false`), and that strictness is pinned
+explicitly. A one-sided change to the protocol or the spec fails `npm test`.
