@@ -215,6 +215,55 @@ describe("hello capability handshake", () => {
         expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
     });
 
+    it("answers a voice-mode prompt with empty capabilities and claims the thread as voice", async () => {
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: ["markdown", "image"] },
+                { prompt: "hi", sessionId: "voice-thread", mode: "voice" },
+            ],
+            { until: "done" },
+        );
+        expect(frames.some((f) => f.error !== undefined)).toBe(false);
+        expect(frames[frames.length - 1]).toEqual({ done: true });
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "voice-thread");
+        expect(call?.[2]).toEqual({ capabilities: [] });
+        expect(store.getSessionByThread("voice-thread")?.kind).toBe("voice");
+    });
+
+    it("keeps declared capabilities for explicit text-mode prompts", async () => {
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: ["markdown", "image"] },
+                {
+                    prompt: "hi",
+                    sessionId: "text-explicit-thread",
+                    mode: "text",
+                },
+            ],
+            { until: "done" },
+        );
+        expect(frames.some((f) => f.error !== undefined)).toBe(false);
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "text-explicit-thread");
+        expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
+        expect(store.getSessionByThread("text-explicit-thread")?.kind).toBe(
+            "text",
+        );
+    });
+
+    it("claims mode-less prompts as text threads", async () => {
+        await collectFrames(
+            [{ prompt: "hi", sessionId: "text-default-thread" }],
+            { until: "done" },
+        );
+        expect(store.getSessionByThread("text-default-thread")?.kind).toBe(
+            "text",
+        );
+    });
+
     it("accepts hello then auth, then prompts as an owned socket", async () => {
         const user = store.createUser("hello-auth", "unused", "user");
         const material = generateDeviceToken();

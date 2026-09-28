@@ -62,6 +62,52 @@ describe("SessionManager.runTurn", () => {
         ).not.toBeNull();
     });
 
+    it("records the prompt's chat mode as the claimed session kind", async () => {
+        const guestThreads = new Set<string>();
+        await sessions.runTurn({
+            sessionId: "voice-1",
+            actor: GUEST,
+            guestThreads,
+            mode: "voice",
+            stream: async () => {},
+        });
+        await sessions.runTurn({
+            sessionId: "text-explicit-1",
+            actor: GUEST,
+            guestThreads,
+            mode: "text",
+            stream: async () => {},
+        });
+        await sessions.runTurn({
+            sessionId: "text-default-1",
+            actor: GUEST,
+            guestThreads,
+            stream: async () => {},
+        });
+        expect(store.getSessionByThread("voice-1")?.kind).toBe("voice");
+        expect(store.getSessionByThread("text-explicit-1")?.kind).toBe("text");
+        expect(store.getSessionByThread("text-default-1")?.kind).toBe("text");
+    });
+
+    it("keeps the write-once kind of an already-claimed thread", async () => {
+        const guestThreads = new Set<string>();
+        await sessions.runTurn({
+            sessionId: "kind-locked-1",
+            actor: GUEST,
+            guestThreads,
+            mode: "voice",
+            stream: async () => {},
+        });
+        await sessions.runTurn({
+            sessionId: "kind-locked-1",
+            actor: GUEST,
+            guestThreads,
+            mode: "text",
+            stream: async () => {},
+        });
+        expect(store.getSessionByThread("kind-locked-1")?.kind).toBe("voice");
+    });
+
     it("does not treat an authenticated actor's session as a guest thread", async () => {
         const user = makeUser(store);
         const device = makeDevice(store, user.id);

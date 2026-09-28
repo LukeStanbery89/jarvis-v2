@@ -219,9 +219,13 @@ and exchange JSON text frames:
       `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. Never
       authenticate → the socket is a **guest** (ephemeral, identity-independent
       chats).
-    - `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
-      `sessionId` names the conversation thread. Reuse it to continue an earlier
+    - `{ "prompt": "<your prompt>", "sessionId": "<id>", "mode": "text"|"voice" }` —
+      the `sessionId` names the conversation thread. Reuse it to continue an earlier
       conversation (bounded to 128 characters); each distinct id is isolated.
+      The optional `mode` (default `"text"`) picks the chat style: text prompts
+      are answered using the client's declared capabilities, while voice prompts
+      always yield plain conversational text. The mode is recorded as the
+      session's `kind` when the thread is first claimed (write-once).
       A `hello` or `auth` frame arriving after this is rejected.
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
@@ -244,7 +248,8 @@ and exchange JSON text frames:
 
 Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
 `~/.jarvis/jarvis.sqlite`): `sessionId` is claimed atomically as a
-**session** tagged `guest`/`owned` and `text`/`voice`. Guest sessions are
+**session** tagged `guest`/`owned` and `text`/`voice` (the kind is the
+prompt's chat `mode`, recorded at first claim). Guest sessions are
 deleted when their socket closes; owned sessions persist and can be listed or
 deleted via the REST management API. Note that deleting a session removes the
 ledger row, not the conversation history in the LangGraph checkpointer (see

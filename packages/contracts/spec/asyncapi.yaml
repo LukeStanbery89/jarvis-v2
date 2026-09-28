@@ -184,9 +184,14 @@ components:
             description: >-
                 `prompt` is non-empty after trimming (no upper bound);
                 `sessionId` names the LangGraph thread and is 1–128
-                characters after trimming. Sending this without authenticating
-                first makes the socket a guest whose claimed sessions are
-                deleted when it disconnects.
+                characters after trimming. The optional `mode` selects the
+                chat style — `"text"` (the default when omitted) is answered
+                using the client's declared rendering capabilities, while
+                `"voice"` always yields plain conversational text. The server
+                records the mode as the session's `kind` when it first claims
+                the thread (write-once: later prompts do not re-claim it).
+                Sending this without authenticating first makes the socket a
+                guest whose claimed sessions are deleted when it disconnects.
             payload:
                 type: object
                 additionalProperties: false
@@ -201,10 +206,24 @@ components:
                         type: string
                         pattern: \S
                         maxLength: 128
+                    mode:
+                        type: string
+                        enum:
+                            - text
+                            - voice
+                        description: >-
+                            The chat mode this prompt runs under; `"text"`
+                            when omitted. Voice prompts yield plain
+                            conversational text regardless of the client's
+                            declared rendering capabilities.
             examples:
                 - payload:
                       prompt: What's on my calendar today?
                       sessionId: s-2026-09-25-morning
+                - payload:
+                      prompt: What's on my calendar today?
+                      sessionId: s-2026-09-25-morning
+                      mode: voice
         chunk:
             title: Response chunk
             summary: One streamed token of the assistant's reply

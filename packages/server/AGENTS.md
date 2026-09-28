@@ -117,18 +117,21 @@ re-declares frames.
     - **First frame (or immediately after `hello`), optional:** `{ "type": "auth", "token": "<device token>" }` —
       the server replies with one `{ "authResult": { "user", "device" } }` frame; a bad token gets an error frame
       and the socket continues as a **guest**. An auth frame after any other frame is rejected.
-    - `{ "prompt": "<text>", "sessionId": "<id>" }` — names the LangGraph conversation thread. Sending a prompt
-      without authenticating makes the socket a guest for its lifetime.
+    - `{ "prompt": "<text>", "sessionId": "<id>", "mode": "text"|"voice" }` — names the LangGraph conversation
+      thread; the optional `mode` (default `"text"`) picks the chat style: text prompts use the socket's declared
+      capabilities, voice prompts always yield plain conversational text (effective capabilities are emptied).
+      Sending a prompt without authenticating makes the socket a guest for its lifetime.
 - Server → Client per prompt: `tool`/`toolResult` frames while the agent calls tools, then `chunk` frames, then
   `{ "done": true }`. Errors: `{ "error": "<message>" }` + `{ "done": true }`.
 - Rejections: a prompt while a previous turn is streaming, a concurrent turn on the same thread across sockets
   (per-thread lock), and a `sessionId` owned by a different principal (`session belongs to another user` — knowing a
   session id alone is never enough to read someone else's conversation).
 
-Every prompt claims its `sessionId` in the session ledger (`AppDatabase.claimSession`). Guest sockets' claimed
-sessions are deleted on socket close; owned sessions persist. Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS`
-(default `120000`); draining is best-effort on a hung model. Authenticated sockets are re-checked against the
-store on every prompt so a revoked device is cut off immediately.
+Every prompt claims its `sessionId` in the session ledger (`AppDatabase.claimSession`) with the prompt's chat
+`mode` recorded as the write-once `kind` (default `text`; an already-claimed thread keeps its first mode). Guest
+sockets' claimed sessions are deleted on socket close; owned sessions persist. Turns are hard-capped by
+`JARVIS_TURN_TIMEOUT_MS` (default `120000`); draining is best-effort on a hung model. Authenticated sockets are
+re-checked against the store on every prompt so a revoked device is cut off immediately.
 
 `POST /api/auth/login` and `POST /api/session` are RateLimited against the **same** `login:` quota (per
 `(ip, username)` plus an aggregate per `ip`, exponential backoff) by `src/http/rateLimit.ts`, and both reject

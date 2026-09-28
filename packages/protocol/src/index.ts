@@ -10,6 +10,7 @@ export type {
     AuthRequest,
     AuthResult,
     AuthResultFrame,
+    ChatMode,
     ChatPrompt,
     ClientCapability,
     ClientFrame,
