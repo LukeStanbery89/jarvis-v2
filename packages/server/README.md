@@ -61,6 +61,7 @@ variables:
 | `JARVIS_TLS_KEY` | unset | Matching PEM private key (required with `JARVIS_TLS_CERT`) |
 | `JARVIS_HTTP_REDIRECT_PORT`| `PORT + 1` | Cleartext port that upgrades to HTTPS (TLS mode) |
 | `JARVIS_PORTAL_DIR` | `packages/portal/dist` | Built portal SPA root served at `/`; empty string disables it |
+| `JARVIS_WEB_DIR` | `packages/web/dist` | Built web chat client root served at `/web`; empty string disables it |
 | `JARVIS_RATE_WINDOW_MS` | `900000` (15 min) | Attempt-accumulation window for login/bootstrap |
 | `JARVIS_RATE_MAX_FAILURES` | `10` | Attempts per `(ip, username)` before a lockout |
 | `JARVIS_RATE_MAX_IP_FAILURES` | `100` | Aggregate attempts per IP before a lockout |
@@ -183,7 +184,8 @@ table — "web session" is the `jarvis_session` cookie):
 
 | Method   | Path                       | Auth                                | Description                                                                              |
 | -------- | -------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET`    | `/`                        | none                                | Health-check, returns `Hello World`                                                      |
+| `GET`    | `/`                        | none                                | Health-check, returns `Hello World` (or the built portal SPA)                            |
+| `GET`    | `/web`                     | none                                | Built web chat client SPA (301s to `/web/`, then serves `index.html`)                    |
 | `WS`     | `/ws`                      | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
 | `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header          | Create the first (owner) account + device token                                          |
 | `POST`   | `/api/auth/login`          | none                                | Username + password → a (rotating) device token                                          |
@@ -207,7 +209,12 @@ in the shared `@lukestanbery/jarvis-protocol` package (machine-readable mirror:
 and exchange JSON text frames:
 
 - Client → Server:
-    - **Optional, first frame only:** `{ "type": "auth", "token": "<device token>" }`
+    - **Optional, first frame only:** `{ "hello": true, "capabilities": ["markdown", "image", "link"] }` (shape
+      `{ "type": "hello", "capabilities": [...] }`) — the client announces how it renders responses. Each token is
+      one of `markdown` / `html` / `image` / `link` (duplicates and unknown tokens are rejected; the list may be
+      empty). This affects the agent's system prompt: the model is told the client renders Markdown/images/links
+      (or that it only shows plain text). Must be the very first frame.
+    - **First frame (or immediately after `hello`), optional:** `{ "type": "auth", "token": "<device token>" }`
       — authenticates as an account. The server replies with one
       `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. Never
       authenticate → the socket is a **guest** (ephemeral, identity-independent
@@ -215,6 +222,7 @@ and exchange JSON text frames:
     - `{ "prompt": "<your prompt>", "sessionId": "<id>" }` — the
       `sessionId` names the conversation thread. Reuse it to continue an earlier
       conversation (bounded to 128 characters); each distinct id is isolated.
+      A `hello` or `auth` frame arriving after this is rejected.
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).

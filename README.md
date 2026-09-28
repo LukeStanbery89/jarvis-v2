@@ -12,6 +12,7 @@ AI-powered assistant monorepo.
 | [packages/cli](./packages/cli)             | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                                                              |
 | [packages/logger](./packages/logger)       | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)                                                  |
 | [packages/portal](./packages/portal)       | React admin portal served by the server at `/` (`@lukestanbery/jarvis-portal`)                                       |
+| [packages/web](./packages/web)             | Browser chat client (markdown/image/link rendering) served at `/web` (`@lukestanbery/jarvis-web`)                    |
 | [packages/contracts](./packages/contracts) | Contract-first API specs: OpenAPI (REST) + AsyncAPI (WebSocket) + generated types (`@lukestanbery/jarvis-contracts`) |
 
 ## Getting started
@@ -35,7 +36,10 @@ The wire protocol those two packages speak over `/ws` is defined **once** in
 Alongside the CLI, the server serves a browser **admin portal**
 (`packages/portal`) — a React SPA at `/` that manages accounts, devices,
 sessions, and prefs through the REST API, authenticating with a cookie session
-plus a per-session CSRF nonce rather than device tokens.
+plus a per-session CSRF nonce rather than device tokens. The server also hosts
+the **web chat client** (`packages/web`) at `/web`, which announces its
+markdown/hyperlink/image rendering capabilities over `/ws` with a `hello`
+first frame (the full chat UI lands with the next PR of issue #12).
 
 During development the workspace packages resolve each other **through the
 workspace symlinks** npm creates in `node_modules` — edit source in

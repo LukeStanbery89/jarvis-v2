@@ -1,10 +1,14 @@
 /**
  * WebSocket chat endpoint.
  *
- * Mounted on the `"/ws"` path of the HTTP server. Clients may authenticate on
- * their **first frame** by presenting a device token (`{ type: "auth", token }`);
- * the server replies with one `authResult` frame. Any other first frame — or
- * no auth at all — runs the socket as a **guest** (ephemeral,
+ * Mounted on the `"/ws"` path of the HTTP server. The client's **first frame**
+ * may authenticate with a device token (`{ type: "auth", token }`), announce
+ * what it can render (`{ type: "hello", capabilities }`), or prompt. Auth
+ * binds the socket to an account and the server replies with one `authResult`
+ * frame; `hello` declares render capabilities for the socket's lifetime and
+ * conditions the agent's system prompt. Either handshake comes first (both,
+ * at most once each, before any prompt) or not at all — any other opening,
+ * or no auth, runs the socket as a **guest** (ephemeral,
  * identity-independent chats). Afterwards clients send JSON prompt frames and
  * receive chunk/done frames back. The frame shapes and parse/serialize logic
  * live in `@lukestanbery/jarvis-protocol` — the single source of truth for
@@ -21,13 +25,14 @@
  * cut off as soon as it speaks.
  */
 import type { Server } from "http";
-import type { RawData } from "ws";
 import { WebSocket, WebSocketServer } from "ws";
 import {
     parseClientMessage,
     serializeFrame,
+    type ClientCapability,
     type ClientFrame,
 } from "@lukestanbery/jarvis-protocol";
+import type { ClientHello } from "@lukestanbery/jarvis-protocol";
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "@lukestanbery/jarvis-auth";
 import type { AppDatabase, AuthContext } from "@lukestanbery/jarvis-auth";
@@ -44,8 +49,14 @@ const GUEST_CONTEXT: AuthContext = Object.freeze({ kind: "guest" });
 
 /** Per-connection auth + guest-ledger state. */
 interface ConnectionState {
-    /** Whether the socket's first frame has been consumed by an auth or prompt. */
+    /** Whether the socket's opening slot has been consumed (hello/auth/prompt). */
+    firstSeen: boolean;
+    /** Whether an `auth` handshake was attempted (successful or not). */
     authed: boolean;
+    /** Whether any prompt was handled (locks the socket as a guest). */
+    promptSeen: boolean;
+    /** Render capabilities declared by a `hello` frame (empty for plain text). */
+    capabilities: ClientCapability[];
     /** Resolved identity: the account + presenting device, or guest. */
     ctx: AuthContext;
     /** Token hash of the authenticating device (for per-prompt revocation checks). */
@@ -80,34 +91,72 @@ export function attachChatServer(
 
     wss.on("connection", (socket) => {
         logger.info("New WebSocket connection");
-        let active: Promise<void> | null = null;
+        // A promise chain serializing every frame, so a pipelined `hello` →
+        // `auth` (or `auth` → prompt before `authResult` is read) still lands in
+        // order. `activePrompt` is the streaming-guard half: one prompt streams
+        // at a time per socket, and a second arriving prompt is rejected.
+        let tail: Promise<void> = Promise.resolve();
+        let activePrompt: Promise<void> | null = null;
         const conn: ConnectionState = {
+            firstSeen: false,
             authed: false,
+            promptSeen: false,
+            capabilities: [],
             ctx: GUEST_CONTEXT,
             guestThreads: new Set(),
         };
 
         socket.on("message", (raw) => {
-            if (active) {
+            const frameText = raw.toString();
+            logger.sensitive("Received message from WebSocket", frameText);
+            let frame: ClientFrame;
+            try {
+                frame = parseClientMessage(frameText);
+            } catch (err) {
+                const detail =
+                    err instanceof Error ? err.message : "unknown error";
+                logger.error(`Failed to parse WebSocket message: ${detail}`);
+                sendError(socket, detail);
+                return;
+            }
+            const isHandshake = "type" in frame;
+            // Only prompts contend for the stream: a second prompt while one is
+            // streaming is rejected. Handshake frames are never denied here —
+            // the opening-slot rules in handleHello/handleAuth own their
+            // ordering — and just join the tail so a prompt can never race an
+            // auth resolution.
+            if (!isHandshake && activePrompt) {
                 logger.warn(
                     "Rejecting prompt: another request is already in progress",
                 );
                 sendError(socket, "another request is already in progress");
                 return;
             }
-            active = handleMessage(raw, socket, conn, store, sessions, options)
-                .catch((err) => {
-                    // handleMessage answers expected failures with error frames;
-                    // anything escaping it (a store error, an unexpected throw)
-                    // must still surface to the client rather than hang it.
-                    logger.error(
-                        `Unhandled error handling message: ${err instanceof Error ? err.message : String(err)}`,
-                    );
-                    sendError(socket, "internal server error");
-                })
-                .finally(() => {
-                    active = null;
+            const step = handleFrame(
+                socket,
+                conn,
+                store,
+                sessions,
+                frame,
+                options,
+            ).catch((err) => {
+                // handleFrame answers expected failures with error frames;
+                // anything escaping it (a store error, an unexpected throw)
+                // must still surface to the client rather than hang it.
+                logger.error(
+                    `Unhandled error handling message: ${err instanceof Error ? err.message : String(err)}`,
+                );
+                sendError(socket, "internal server error");
+            });
+            tail = tail.then(() => step);
+            if (!isHandshake) {
+                activePrompt = step;
+                void step.finally(() => {
+                    if (activePrompt === step) {
+                        activePrompt = null;
+                    }
                 });
+            }
         });
 
         socket.on("close", () => {
@@ -120,39 +169,31 @@ export function attachChatServer(
 }
 
 /**
- * Handles one incoming frame.
+ * Handles one already-parsed frame.
  *
- * An `auth` frame resolves the socket's identity (only valid as the first
- * frame); any other frame is a prompt that claims its session and streams the
- * agent's events over the socket. Invalid messages get an error frame, as do
- * LLM failures on the stream path. Returns a promise that settles when the
- * response is fully streamed (or the frame was rejected).
+ * An `auth` frame resolves the socket's identity, a `hello` frame records the
+ * socket's render capabilities (both only valid in the opening slot), and a
+ * prompt claims its session and streams the agent's events over the socket.
+ * Returns a promise that settles when the response is fully streamed (or the
+ * frame was rejected).
  */
-async function handleMessage(
-    raw: RawData,
+async function handleFrame(
     socket: WebSocket,
     conn: ConnectionState,
     store: AppDatabase,
     sessions: SessionManager,
+    frame: ClientFrame,
     options: AttachmentOptions,
 ): Promise<void> {
-    const frameText = raw.toString();
-    logger.sensitive("Received message from WebSocket", frameText);
-    let frame: ClientFrame;
-    try {
-        frame = parseClientMessage(frameText);
-    } catch (err) {
-        const detail = err instanceof Error ? err.message : "unknown error";
-        logger.error(`Failed to parse WebSocket message: ${detail}`);
-        sendError(socket, detail);
+    if ("type" in frame) {
+        if (frame.type === "hello") {
+            await handleHello(socket, conn, frame);
+        } else {
+            await handleAuth(socket, conn, store, frame.token);
+        }
         return;
     }
-
-    if (!("type" in frame)) {
-        await handlePrompt(socket, conn, store, sessions, frame, options);
-        return;
-    }
-    await handleAuth(socket, conn, store, frame.token);
+    await handlePrompt(socket, conn, store, sessions, frame, options);
 }
 
 /**
@@ -173,10 +214,14 @@ async function handlePrompt(
     prompt: Extract<ClientFrame, { prompt: string }>,
     options: AttachmentOptions,
 ): Promise<void> {
-    if (!conn.authed) {
-        conn.authed = true;
+    if (!conn.firstSeen) {
+        conn.firstSeen = true;
         conn.ctx = GUEST_CONTEXT;
     }
+    // A signal of the socket's first prompt. Set unconditionally — a socket
+    // that opened with `hello` is still locked to guest if it never authed,
+    // so a late `auth` can never re-parent it mid-life.
+    conn.promptSeen = true;
     // DHCP-style revocation check: a device token may have been revoked since
     // the handshake. Re-resolve on every prompt so a revoked credential is
     // cut off immediately instead of living on in `conn.ctx`.
@@ -204,6 +249,7 @@ async function handlePrompt(
                 prompt.prompt,
                 sessionId,
                 options.turnTimeoutMs,
+                conn.capabilities,
             ),
     });
     respondToTurn(socket, turn, prompt.sessionId);
@@ -234,12 +280,43 @@ function respondToTurn(
 }
 
 /**
+ * Records a `hello` capability-announcement frame.
+ *
+ * Only valid as the socket's opening frame (the `auth` handshake may open the
+ * socket *or* immediately follow it — never the other way around), and exactly
+ * once. Stores the declared capabilities for the socket's lifetime; each
+ * subsequent prompt runs the agent with them so the output can be shaped for
+ * what this client can render. A late `hello` is answered with an error frame.
+ */
+async function handleHello(
+    socket: WebSocket,
+    conn: ConnectionState,
+    hello: ClientHello,
+): Promise<void> {
+    if (conn.firstSeen) {
+        logger.warn("Rejecting hello: handshake must be the first frame");
+        sendError(socket, "hello frame must be the first frame");
+        return;
+    }
+    conn.firstSeen = true;
+    conn.capabilities = hello.capabilities;
+    logger.info(
+        `Socket announced capabilities: ${
+            hello.capabilities.length > 0
+                ? hello.capabilities.join(", ")
+                : "plain text only"
+        }`,
+    );
+}
+
+/**
  * Resolves an `auth` handshake frame.
  *
- * Only valid as the socket's first frame; a valid token binds the socket to
- * its account (one `authResult` frame), an unknown token gets an error frame
- * and the socket continues as a guest. Either way the slot is consumed — a
- * client only gets one chance to authenticate.
+ * Only valid before any prompt and at most once (whether it opened the socket
+ * or followed a `hello`); a valid token binds the socket to its account (one
+ * `authResult` frame), an unknown token gets an error frame and the socket
+ * continues as a guest. Either way the slot is consumed — a client only gets
+ * one chance to authenticate.
  */
 async function handleAuth(
     socket: WebSocket,
@@ -247,12 +324,13 @@ async function handleAuth(
     store: AppDatabase,
     token: string,
 ): Promise<void> {
-    if (conn.authed) {
+    if (conn.authed || conn.promptSeen) {
         logger.warn("Rejecting auth: handshake must be the first frame");
         sendError(socket, "auth handshake must be the first frame");
         return;
     }
     conn.authed = true;
+    conn.firstSeen = true;
     const identity = store.resolveTokenHash(hashDeviceToken(token));
     if (!identity) {
         logger.warn("Rejecting auth: unknown device token");
@@ -280,7 +358,9 @@ async function handleAuth(
 /**
  * Streams the agent's events to the socket as frames, finishing with
  * `{"done": true}`, or an error frame followed by `done` if the agent fails,
- * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`.
+ * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`. The
+ * socket's declared render capabilities (from a `hello` frame) are forwarded
+ * to the agent so it can shape output for what this client can render.
  *
  * The timeout error is emitted by the timer itself; the in-flight generator is
  * `return()`d shortly after, which drains when its current await settles.
@@ -296,6 +376,7 @@ async function streamEventsToSocket(
     prompt: string,
     sessionId: string,
     turnTimeoutMs: number,
+    capabilities: ClientCapability[],
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -312,7 +393,7 @@ async function streamEventsToSocket(
         void generator?.return?.(undefined);
     }, turnTimeoutMs);
     try {
-        generator = runAgent(prompt, sessionId);
+        generator = runAgent(prompt, sessionId, { capabilities });
         try {
             for await (const event of generator) {
                 if (finished || socket.readyState !== WebSocket.OPEN) {

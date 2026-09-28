@@ -57,6 +57,19 @@ export function defaultPortalDir(): string {
     return path.resolve(__dirname, "../../portal/dist");
 }
 
+/**
+ * Default location of the built web chat client when none is configured.
+ *
+ * The web package (`packages/web`) compiles to `packages/web/dist`; from the
+ * server's `src/` (tsx dev) *and* `dist/` (compiled) both resolve to
+ * `packages/web/dist` via `../..`. `createApp` mounts the folder at `/web`
+ * only when its `index.html` actually exists, so a server running without a
+ * web build simply has no chat client mounted.
+ */
+export function defaultWebDir(): string {
+    return path.resolve(__dirname, "../../web/dist");
+}
+
 /** Default persona the assistant is primed with on every conversation thread. */
 export const DEFAULT_SYSTEM_PROMPT =
     "You are J.A.R.V.I.S., a helpful, personal AI assistant. " +
@@ -181,6 +194,14 @@ export interface AppConfig {
      * path to override, or to the empty string to disable portal serving.
      */
     readonly portalDir?: string;
+    /**
+     * Directory of the built web chat client to serve at `/web`
+     * (`JARVIS_WEB_DIR`). When unset, `getAppConfig` resolves the workspace's
+     * `packages/web/dist` and `createApp` mounts it only if `index.html`
+     * exists. Set to an explicit path to override, or to the empty string to
+     * disable web-chat serving (leaving a bare `/web` to 404).
+     */
+    readonly webDir?: string;
     /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
     readonly loginRateLimit?: RateLimitConfig;
     /**
@@ -218,6 +239,10 @@ export function getAppConfig(): AppConfig {
             process.env.JARVIS_PORTAL_DIR === ""
                 ? undefined
                 : process.env.JARVIS_PORTAL_DIR || defaultPortalDir(),
+        webDir:
+            process.env.JARVIS_WEB_DIR === ""
+                ? undefined
+                : process.env.JARVIS_WEB_DIR || defaultWebDir(),
         loginRateLimit: {
             windowMs: numberOr(process.env.JARVIS_RATE_WINDOW_MS, 15 * 60_000),
             maxFailures: numberOr(process.env.JARVIS_RATE_MAX_FAILURES, 10),

@@ -11,13 +11,28 @@
  * the error message wording is user-facing (the CLI surfaces it verbatim) so
  * it must not drift.
  */
-import { MAX_SESSION_ID_LENGTH, MAX_TOKEN_LENGTH } from "./types";
+import {
+    MAX_CAPABILITIES,
+    MAX_CAPABILITY_LENGTH,
+    MAX_SESSION_ID_LENGTH,
+    MAX_TOKEN_LENGTH,
+} from "./types";
 import type {
     AuthRequest,
     ChatPrompt,
+    ClientCapability,
     ClientFrame,
+    ClientHello,
     ServerFrame,
 } from "./types";
+
+/** The capability tokens the protocol recognizes (mirrors `ClientCapability`). */
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set<string>([
+    "markdown",
+    "html",
+    "image",
+    "link",
+]);
 
 /** User-facing wording for a malformed JSON payload; must not drift. */
 const MALFORMED_JSON = "malformed request; expected a JSON object";
@@ -136,22 +151,65 @@ function validateAuthRequest(request: { token?: unknown }): AuthRequest {
 }
 
 /**
+ * Validates a `hello` capability-announcement object.
+ *
+ * Throws if `capabilities` is not an array of known, non-empty, trimmed
+ * tokens, if any token exceeds {@link MAX_CAPABILITY_LENGTH} characters, or
+ * if the list exceeds {@link MAX_CAPABILITIES} entries. An empty array is
+ * valid — it declares "renders plain text only". Deduplicates the list so a
+ * repeated token cannot bloat the bounds.
+ */
+function validateClientHello(request: { capabilities?: unknown }): ClientHello {
+    if (!Array.isArray(request.capabilities)) {
+        throw new Error("expected a 'capabilities' array");
+    }
+    if (request.capabilities.length > MAX_CAPABILITIES) {
+        throw new Error(`at most ${MAX_CAPABILITIES} capabilities may be sent`);
+    }
+    const capabilities: ClientCapability[] = [];
+    for (const token of request.capabilities) {
+        if (typeof token !== "string" || token.trim() === "") {
+            throw new Error("every capability must be a non-empty string");
+        }
+        if (token.length > MAX_CAPABILITY_LENGTH) {
+            throw new Error(
+                `each capability is at most ${MAX_CAPABILITY_LENGTH} characters`,
+            );
+        }
+        const capability = token as ClientCapability;
+        if (!KNOWN_CAPABILITIES.has(capability)) {
+            throw new Error(`unknown capability '${token}'`);
+        }
+        if (capabilities.includes(capability)) {
+            throw new Error(`duplicate capability '${token}'`);
+        }
+        capabilities.push(capability);
+    }
+    return { type: "hello", capabilities };
+}
+
+/**
  * Parses one raw client message into a typed {@link ClientFrame}.
  *
- * A `type: "auth"` message is validated as the first-frame handshake; anything
- * else is validated as a legacy {@link ChatPrompt}. Throws on malformed JSON
- * (or a non-object) or shape violations; the thrown message is surfaced to
- * users by the server's error frames and must not drift.
+ * A `type: "auth"` message is validated as the first-frame handshake, a
+ * `type: "hello"` message as the first-frame capability announcement, and
+ * anything else as a legacy {@link ChatPrompt}. Throws on malformed JSON (or
+ * a non-object) or shape violations; the thrown message is surfaced to users
+ * by the server's error frames and must not drift.
  */
 export function parseClientMessage(raw: string): ClientFrame {
     const msg = parseJson(raw) as {
         type?: unknown;
         token?: unknown;
+        capabilities?: unknown;
         prompt?: unknown;
         sessionId?: unknown;
     };
     if (msg.type === "auth") {
         return validateAuthRequest({ token: msg.token });
+    }
+    if (msg.type === "hello") {
+        return validateClientHello({ capabilities: msg.capabilities });
     }
     return validateChatPrompt(msg);
 }
@@ -181,4 +239,12 @@ export function serializeRequest(prompt: string, sessionId: string): string {
 /** Serializes the `auth` handshake frame to its wire JSON text. */
 export function serializeAuth(token: string): string {
     return JSON.stringify({ type: "auth", token } satisfies AuthRequest);
+}
+
+/** Serializes the `hello` capability-announcement frame to its wire JSON text. */
+export function serializeHello(capabilities: ClientCapability[]): string {
+    return JSON.stringify({
+        type: "hello",
+        capabilities,
+    } satisfies ClientHello);
 }

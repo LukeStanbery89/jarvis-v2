@@ -5,6 +5,8 @@ import {
     DEFAULT_RATE_LIMIT_CONFIG,
     DEFAULT_TURN_TIMEOUT_MS,
     defaultAppDbPath,
+    defaultPortalDir,
+    defaultWebDir,
     getAppConfig,
     getServerPort,
 } from "../src/config";
@@ -23,6 +25,8 @@ afterEach(() => {
     delete process.env.JARVIS_RATE_LOCKOUT_MS;
     delete process.env.JARVIS_RATE_MAX_IP_FAILURES;
     delete process.env.JARVIS_API_CONTRACT;
+    delete process.env.JARVIS_PORTAL_DIR;
+    delete process.env.JARVIS_WEB_DIR;
 });
 
 describe("getServerPort", () => {
@@ -106,5 +110,26 @@ describe("getAppConfig", () => {
         expect(getAppConfig().apiContractVerify).toBe(true);
         process.env.JARVIS_API_CONTRACT = "off";
         expect(getAppConfig().apiContractVerify).toBe(false);
+    });
+
+    it("resolves the portal and web dirs from the workspace by default", () => {
+        expect(getAppConfig().portalDir).toBe(defaultPortalDir());
+        expect(getAppConfig().webDir).toBe(defaultWebDir());
+        expect(defaultWebDir()).toMatch(/packages\/web\/dist$/);
+    });
+
+    it("reads JARVIS_PORTAL_DIR and JARVIS_WEB_DIR; empty string disables", () => {
+        process.env.JARVIS_PORTAL_DIR = "/srv/portal";
+        process.env.JARVIS_WEB_DIR = "/srv/web";
+        expect(getAppConfig()).toMatchObject({
+            portalDir: "/srv/portal",
+            webDir: "/srv/web",
+        });
+        process.env.JARVIS_PORTAL_DIR = "";
+        process.env.JARVIS_WEB_DIR = "";
+        expect(getAppConfig()).toMatchObject({
+            portalDir: undefined,
+            webDir: undefined,
+        });
     });
 });
