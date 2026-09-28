@@ -11,15 +11,23 @@ export type {
     AuthResult,
     AuthResultFrame,
     ChatPrompt,
+    ClientCapability,
     ClientFrame,
+    ClientHello,
     ServerFrame,
 } from "./types";
-export { MAX_SESSION_ID_LENGTH, MAX_TOKEN_LENGTH } from "./types";
+export {
+    MAX_CAPABILITIES,
+    MAX_CAPABILITY_LENGTH,
+    MAX_SESSION_ID_LENGTH,
+    MAX_TOKEN_LENGTH,
+} from "./types";
 export {
     parseClientMessage,
     parseFrame,
     parseRequest,
     serializeAuth,
     serializeFrame,
+    serializeHello,
     serializeRequest,
 } from "./frame";

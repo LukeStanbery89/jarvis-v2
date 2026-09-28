@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+    MAX_CAPABILITIES,
+    MAX_CAPABILITY_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     parseClientMessage,
@@ -7,9 +9,10 @@ import {
     parseRequest,
     serializeAuth,
     serializeFrame,
+    serializeHello,
     serializeRequest,
 } from "../src/index";
-import type { ServerFrame } from "../src/index";
+import type { ClientCapability, ServerFrame } from "../src/index";
 
 describe("parseFrame", () => {
     it("parses a chunk frame", () => {
@@ -187,6 +190,89 @@ describe("parseClientMessage", () => {
 
     it("throws on non-JSON payloads", () => {
         expect(() => parseClientMessage("nope")).toThrow(/malformed/);
+    });
+});
+
+describe("parseClientMessage: hello capability frames", () => {
+    it("parses a hello with declared capabilities", () => {
+        expect(
+            parseClientMessage(
+                '{"type":"hello","capabilities":["markdown","image","link"]}',
+            ),
+        ).toEqual({
+            type: "hello",
+            capabilities: ["markdown", "image", "link"],
+        });
+    });
+
+    it("accepts an empty capabilities list (plain-text client)", () => {
+        expect(
+            parseClientMessage('{"type":"hello","capabilities":[]}'),
+        ).toEqual({ type: "hello", capabilities: [] });
+    });
+
+    it("rejects duplicate capability tokens", () => {
+        expect(() =>
+            parseClientMessage(
+                '{"type":"hello","capabilities":["markdown","markdown"]}',
+            ),
+        ).toThrow(/duplicate capability 'markdown'/);
+    });
+
+    it("rejects a hello without a capabilities array", () => {
+        expect(() => parseClientMessage('{"type":"hello"}')).toThrow(
+            /capabilities/,
+        );
+        expect(() =>
+            parseClientMessage('{"type":"hello","capabilities":"markdown"}'),
+        ).toThrow(/capabilities/);
+    });
+
+    it("rejects unknown capability tokens", () => {
+        expect(() =>
+            parseClientMessage('{"type":"hello","capabilities":["hologram"]}'),
+        ).toThrow(/unknown capability 'hologram'/);
+    });
+
+    it("rejects non-string capability entries", () => {
+        expect(() =>
+            parseClientMessage('{"type":"hello","capabilities":[42]}'),
+        ).toThrow(/non-empty string/);
+    });
+
+    it("rejects a capabilities list over MAX_CAPABILITIES long", () => {
+        const caps = Array(MAX_CAPABILITIES + 1).fill("markdown") as string[];
+        expect(() =>
+            parseClientMessage(
+                JSON.stringify({ type: "hello", capabilities: caps }),
+            ),
+        ).toThrow(/at most/);
+    });
+
+    it("rejects a capability token over MAX_CAPABILITY_LENGTH", () => {
+        const token = "x".repeat(MAX_CAPABILITY_LENGTH + 1);
+        expect(() =>
+            parseClientMessage(
+                JSON.stringify({ type: "hello", capabilities: [token] }),
+            ),
+        ).toThrow(/each capability is at most 16 characters/);
+    });
+});
+
+describe("serializeHello", () => {
+    it("round-trips through parseClientMessage", () => {
+        const caps: ClientCapability[] = ["markdown", "link"];
+        expect(parseClientMessage(serializeHello(caps))).toEqual({
+            type: "hello",
+            capabilities: caps,
+        });
+    });
+
+    it("round-trips an empty capabilities list", () => {
+        expect(parseClientMessage(serializeHello([]))).toEqual({
+            type: "hello",
+            capabilities: [],
+        });
     });
 });
 

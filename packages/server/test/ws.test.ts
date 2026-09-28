@@ -4,6 +4,7 @@ import { WebSocket } from "ws";
 import Database from "better-sqlite3";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
+import { runAgent } from "../src/agent";
 import {
     SqliteAppDatabase,
     generateDeviceToken,
@@ -194,6 +195,177 @@ describe("auth handshake", () => {
         );
         expect(frames[frames.length - 1]).toEqual({ done: true });
         expect(frames.some((f) => f.authResult !== undefined)).toBe(false);
+    });
+});
+
+describe("hello capability handshake", () => {
+    it("accepts a hello as the first frame and forwards capabilities to the agent", async () => {
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: ["markdown", "image"] },
+                { prompt: "hi", sessionId: "hello-cap-thread" },
+            ],
+            { until: "done" },
+        );
+        expect(frames.some((f) => f.error !== undefined)).toBe(false);
+        expect(frames[frames.length - 1]).toEqual({ done: true });
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "hello-cap-thread");
+        expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
+    });
+
+    it("accepts hello then auth, then prompts as an owned socket", async () => {
+        const user = store.createUser("hello-auth", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const { again } = await twoPhase(
+            [
+                { type: "hello", capabilities: ["markdown"] },
+                { type: "auth", token: material.token },
+            ],
+            "authResult",
+            [{ prompt: "hi", sessionId: "hello-auth-thread" }],
+        );
+        expect(again.some((f) => f.authResult !== undefined)).toBe(false);
+        expect(again[again.length - 1]).toEqual({ done: true });
+
+        // The prompt really ran as the authenticated principal: a different
+        // socket (no handshake of its own) is refused the same thread.
+        const { frames: stranger } = await collectFrames(
+            [{ prompt: "hi", sessionId: "hello-auth-thread" }],
+            { until: "done" },
+        );
+        expect(stranger).toContainEqual({
+            error: "session belongs to another user",
+        });
+    });
+
+    it("rejects an auth frame after a prompt on a hello-opened socket", async () => {
+        const user = store.createUser("late-hello-auth", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: ["markdown"] },
+                { prompt: "hi", sessionId: "hello-prompt-auth-thread" },
+                { type: "auth", token: material.token },
+            ],
+            { until: "done", count: 2 },
+        );
+        // The prompt's turn ends with done, then the late auth is refused —
+        // a socket can never change identity mid-life.
+        expect(frames).toContainEqual({
+            error: "auth handshake must be the first frame",
+        });
+        expect(frames.some((f) => f.authResult !== undefined)).toBe(false);
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "hello-prompt-auth-thread");
+        expect(call?.[2]).toEqual({ capabilities: ["markdown"] });
+    });
+
+    it("rejects a hello after a prompt", async () => {
+        const { frames } = await collectFrames(
+            [
+                { prompt: "hi", sessionId: "prompt-hello-thread" },
+                { type: "hello", capabilities: ["markdown"] },
+            ],
+            { until: "done", count: 2 },
+        );
+        expect(frames).toContainEqual({
+            error: "hello frame must be the first frame",
+        });
+    });
+
+    it("keeps a hello-opened socket a guest after a bad token, capabilities intact", async () => {
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: ["markdown", "image"] },
+                { type: "auth", token: "not-a-real-token" },
+                { prompt: "hi", sessionId: "hello-badauth-thread" },
+            ],
+            { until: "done", count: 2 },
+        );
+        expect(frames).toContainEqual({ error: "invalid device token" });
+        expect(frames.some((f) => f.authResult !== undefined)).toBe(false);
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "hello-badauth-thread");
+        expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
+    });
+
+    it("accepts a hello with an empty capabilities list (plain text)", async () => {
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: [] },
+                { prompt: "hi", sessionId: "hello-empty-thread" },
+            ],
+            { until: "done" },
+        );
+        expect(frames.some((f) => f.error !== undefined)).toBe(false);
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "hello-empty-thread");
+        expect(call?.[2]).toEqual({ capabilities: [] });
+    });
+
+    it("rejects a second hello frame", async () => {
+        const { frames } = await collectFrames(
+            [
+                { type: "hello", capabilities: ["markdown"] },
+                { type: "hello", capabilities: ["image"] },
+            ],
+            { until: "done" },
+        );
+        expect(frames).toContainEqual({
+            error: "hello frame must be the first frame",
+        });
+    });
+
+    it("rejects a hello after the auth handshake consumed the slot", async () => {
+        const user = store.createUser("late-hello", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const { again } = await twoPhase(
+            [{ type: "auth", token: material.token }],
+            "authResult",
+            [{ type: "hello", capabilities: ["markdown"] }],
+        );
+        expect(again).toContainEqual({
+            error: "hello frame must be the first frame",
+        });
+    });
+
+    it("runs plain-text guests without capability conditioning", async () => {
+        await collectFrames(
+            [{ prompt: "hi", sessionId: "plain-guest-thread" }],
+            {
+                until: "done",
+            },
+        );
+        const call = vi
+            .mocked(runAgent)
+            .mock.calls.find((c) => c[1] === "plain-guest-thread");
+        expect(call?.[2]).toEqual({ capabilities: [] });
     });
 });
 
@@ -603,6 +775,8 @@ function collectFrames(
         const stopAfter = opts.count ?? 1;
         let stops = 0;
 
+        // Payloads are sent back-to-back; the server serializes frames itself,
+        // so a pipelined handshake chain (e.g. hello → auth) still lands in order.
         ws.on("open", () => {
             for (const payload of payloads) {
                 ws.send(JSON.stringify(payload));

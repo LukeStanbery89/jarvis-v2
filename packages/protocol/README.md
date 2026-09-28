@@ -2,8 +2,9 @@
 
 Shared chat wire-protocol types and framing for J.A.R.V.I.S. packages. This is
 the **single source of truth** for the frames exchanged over the `/ws`
-WebSocket: both `@lukestanbery/jarvis-server` and `@lukestanbery/jarvis-cli` import their frame types
-and parsing/serialization from here instead of maintaining their own copies.
+WebSocket: `@lukestanbery/jarvis-server`, `@lukestanbery/jarvis-cli`, and the web chat
+client (`@lukestanbery/jarvis-web`) all import their frame types and
+parsing/serialization from here instead of maintaining their own copies.
 
 ## Install
 
@@ -21,21 +22,26 @@ npm install @lukestanbery/jarvis-protocol
 
 ## API
 
-| Export                    | Description                                                               |
-| ------------------------- | ------------------------------------------------------------------------- |
-| `type ServerFrame`        | Union of every frame the server sends to a chat client                    |
-| `type ClientFrame`        | Union of every frame a chat client sends: `AuthRequest \| ChatPrompt`     |
-| `interface AuthRequest`   | The `auth` handshake: `{ type: "auth", token }`                           |
-| `interface AuthResult`    | The `authResult` payload: `{ user, device }`                              |
-| `interface ChatPrompt`    | A client request: `{ prompt, sessionId }`                                 |
-| `MAX_SESSION_ID_LENGTH`   | `128` — longest allowed `sessionId`                                       |
-| `MAX_TOKEN_LENGTH`        | `128` — longest allowed device `token`                                    |
-| `parseFrame(raw)`         | Parses a server frame; throws on malformed/unrecognized payload           |
-| `parseClientMessage(raw)` | Parses + validates a client message into an `AuthRequest` or `ChatPrompt` |
-| `parseRequest(raw)`       | Parses + validates a client request (non-empty strings, ≤128 id)          |
-| `serializeFrame(frame)`   | Serializes a `ServerFrame` to wire JSON                                   |
-| `serializeRequest(p,sid)` | Serializes a client request to wire JSON                                  |
-| `serializeAuth(token)`    | Serializes an `auth` handshake to wire JSON                               |
+| Export                    | Description                                                                               |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `type ServerFrame`        | Union of every frame the server sends to a chat client                                    |
+| `type ClientFrame`        | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt`      |
+| `type ClientCapability`   | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares        |
+| `interface AuthRequest`   | The `auth` handshake: `{ type: "auth", token }`                                           |
+| `interface ClientHello`   | The capability announcement: `{ type: "hello", capabilities }`                            |
+| `interface AuthResult`    | The `authResult` payload: `{ user, device }`                                              |
+| `interface ChatPrompt`    | A client request: `{ prompt, sessionId }`                                                 |
+| `MAX_SESSION_ID_LENGTH`   | `128` — longest allowed `sessionId`                                                       |
+| `MAX_TOKEN_LENGTH`        | `128` — longest allowed device `token`                                                    |
+| `MAX_CAPABILITIES`        | `16` — longest allowed `capabilities` list in a `hello` frame                             |
+| `MAX_CAPABILITY_LENGTH`   | `16` — longest allowed single capability token                                            |
+| `parseFrame(raw)`         | Parses a server frame; throws on malformed/unrecognized payload                           |
+| `parseClientMessage(raw)` | Parses + validates a client message into an `AuthRequest`, `ClientHello`, or `ChatPrompt` |
+| `parseRequest(raw)`       | Parses + validates a client request (non-empty strings, ≤128 id)                          |
+| `serializeFrame(frame)`   | Serializes a `ServerFrame` to wire JSON                                                   |
+| `serializeRequest(p,sid)` | Serializes a client request to wire JSON                                                  |
+| `serializeAuth(token)`    | Serializes an `auth` handshake to wire JSON                                               |
+| `serializeHello(caps[])`  | Serializes a `hello` capability announcement to wire JSON                                 |
 
 ## Chat protocol
 
@@ -47,6 +53,11 @@ JSON text frames over `/ws`:
       `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. A
       client that never sends `auth` is treated as a **guest** (ephemeral,
       identity-independent chats).
+    - Optionally, **first frame only**: `{ "type": "hello", "capabilities": ["markdown", "image", ...] }`
+      — declares what the client can render in the response (`markdown`,
+      `html`, `image`, `link`, ≤16 tokens). The server stores the declaration
+      for the socket's lifetime and conditions the agent's output on it; an
+      empty list ("plain text only") is valid, and `hello` may precede `auth`.
     - `{ "prompt": "<text>", "sessionId": "<id>" }` — `sessionId`
       (required, ≤128 chars) names the LangGraph conversation thread.
 - Server → Client:
@@ -57,9 +68,9 @@ JSON text frames over `/ws`:
       `auth` handshake.
 - Invalid input or model failure: `{ "error": "<message>" }` then `{ "done": true }`.
 
-Frames are key-discriminated (no `type` field), with a single exception: the
-client `auth` handshake carries `type: "auth"` so the server can tell a
-handshake from a prompt. Chunks concatenate verbatim to the full response. The
+Frames are key-discriminated (no `type` field), with exception only for the
+client `auth` and `hello` frames, which carry a `type` so the server can tell
+them apart from prompts. Chunks concatenate verbatim to the full response. The
 error messages thrown by `parseFrame`/`parseClientMessage`/`parseRequest` are
 user-facing on the CLI side, so their wording must not drift.
 

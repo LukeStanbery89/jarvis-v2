@@ -114,13 +114,17 @@ check:endpoints` regenerates the endpoint tables the same way (`build`
 
 ## WS spec inventory (`spec/asyncapi.yaml`)
 
-One channel (`/ws`), two operations, eight messages — one per frame, mirroring
+One channel (`/ws`), two operations, nine messages — one per frame, mirroring
 `@lukestanbery/jarvis-protocol`'s types:
 
-| Operation            | Direction     | Messages                                                         |
-| -------------------- | ------------- | ---------------------------------------------------------------- |
-| `sendClientFrame`    | client→server | `authHandshake` (optional first frame), `chatPrompt`             |
-| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error` |
+| Operation            | Direction     | Messages                                                                                                       |
+| -------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
+| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt` |
+| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`                                               |
+
+A client may open the socket with either the `hello` capability announcement or
+the `auth` handshake (and `auth` may also come immediately after `hello`); any
+other first frame runs the socket as a guest.
 
 Payloads are strict (`additionalProperties: false`) and encode the protocol's
 bounds: non-empty-after-trim strings (`pattern: \S`) and the ≤128-char

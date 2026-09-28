@@ -39,9 +39,10 @@ export interface AuthResultFrame {
  * A frame a chat client sends to the server over `/ws`.
  *
  * Exactly one of these shapes arrives per message: the first-frame `auth`
- * handshake (to bind the socket to an account), or a chat prompt.
+ * handshake (to bind the socket to an account), the first-frame `hello`
+ * announcement (to declare what the client can render), or a chat prompt.
  */
-export type ClientFrame = AuthRequest | ChatPrompt;
+export type ClientFrame = AuthRequest | ClientHello | ChatPrompt;
 
 /**
  * The auth handshake: the client's first frame, presenting a stored device
@@ -50,6 +51,28 @@ export type ClientFrame = AuthRequest | ChatPrompt;
 export interface AuthRequest {
     type: "auth";
     token: string;
+}
+
+/**
+ * What one chat client is capable of rendering in the server's response.
+ *
+ * Tokens are coarse render guarantees the client absorbs as plain text; the
+ * server conditions its output (and eventually its content frames) on the
+ * capabilities an announcing client declared. Unknown tokens are rejected at
+ * parse time so the shared contract stays tight.
+ */
+export type ClientCapability = "markdown" | "html" | "image" | "link";
+
+/**
+ * The capability announcement: a client's optional first frame declaring, in
+ * `capabilities`, which of the {@link ClientCapability} tokens it can render.
+ * The server logs and stores the declaration for the socket's lifetime and
+ * conditions the agent's system prompt on it. An empty array ("renders plain
+ * text only") is valid; a second `hello` on the same socket is rejected.
+ */
+export interface ClientHello {
+    type: "hello";
+    capabilities: ClientCapability[];
 }
 
 /**
@@ -66,3 +89,15 @@ export const MAX_SESSION_ID_LENGTH = 128;
 
 /** Longest device `token` a client may send in an `auth` handshake. */
 export const MAX_TOKEN_LENGTH = 128;
+
+/**
+ * Longest `capabilities` list a client may send in a `hello` frame.
+ *
+ * A 16-token cap bounds the frame without sacrificing the known token set,
+ * which is itself bounded by the `"markdown" | "html" | "image" | "link"`
+ * union.
+ */
+export const MAX_CAPABILITIES = 16;
+
+/** Longest single capability token a client may send in a `hello` frame. */
+export const MAX_CAPABILITY_LENGTH = 16;

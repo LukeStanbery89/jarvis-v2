@@ -5,11 +5,12 @@
 # source of truth). `npm run validate` checks it; the Phase 6 conformance
 # tests prove real frames still match it.
 #
-# Phase 5: full spec. One message per frame (`authHandshake`, `chatPrompt`,
-# `chunk`, `toolCall`, `toolResult`, `done`, `error`, `authResult`) so docs and
-# conformance tests can address each frame individually. Payloads are strict
-# (`additionalProperties: false`) and encode the protocol's value bounds
-# (`\S` non-empty-after-trim, 128-char `sessionId`/`token` caps). Edit it in
+# Phase 5: full spec. One message per frame (`clientHello`, `authHandshake`,
+# `chatPrompt`, `chunk`, `toolCall`, `toolResult`, `done`, `error`,
+# `authResult`) so docs and conformance tests can address each frame
+# individually. Payloads are strict (`additionalProperties: false`) and encode
+# the protocol's value bounds (`\S` non-empty-after-trim, 128-char
+# `sessionId`/`token` caps, the `hello` capability enum/caps). Edit it in
 # lockstep with `packages/protocol` — the conformance tests fail otherwise.
 asyncapi: 3.1.0
 info:
@@ -17,12 +18,14 @@ info:
     description: >-
         WebSocket chat endpoint at /ws. Clients send one JSON frame per
         WebSocket text message: an optional first-frame `auth` handshake
-        binding the socket to a device token, then chat prompts. The server
-        streams the agent's progress back as `tool` / `toolResult` notices,
-        `chunk` tokens, and a terminal `done` (or `error` + `done`).
-        Frame shapes mirror @lukestanbery/jarvis-protocol and must be updated
-        in lockstep with it (enforced by the conformance tests).
-    version: 0.2.0
+        binding the socket to a device token, an optional first-frame `hello`
+        announcement declaring which response formats the client can render,
+        then chat prompts. The server streams the agent's progress back as
+        `tool` / `toolResult` notices, `chunk` tokens, and a terminal `done`
+        (or `error` + `done`). Frame shapes mirror
+        @lukestanbery/jarvis-protocol and must be updated in lockstep with it
+        (enforced by the conformance tests).
+    version: 0.3.0
 defaultContentType: application/json
 servers:
     chat:
@@ -43,6 +46,8 @@ channels:
             shape is answered with an `error` frame followed by a terminal
             `done`, and the turn is not started.
         messages:
+            clientHello:
+                $ref: "#/components/messages/clientHello"
             authHandshake:
                 $ref: "#/components/messages/authHandshake"
             chatPrompt:
@@ -65,15 +70,19 @@ operations:
         channel:
             $ref: "#/channels/ws"
         title: Send a client frame
-        summary: Auth handshake (optional first frame) or chat prompt
+        summary: Auth handshake, capability announcement, or chat prompt
         description: >-
-            The client's first frame may be the `auth` handshake; skipping it
-            makes the socket a guest for its lifetime, and a later auth is
-            rejected. Every other frame is a chat prompt naming the LangGraph
-            thread (`sessionId`, ≤128 chars) to continue. One turn at a time:
-            a prompt while a previous turn is streaming — on this socket or
-            any other sharing the thread — is answered with an `error` frame.
+            The client's first frame may be the `auth` handshake, the `hello`
+            capability announcement, or a prompt. `hello` must open the socket
+            (the `auth` handshake may come first or immediately after it), each
+            arrives at most once and before any prompt. Skipping auth makes
+            the socket a guest for its lifetime; a later auth is rejected.
+            Every other frame is a chat prompt naming the LangGraph thread
+            (`sessionId`, ≤128 chars) to continue. One turn at a time: a
+            prompt while a previous turn is streaming — on this socket or any
+            other sharing the thread — is answered with an `error` frame.
         messages:
+            - $ref: "#/channels/ws/messages/clientHello"
             - $ref: "#/channels/ws/messages/authHandshake"
             - $ref: "#/channels/ws/messages/chatPrompt"
     receiveServerFrame:
@@ -101,15 +110,57 @@ operations:
             - $ref: "#/channels/ws/messages/error"
 components:
     messages:
+        clientHello:
+            title: Client capability announcement
+            summary: The client's optional first frame, declaring what it can render
+            description: >-
+                Telling the server which response formats this client can render.
+                Only valid as the socket's first frame — at most once, before
+                any prompt (an `auth` handshake may follow it); the server
+                stores the declared capabilities for the socket's lifetime and
+                conditions the agent's output on them. `capabilities` lists
+                tokens from the `markdown` / `html` / `image` / `link` enum —
+                at most 16 entries, each a non-empty string ≤16 characters. An
+                empty list declares a plain-text-only client.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - type
+                    - capabilities
+                properties:
+                    type:
+                        const: hello
+                    capabilities:
+                        type: array
+                        maxItems: 16
+                        uniqueItems: true
+                        items:
+                            type: string
+                            pattern: \S
+                            maxLength: 16
+                            enum:
+                                - markdown
+                                - html
+                                - image
+                                - link
+            examples:
+                - payload:
+                      type: hello
+                      capabilities:
+                          - markdown
+                          - image
+                          - link
         authHandshake:
             title: Auth handshake
-            summary: The client's optional first frame, presenting a device token
+            summary: The client's optional handshake, presenting a device token
             description: >-
-                Binding the socket to an account. Only valid as the first
-                frame; the server answers with one `authResult` on success or
-                an `error` + terminal `done` (and a guest socket) on a bad
-                token. `token` is
-                1–128 characters, non-empty after trimming.
+                Binding the socket to an account. May open the socket (first
+                frame) or come immediately after a `hello` frame — never after
+                any other frame. The server answers with one `authResult` on
+                success or an `error` + terminal `done` (and a guest socket) on
+                a bad token. `token` is 1–128 characters, non-empty after
+                trimming.
             payload:
                 type: object
                 additionalProperties: false
@@ -266,10 +317,11 @@ components:
             title: Auth result
             summary: Acknowledgment of a successful handshake
             description: >-
-                The only reply to a valid first-frame `auth` handshake:
-                `user` is the bound account's username and `device` the
-                authenticating device's name. Revoked devices are re-checked
-                on every subsequent prompt.
+                The only reply to a successful `auth` handshake (a frame that
+                may open the socket or immediately follow `hello`): `user` is
+                the bound account's username and `device` the authenticating
+                device's name. Revoked devices are re-checked on every
+                subsequent prompt.
             payload:
                 type: object
                 additionalProperties: false

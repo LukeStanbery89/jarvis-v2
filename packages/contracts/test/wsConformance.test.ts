@@ -31,12 +31,14 @@ import { Parser } from "@asyncapi/parser";
 import Ajv from "ajv";
 import { load as loadYaml } from "js-yaml";
 import {
+    MAX_CAPABILITIES,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     parseClientMessage,
     parseFrame,
     serializeAuth,
     serializeFrame,
+    serializeHello,
     serializeRequest,
 } from "@lukestanbery/jarvis-protocol";
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
@@ -65,8 +67,12 @@ const SERVER_FRAME_KEYS = [
     "authResult",
 ] as const satisfies readonly FrameKeys<ServerFrame>[];
 
-/** Client message names (not a `ClientFrame` key — it is a union of two shapes). */
-const CLIENT_MESSAGE_NAMES = ["authHandshake", "chatPrompt"] as const;
+/** Client message names (not a `ClientFrame` key — it is a union of three shapes). */
+const CLIENT_MESSAGE_NAMES = [
+    "authHandshake",
+    "chatPrompt",
+    "clientHello",
+] as const;
 
 /**
  * The spec's message name for each server-frame discriminator key. The spec
@@ -92,6 +98,7 @@ const MESSAGE_NAMES = [
 const MESSAGE_FOR_CLIENT: Record<string, string> = {
     authHandshake: "authHandshake",
     chatPrompt: "chatPrompt",
+    clientHello: "clientHello",
 };
 
 // ---------------------------------------------------------------------------
@@ -233,6 +240,31 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 MESSAGE_FOR_CLIENT.chatPrompt,
             );
         });
+
+        it("validates a hello capability announcement through the serializer", () => {
+            expectWireConformant(
+                () => serializeHello(["markdown", "image", "link"]),
+                MESSAGE_FOR_CLIENT.clientHello,
+            );
+        });
+
+        it("validates a hello with an empty capabilities list (plain text)", () => {
+            expectWireConformant(
+                () => serializeHello([]),
+                MESSAGE_FOR_CLIENT.clientHello,
+            );
+        });
+
+        it("validates a hello declaring every capability token", () => {
+            // 16 distinct entries are unbuildable from the 4-value enum, so
+            // "at the MAX_CAPABILITIES cap" has no spec-valid shape (the
+            // duplicate-rejection case below pins why); the widest valid
+            // announcement is all four tokens, once each.
+            expectWireConformant(
+                () => serializeHello(["markdown", "html", "image", "link"]),
+                MESSAGE_FOR_CLIENT.clientHello,
+            );
+        });
     });
 
     describe("server → client (real frames from the server transport)", () => {
@@ -337,6 +369,10 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expect(() =>
                 parseClientMessage(serializeRequest("hi", "s")),
             ).not.toThrow();
+            expect(() =>
+                parseClientMessage(serializeHello(["markdown"])),
+            ).not.toThrow();
+            expect(() => parseClientMessage(serializeHello([]))).not.toThrow();
         });
     });
 });
@@ -369,6 +405,33 @@ describe("AsyncAPI conformance: spec rejects protocol-invalid frames", () => {
         expectBothReject(
             MESSAGE_FOR_CLIENT.chatPrompt,
             asClient({ prompt: "hi", sessionId: "   " }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a hello with an unknown capability token", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.clientHello,
+            asClient({ type: "hello", capabilities: ["hologram"] }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a hello with a duplicate capability token (spec: uniqueItems)", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.clientHello,
+            asClient({ type: "hello", capabilities: ["markdown", "markdown"] }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a hello with more than MAX_CAPABILITIES capabilities", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.clientHello,
+            asClient({
+                type: "hello",
+                capabilities: Array(MAX_CAPABILITIES + 1).fill("markdown"),
+            }),
             parseClientMessage,
         );
     });

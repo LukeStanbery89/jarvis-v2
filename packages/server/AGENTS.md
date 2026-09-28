@@ -5,7 +5,8 @@
 `@lukestanbery/jarvis-server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /health`
 health check, a REST management API (`/api` for accounts/devices/sessions/prefs — device-token **or** cookie auth with
 CSRF), a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response, and serves the web
-portal SPA at `/` when it has been built (see "Web portal" below).
+portal SPA at `/` when it has been built (see "Web portal" below) plus the web chat client at `/web` (see
+"Web chat client").
 
 ## Stack
 
@@ -41,6 +42,7 @@ the specs, not this table, when routes change.
 | -------- | -------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `GET`    | `/health`                  | none                                  | Machine health check → `{ "ok": true }`                                                               |
 | `GET`    | `/`                        | none                                  | Serves the built portal SPA ("Hello World" without one)                                               |
+| `GET`    | `/web`                     | none                                  | Serves the built web chat client (301 to `/web/`, then the SPA)                                       |
 | `WS`     | `/ws`                      | optional device token (first frame)   | Chat endpoint (WebSocket)                                                                             |
 | `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header            | Create the first (owner) account + device token                                                       |
 | `POST`   | `/api/auth/login`          | none                                  | Username + password → a (rotating) device token                                                       |
@@ -85,6 +87,20 @@ connect-src 'self'`) plus `X-Content-Type-Options: nosniff`. A `Cache-Control: n
   hash-routed shell fresh.
 - The `/api` namespace is untouched by the fallback, so REST, `/ws`, and `/health` keep working regardless.
 
+## Web chat client
+
+The server also serves the built web chat SPA (`@lukestanbery/jarvis-web`) at `/web` via `express.static` plus a
+`/web`-scoped SPA fallback, mounted before the portal mount. It is only mounted when the client has been built and
+`index.html` exists at the configured directory.
+
+- The base directory is `JARVIS_WEB_DIR`, defaulting to `packages/web/dist` (produced by `vite build`); an empty
+  string disables it. `AppConfig.webDir` mirrors the env var in tests.
+- The mount widens the portal's strict CSP for the browser client only: `img-src 'self' data: https:` (remote
+  images render) and a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
+  header so `/ws` can be reached over the socket. The portal mount keeps `img-src 'self' data:` and a static
+  `connect-src 'self'`.
+- Requests under `/web` are skipped by the portal SPA fallback (which is `/web`-boundary aware — `/webfoo` still gets the portal shell), so with the web client unbuilt or disabled `GET /web` is an honest 404, never the portal shell. `GET /web` itself 301s to `/web/` before serving `index.html` (standard `express.static` directory redirect); note that redirect response carries `serve-static`'s own strict `Content-Security-Policy: default-src 'none'` (browsers follow it and get the real headers on the target).
+
 ## Chat protocol
 
 The wire protocol (frame shapes, the ≤128-char `sessionId` and ≤128-char `token` bounds, and all
@@ -92,9 +108,15 @@ parsing/serialization) is defined once in `@lukestanbery/jarvis-protocol`; the s
 re-declares frames.
 
 - Client → Server:
-    - **First frame, optional:** `{ "type": "auth", "token": "<device token>" }` — the server replies with one
-      `{ "authResult": { "user", "device" } }` frame; a bad token gets an error frame and the socket continues as a
-      **guest**. An auth frame after the first frame is rejected.
+    - **First frame, optional:** `{ "type": "hello", "capabilities": ["markdown", "image", "link"] }` — the client
+      announces how it renders responses so the model can tailor formatting. Tokens are from the closed set
+      `markdown` / `html` / `image` / `link` (duplicates and unknown tokens are rejected; empty list = plain text).
+      `systemPromptForCapabilities` frames each declared token into the system prompt (a client that claims
+      `markdown` gets "Markdown is rendered…", etc.). A `hello` after any other frame is rejected as
+      `hello frame must be the first frame`.
+    - **First frame (or immediately after `hello`), optional:** `{ "type": "auth", "token": "<device token>" }` —
+      the server replies with one `{ "authResult": { "user", "device" } }` frame; a bad token gets an error frame
+      and the socket continues as a **guest**. An auth frame after any other frame is rejected.
     - `{ "prompt": "<text>", "sessionId": "<id>" }` — names the LangGraph conversation thread. Sending a prompt
       without authenticating makes the socket a guest for its lifetime.
 - Server → Client per prompt: `tool`/`toolResult` frames while the agent calls tools, then `chunk` frames, then
@@ -119,14 +141,17 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 ## Source layout
 
 - `src/index.ts` — process entry: loads `.env` via `import "dotenv/config"` (first import, so `config.ts` sees the file; real env always wins), config, `openAppDatabase` (from `@lukestanbery/jarvis-auth`), `createApp`, `attachChatServer` — hands the app to the listener seam.
-- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification.
+- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification; `defaultWebDir`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
-- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, and the
-  portal static serving + SPA fallback capped with a strict CSP (only when `portalDir` holds `index.html`);
+- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, the
+  portal static serving + SPA fallback capped with a strict CSP (only when `portalDir` holds `index.html`), and
+  (when `webDir` holds `index.html`) the `/web` web chat mount with a widened CSP + `/web`-scoped SPA fallback;
   `createHttpsRedirectApp`.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
-  `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls).
+  `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls);
+  `AuthedRequest` derives from the auth `AuthContext` union (`guest | authed | session`) so `authed(req).jarv` is
+  the guaranteed non-null identity.
 - `src/http/contractValidation.ts` — runtime REST contract gate: resolves the OpenAPI spec from
   `@lukestanbery/jarvis-contracts` (bundle, else source), mounts `express-openapi-validator` ahead of `/api` +
   `/health` (requests always; responses under `JARVIS_API_CONTRACT=verify`; `validateSecurity: false` — auth stays
@@ -140,14 +165,14 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   interfaces — `UserLedger`/`DeviceLedger`/`SessionLedger`; `crypto.ts` (the primitives), `credential.ts` (the
   `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
   shared row-ownership policy), `errors.ts`, `types.ts`, `fs.ts`.
-- `src/ws.ts` — the `/ws` endpoint: auth handshake + prompt framing. The session lifecycle (claim, ownership
+- `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + prompt framing. The session lifecycle (claim, ownership
   guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`.
-- `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer.
+- `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer; `systemPromptForCapabilities` conditions the system prompt on the client's declared rendering capabilities.
 - `src/transport.ts` — `AgentEvent → ServerFrame` mapping.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
 - `src/llm/chatModel.ts` — the only module that knows `@langchain/openai`.
 - `src/llm/tools/` — the tool implementations.
-- `test/` — Vitest suites: `app.test.ts` (health + portal serving), `ws.test.ts`, `http.test.ts`, `sessionManager.test.ts`.
+- `test/` — Vitest suites: `app.test.ts` (health + portal/web serving), `ws.test.ts` (frames + handshakes), `agent.test.ts` (capability prompt conditioning), `http.test.ts`, `sessionManager.test.ts`, `contract.test.ts`.
 
 `src/ws.ts` is the only module that touches the agent seam; `src/llm/chatModel.ts` is the only module that knows
 `@langchain/openai`; nothing outside `@lukestanbery/jarvis-auth` hashes or compares secrets (within it, only
