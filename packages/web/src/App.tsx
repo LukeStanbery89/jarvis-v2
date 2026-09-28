@@ -1,76 +1,62 @@
-import { useEffect, useState } from "react";
-import { parseFrame, serializeHello } from "@lukestanbery/jarvis-protocol";
-import { webSocketUrl } from "./wsUrl";
-
-/**
- * Capabilities this client advertises to the server via its first-frame
- * `hello` announcement: it renders Markdown (which covers text formatting and
- * structure), hyperlinks, and images. Raw HTML is *not* claimed — model text
- * is rendered as Markdown with raw HTML escaped.
- */
-const CAPABILITIES = ["markdown", "image", "link"] as const;
-
 /**
  * The web chat client shell.
  *
- * Placeholder UI until the chat surface lands (next PR): on load it dials the
- * chat WebSocket, sends its `hello` capability announcement, and reports the
- * outcome — exercising the full protocol lockstep (client frame → server
- * `hello` handling) end to end.
+ * Forced sign-in: without a usable stored credential the login screen is the
+ * entry gate; with one, the chat view re-authenticates the stored device
+ * token in the background and any permanent rejection (invalid, revoked, or
+ * a REST 401) clears the credential and drops back to the gate. Sign-out
+ * clears the credential but deliberately keeps the per-user transcripts.
+ */
+import { useCallback, useState } from "react";
+import type { LoginResult } from "./api";
+import {
+    clearCredential,
+    saveCredential,
+    loadCredential,
+    type StoredCredential,
+} from "./credentials";
+import { Login } from "./views/Login";
+import { Chat } from "./views/Chat";
+
+/**
+ * Routes between the sign-in gate and the chat surface based on the stored
+ * credential.
  */
 export function App() {
-    const [status, setStatus] = useState("connecting");
-    const [detail, setDetail] = useState("");
+    const [credential, setCredential] = useState<StoredCredential | null>(() =>
+        loadCredential(localStorage),
+    );
 
-    useEffect(() => {
-        const socket = new WebSocket(webSocketUrl());
-        socket.addEventListener("open", () => {
-            socket.send(serializeHello([...CAPABILITIES]));
-            setStatus("announced");
-            setDetail(`capabilities: ${CAPABILITIES.join(", ")}`);
-        });
-        socket.addEventListener("message", (event) => {
-            let frame: ReturnType<typeof parseFrame>;
-            try {
-                frame = parseFrame(String(event.data));
-            } catch (err) {
-                setStatus("error");
-                setDetail(
-                    err instanceof Error
-                        ? err.message
-                        : "unparsable server frame",
-                );
-                socket.close();
-                return;
-            }
-            if ("error" in frame) {
-                setStatus("error");
-                setDetail(frame.error);
-                socket.close();
-            }
-        });
-        socket.addEventListener("error", () => {
-            setStatus("error");
-            setDetail("could not connect to the chat socket");
-        });
-        return () => {
-            socket.close();
+    /** Persists a fresh login and enters the chat. */
+    const onSignedIn = useCallback((result: LoginResult): void => {
+        const stored: StoredCredential = {
+            username: result.user.username,
+            userId: result.user.id,
+            token: result.device.token,
+            device: {
+                id: result.device.id,
+                name: result.device.name,
+                prefix: result.device.prefix,
+            },
         };
+        saveCredential(localStorage, stored);
+        setCredential(stored);
     }, []);
 
+    /** Clears the credential and returns to the gate (revoked/401/logout). */
+    const dropToLogin = useCallback((): void => {
+        clearCredential(localStorage);
+        setCredential(null);
+    }, []);
+
+    if (credential === null) {
+        return <Login onSignedIn={onSignedIn} />;
+    }
     return (
-        <main className="shell">
-            <h1>J.A.R.V.I.S. Web</h1>
-            <p className={status === "error" ? "status error" : "status"}>
-                {status === "connecting" && "Connecting…"}
-                {status === "announced" && "Connected"}
-                {status === "error" && "Connection error"}
-            </p>
-            {detail && <p className="detail">{detail}</p>}
-            <p className="hint">
-                Web chat arrives in the next update; for now use the CLI or the
-                admin portal.
-            </p>
-        </main>
+        <Chat
+            credential={credential}
+            onAuthRejected={dropToLogin}
+            onSignedOut={dropToLogin}
+        />
     );
 }
