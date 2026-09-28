@@ -37,9 +37,10 @@ Alongside the CLI, the server serves a browser **admin portal**
 (`packages/portal`) — a React SPA at `/` that manages accounts, devices,
 sessions, and prefs through the REST API, authenticating with a cookie session
 plus a per-session CSRF nonce rather than device tokens. The server also hosts
-the **web chat client** (`packages/web`) at `/web`, which announces its
-markdown/hyperlink/image rendering capabilities over `/ws` with a `hello`
-first frame (the full chat UI lands with the next PR of issue #12).
+the **web chat client** (`packages/web`) at `/web`: a signed-in browser chat
+with conversation management and streaming Markdown/tables/images rendering
+(it announces those capabilities with a `hello` frame and chats with
+`mode: "text"` — voice mode is future work).
 
 During development the workspace packages resolve each other **through the
 workspace symlinks** npm creates in `node_modules` — edit source in
