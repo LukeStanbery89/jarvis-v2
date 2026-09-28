@@ -6,7 +6,11 @@
  * what it can render (`{ type: "hello", capabilities }`), or prompt. Auth
  * binds the socket to an account and the server replies with one `authResult`
  * frame; `hello` declares render capabilities for the socket's lifetime and
- * conditions the agent's system prompt. Either handshake comes first (both,
+ * conditions the agent's system prompt. Prompts may declare a chat `mode`
+ * ("text" | "voice", defaulting to "text"): the mode is recorded as the
+ * session's `kind` at first claim, and voice prompts are answered in plain
+ * conversational text regardless of the declared capabilities. Either
+ * handshake comes first (both,
  * at most once each, before any prompt) or not at all — any other opening,
  * or no auth, runs the socket as a **guest** (ephemeral,
  * identity-independent chats). Afterwards clients send JSON prompt frames and
@@ -29,6 +33,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
     parseClientMessage,
     serializeFrame,
+    type ChatMode,
     type ClientCapability,
     type ClientFrame,
 } from "@lukestanbery/jarvis-protocol";
@@ -201,10 +206,14 @@ async function handleFrame(
  *
  * The socket degrades to guest on its first prompt if it never authed. The
  * prompt's `sessionId` goes through the {@link SessionManager} pipeline —
- * lock, claim in the ledger, ownership guard, stream under `turnTimeoutMs`,
+ * lock, claim in the ledger (with the prompt's chat `mode` recorded as the
+ * session's write-once `kind`), ownership guard, stream under `turnTimeoutMs`,
  * touch, release — which answers `busy`/`not-owned` where ws.ts only needs to
- * pick the error frame. Guest sockets track the sessions they created so the
- * socket-close handler can remove the ephemeral rows; owned sessions persist.
+ * pick the error frame. Voice-mode prompts stream with empty effective
+ * capabilities so the model answers in plain conversational text regardless
+ * of the socket's `hello` declaration. Guest sockets track the sessions they
+ * created so the socket-close handler can remove the ephemeral rows; owned
+ * sessions persist.
  */
 async function handlePrompt(
     socket: WebSocket,
@@ -239,10 +248,12 @@ async function handlePrompt(
             return;
         }
     }
+    const mode: ChatMode = prompt.mode ?? "text";
     const turn = await sessions.runTurn({
         sessionId: prompt.sessionId,
         actor: conn.ctx,
         guestThreads: conn.guestThreads,
+        mode,
         stream: async (sessionId) =>
             streamEventsToSocket(
                 socket,
@@ -250,6 +261,7 @@ async function handlePrompt(
                 sessionId,
                 options.turnTimeoutMs,
                 conn.capabilities,
+                mode,
             ),
     });
     respondToTurn(socket, turn, prompt.sessionId);
@@ -360,7 +372,10 @@ async function handleAuth(
  * `{"done": true}`, or an error frame followed by `done` if the agent fails,
  * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`. The
  * socket's declared render capabilities (from a `hello` frame) are forwarded
- * to the agent so it can shape output for what this client can render.
+ * to the agent so it can shape output for what this client can render —
+ * except under `mode: "voice"`, where the effective capabilities are empty so
+ * the model answers in plain conversational text (rich formatting is
+ * text-mode-only).
  *
  * The timeout error is emitted by the timer itself; the in-flight generator is
  * `return()`d shortly after, which drains when its current await settles.
@@ -377,6 +392,7 @@ async function streamEventsToSocket(
     sessionId: string,
     turnTimeoutMs: number,
     capabilities: ClientCapability[],
+    mode: ChatMode,
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -393,7 +409,9 @@ async function streamEventsToSocket(
         void generator?.return?.(undefined);
     }, turnTimeoutMs);
     try {
-        generator = runAgent(prompt, sessionId, { capabilities });
+        generator = runAgent(prompt, sessionId, {
+            capabilities: mode === "voice" ? [] : capabilities,
+        });
         try {
             for await (const event of generator) {
                 if (finished || socket.readyState !== WebSocket.OPEN) {

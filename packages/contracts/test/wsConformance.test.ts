@@ -241,6 +241,20 @@ describe("AsyncAPI conformance: protocol frames", () => {
             );
         });
 
+        it("validates a voice-mode chat prompt through the serializer", () => {
+            expectWireConformant(
+                () => serializeRequest("Hello", "s-morning", "voice"),
+                MESSAGE_FOR_CLIENT.chatPrompt,
+            );
+        });
+
+        it("validates an explicit text-mode chat prompt through the serializer", () => {
+            expectWireConformant(
+                () => serializeRequest("Hello", "s-morning", "text"),
+                MESSAGE_FOR_CLIENT.chatPrompt,
+            );
+        });
+
         it("validates a hello capability announcement through the serializer", () => {
             expectWireConformant(
                 () => serializeHello(["markdown", "image", "link"]),
@@ -391,6 +405,30 @@ describe("AsyncAPI conformance: spec rejects protocol-invalid frames", () => {
             asClient({ prompt: "hi", sessionId: "s".repeat(129) }),
             parseClientMessage,
         );
+    });
+
+    it("rejects an unknown chat mode", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.chatPrompt,
+            asClient({ prompt: "hi", sessionId: "s", mode: "video" }),
+            parseClientMessage,
+        );
+        expect(() =>
+            parseClientMessage(
+                '{"prompt":"hi","sessionId":"s","mode":"video"}',
+            ),
+        ).toThrow("expected 'mode' to be 'text' or 'voice'");
+    });
+
+    it("rejects a non-string chat mode", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.chatPrompt,
+            asClient({ prompt: "hi", sessionId: "s", mode: 42 }),
+            parseClientMessage,
+        );
+        expect(() =>
+            parseClientMessage('{"prompt":"hi","sessionId":"s","mode":42}'),
+        ).toThrow("expected 'mode' to be 'text' or 'voice'");
     });
 
     it("rejects a token longer than MAX_TOKEN_LENGTH", () => {

@@ -19,6 +19,7 @@ import {
 } from "./types";
 import type {
     AuthRequest,
+    ChatMode,
     ChatPrompt,
     ClientCapability,
     ClientFrame,
@@ -107,15 +108,22 @@ function parseJson(raw: string): Record<string, unknown> {
     return parsed as Record<string, unknown>;
 }
 
+/** The chat-mode tokens the protocol recognizes (mirrors `ChatMode`). */
+const KNOWN_MODES: ReadonlySet<string> = new Set<string>(["text", "voice"]);
+
 /**
  * Parses + validates a ChatPrompt-shaped object.
  *
- * Throws if `prompt` or `sessionId` are not non-empty trimmed strings, or if
- * `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters.
+ * Throws if `prompt` or `sessionId` are not non-empty trimmed strings, if
+ * `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters, or if `mode`
+ * is present but not `"text"` or `"voice"`. An absent `mode` means `"text"`
+ * and is omitted from the parsed frame, so legacy prompts round-trip
+ * unchanged.
  */
 function validateChatPrompt(request: {
     prompt?: unknown;
     sessionId?: unknown;
+    mode?: unknown;
 }): ChatPrompt {
     if (typeof request.prompt !== "string" || request.prompt.trim() === "") {
         throw new Error("expected a non-empty string field 'prompt'");
@@ -131,7 +139,17 @@ function validateChatPrompt(request: {
             `sessionId must be at most ${MAX_SESSION_ID_LENGTH} characters`,
         );
     }
-    return { prompt: request.prompt, sessionId: request.sessionId };
+    if (request.mode === undefined) {
+        return { prompt: request.prompt, sessionId: request.sessionId };
+    }
+    if (typeof request.mode !== "string" || !KNOWN_MODES.has(request.mode)) {
+        throw new Error("expected 'mode' to be 'text' or 'voice'");
+    }
+    return {
+        prompt: request.prompt,
+        sessionId: request.sessionId,
+        mode: request.mode as ChatMode,
+    };
 }
 
 /**
@@ -193,9 +211,10 @@ function validateClientHello(request: { capabilities?: unknown }): ClientHello {
  *
  * A `type: "auth"` message is validated as the first-frame handshake, a
  * `type: "hello"` message as the first-frame capability announcement, and
- * anything else as a legacy {@link ChatPrompt}. Throws on malformed JSON (or
- * a non-object) or shape violations; the thrown message is surfaced to users
- * by the server's error frames and must not drift.
+ * anything else as a legacy {@link ChatPrompt} (which may carry an optional
+ * `mode`). Throws on malformed JSON (or a non-object) or shape violations;
+ * the thrown message is surfaced to users by the server's error frames and
+ * must not drift.
  */
 export function parseClientMessage(raw: string): ClientFrame {
     const msg = parseJson(raw) as {
@@ -204,6 +223,7 @@ export function parseClientMessage(raw: string): ClientFrame {
         capabilities?: unknown;
         prompt?: unknown;
         sessionId?: unknown;
+        mode?: unknown;
     };
     if (msg.type === "auth") {
         return validateAuthRequest({ token: msg.token });
@@ -219,8 +239,9 @@ export function parseClientMessage(raw: string): ClientFrame {
  *
  * Kept for callers that chat (and maybe authenticate): identical to the
  * prompt branch of {@link parseClientMessage}. Throws if the payload is not
- * valid JSON, if `prompt` or `sessionId` are not non-empty trimmed strings, or
- * if `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters.
+ * valid JSON, if `prompt` or `sessionId` are not non-empty trimmed strings,
+ * if `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters, or if
+ * `mode` is present but not `"text"` or `"voice"`.
  */
 export function parseRequest(raw: string): ChatPrompt {
     return validateChatPrompt(parseJson(raw));
@@ -231,9 +252,22 @@ export function serializeFrame(frame: ServerFrame): string {
     return JSON.stringify(frame);
 }
 
-/** Serializes a client chat request to its wire JSON text. */
-export function serializeRequest(prompt: string, sessionId: string): string {
-    return JSON.stringify({ prompt, sessionId });
+/**
+ * Serializes a client chat request to its wire JSON text.
+ *
+ * With `mode` omitted the two-argument wire shape stays byte-identical to
+ * the historical `{"prompt","sessionId"}` frame, so older clients are
+ * unaffected; a present `mode` serializes as a third `"mode"` key (including
+ * an explicit `"text"`).
+ */
+export function serializeRequest(
+    prompt: string,
+    sessionId: string,
+    mode?: ChatMode,
+): string {
+    return mode === undefined
+        ? JSON.stringify({ prompt, sessionId })
+        : JSON.stringify({ prompt, sessionId, mode });
 }
 
 /** Serializes the `auth` handshake frame to its wire JSON text. */

@@ -22,26 +22,27 @@ npm install @lukestanbery/jarvis-protocol
 
 ## API
 
-| Export                    | Description                                                                               |
-| ------------------------- | ----------------------------------------------------------------------------------------- |
-| `type ServerFrame`        | Union of every frame the server sends to a chat client                                    |
-| `type ClientFrame`        | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt`      |
-| `type ClientCapability`   | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares        |
-| `interface AuthRequest`   | The `auth` handshake: `{ type: "auth", token }`                                           |
-| `interface ClientHello`   | The capability announcement: `{ type: "hello", capabilities }`                            |
-| `interface AuthResult`    | The `authResult` payload: `{ user, device }`                                              |
-| `interface ChatPrompt`    | A client request: `{ prompt, sessionId }`                                                 |
-| `MAX_SESSION_ID_LENGTH`   | `128` — longest allowed `sessionId`                                                       |
-| `MAX_TOKEN_LENGTH`        | `128` — longest allowed device `token`                                                    |
-| `MAX_CAPABILITIES`        | `16` — longest allowed `capabilities` list in a `hello` frame                             |
-| `MAX_CAPABILITY_LENGTH`   | `16` — longest allowed single capability token                                            |
-| `parseFrame(raw)`         | Parses a server frame; throws on malformed/unrecognized payload                           |
-| `parseClientMessage(raw)` | Parses + validates a client message into an `AuthRequest`, `ClientHello`, or `ChatPrompt` |
-| `parseRequest(raw)`       | Parses + validates a client request (non-empty strings, ≤128 id)                          |
-| `serializeFrame(frame)`   | Serializes a `ServerFrame` to wire JSON                                                   |
-| `serializeRequest(p,sid)` | Serializes a client request to wire JSON                                                  |
-| `serializeAuth(token)`    | Serializes an `auth` handshake to wire JSON                                               |
-| `serializeHello(caps[])`  | Serializes a `hello` capability announcement to wire JSON                                 |
+| Export                          | Description                                                                               |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `type ServerFrame`              | Union of every frame the server sends to a chat client                                    |
+| `type ClientFrame`              | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt`      |
+| `type ClientCapability`         | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares        |
+| `type ChatMode`                 | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`)               |
+| `interface AuthRequest`         | The `auth` handshake: `{ type: "auth", token }`                                           |
+| `interface ClientHello`         | The capability announcement: `{ type: "hello", capabilities }`                            |
+| `interface AuthResult`          | The `authResult` payload: `{ user, device }`                                              |
+| `interface ChatPrompt`          | A client request: `{ prompt, sessionId, mode? }`                                          |
+| `MAX_SESSION_ID_LENGTH`         | `128` — longest allowed `sessionId`                                                       |
+| `MAX_TOKEN_LENGTH`              | `128` — longest allowed device `token`                                                    |
+| `MAX_CAPABILITIES`              | `16` — longest allowed `capabilities` list in a `hello` frame                             |
+| `MAX_CAPABILITY_LENGTH`         | `16` — longest allowed single capability token                                            |
+| `parseFrame(raw)`               | Parses a server frame; throws on malformed/unrecognized payload                           |
+| `parseClientMessage(raw)`       | Parses + validates a client message into an `AuthRequest`, `ClientHello`, or `ChatPrompt` |
+| `parseRequest(raw)`             | Parses + validates a client request (non-empty strings, ≤128 id)                          |
+| `serializeFrame(frame)`         | Serializes a `ServerFrame` to wire JSON                                                   |
+| `serializeRequest(p,sid,mode?)` | Serializes a client request to wire JSON (byte-identical without `mode`)                  |
+| `serializeAuth(token)`          | Serializes an `auth` handshake to wire JSON                                               |
+| `serializeHello(caps[])`        | Serializes a `hello` capability announcement to wire JSON                                 |
 
 ## Chat protocol
 
@@ -58,8 +59,12 @@ JSON text frames over `/ws`:
       `html`, `image`, `link`, ≤16 tokens). The server stores the declaration
       for the socket's lifetime and conditions the agent's output on it; an
       empty list ("plain text only") is valid, and `hello` may precede `auth`.
-    - `{ "prompt": "<text>", "sessionId": "<id>" }` — `sessionId`
-      (required, ≤128 chars) names the LangGraph conversation thread.
+    - `{ "prompt": "<text>", "sessionId": "<id>", "mode": "text" | "voice" }` —
+      `sessionId` (required, ≤128 chars) names the LangGraph conversation
+      thread; `mode` is optional and defaults to `"text"`. `"text"` prompts
+      are answered using the client's declared capabilities; `"voice"` prompts
+      are always answered with plain conversational text. The server records
+      the mode as the session's `kind` when it first claims the thread.
 - Server → Client:
     - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output" } }`
       frames while the agent calls tools,

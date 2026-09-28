@@ -127,6 +127,33 @@ describe("parseRequest", () => {
             parseRequest(JSON.stringify({ prompt: "hi", sessionId })),
         ).toEqual({ prompt: "hi", sessionId });
     });
+
+    it("omits mode when absent", () => {
+        const parsed = parseRequest('{"prompt":"hi","sessionId":"abc"}');
+        expect(parsed.mode).toBeUndefined();
+    });
+
+    it.each(["text", "voice"] as const)(
+        "parses a prompt with an explicit %s mode",
+        (mode) => {
+            const parsed = parseRequest(
+                JSON.stringify({ prompt: "hi", sessionId: "abc", mode }),
+            );
+            expect(parsed.mode).toBe(mode);
+        },
+    );
+
+    it("rejects an unknown chat mode", () => {
+        expect(() =>
+            parseRequest('{"prompt":"hi","sessionId":"abc","mode":"video"}'),
+        ).toThrow("expected 'mode' to be 'text' or 'voice'");
+    });
+
+    it("rejects a non-string chat mode", () => {
+        expect(() =>
+            parseRequest('{"prompt":"hi","sessionId":"abc","mode":42}'),
+        ).toThrow("expected 'mode' to be 'text' or 'voice'");
+    });
 });
 
 describe("serializeRequest", () => {
@@ -134,6 +161,34 @@ describe("serializeRequest", () => {
         expect(JSON.parse(serializeRequest("hi", "abc"))).toEqual({
             prompt: "hi",
             sessionId: "abc",
+        });
+    });
+
+    it("keeps the two-argument wire shape byte-identical (no mode key)", () => {
+        expect(serializeRequest("hi", "abc")).toBe(
+            '{"prompt":"hi","sessionId":"abc"}',
+        );
+    });
+
+    it("serializes an explicit voice mode", () => {
+        expect(serializeRequest("hi", "abc", "voice")).toBe(
+            '{"prompt":"hi","sessionId":"abc","mode":"voice"}',
+        );
+    });
+
+    it("serializes an explicit text mode", () => {
+        expect(serializeRequest("hi", "abc", "text")).toBe(
+            '{"prompt":"hi","sessionId":"abc","mode":"text"}',
+        );
+    });
+
+    it("round-trips a mode-carrying prompt through the parser", () => {
+        const raw = serializeRequest("hi", "abc", "voice");
+        expect(parseRequest(raw).mode).toBe("voice");
+        expect(parseClientMessage(raw)).toEqual({
+            prompt: "hi",
+            sessionId: "abc",
+            mode: "voice",
         });
     });
 });
@@ -174,6 +229,22 @@ describe("parseClientMessage", () => {
         expect(parseClientMessage('{"prompt":"hi","sessionId":"abc"}')).toEqual(
             { prompt: "hi", sessionId: "abc" },
         );
+    });
+
+    it("parses a prompt frame with a voice mode", () => {
+        expect(
+            parseClientMessage(
+                '{"prompt":"hi","sessionId":"abc","mode":"voice"}',
+            ),
+        ).toEqual({ prompt: "hi", sessionId: "abc", mode: "voice" });
+    });
+
+    it("rejects a prompt frame with an unknown mode", () => {
+        expect(() =>
+            parseClientMessage(
+                '{"prompt":"hi","sessionId":"abc","mode":"video"}',
+            ),
+        ).toThrow("expected 'mode' to be 'text' or 'voice'");
     });
 
     it("rejects a prompt-shaped message with an invalid prompt field", () => {

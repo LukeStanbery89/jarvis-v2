@@ -76,12 +76,31 @@ export interface ClientHello {
 }
 
 /**
+ * The chat mode a prompt runs under.
+ *
+ * Structurally mirrors the session ledger's `SessionKind` ("text" | "voice")
+ * in `@lukestanbery/jarvis-auth` — the server passes the wire value straight
+ * through as the ledger kind without importing this package. `"text"` chats
+ * are answered using the client's declared render capabilities; `"voice"`
+ * chats always yield plain conversational text.
+ */
+export type ChatMode = "text" | "voice";
+
+/**
  * A chat request from a client: the free-text `prompt` and the `sessionId`
- * naming the LangGraph conversation thread it continues.
+ * naming the LangGraph conversation thread it continues, plus the optional
+ * `mode` the chat runs under (absent means `"text"`).
  */
 export interface ChatPrompt {
     prompt: string;
     sessionId: string;
+    /**
+     * The chat mode for this prompt; `"text"` when omitted. `"voice"` prompts
+     * are answered with plain conversational text regardless of the client's
+     * declared render capabilities. The server records the mode as the
+     * session's `kind` when it first claims the thread.
+     */
+    mode?: ChatMode;
 }
 
 /** Longest `sessionId` a client may send in a chat request. */

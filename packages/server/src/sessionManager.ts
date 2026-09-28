@@ -17,6 +17,7 @@
  */
 import type { AuthContext, SessionLedger } from "@lukestanbery/jarvis-auth";
 import { ownsRow } from "@lukestanbery/jarvis-auth";
+import type { ChatMode } from "@lukestanbery/jarvis-protocol";
 
 /** How a turn resolved; the caller decides the user-facing message. */
 export type TurnOutcome = "completed" | "busy" | "not-owned";
@@ -40,6 +41,13 @@ export interface SessionManager {
         sessionId: string;
         actor: AuthContext;
         guestThreads: Set<string>;
+        /**
+         * The prompt's declared chat mode; `"text"` when omitted. Recorded as
+         * the ledger session's `kind` — write-once at claim time, so a
+         * thread's kind is the mode of its first prompt and later prompts do
+         * not re-claim it.
+         */
+        mode?: ChatMode;
         stream: (sessionId: string) => Promise<void>;
     }): Promise<TurnOutcome>;
 
@@ -60,7 +68,7 @@ export function createSessionManager(store: SessionLedger): SessionManager {
     /** Thread ids with a turn currently in flight, across all sockets. */
     const threadLocks = new Set<string>();
     return {
-        async runTurn({ sessionId, actor, guestThreads, stream }) {
+        async runTurn({ sessionId, actor, guestThreads, mode, stream }) {
             if (threadLocks.has(sessionId)) {
                 return "busy";
             }
@@ -71,7 +79,7 @@ export function createSessionManager(store: SessionLedger): SessionManager {
                 const { session, created } = store.claimSession(sessionId, {
                     userId: actorUserId,
                     deviceId: actor.kind === "authed" ? actor.device.id : null,
-                    kind: "text",
+                    kind: mode ?? "text",
                 });
                 if (created && actor.kind !== "authed") {
                     guestThreads.add(sessionId);
