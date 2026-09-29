@@ -18,6 +18,7 @@ import {
     AIMessageChunk,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 } from "@langchain/core/messages";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
@@ -76,10 +77,19 @@ export function createAgentGraph({
     checkpointer,
 }: AgentGraphOptions) {
     return new StateGraph(MessagesAnnotation)
-        .addNode("model", async (state) => {
+        .addNode("model", async (state, config) => {
+            const boundary = Number(
+                config.configurable?.historyBoundary ?? state.messages.length,
+            );
+            // Prune stale clock exchanges from the persisted prefix only; the
+            // in-flight turn's messages (from the boundary onward) — including
+            // the fresh tool result — are never touched, so the model can
+            // answer from the value it just computed.
+            const persisted = state.messages.slice(0, boundary);
+            const inFlight = state.messages.slice(boundary);
             const response = await model
                 .bindTools(tools)
-                .invoke(state.messages);
+                .invoke([...prunedClockHistory(persisted), ...inFlight]);
             return { messages: [response] };
         })
         .addNode("tools", new ToolNode(tools))
@@ -124,17 +134,26 @@ export async function* streamAgentTurn(
     sessionId: string,
     { systemPrompt, recursionLimit }: TurnOptions,
 ): AsyncGenerator<AgentEvent> {
-    const config = {
+    const prior = await graph.getState({
         configurable: { thread_id: sessionId },
-        recursionLimit,
-    };
-    const prior = await graph.getState(config);
+    });
     const messages = prior.values.messages as BaseMessage[] | undefined;
     const history = messages ?? [];
     const input =
         history.length === 0
             ? [new SystemMessage(systemPrompt), new HumanMessage(prompt)]
             : refreshedPrime(history, systemPrompt, prompt);
+    const config = {
+        configurable: {
+            thread_id: sessionId,
+            // Messages at or beyond this index were written by the current
+            // run; everything before it is persisted history. The model node
+            // prunes stale clock exchanges from the prefix only, so the fresh
+            // tool result of the in-flight turn stays visible.
+            historyBoundary: history.length,
+        },
+        recursionLimit,
+    };
 
     const tracked = new ToolCallTracker();
     const stream = await graph.stream(
@@ -152,12 +171,102 @@ export async function* streamAgentTurn(
     }
 }
 
-/** True when `message` asks for tool execution. */
+/**
+ * True when `message` asks for tool execution.
+ */
 function hasToolCalls(message: BaseMessage): boolean {
     const ai = message as AIMessage;
     return (
         (ai.tool_calls?.length ?? 0) > 0 ||
         (ai.invalid_tool_calls?.length ?? 0) > 0
+    );
+}
+
+/**
+ * Returns the history with every earlier `getCurrentTime` exchange removed.
+ *
+ * A stale clock exchange in the conversation is radioactive: a small local
+ * model asked the time again will typically quote the earlier timestamp —
+ * either from the stored tool result or from its own prior "the time is …"
+ * prose — instead of re-invoking the live tool, no matter how the question is
+ * worded (the `TIME_CALL_RULE` system-prompt nudge helps but is not
+ * reliable). This prunes the full prior exchange — the ask, the tool call, its
+ * result, and the text answer that followed — so the model never sees an old
+ * value to copy or a stranded question to answer again. The current turn's
+ * (fresh) result is the only clock data in context, so the answer must come
+ * from a live call.
+ *
+ * Walk preserves ordering and only removes messages tightly coupled to a
+ * clock exchange: the result, the tool-call `AIMessage` that invoked it
+ * (immediately preceding), the `HumanMessage` ask that prompted the call, and
+ * a text-only `AIMessage` that directly followed the result (the prose
+ * embedding the timestamp). A final answer that was produced after chained
+ * further tool calls is left standing — rare for a time-only ask, and not
+ * worth mis-pruning unrelated turns for.
+ */
+export function prunedClockHistory(history: BaseMessage[]): BaseMessage[] {
+    const pruned: BaseMessage[] = [];
+    for (let i = 0; i < history.length; i += 1) {
+        const message = history[i];
+        if (message._getType() === "tool") {
+            const tool = message as ToolMessage;
+            if (tool.name === "getCurrentTime") {
+                // Drop the tool call that invoked it (if it's the immediately
+                // preceding message) and any text answer that directly followed
+                // the result (the prose that embedded the stale value).
+                const prev = pruned[pruned.length - 1];
+                if (prev !== undefined && isClockInvocation(prev, tool)) {
+                    pruned.pop();
+                    // Also drop the human ask that prompted the exchange (it
+                    // directly precedes the invocation). Leaving it strands an
+                    // unanswered question in the thread, so a small model
+                    // answers it again on every later turn — that compounds the
+                    // very repetition this prune exists to stop.
+                    const ask = history[i - 2];
+                    if (
+                        ask !== undefined &&
+                        ask._getType() === "human" &&
+                        pruned[pruned.length - 1] === ask
+                    ) {
+                        pruned.pop();
+                    }
+                }
+                const next = history[i + 1];
+                if (next !== undefined && isPlainAnswer(next)) {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        pruned.push(message);
+    }
+    return pruned;
+}
+
+/** True when `candidate` is the AIMessage whose tool_calls invoked `result`. */
+function isClockInvocation(
+    candidate: BaseMessage,
+    result: ToolMessage,
+): boolean {
+    if (candidate._getType() !== "ai") {
+        return false;
+    }
+    const ai = candidate as AIMessage;
+    return (ai.tool_calls ?? []).some(
+        (call) => call.id === result.tool_call_id,
+    );
+}
+
+/** True when `candidate` is a plain-text assistant message (no tool calls). */
+function isPlainAnswer(candidate: BaseMessage): boolean {
+    if (candidate._getType() !== "ai") {
+        return false;
+    }
+    const ai = candidate as AIMessage;
+    return (
+        (ai.tool_calls?.length ?? 0) === 0 &&
+        typeof ai.content === "string" &&
+        ai.content.length > 0
     );
 }
 

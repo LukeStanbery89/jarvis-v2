@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
     appendChunk,
     appendMessage,
+    appendToolResult,
     deleteThread,
     ensureThread,
     loadThreads,
@@ -105,6 +106,52 @@ describe("thread mutations", () => {
         map = appendChunk(map, "s1", "two", 4);
         const roles = (map.s1?.messages ?? []).map((m) => m.role);
         expect(roles).toEqual(["assistant", "tool", "assistant"]);
+    });
+
+    it("appendToolResult merges the output into the trailing matching tool call", () => {
+        let map = appendMessage(ensureThread({}, "s1", 1), "s1", {
+            id: "t1",
+            role: "tool",
+            tool: { name: "calc", args: { expression: "3 + 3" } },
+            at: 2,
+        });
+        map = appendToolResult(map, "s1", "calc", 6, 3);
+        const messages = map.s1?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({
+            id: "t1",
+            role: "tool",
+            tool: {
+                name: "calc",
+                args: { expression: "3 + 3" },
+                output: 6,
+            },
+            at: 2,
+        });
+    });
+
+    it("appendToolResult appends a standalone notice for a mismatched/absent call", () => {
+        let map = appendMessage(ensureThread({}, "s1", 1), "s1", {
+            id: "t1",
+            role: "tool",
+            tool: { name: "calc" },
+            at: 2,
+        });
+        map = appendToolResult(map, "s1", "other", "x", 3);
+        const roles = (map.s1?.messages ?? []).map((m) => m.role);
+        expect(roles).toEqual(["tool", "tool"]);
+        expect(map.s1?.messages?.[1]).toMatchObject({
+            role: "tool",
+            tool: { name: "other", output: "x" },
+        });
+
+        const fresh = appendToolResult({}, "s1", "solo", "y", 4);
+        const solo = fresh.s1?.messages ?? [];
+        expect(solo).toHaveLength(1);
+        expect(solo[0]).toMatchObject({
+            role: "tool",
+            tool: { name: "solo", output: "y" },
+        });
     });
 
     it("appendChunk ignores unknown sessions", () => {

@@ -121,6 +121,62 @@ describe("ToolCallTracker", () => {
         ).toEqual([{ type: "tool", name: "x", args: {} }]);
     });
 
+    it("reassembles LM Studio's id-once/index-elsewhere stream into one call", () => {
+        // Regression reproducing the real wire capture: LM Studio sends the
+        // call id only on the first delta; argument deltas carry just the
+        // index. Keying chunks by `id ?? index` split one call into a
+        // name-only entry (announced `{}` at result time) and an args-only
+        // entry (announced mid-stream as the fallback name "tool").
+        const events = track(
+            new AIMessageChunk({
+                tool_call_chunks: [
+                    { id: "968981763", index: 0, name: "calculate", args: "" },
+                ],
+            }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: '{"' }],
+            }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: "expression" }],
+            }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: '":' }],
+            }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: ' "' }],
+            }),
+            new AIMessageChunk({ tool_call_chunks: [{ index: 0, args: "1" }] }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: " +" }],
+            }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: " 1" }],
+            }),
+            new AIMessageChunk({
+                tool_call_chunks: [{ index: 0, args: '"}' }],
+            }),
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "968981763",
+                        name: "calculate",
+                        args: { expression: "1 + 1" },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "2",
+                tool_call_id: "968981763",
+                name: "calculate",
+            }),
+        );
+        expect(events).toEqual([
+            { type: "tool", name: "calculate", args: { expression: "1 + 1" } },
+            { type: "toolResult", name: "calculate", output: "2" },
+        ]);
+    });
+
     it("announces a call at toolResult time if it was never announced", () => {
         expect(
             track(

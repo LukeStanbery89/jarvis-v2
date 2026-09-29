@@ -10,12 +10,31 @@
 import { describe, expect, it } from "vitest";
 import { systemPromptForCapabilities } from "../src/agent";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/config";
+import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
 
 describe("systemPromptForCapabilities", () => {
-    it("returns the base prompt verbatim for a plain-text client", () => {
-        expect(systemPromptForCapabilities(DEFAULT_SYSTEM_PROMPT, [])).toBe(
-            DEFAULT_SYSTEM_PROMPT,
-        );
+    it("keeps the base persona and appends tool rules for a plain-text client", () => {
+        const prompt = systemPromptForCapabilities(DEFAULT_SYSTEM_PROMPT, []);
+        expect(prompt).toContain(DEFAULT_SYSTEM_PROMPT);
+        expect(prompt).toMatch(/exactly one tool call at a time/);
+        expect(prompt).toMatch(/make exactly\s+one getCurrentTime call/);
+        expect(prompt).not.toMatch(/renders the following/);
+    });
+
+    it("appends the tool rules to every conditioned prompt", () => {
+        const variants: ClientCapability[][] = [
+            [],
+            ["markdown"],
+            ["html", "link"],
+        ];
+        for (const capabilities of variants) {
+            const prompt = systemPromptForCapabilities(
+                DEFAULT_SYSTEM_PROMPT,
+                capabilities,
+            );
+            expect(prompt).toMatch(/exactly one tool call at a time/);
+            expect(prompt).toMatch(/make exactly\s+one getCurrentTime call/);
+        }
     });
 
     it("appends formatting guidance for a markdown-capable client", () => {

@@ -1,13 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import {
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    ToolMessage,
+    type BaseMessage,
+} from "@langchain/core/messages";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import type { Runnable } from "@langchain/core/runnables";
-import { AIMessageChunk } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
     createAgentGraph,
+    prunedClockHistory,
     streamAgentTurn,
     type AgentGraph,
 } from "../src/llm/agentGraph";
@@ -56,7 +62,13 @@ class ScriptedChatModel extends BaseChatModel {
 const SYSTEM_PROMPT = "System prompt here.";
 const TOOL_CALL = new AIMessage({
     content: "",
-    tool_calls: [{ name: "getCurrentTime", args: {}, id: "call-1" }],
+    tool_calls: [
+        {
+            name: "getCurrentTime",
+            args: { question: "what time is it?" },
+            id: "call-1",
+        },
+    ],
 });
 
 function buildGraph(model: ScriptedChatModel): AgentGraph {
@@ -101,16 +113,14 @@ describe("createAgentGraph", () => {
         expect(events[0]).toEqual({
             type: "tool",
             name: "getCurrentTime",
-            args: {},
+            args: { question: "what time is it?" },
         });
         expect(events[1]).toMatchObject({
             type: "toolResult",
             name: "getCurrentTime",
         });
         const timeOutput = (events[1] as { output: string }).output;
-        expect(timeOutput).toMatch(
-            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} UTC[+-]\d{2}:\d{2}$/,
-        );
+        expect(timeOutput).toMatch(/^\d{1,2}:\d{2} (AM|PM)$/);
         expect(events[2]).toEqual({
             type: "token",
             text: "The time is 2026-09-20.",
@@ -181,6 +191,45 @@ describe("createAgentGraph", () => {
             "human",
             "ai",
             "human",
+        ]);
+    });
+
+    it("prunes the earlier clock ask + exchange from a later turn's model input", async () => {
+        // Turn 1 asks the time (model calls the clock); turn 2 asks the date.
+        // The model input for turn 2 must NOT contain turn 1's stranded clock
+        // ask, invocation, result, or answer — otherwise a small model re-answers
+        // them and the reply compounds across turns.
+        const model = new ScriptedChatModel([
+            TOOL_CALL,
+            new AIMessage({ content: "The time is 11:43 PM." }),
+            new AIMessage({ content: "Today is September 28, 2026." }),
+        ]);
+        const graph = buildGraph(model);
+        await collect(
+            streamAgentTurn(graph, "What time is it?", "t-clock", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+        await collect(
+            streamAgentTurn(graph, "What is today's date?", "t-clock", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+
+        // Turn 1's scripted model makes two calls (invocation + post-tool
+        // answer), so turn 2's input is the fourth entry. It must NOT contain
+        // turn 1's stranded clock ask, invocation, result, or answer —
+        // otherwise a small model re-answers them and the reply compounds.
+        const secondTurnInput = model.callInputs[2];
+        expect(secondTurnInput.map((m) => m._getType())).toEqual([
+            "system",
+            "human",
+        ]);
+        expect(secondTurnInput.map((m) => m.content)).toEqual([
+            SYSTEM_PROMPT,
+            "What is today's date?",
         ]);
     });
 
@@ -270,5 +319,164 @@ describe("createAgentGraph", () => {
                 }),
             ),
         ).rejects.toThrow(/recursion|limit/i);
+    });
+});
+
+describe("prunedClockHistory", () => {
+    it("removes a prior clock exchange: invocation, result, and answer", () => {
+        const history: BaseMessage[] = [
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-1",
+                        name: "getCurrentTime",
+                        args: {
+                            question: "What time is it?",
+                        },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "2026-09-27T10:00:00.000Z",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({ content: "The time is 10:00." }),
+            new AIMessage({ content: "Unrelated reply." }),
+        ];
+        const pruned = prunedClockHistory(history);
+        expect(pruned).toEqual([
+            new AIMessage({ content: "Unrelated reply." }),
+        ]);
+    });
+
+    it("drops the stranded ask with a pruned clock exchange so it isn't re-answered", () => {
+        // The model sees the full stored history: the human ask, the clock
+        // invocation, its result, and the prose answer. Pruning the exchange
+        // but leaving the ask would strand an unanswered question that a small
+        // model promptly re-answers (compounding verbosity across clock asks).
+        const history: BaseMessage[] = [
+            new HumanMessage({ content: "What time is it?" }),
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-1",
+                        name: "getCurrentTime",
+                        args: {
+                            question: "What time is it?",
+                        },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "11:43 PM",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({ content: "The current time is 11:43 PM." }),
+            new AIMessage({ content: "Unrelated reply." }),
+        ];
+        const pruned = prunedClockHistory(history);
+        expect(pruned).toEqual([
+            new AIMessage({ content: "Unrelated reply." }),
+        ]);
+    });
+
+    it("drops a chained multi-call clock exchange root and branch", () => {
+        // A single clock turn can accumulate more than one invocation; the
+        // whole chain must go with the ask, not just the last exchange.
+        const history: BaseMessage[] = [
+            new HumanMessage({ content: "What is today's date?" }),
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-1",
+                        name: "getCurrentTime",
+                        args: {
+                            question: "What time is it?",
+                        },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "11:43 PM",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-2",
+                        name: "getCurrentTime",
+                        args: {
+                            question: "What is today's date?",
+                        },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "September 28, 2026",
+                tool_call_id: "call-2",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({
+                content:
+                    "The current time is 11:43 PM. Today is September 28, 2026.",
+            }),
+        ];
+        expect(prunedClockHistory(history)).toEqual([]);
+    });
+
+    it("prunes the result and invocation but keeps another tool call", () => {
+        const history: BaseMessage[] = [
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-2",
+                        name: "getCurrentTime",
+                        args: {},
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "2026-09-27T10:00:00.000Z",
+                tool_call_id: "call-2",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-3",
+                        name: "calculate",
+                        args: { expression: "1 + 1" },
+                    },
+                ],
+            }),
+        ];
+        const pruned = prunedClockHistory(history);
+        // The clock invocation and result both go; the unrelated call stays.
+        expect(pruned).toHaveLength(1);
+        expect(pruned[0]).toMatchObject({ content: "" });
+        expect((pruned[0] as AIMessage).tool_calls?.[0]?.name).toBe(
+            "calculate",
+        );
+    });
+
+    it("leaves non-clock messages untouched", () => {
+        const history: BaseMessage[] = [
+            new AIMessage({ content: "hi" }),
+            new ToolMessage({
+                content: "4",
+                tool_call_id: "call-x",
+                name: "calculate",
+            }),
+        ];
+        expect(prunedClockHistory(history)).toEqual(history);
     });
 });

@@ -1,11 +1,23 @@
 :root {
-    color-scheme: light dark;
+    color-scheme: dark;
     font-family:
         system-ui,
         -apple-system,
         "Segoe UI",
         sans-serif;
     line-height: 1.5;
+
+    /* J.A.R.V.I.S. holographic blue (#4d9fff) on dark translucent panels. */
+    --jarvis-blue: #4d9fff;
+    --jarvis-blue-hot: #66adff;
+    --jarvis-blue-deep: #2f7ee0;
+    --panel: #10182a;
+    --panel-raised: #16203a;
+    --panel-border: #4d9fff33;
+    --bg: #0a1020;
+    --text: #cdd9f0;
+    --text-dim: #9aa8c6;
+    --error: #ff6b6b;
 }
 
 * {
@@ -14,6 +26,9 @@
 
 body {
     margin: 0;
+    background: linear-gradient(180deg, #0a1020 0%, #0d1530 100%);
+    min-height: 100dvh;
+    color: var(--text);
 }
 
 /* --- Sign-in gate --- */
@@ -22,6 +37,13 @@ body {
     max-width: 22rem;
     margin: 0 auto;
     padding: 4rem 1.25rem;
+}
+
+.login h1 {
+    margin: 0 0 1.25rem;
+    font-size: 1.5rem;
+    letter-spacing: 0.08em;
+    color: var(--jarvis-blue);
 }
 
 .login form {
@@ -40,15 +62,39 @@ body {
 .login input {
     padding: 0.5rem;
     font: inherit;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+}
+
+.login input:focus {
+    outline: none;
+    border-color: var(--jarvis-blue);
 }
 
 .login button {
     padding: 0.5rem;
     font: inherit;
+    font-weight: 600;
+    color: #071020;
+    background: var(--jarvis-blue);
+    border: 1px solid var(--jarvis-blue-deep);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.login button:hover {
+    background: var(--jarvis-blue-hot);
+}
+
+.login button:disabled {
+    opacity: 0.55;
+    cursor: default;
 }
 
 .error {
-    color: #b3261e;
+    color: var(--error);
     font-weight: 600;
 }
 
@@ -57,7 +103,9 @@ body {
 .chat {
     display: grid;
     grid-template-columns: 16rem 1fr;
+    grid-template-rows: 1fr;
     height: 100dvh;
+    overflow: hidden;
 }
 
 .sidebar {
@@ -65,7 +113,8 @@ body {
     flex-direction: column;
     gap: 0.5rem;
     padding: 1rem 0.75rem;
-    border-right: 1px solid #ccc4;
+    background: var(--panel);
+    border-right: 1px solid var(--panel-border);
     overflow-y: auto;
 }
 
@@ -74,6 +123,7 @@ body {
     align-items: center;
     justify-content: space-between;
     font-weight: 600;
+    color: var(--jarvis-blue);
 }
 
 .sidebar nav {
@@ -93,6 +143,7 @@ body {
     padding: 0.35rem 0.5rem;
     font: inherit;
     background: transparent;
+    color: var(--text);
     border: 0;
     border-radius: 6px;
     cursor: pointer;
@@ -101,32 +152,56 @@ body {
     white-space: nowrap;
 }
 
+.thread-open:hover {
+    background: var(--panel-raised);
+}
+
 .thread-open.active {
-    background: #8881;
+    background: var(--jarvis-blue-deep);
+    color: #fff;
 }
 
 .thread-delete {
     border: 0;
     background: transparent;
-    color: #888;
+    color: var(--text-dim);
     cursor: pointer;
+}
+
+.thread-delete:hover {
+    color: var(--error);
 }
 
 .new-chat {
     padding: 0.4rem;
     font: inherit;
+    font-weight: 600;
+    color: #071020;
+    background: var(--jarvis-blue);
+    border: 1px solid var(--jarvis-blue-deep);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.new-chat:hover {
+    background: var(--jarvis-blue-hot);
 }
 
 .conversation {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .status {
     margin: 0;
     padding: 0.4rem 1rem;
     font-weight: 600;
+    color: var(--jarvis-blue);
+    background: var(--panel);
+    border-bottom: 1px solid var(--panel-border);
 }
 
 .transcript {
@@ -147,16 +222,18 @@ body {
 
 .msg.user {
     align-self: flex-end;
-    background: #7c8cff26;
+    background: var(--jarvis-blue-deep);
+    color: #fff;
 }
 
 .msg.assistant {
     align-self: flex-start;
-    background: #8881;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
 }
 
 .msg.assistant.error {
-    color: #b3261e;
+    color: var(--error);
     font-weight: 600;
 }
 
@@ -164,7 +241,7 @@ body {
     align-self: flex-start;
     max-width: 46rem;
     font-size: 0.85rem;
-    color: #666;
+    color: var(--text-dim);
 }
 
 .tool-call summary {
@@ -179,7 +256,8 @@ body {
     display: flex;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    border-top: 1px solid #ccc4;
+    background: var(--panel);
+    border-top: 1px solid var(--panel-border);
 }
 
 .composer textarea {
@@ -188,15 +266,45 @@ body {
     max-height: 9rem;
     padding: 0.5rem;
     font: inherit;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
     resize: vertical;
+}
+
+.composer textarea:focus {
+    outline: none;
+    border-color: var(--jarvis-blue);
 }
 
 .composer button {
     padding: 0.5rem 1rem;
     font: inherit;
+    font-weight: 600;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.composer button.send:disabled {
+    background: var(--panel-raised);
+    color: var(--text-dim);
+    border-color: var(--panel-border);
+    cursor: default;
+}
+
+.composer button.send.active {
+    background: var(--jarvis-blue);
+    border-color: var(--jarvis-blue-deep);
+    color: #071020;
+}
+
+.composer button.send.active:hover {
+    background: var(--jarvis-blue-hot);
 }
 
 .hint {
     margin: 2rem auto;
-    color: #888;
+    color: var(--text-dim);
 }

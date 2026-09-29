@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateResult } from "../src/llm/tools/math";
-import { localClock } from "../src/llm/tools/time";
+import { clockFacet, localClock } from "../src/llm/tools/time";
 
 const CASES: Array<[string, number]> = [
     ["42", 42],
@@ -30,30 +30,71 @@ describe("calculateResult", () => {
     });
 });
 
-describe("localClock", () => {
-    it("formats the wall-clock with the local UTC offset", () => {
-        // The CI timezone is whatever it is; assert the shape and that the
-        // wall-clock agrees with local Date getters on a known instant.
-        const instant = new Date("2026-09-22T12:34:56Z");
-        const output = localClock(instant);
-        expect(output).toMatch(
-            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} UTC[+-]\d{2}:\d{2}$/,
-        );
-        const hour = String(instant.getHours()).padStart(2, "0");
-        const minute = String(instant.getMinutes()).padStart(2, "0");
-        const second = String(instant.getSeconds()).padStart(2, "0");
-        expect(output).toContain(`T${hour}:${minute}:${second}`);
+describe("clockFacet", () => {
+    it("classifies time, date, and weekday asks", () => {
+        expect(clockFacet("What time is it?")).toBe("time");
+        expect(clockFacet("What's the current time now?")).toBe("time");
+        expect(clockFacet("What's today's date?")).toBe("date");
+        expect(clockFacet("What date is it?")).toBe("date");
+        expect(clockFacet("What day of the week is it?")).toBe("weekday");
+        expect(clockFacet("What weekday is it?")).toBe("weekday");
     });
 
-    it("carries the exact machine offset, whatever the CI timezone", () => {
-        const instant = new Date("2026-09-22T12:34:56Z");
-        const output = localClock(instant);
-        const abs = Math.abs(instant.getTimezoneOffset());
-        const sign = instant.getTimezoneOffset() <= 0 ? "+" : "-";
-        const offset = `${sign}${String(Math.floor(abs / 60)).padStart(
-            2,
-            "0",
-        )}:${String(abs % 60).padStart(2, "0")}`;
-        expect(output).toContain(`UTC${offset}`);
+    it("classifies 'what day is it' asks as the full form", () => {
+        expect(clockFacet("What day is it?")).toBe("full");
+        expect(clockFacet("What day is today?")).toBe("full");
+        expect(clockFacet("Today, what day is this?")).toBe("full");
+    });
+
+    it("falls back to the full form for unrecognized phrasing", () => {
+        expect(clockFacet("Do you know what it is today?")).toBe("full");
+        expect(clockFacet("")).toBe("full");
+    });
+});
+
+describe("localClock", () => {
+    // The CI timezone is whatever it is; assert against local Date getters on
+    // a known instant rather than a fixed wall-clock string.
+    const instant = new Date("2026-09-22T12:34:56Z");
+    const hours = instant.getHours();
+    const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
+    const meridiem = hours < 12 ? "AM" : "PM";
+    const minute = String(instant.getMinutes()).padStart(2, "0");
+
+    it("time ask returns just hour, minute, and AM/PM", () => {
+        const output = localClock("What time is it?", instant);
+        expect(output).toMatch(/^\d{1,2}:\d{2} (AM|PM)$/);
+        expect(output).toBe(`${hour12}:${minute} ${meridiem}`);
+    });
+
+    it("date ask returns Month day, year", () => {
+        const output = localClock("What's today's date?", instant);
+        expect(output).toMatch(/^[A-Za-z]+ \d{1,2}, \d{4}$/);
+        expect(output).toContain(String(instant.getFullYear()));
+    });
+
+    it("weekday ask returns just the day of the week", () => {
+        const output = localClock("What day of the week is it?", instant);
+        expect(output).toMatch(/^[A-Za-z]+$/);
+        expect(output.length).toBeLessThan(12);
+    });
+
+    it("what-day-is-it ask returns weekday with the full date", () => {
+        const output = localClock("What day is it?", instant);
+        expect(output).toMatch(/^[A-Za-z]+, [A-Za-z]+ \d{1,2}, \d{4}$/);
+        const weekday =
+            instant.getDay() === 0
+                ? "Sunday"
+                : [
+                      "Sunday",
+                      "Monday",
+                      "Tuesday",
+                      "Wednesday",
+                      "Thursday",
+                      "Friday",
+                      "Saturday",
+                  ][instant.getDay()];
+        expect(output).toContain(weekday);
+        expect(output).toContain(String(instant.getFullYear()));
     });
 });
