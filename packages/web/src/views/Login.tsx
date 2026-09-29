@@ -49,6 +49,7 @@ export function Login({ onSignedIn }: LoginProps) {
                 <label>
                     Username
                     <input
+                        name="username"
                         value={username}
                         autoComplete="username"
                         required
@@ -59,6 +60,7 @@ export function Login({ onSignedIn }: LoginProps) {
                     Password
                     <input
                         type="password"
+                        name="password"
                         value={password}
                         autoComplete="current-password"
                         required

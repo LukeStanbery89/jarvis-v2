@@ -170,7 +170,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   shared row-ownership policy), `errors.ts`, `types.ts`, `fs.ts`.
 - `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + prompt framing. The session lifecycle (claim, ownership
   guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`.
-- `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer; `systemPromptForCapabilities` conditions the system prompt on the client's declared rendering capabilities.
+- `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer; `systemPromptForCapabilities` conditions the system prompt on the client's declared rendering capabilities and always appends two fixed hygiene paragraphs (one well-formed tool call at a time, and exactly one `getCurrentTime` call per time/date/weekday ask with the question passed verbatim so it returns the requested facet) so emulated tool calling doesn't fragment calls or reuse stale time answers.
 - `src/transport.ts` — `AgentEvent → ServerFrame` mapping.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
 - `src/llm/chatModel.ts` — the only module that knows `@langchain/openai`.

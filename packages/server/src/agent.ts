@@ -41,20 +41,55 @@ export interface RunAgentOptions {
 }
 
 /**
+ * Tool-call hygiene instruction appended to every conditioned system prompt.
+ *
+ * Local models served over OpenAI-compatible emulation (LM Studio) frequently
+ * fragment tool calls: empty argument objects, invented tool names, or calls
+ * fired before the previous result was seen. Pinning the expected behavior in
+ * the prompt reduces the malformed-call noise the agent loop would otherwise
+ * faithfully execute and stream to clients.
+ */
+const TOOL_CALL_RULES =
+    "When you use a tool, make exactly one tool call at a time and supply " +
+    "every required argument as well-formed JSON matching the tool's " +
+    "schema. Never call a tool without its required arguments, never " +
+    "invent tool names, and wait for each tool's result before deciding " +
+    "what to do next.";
+
+/**
+ * Time-query hygiene appended to every conditioned system prompt.
+ *
+ * Small local models reuse earlier answers from the conversation when asked
+ * for the time again, reporting a stale value without ever re-calling the
+ * clock, and over-report facets that weren't asked for. Because
+ * `getCurrentTime` is the assistant's only source of "now", the prompt pins
+ * that the tool must be invoked exactly once per ask with the verbatim
+ * question, its stale result never reused.
+ */
+const TIME_CALL_RULE =
+    "When asked for the current time, date, or day of the week, make exactly " +
+    "one getCurrentTime call and pass the user's actual question verbatim as " +
+    "the `question` argument; the tool returns only the facet they asked for, " +
+    "so report that and nothing else. Do not call getCurrentTime again within " +
+    "the same reply, and never reuse or repeat a value you already gave " +
+    "earlier in this conversation — the clock only moves forward, so an " +
+    "earlier answer is stale.";
+
+/**
  * Derives a system prompt that admits the formats a capable client renders.
  *
  * Pure (and exported) so the conditioning rules are unit-testable without a
- * model. Base persona constraints are preserved; capability notes are appended
- * as one paragraph only when the client actually declared the token (an empty
- * or plain-text client gets the base prompt verbatim).
+ * model. The fixed hygiene paragraphs — tool-call discipline
+ * ({@link TOOL_CALL_RULES}) and clock freshness ({@link TIME_CALL_RULE}) — are
+ * always appended: both are server concerns, independent of the client's
+ * rendering capabilities and of any `LLM_SYSTEM_PROMPT` override. Capability
+ * notes are appended as one paragraph only when the client actually declared
+ * the token.
  */
 export function systemPromptForCapabilities(
     systemPrompt: string,
     capabilities: ClientCapability[],
 ): string {
-    if (capabilities.length === 0) {
-        return systemPrompt;
-    }
     const notes: string[] = [];
     if (capabilities.includes("markdown")) {
         notes.push(
@@ -76,10 +111,11 @@ export function systemPromptForCapabilities(
             "HTML is rendered: you may emit small, presentation-only HTML snippets.",
         );
     }
-    if (notes.length === 0) {
-        return systemPrompt;
-    }
-    return `${systemPrompt}\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
+    const rendering =
+        notes.length === 0
+            ? ""
+            : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}${rendering}`;
 }
 
 let graph: AgentGraph | null = null;

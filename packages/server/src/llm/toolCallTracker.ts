@@ -30,6 +30,12 @@ export type { AgentEvent } from "./event";
 interface PendingToolCall {
     name: string;
     args: Record<string, unknown> | string;
+    /**
+     * The call's real id, learned from whichever chunk carried one (usually
+     * only the first delta). Announcements and dedupe key off this id so the
+     * final aggregated `tool_calls` message never re-announces the call.
+     */
+    callId?: string;
 }
 
 /**
@@ -40,6 +46,8 @@ interface PendingToolCall {
  */
 export class ToolCallTracker {
     private readonly tracked = new Map<string, PendingToolCall>();
+    /** Maps a real call id onto the tracked entry key that accumulates it. */
+    private readonly keyByCallId = new Map<string, string>();
     private readonly announced = new Set<string>();
 
     /** Converts one streamed message into the events it implies. */
@@ -60,40 +68,68 @@ export class ToolCallTracker {
      * events as soon as their name and args are known — either from a complete
      * `tool_calls` payload or from accumulated streaming `tool_call_chunks`
      * whose args successfully JSON-parse.
+     *
+     * Two hazards shaped this code:
+     *
+     * - Chunk accumulation keys off `index` because OpenAI-compatible
+     *   providers (LM Studio included) put the call `id` only on the first
+     *   delta while argument deltas carry just the index; keying by
+     *   `id ?? index` split one call into a name-only entry and an args-only
+     *   entry, announcing a phantom call under the fallback name "tool". The
+     *   real id — remembered from whichever chunk carried it — is what
+     *   announcements and dedupe key on.
+     * - On a streamed chunk the `tool_calls` getter eagerly parses whatever
+     *   args have arrived so far (an empty `{}` until the JSON completes), so
+     *   the complete-payload loop must only run for genuine (non-chunk)
+     *   `AIMessage`s — otherwise every named chunk announces a premature
+     *   empty-args call.
      */
     private onModelMessage(message: AIMessage): AgentEvent[] {
         const events: AgentEvent[] = [];
 
-        for (const call of message.tool_calls ?? []) {
-            if (!call.id || !call.name) {
-                continue;
-            }
-            if (!this.announced.has(call.id)) {
-                this.announced.add(call.id);
-                this.tracked.set(call.id, {
-                    name: call.name,
-                    args: (call.args ?? {}) as Record<string, unknown>,
-                });
-                events.push({
-                    type: "tool",
-                    name: call.name,
-                    args: call.args ?? {},
-                });
+        if (!(message instanceof AIMessageChunk)) {
+            for (const call of message.tool_calls ?? []) {
+                if (!call.id || !call.name) {
+                    continue;
+                }
+                const key = this.keyByCallId.get(call.id) ?? call.id;
+                this.keyByCallId.set(call.id, key);
+                if (!this.announced.has(call.id)) {
+                    this.announced.add(call.id);
+                    this.tracked.set(key, {
+                        name: call.name,
+                        args: (call.args ?? {}) as Record<string, unknown>,
+                        callId: call.id,
+                    });
+                    events.push({
+                        type: "tool",
+                        name: call.name,
+                        args: call.args ?? {},
+                    });
+                }
             }
         }
 
         const chunks = (message as AIMessageChunk).tool_call_chunks;
         for (const call of chunks ?? []) {
-            const id = call.id ?? call.index?.toString();
-            if (!id) {
+            const aliased = call.id ? this.keyByCallId.get(call.id) : undefined;
+            const key =
+                aliased ??
+                (typeof call.index === "number" ? `#${call.index}` : call.id);
+            if (!key) {
                 continue;
             }
-            const pending = this.tracked.get(id);
+            if (call.id) {
+                this.keyByCallId.set(call.id, key);
+            }
+            const pending = this.tracked.get(key);
+            const callId = call.id ?? pending?.callId;
             const name = call.name || pending?.name;
             if (call.name) {
-                this.tracked.set(id, {
+                this.tracked.set(key, {
                     name: call.name,
                     args: pending?.args ?? {},
+                    callId,
                 });
             }
             if (typeof call.args === "string") {
@@ -107,25 +143,24 @@ export class ToolCallTracker {
                     parsed = undefined;
                 }
                 if (parsed !== undefined) {
-                    this.tracked.set(id, {
+                    this.tracked.set(key, {
                         name: name ?? "tool",
                         args: parsed,
+                        callId,
                     });
-                    // Announce only once the call's name is known. Streaming
-                    // chunks may key the same call by id and index at different
-                    // times (the name often arrives under one key and complete
-                    // args under the other), so a chunk with unknown name is
-                    // left for the final tool_calls message to announce —
-                    // otherwise a fallback "tool" name would leak into the
-                    // event stream.
-                    if (name && !this.announced.has(id)) {
-                        this.announced.add(id);
+                    // Announce only once the call's name is known, and key the
+                    // dedupe on the real call id — the final aggregated
+                    // `tool_calls` message carries that same id and must not
+                    // announce the call a second time.
+                    if (name && callId && !this.announced.has(callId)) {
+                        this.announced.add(callId);
                         events.push({ type: "tool", name, args: parsed });
                     }
                 } else {
-                    this.tracked.set(id, {
+                    this.tracked.set(key, {
                         name: name ?? "tool",
                         args: merged,
+                        callId,
                     });
                 }
             }
@@ -148,7 +183,10 @@ export class ToolCallTracker {
      */
     private onToolResult(message: ToolMessage): AgentEvent[] {
         const id = message.tool_call_id;
-        const pending = id ? this.tracked.get(id) : undefined;
+        const key = id ? this.keyByCallId.get(id) : undefined;
+        const pending =
+            (key ? this.tracked.get(key) : undefined) ??
+            (id ? this.tracked.get(id) : undefined);
         const name = pending?.name ?? message.name ?? "tool";
         const args = typeof pending?.args === "object" ? pending.args : {};
         const output =

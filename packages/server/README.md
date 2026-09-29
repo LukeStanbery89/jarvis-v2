@@ -50,7 +50,7 @@ variables:
 | `LLM_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible base URL |
 | `LLM_MODEL` | `qwen/qwen3-4b-2507` | Model served by the server |
 | `LLM_TEMPERATURE` | `0` | Sampling temperature |
-| `LLM_SYSTEM_PROMPT` | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread |
+| `LLM_SYSTEM_PROMPT` | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends two fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer) plus capability notes — see the Chat protocol section |
 | `JARVIS_AGENT_MAX_TURNS` | `10` | Max agent loop steps per turn (tools + model calls) |
 | `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite` | SQLite checkpoint file for conversation persistence |
 | `JARVIS_DB_PATH` | `~/.jarvis/jarvis.sqlite` | App database: users, devices, sessions, prefs |
@@ -213,7 +213,13 @@ and exchange JSON text frames:
       `{ "type": "hello", "capabilities": [...] }`) — the client announces how it renders responses. Each token is
       one of `markdown` / `html` / `image` / `link` (duplicates and unknown tokens are rejected; the list may be
       empty). This affects the agent's system prompt: the model is told the client renders Markdown/images/links
-      (or that it only shows plain text). Must be the very first frame.
+      (or that it only shows plain text). Regardless of capabilities, the server always appends two fixed
+      hygiene paragraphs to the system prompt — make exactly one tool call at a time with every required
+      argument as well-formed JSON and wait for each result (emulated tool calling in local models otherwise
+      fragments calls into empty-arg or misnamed invocations), and make exactly one `getCurrentTime` call per
+      time/date/weekday ask, passing the user's question verbatim so the tool returns just the requested facet,
+      never reusing a value answered earlier (small local models otherwise reuse a stale timestamp from the
+      conversation history or over-report facets that weren't asked for). Must be the very first frame.
     - **First frame (or immediately after `hello`), optional:** `{ "type": "auth", "token": "<device token>" }`
       — authenticates as an account. The server replies with one
       `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. Never

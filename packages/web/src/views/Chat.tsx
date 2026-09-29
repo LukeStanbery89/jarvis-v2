@@ -27,6 +27,7 @@ import type { StoredCredential } from "../credentials";
 import {
     appendChunk,
     appendMessage,
+    appendToolResult,
     deleteThread,
     ensureThread,
     loadThreads,
@@ -81,12 +82,13 @@ function threadsReducer(map: ThreadMap, action: ThreadsAction): ThreadMap {
                 at: action.at,
             });
         case "toolResult":
-            return appendMessage(map, action.sessionId, {
-                id: crypto.randomUUID(),
-                role: "tool",
-                tool: { name: action.name, output: action.output },
-                at: action.at,
-            });
+            return appendToolResult(
+                map,
+                action.sessionId,
+                action.name,
+                action.output,
+                action.at,
+            );
         case "assistantError":
             return markAssistantError(
                 map,
@@ -145,6 +147,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     /** Latest auth-rejection callback (client events must stay fresh). */
     const onAuthRejectedRef = useRef(onAuthRejected);
     onAuthRejectedRef.current = onAuthRejected;
+    /** The scrolling transcript container (auto-scroll target). */
+    const transcriptRef = useRef<HTMLDivElement | null>(null);
+    /** The composer textarea (refocused after each turn so chat stays fluid). */
+    const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
     /** One chat client for the component's lifetime. */
     const clientRef = useRef<ChatClient | null>(null);
@@ -275,6 +281,26 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     }, [rows, threads]);
 
     const activeThread = activeId !== null ? (threads[activeId] ?? null) : null;
+
+    // Keep the newest content in view: any message change (own send, streamed
+    // chunks, tool notices, or a thread switch) snaps the transcript to the
+    // bottom. The effect reads the stable messages reference, so it fires on
+    // each store mutation, not merely every render.
+    const transcriptMessages = activeThread?.messages ?? [];
+    useEffect(() => {
+        const el = transcriptRef.current;
+        if (el && transcriptMessages.length > 0) {
+            el.scrollTop = el.scrollHeight;
+        }
+    }, [transcriptMessages, activeId]);
+
+    // Restore focus to the composer once a streaming turn ends, so the next
+    // message can be typed without re-clicking the textarea.
+    useEffect(() => {
+        if (!streaming) {
+            composerRef.current?.focus();
+        }
+    }, [streaming]);
 
     /** Starts a fresh conversation (locally; the server row appears on first prompt). */
     function newChat(): void {
@@ -407,7 +433,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         {banner}
                     </p>
                 )}
-                <div className="transcript">
+                <div className="transcript" ref={transcriptRef}>
                     {activeThread === null && (
                         <p className="hint">
                             Pick a conversation or start a new one — JARVIS
@@ -448,19 +474,27 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 </div>
                 <div className="composer">
                     <textarea
+                        id="message"
+                        name="message"
                         value={draft}
                         placeholder={
                             activeId === null
                                 ? "Pick or start a conversation…"
                                 : "Message JARVIS…"
                         }
-                        disabled={activeId === null || streaming}
+                        disabled={activeId === null}
+                        ref={composerRef}
                         onChange={(e) => setDraft(e.target.value)}
                         onKeyDown={onKeyDown}
                     />
                     <button
                         type="button"
-                        disabled={activeId === null || streaming}
+                        className={draft.trim() !== "" ? "send active" : "send"}
+                        disabled={
+                            activeId === null ||
+                            streaming ||
+                            draft.trim() === ""
+                        }
                         onClick={() => void send()}
                     >
                         {streaming ? "…" : "Send"}

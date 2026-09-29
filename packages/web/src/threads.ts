@@ -144,6 +144,50 @@ export function appendMessage(
 }
 
 /**
+ * Returns the map with a tool's result attached.
+ *
+ * The wire delivers a tool call (`tool`) and its result (`toolResult`) as two
+ * frames and the server streams them adjacently, so this merges the output
+ * into the trailing `tool` notice when the names match — one "Ran tool" box
+ * per call instead of a call box followed by a result box. Anything else
+ * (no preceding call, a different tool, or a call that already has output)
+ * appends a standalone result notice, keeping out-of-order frames intact.
+ */
+export function appendToolResult(
+    map: ThreadMap,
+    sessionId: string,
+    name: string,
+    output: unknown,
+    at: number = Date.now(),
+): ThreadMap {
+    const record = map[sessionId];
+    if (record) {
+        const last = record.messages[record.messages.length - 1];
+        if (
+            last?.role === "tool" &&
+            last.tool.name === name &&
+            last.tool.output === undefined
+        ) {
+            const messages = [...record.messages];
+            messages[messages.length - 1] = {
+                ...last,
+                tool: { ...last.tool, output },
+            };
+            return {
+                ...map,
+                [sessionId]: { ...record, updatedAt: at, messages },
+            };
+        }
+    }
+    return appendMessage(map, sessionId, {
+        id: crypto.randomUUID(),
+        role: "tool",
+        tool: { name, output },
+        at,
+    });
+}
+
+/**
  * Returns the map with `chunk` appended to the thread's trailing assistant
  * message (created on the first chunk of a turn), streaming-style.
  */
