@@ -1,14 +1,11 @@
 import type { AddressInfo } from "net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
-import Database from "better-sqlite3";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
 import { runAgent } from "../src/agent";
-import {
-    SqliteAppDatabase,
-    generateDeviceToken,
-} from "@lukestanbery/jarvis-auth";
+import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AgentEvent } from "../src/llm/agentGraph";
 
 vi.mock("../src/agent", () => ({
@@ -37,7 +34,7 @@ vi.mock("../src/agent", () => ({
     }),
 }));
 
-const store = new SqliteAppDatabase(new Database(":memory:"));
+const store = createInMemoryAppDatabase();
 const appConfig = {
     appDbPath: ":memory:",
     turnTimeoutMs: 30_000,

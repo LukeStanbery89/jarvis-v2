@@ -20,7 +20,8 @@ portal SPA at `/` when it has been built (see "Web portal" below) plus the web c
   checkpoint database (`~/.jarvis/checkpoints.sqlite`), a separate file from auth's app database
   (`~/.jarvis/jarvis.sqlite`). The server owns that file's contents; auth supplies only the filesystem-posture
   helpers (`ensurePrivateStorage`/`ensurePrivateFile`) applied to it. Within `src/` the driver is imported in
-  one place only (`agent.ts`); `test/` reaches it to build `:memory:` store fixtures (tracked in #53)
+  one place only (`agent.ts`); server tests build `:memory:` stores via `createInMemoryAppDatabase()` from the
+  `@lukestanbery/jarvis-auth/testing` subpath and do not import the driver
 - Logging via `@lukestanbery/jarvis-logger` (see `src/logger.ts`)
 - Tests via Vitest + supertest
 

@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
 import {
     generateDeviceToken,
-    SqliteAppDatabase,
     type AppDatabase,
     type AppDevice,
     type AppUser,
     type AuthContext,
 } from "@lukestanbery/jarvis-auth";
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import { createSessionManager } from "../src/sessionManager";
 import type { SessionManager } from "../src/sessionManager";
 
@@ -35,7 +34,7 @@ function authed(user: AppUser, device: AppDevice): AuthContext {
 }
 
 beforeEach(() => {
-    store = new SqliteAppDatabase(new Database(":memory:"));
+    store = createInMemoryAppDatabase();
     sessions = createSessionManager(store);
 });
 
