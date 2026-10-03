@@ -36,12 +36,23 @@ Run from the repository root:
 | `npm run build`        | Build all packages (`tsc`, plus `vite build` for the portal) |
 | `npm run typecheck`    | Type-check all packages (src + tests)                        |
 | `npm test`             | Run all package test suites (Vitest)                         |
-| `npm run check`        | Build + typecheck + test + format check                      |
+| `npm run test:scripts` | Run the root tooling tests under `scripts/` (Vitest)         |
+| `npm run check`        | Deps + build + typecheck + test + format check               |
+| `npm run check:deps`   | Verify no package imports an undeclared dependency           |
 | `npm run format`       | Auto-format all files with Prettier                          |
 | `npm run format:check` | Verify formatting without modifying files                    |
 
 ## Conventions
 
+- **Declare what you import.** A package must list every module it imports at
+  runtime in its own `package.json` — `src/` imports in `dependencies`,
+  `peerDependencies`, or `optionalDependencies`; test imports may also use
+  `devDependencies`. An undeclared import still type-checks (when `@types/*` is
+  present) and still tests green (npm workspaces hoist a sibling's copy into the
+  root `node_modules`), so nothing else catches it. `npm run check:deps` fails the
+  build on a violation; run it when you add an import. Subpath imports
+  (`@lukestanbery/jarvis-auth/testing`) attribute to their owning package, and Node
+  builtins are exempt in both the `node:`-prefixed and bare spellings.
 - Code style is enforced by Prettier (see `.prettierrc.json`): double quotes, 4-space indent.
 - Format-on-save is configured for VS Code (`.vscode/settings.json`) and OpenCode (`opencode.json`).
 - Every new or modified function/module ships (or updates) a JSDoc `/** ... */` comment describing purpose, callers, and behavior; keep existing doc comments current whenever behavior changes.

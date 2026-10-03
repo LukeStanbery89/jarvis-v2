@@ -46,6 +46,7 @@
         "zod": "^4.6.5"
     },
     "devDependencies": {
+        "@langchain/langgraph-checkpoint": "^1.1.5",
         "@types/better-sqlite3": "^9.6.0",
         "@types/express": "^5.0.6",
         "@types/node": "^26.6.2",
