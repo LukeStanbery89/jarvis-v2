@@ -8,7 +8,9 @@
     ],
     "scripts": {
         "build": "npm run build -w @lukestanbery/jarvis-protocol -w @lukestanbery/jarvis-logger -w @lukestanbery/jarvis-auth -w @lukestanbery/jarvis-cli -w @lukestanbery/jarvis-contracts -w @lukestanbery/jarvis-server -w @lukestanbery/jarvis-portal -w @lukestanbery/jarvis-web",
-        "check": "npm run build && npm run typecheck && npm test && npm run format:check",
+        "check": "npm run check:deps && npm run build && npm run typecheck && npm test && npm run test:scripts && npm run format:check",
+        "check:deps": "node scripts/check-dependencies.mjs",
+        "test:scripts": "vitest run scripts",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "prepare": "husky",
@@ -26,8 +28,10 @@
     "homepage": "https://github.com/LukeStanbery89/jarvis-v2#readme",
     "license": "MIT",
     "devDependencies": {
+        "esbuild": "^0.28.2",
         "husky": "^9.1.0",
-        "prettier": "^3.9.8"
+        "prettier": "^3.9.8",
+        "vitest": "^5.0.1"
     },
     "allowScripts": {
         "better-sqlite3@12.11.1": true
