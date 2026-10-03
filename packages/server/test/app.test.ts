@@ -1,13 +1,12 @@
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp, createHttpsRedirectApp } from "../src/app";
-import { SqliteAppDatabase } from "@lukestanbery/jarvis-auth";
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 
-const store = new SqliteAppDatabase(new Database(":memory:"));
+const store = createInMemoryAppDatabase();
 
 afterAll(() => {
     store.close();

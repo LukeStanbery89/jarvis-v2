@@ -1,11 +1,8 @@
 import request from "supertest";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
 import { createApp } from "../src/app";
-import {
-    SqliteAppDatabase,
-    generateDeviceToken,
-} from "@lukestanbery/jarvis-auth";
+import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { AppConfig } from "../src/config";
 
@@ -18,7 +15,7 @@ const FAST: AppConfig & { bootstrapToken: string } = {
 /** Bootstrap secret for per-test apps (gate consumption leaves FAST untouched). */
 const BOOTSTRAP = "s3cret-bootstrap";
 
-const store = new SqliteAppDatabase(new Database(":memory:")) as AppDatabase;
+const store = createInMemoryAppDatabase();
 
 const app = createApp(store, FAST);
 
@@ -74,7 +71,7 @@ describe("bootstrap", () => {
     });
 
     it("rejects a missing or wrong bootstrap token", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const freshApp = createApp(freshStore, {
             ...FAST,
             bootstrapToken: BOOTSTRAP,
@@ -117,7 +114,7 @@ describe("bootstrap", () => {
     });
 
     it("rejects a second bootstrap once an owner exists", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const freshApp = createApp(freshStore, {
             ...FAST,
             bootstrapToken: BOOTSTRAP,
@@ -138,7 +135,7 @@ describe("bootstrap", () => {
     });
 
     it("ignores a bootstrap token supplied in the body (header only)", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const freshApp = createApp(freshStore, {
             ...FAST,
             bootstrapToken: BOOTSTRAP,
@@ -154,7 +151,7 @@ describe("bootstrap", () => {
     });
 
     it("consumes the single-use token after a successful bootstrap", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const freshApp = createApp(freshStore, {
             ...FAST,
             appDbPath: ":memory:",
@@ -178,7 +175,7 @@ describe("bootstrap", () => {
     });
 
     it("throttles login attempts past the per-key limit", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const limiterConfig = { maxFailures: 3 } as const;
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
@@ -212,7 +209,7 @@ describe("bootstrap", () => {
     });
 
     it("resets the failure count on a successful login", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
             appDbPath: ":memory:",
@@ -253,7 +250,7 @@ describe("bootstrap", () => {
     });
 
     it("throttles bootstrap guesses by IP", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const cfg: AppConfig & { bootstrapToken: string } = {
             ...FAST,
             appDbPath: ":memory:",
@@ -378,7 +375,7 @@ describe("login + devices", () => {
     });
 
     it("rejects login before an owner is bootstrapped", async () => {
-        const freshStore = new SqliteAppDatabase(new Database(":memory:"));
+        const freshStore = createInMemoryAppDatabase();
         const freshApp = createApp(freshStore, FAST);
         const res = await request(freshApp).post("/api/auth/login").send({
             username: "anyone",
@@ -803,7 +800,7 @@ describe("user role + disabled management", () => {
     });
 
     it("promotes a new owner and never allows a zero-owner state (fresh app)", async () => {
-        const fresh = new SqliteAppDatabase(new Database(":memory:"));
+        const fresh = createInMemoryAppDatabase();
         try {
             const freshApp = createApp(fresh, {
                 ...FAST,
@@ -1086,7 +1083,7 @@ describe("sessions (owner-wide)", () => {
 
 describe("cookie attributes", () => {
     it("uses a plain cookie without Secure on plain HTTP", async () => {
-        const fresh = new SqliteAppDatabase(new Database(":memory:"));
+        const fresh = createInMemoryAppDatabase();
         try {
             const freshApp = createApp(fresh, FAST);
             await request(freshApp)
@@ -1111,7 +1108,7 @@ describe("cookie attributes", () => {
     });
 
     it("uses a __Host- cookie with Secure under TLS", async () => {
-        const fresh = new SqliteAppDatabase(new Database(":memory:"));
+        const fresh = createInMemoryAppDatabase();
         try {
             const tls: AppConfig & { bootstrapToken: string } = {
                 ...FAST,

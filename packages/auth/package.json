@@ -4,6 +4,16 @@
     "description": "J.A.R.V.I.S. auth core: the app database and account/device/credential seams",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./testing": {
+            "types": "./dist/testing.d.ts",
+            "default": "./dist/testing.js"
+        }
+    },
     "files": [
         "dist"
     ],

@@ -18,6 +18,7 @@ concern so consumers depend on narrow seams, never raw SQL.
 | `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                          |
 | `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                     |
 | `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session ledgers |
+| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                           |
 | `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                       |
 | `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                     |
 | `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                         |
@@ -109,8 +110,33 @@ router and middleware span all five ledgers and therefore take the full
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's
-default `0644` creation would open is closed up front. Tests construct
-`SqliteAppDatabase` over `":memory:"` directly.
+default `0644` creation would open is closed up front.
+
+### Testing against the store
+
+Tests should not construct `SqliteAppDatabase` over `":memory:"` themselves.
+Import the factory from the **`/testing` subpath**, which is a separate entry
+point so it stays off the production surface:
+
+```ts
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
+
+const store = createInMemoryAppDatabase();
+// ... exercise store ...
+store.close();
+```
+
+It returns a fully-migrated `AppDatabase` (the constructor runs the schema
+migrations) backed by `:memory:`, with no filesystem side effects. Each call
+yields an independent database, so call it per test rather than reusing one
+store. It deliberately skips `openAppDatabase`'s `0700`/`0600` posture — that is
+meaningless for an in-memory database, and the on-disk posture is asserted
+against real temp files in `test/store.test.ts`, which is also the one suite that
+still imports the driver directly (it needs the raw handle for raw-SQL fixtures
+and pre-v4/v3 migration upgrades).
+
+Do not use the factory in production code: an in-memory database is discarded
+when the process exits.
 
 ## Rules for callers
 

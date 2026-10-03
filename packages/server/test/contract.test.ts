@@ -12,9 +12,8 @@
  */
 import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
 import { createApp } from "../src/app";
-import { SqliteAppDatabase } from "@lukestanbery/jarvis-auth";
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { AppConfig } from "../src/config";
 
@@ -25,7 +24,7 @@ const VERIFY: AppConfig = {
     apiContractVerify: true,
 };
 
-const store = new SqliteAppDatabase(new Database(":memory:")) as AppDatabase;
+const store = createInMemoryAppDatabase();
 const app = createApp(store, VERIFY);
 
 afterAll(() => {
@@ -164,9 +163,7 @@ describe("REST contract verification", () => {
         // serving a user role the spec's enum does not allow. With the gate
         // active this is answered 500 (validator, generic body); without it
         // the bogus payload would sail out as 200.
-        const tampered = new SqliteAppDatabase(
-            new Database(":memory:"),
-        ) as AppDatabase;
+        const tampered = createInMemoryAppDatabase();
         const tamperedApp = createApp(tampered, VERIFY);
         const boot = await request(tamperedApp)
             .post("/api/bootstrap")

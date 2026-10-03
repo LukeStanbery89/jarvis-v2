@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
 import {
     createCookieSessionProvider,
     hashDeviceToken,
-    SqliteAppDatabase,
     type AppDatabase,
     type CookieSessionProvider,
 } from "../src";
+import { createInMemoryAppDatabase } from "../src/testing";
 
 let store: AppDatabase;
 let provider: CookieSessionProvider;
@@ -15,7 +14,7 @@ let provider: CookieSessionProvider;
 let nowMs: number;
 
 beforeEach(() => {
-    store = new SqliteAppDatabase(new Database(":memory:"));
+    store = createInMemoryAppDatabase();
     nowMs = Date.parse("2026-01-01T00:00:00.000Z");
     provider = createCookieSessionProvider(store, { now: () => nowMs });
 });
