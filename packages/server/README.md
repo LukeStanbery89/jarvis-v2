@@ -267,4 +267,7 @@ the agent produces its final text (bounded by `JARVIS_AGENT_MAX_TURNS`); tool
 events cannot appear inside the text stream, only before it. The agent state —
 including the whole message history of each session — is persisted to the
 SQLite checkpoint file (`JARVIS_CHECKPOINT_PATH`), so a server restart resumes
-conversations. Try it with the `@lukestanbery/jarvis-cli` REPL.
+conversations. That checkpoint file is a separate database from the auth app
+database (`JARVIS_DB_PATH`); the server depends on `better-sqlite3` directly to
+open it, while account state is reached only through `@lukestanbery/jarvis-auth`.
+Try it with the `@lukestanbery/jarvis-cli` REPL.

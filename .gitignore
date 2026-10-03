@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Generated static API docs (built by `npm run docs:*` in @lukestanbery/jarvis-contracts)
 packages/contracts/.docs/
+
+# Graphify knowledge-graph output: regenerable via `graphify update` (see graphify skill).
+graphify-out/
