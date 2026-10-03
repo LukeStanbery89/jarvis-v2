@@ -51,6 +51,16 @@ Run from the repository root:
 - Each package is independently publishable to npm (`npm pack --dry-run` from the package to verify contents).
 - Do not commit changes unless the user explicitly asks. Never stage, commit, or push without an explicit instruction to do so.
 
+## Rule: close the corresponding GitHub issues in the PR
+
+Every PR that delivers tracked work must close the issues it satisfies, so GitHub closes them automatically on merge instead of leaving the tracker stale.
+
+- Put a GitHub closing keyword on its own line in the **PR description** (not just the commit subject), referencing the issue by number: `Closes #33`. Also valid: `close`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`. `owner/repo#33` works for issues in other repos.
+- One closing keyword closes only the **first** issue named on its line — list further issues as separate `Closes #n` lines or a bulleted list so each is picked up.
+- Before writing the line, check the issue's acceptance criteria and confirm the PR actually satisfies them; note which PR/commit delivered the work. Reference the issues that are genuinely done — do not close an issue on the assumption that it is.
+- If a PR only **partially** advances an issue, do not use a closing keyword: state the remaining scope in the description (and add a task comment) and leave the issue open.
+- Keep it in step with the PR template (`.github/PULL_REQUEST_TEMPLATE.md`), which asks for these lines explicitly.
+
 ## Rule: keep README files current
 
 Whenever a change makes any `README.md` stale or outdated, update it in the same change. READMEs describe purpose, usage, scripts, and endpoints — keep them accurate, especially when adding/removing scripts, dependencies, endpoints, or package structure.

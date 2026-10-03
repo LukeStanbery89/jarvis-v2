@@ -14,8 +14,13 @@ portal SPA at `/` when it has been built (see "Web portal" below) plus the web c
 - Express 5 + `ws` for WebSocket server
 - LangChain (`@langchain/core` + `@langchain/openai`) for the model stack
 - LangGraph (`@langchain/langgraph`) + SQLite checkpoints for the agent loop
-- The app database (`users`/`devices`/`sessions`) + password/device-token crypto live in the shared
-  `@lukestanbery/jarvis-auth` package (better-sqlite3; see its README) — the server only consumes its seams
+- The app database (`users`/`devices`/`sessions`/`prefs`) + password/device-token crypto live in the shared
+  `@lukestanbery/jarvis-auth` package (see its README) — the server only consumes its seams
+- `better-sqlite3` is a direct server dependency for exactly one reason: `src/agent.ts` opens the LangGraph
+  checkpoint database (`~/.jarvis/checkpoints.sqlite`), a separate file from auth's app database
+  (`~/.jarvis/jarvis.sqlite`). The server owns that file's contents; auth supplies only the filesystem-posture
+  helpers (`ensurePrivateStorage`/`ensurePrivateFile`) applied to it. Within `src/` the driver is imported in
+  one place only (`agent.ts`); `test/` reaches it to build `:memory:` store fixtures (tracked in #53)
 - Logging via `@lukestanbery/jarvis-logger` (see `src/logger.ts`)
 - Tests via Vitest + supertest
 
