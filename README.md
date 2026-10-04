@@ -52,14 +52,17 @@ a published tarball.
 
 ## Commands
 
-| Command                | Description                               |
-| ---------------------- | ----------------------------------------- |
-| `npm run build`        | Build all packages                        |
-| `npm run typecheck`    | Type-check all packages (src + tests)     |
-| `npm test`             | Run all package tests                     |
-| `npm run check`        | Build + typecheck + test + format check   |
-| `npm run format`       | Auto-format all files with Prettier       |
-| `npm run format:check` | Verify formatting without modifying files |
+| Command                | Description                                        |
+| ---------------------- | -------------------------------------------------- |
+| `npm run build`        | Build all packages                                 |
+| `npm run typecheck`    | Type-check all packages (src + tests)              |
+| `npm test`             | Run all package tests                              |
+| `npm run test:scripts` | Run the root tooling tests under `scripts/`        |
+| `npm run check`        | Deps + build + typecheck + test + format check     |
+| `npm run check:deps`   | Verify no package imports an undeclared dependency |
+| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost) |
+| `npm run format`       | Auto-format all files with Prettier                |
+| `npm run format:check` | Verify formatting without modifying files          |
 
 ## API docs
 
