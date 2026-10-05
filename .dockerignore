@@ -1,0 +1,46 @@
+# Build context excludes: everything the image does not need to compile and run the server.
+# Keeping this tight matters most for `node_modules` (791MB locally) and the graphify
+# knowledge graph, which is regenerable and gitignored.
+
+# Dependencies: the image installs from package-lock.json inside the build stage, so a
+# host-installed tree must never leak in (it may contain macOS-built native binaries).
+node_modules
+**/node_modules
+
+# Build output: the image compiles inside its own build stage.
+dist
+**/dist
+
+# Regenerable graphify output (see AGENTS.md) — large, gitignored, never runtime input.
+graphify-out
+
+# Generated API docs (packages/contracts/.docs)
+packages/contracts/.docs
+
+# Version control and CI
+.git
+.gitignore
+.github
+.husky
+
+# Local config and secrets. `.env.example` is intentionally NOT ignored (see below);
+# the real `.env` must never enter an image layer.
+.env
+.env.*
+!.env.example
+
+# Container definitions themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Editor / OS noise
+.vscode
+.idea
+**/.DS_Store
+
+# Logs and scratch
+logs
+*.log
+coverage
+.nyc_output

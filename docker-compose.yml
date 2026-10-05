@@ -1,0 +1,80 @@
+# J.A.R.V.I.S. server, containerized (#28).
+#
+# Server-only. The CLI, portal, and web chat client deploy separately (#29), so
+# nothing here builds or serves the browser SPAs — see "Serving the SPAs" below.
+#
+#   docker compose up -d --build
+#   curl http://localhost:54321/health        # -> {"ok":true}
+#
+# The one thing to know: the LLM is expected on the HOST, not in this network.
+# `LLM_BASE_URL` defaults to `http://localhost:1234/v1` (LM Studio), and inside a
+# container `localhost` means *the container*. Compose therefore points it at
+# `host.docker.internal`, which OrbStack and Docker Desktop provide natively;
+# `extra_hosts` covers plain Docker Engine on Linux.
+
+services:
+    jarvis:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        image: jarvis-server:latest
+        container_name: jarvis
+        restart: unless-stopped
+
+        ports:
+            # host:container. Omit the left-hand side to publish on an ephemeral
+            # host port instead (`docker compose port jarvis 54321` to find it).
+            - "54321:54321"
+
+        environment:
+            # Host-side LM Studio. Override for a remote or containerised model
+            # endpoint (e.g. http://ollama:11434/v1, https://api.openai.com/v1).
+            LLM_BASE_URL: "http://host.docker.internal:1234/v1"
+
+            # Required to create the first owner account:
+            #   curl -X POST http://localhost:54321/api/bootstrap \
+            #     -H "x-bootstrap-token: $JARVIS_BOOTSTRAP_TOKEN" \
+            #     -H 'content-type: application/json' \
+            #     -d '{"username":"owner","password":"...","deviceName":"laptop"}'
+            # Left empty here so no secret is baked into the compose file; put it
+            # in a `.env` next to this file, or pass it with
+            # `JARVIS_BOOTSTRAP_TOKEN=... docker compose up`. Until it is set,
+            # bootstrap stays disabled and every caller gets 409 with
+            # `first-owner setup is disabled`.
+            JARVIS_BOOTSTRAP_TOKEN: "${JARVIS_BOOTSTRAP_TOKEN:-}"
+
+            # `info` keeps normal operation informative; use `debug` when
+            # diagnosing, `silent` to quieten entirely.
+            JARVIS_LOG_LEVEL: "${JARVIS_LOG_LEVEL:-info}"
+
+            # Defaults to `info` and resolves under /app; the image ships no SPA
+            # builds, so leave these unset unless you mount dist/ directories
+            # (see below).
+            # JARVIS_PORTAL_DIR: "/srv/portal"
+            # JARVIS_WEB_DIR: "/srv/web"
+
+        volumes:
+            # The app database and LangGraph checkpoints. Both default under
+            # `~/.jarvis`, which is `/home/jarvis/.jarvis` because the image sets
+            # HOME, so this single mount persists all server state.
+            - jarvis-data:/home/jarvis/.jarvis
+
+            # Uncomment to serve the browser SPAs from a host build. The server
+            # mounts a directory only when it contains index.html, so a wrong
+            # path degrades to the plain "Hello World" root rather than failing.
+            # - ./packages/portal/dist:/srv/portal:ro
+            # - ./packages/web/dist:/srv/web:ro
+
+        # Lets the container reach a host-side LLM under plain Docker Engine on
+        # Linux. Harmless (and already implicit) on OrbStack and Docker Desktop.
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+
+        # The server needs no CPU or RAM reservation; uncomment to cap it.
+        # deploy:
+        #   resources:
+        #     limits:
+        #       memory: 1g
+
+volumes:
+    jarvis-data:
