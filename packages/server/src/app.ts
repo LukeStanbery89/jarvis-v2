@@ -14,6 +14,7 @@ import {
     contractErrorResponse,
     mountContractValidator,
 } from "./http/contractValidation";
+import { createCorsMiddleware } from "./http/cors";
 import { logger } from "./logger";
 
 /**
@@ -37,6 +38,24 @@ import { logger } from "./logger";
  */
 export function createApp(store: AppDatabase, appConfig: AppConfig) {
     const app = express();
+
+    // Believe X-Forwarded-For only from the configured proxy hops (#63). Set
+    // before any middleware so `req.ip` is correct everywhere — most visibly in
+    // the credential throttle, whose per-(ip, username) and per-ip keys would
+    // otherwise collapse into one shared bucket for every client behind the
+    // proxy. Empty/unset trusts nothing, which is fail-closed.
+    if (appConfig.trustProxyCidrs && appConfig.trustProxyCidrs.length > 0) {
+        app.set("trust proxy", [...appConfig.trustProxyCidrs]);
+        logger.info(
+            `trusting X-Forwarded-For from ${appConfig.trustProxyCidrs.join(", ")}`,
+        );
+    }
+
+    // Ahead of express.json() and the contract validator: a browser preflight is
+    // an OPTIONS request that the validator would reject against POST-only
+    // paths (see the module doc for the full ordering rationale).
+    app.use(createCorsMiddleware(appConfig.corsOrigins));
+
     app.use(express.json());
 
     // Runtime contract gate: /api request shapes always, /api + /health
