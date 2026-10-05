@@ -67,7 +67,8 @@ CLI diagnostics (banner, errors) go to stderr through the shared
 `@lukestanbery/jarvis-logger` instance in `src/logger.ts` (tag `cli`), so **stdout is
 reserved for the streamed assistant response** — piping `stdout` captures only
 the reply. Default level is `info`; set `JARVIS_LOG_LEVEL`
-(`debug` | `info` | `warn` | `error`) to change it.
+(`silent` | `debug` | `info` | `warn` | `error`) to change it; the default drops to `silent`
+under a test runner.
 
 ## Exit commands
 

@@ -191,7 +191,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 
 Server logs go through the shared `@lukestanbery/jarvis-logger` instance in `src/logger.ts` (tag `server`):
 `YYYY-MM-DD HH:mm:ss [LEVEL] server — message` lines, colored by level. Default level is `info`; set
-`JARVIS_LOG_LEVEL` (`debug` | `info` | `warn` | `error`) to change it.
+`JARVIS_LOG_LEVEL` (`silent` | `debug` | `info` | `warn` | `error`) to change it; the default is `silent` under a test runner.
 
 User prompts (`logger.sensitive`) and streamed tokens (`logger.sensitiveDebug`) are sensitive payloads: redacted
 by default, logged verbatim only under `NODE_ENV=development` (the `npm run dev` script sets this). Production is

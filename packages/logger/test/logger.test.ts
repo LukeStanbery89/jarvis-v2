@@ -1,13 +1,31 @@
 import { Writable } from "node:stream";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createLogger } from "../src/index";
 import type { LogLevel } from "../src/index";
+
+/**
+ * The real `VITEST` value for the worker running this suite. Cleared in
+ * `beforeEach` so the default-level assertions exercise the production
+ * default rather than the silent one, then restored in `afterEach`. The
+ * test-runner default has its own cases in the "silent by default" block.
+ */
+let savedVitest: string | undefined;
+
+beforeEach(() => {
+    savedVitest = process.env.VITEST;
+    delete process.env.VITEST;
+});
 
 afterEach(() => {
     delete process.env.JARVIS_LOG_LEVEL;
     delete process.env.JARVIS_LOG_SENSITIVE;
     delete process.env.NO_COLOR;
     delete process.env.FORCE_COLOR;
+    if (savedVitest === undefined) {
+        delete process.env.VITEST;
+    } else {
+        process.env.VITEST = savedVitest;
+    }
 });
 
 /** Collects writes into an array so tests can assert on the exact lines. */
@@ -135,6 +153,73 @@ describe("createLogger", () => {
         const joined = lines().join("\n");
         expect(joined).toContain("— boom");
         expect(joined).toContain('{"requestId":42}');
+    });
+});
+
+describe("silent by default under a test runner", () => {
+    it("emits nothing at all when VITEST is set", () => {
+        process.env.VITEST = "true";
+        const { stream, lines } = makeCapture();
+        const logger = createLogger({ tag: "server", stream });
+
+        logger.error("dropped");
+        logger.warn("dropped");
+        logger.info("dropped");
+        logger.debug("dropped");
+        logger.sensitive("Streaming LLM response", "dropped");
+
+        expect(logger.level).toBe("silent");
+        expect(lines()).toEqual([]);
+    });
+
+    it("still honours JARVIS_LOG_LEVEL so a noisy test can be debugged", () => {
+        process.env.VITEST = "true";
+        const { stream, lines } = makeCapture();
+        withEnvLevel("error", () => {
+            const logger = createLogger({ tag: "server", stream });
+            logger.info("hidden");
+            logger.error("shown");
+        });
+
+        expect(lines().join("\n")).toContain("shown");
+        expect(lines().join("\n")).not.toContain("hidden");
+    });
+
+    it("still honours an explicit level", () => {
+        process.env.VITEST = "true";
+        const { stream, lines } = makeCapture();
+        const logger = createLogger({
+            tag: "server",
+            stream,
+            level: "info",
+        });
+
+        logger.info("shown");
+
+        expect(logger.level).toBe("info");
+        expect(lines()[0]).toContain("shown");
+    });
+
+    it("ignores an unrecognized JARVIS_LOG_LEVEL rather than failing", () => {
+        process.env.VITEST = "true";
+        process.env.JARVIS_LOG_LEVEL = "loud";
+        const { stream, lines } = makeCapture();
+        const logger = createLogger({ tag: "server", stream });
+
+        logger.info("dropped");
+
+        expect(logger.level).toBe("silent");
+        expect(lines()).toEqual([]);
+    });
+
+    it("defaults to info outside a test runner", () => {
+        const { stream, lines } = makeCapture();
+        const logger = createLogger({ tag: "server", stream });
+
+        logger.info("printed");
+
+        expect(logger.level).toBe("info");
+        expect(lines()[0]).toContain("printed");
     });
 });
 

@@ -4,7 +4,8 @@
  * Emits `[INFO]`/`[DEBUG]`/`[WARN]`/`[ERROR]` lines with a timestamp to
  * stderr, attributed to the `"cli"` tag. Diagnostics go to stderr so stdout
  * stays reserved for the streamed assistant response. Default level is
- * `info`; set `JARVIS_LOG_LEVEL` (debug | info | warn | error) to change it.
+ * `info`; set `JARVIS_LOG_LEVEL` (silent | debug | info | warn | error) to change it. The default drops
+ * to `silent` under a test runner so `npm test` prints only test output.
  *
  * See `@lukestanbery/jarvis-logger` for the full API.
  */
