@@ -243,14 +243,14 @@ describe("AsyncAPI conformance: protocol frames", () => {
 
         it("validates a voice-mode chat prompt through the serializer", () => {
             expectWireConformant(
-                () => serializeRequest("Hello", "s-morning", "voice"),
+                () => serializeRequest("Hello", "s-morning", { mode: "voice" }),
                 MESSAGE_FOR_CLIENT.chatPrompt,
             );
         });
 
         it("validates an explicit text-mode chat prompt through the serializer", () => {
             expectWireConformant(
-                () => serializeRequest("Hello", "s-morning", "text"),
+                () => serializeRequest("Hello", "s-morning", { mode: "text" }),
                 MESSAGE_FOR_CLIENT.chatPrompt,
             );
         });

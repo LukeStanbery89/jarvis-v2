@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+    MAX_ATTACHMENTS,
+    MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
     MAX_SESSION_ID_LENGTH,
@@ -154,6 +156,110 @@ describe("parseRequest", () => {
             parseRequest('{"prompt":"hi","sessionId":"abc","mode":42}'),
         ).toThrow("expected 'mode' to be 'text' or 'voice'");
     });
+
+    it("omits attachments when absent", () => {
+        const parsed = parseRequest('{"prompt":"hi","sessionId":"abc"}');
+        expect(parsed).toEqual({ prompt: "hi", sessionId: "abc" });
+        expect("attachments" in parsed).toBe(false);
+    });
+
+    it("accepts an attachments list within bounds", () => {
+        const id = "A".repeat(24);
+        expect(
+            parseRequest(
+                JSON.stringify({
+                    prompt: "hi",
+                    sessionId: "abc",
+                    attachments: [id, "B".repeat(24)],
+                }),
+            ),
+        ).toEqual({
+            prompt: "hi",
+            sessionId: "abc",
+            attachments: [id, "B".repeat(24)],
+        });
+    });
+
+    it("accepts an id of exactly MAX_ATTACHMENT_ID_LENGTH", () => {
+        const id = "A".repeat(MAX_ATTACHMENT_ID_LENGTH);
+        expect(
+            parseRequest(
+                JSON.stringify({
+                    prompt: "hi",
+                    sessionId: "abc",
+                    attachments: [id],
+                }),
+            ).attachments,
+        ).toEqual([id]);
+    });
+
+    it("accepts an empty attachments list", () => {
+        expect(
+            parseRequest('{"prompt":"hi","sessionId":"abc","attachments":[]}'),
+        ).toEqual({ prompt: "hi", sessionId: "abc", attachments: [] });
+    });
+
+    it("rejects a non-array attachments field", () => {
+        expect(() =>
+            parseRequest('{"prompt":"hi","sessionId":"abc","attachments":"x"}'),
+        ).toThrow("expected 'attachments' to be an array of ids");
+    });
+
+    it("rejects more than MAX_ATTACHMENTS ids", () => {
+        const ids = Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) =>
+            `${i}`.repeat(24),
+        );
+        expect(() =>
+            parseRequest(
+                JSON.stringify({
+                    prompt: "hi",
+                    sessionId: "abc",
+                    attachments: ids,
+                }),
+            ),
+        ).toThrow(`at most ${MAX_ATTACHMENTS} attachments may be referenced`);
+    });
+
+    it("rejects a non-string attachment id", () => {
+        expect(() =>
+            parseRequest(
+                '{"prompt":"hi","sessionId":"abc","attachments":[42]}',
+            ),
+        ).toThrow("every attachment id must be a non-empty string");
+    });
+
+    it("rejects an empty attachment id", () => {
+        expect(() =>
+            parseRequest(
+                '{"prompt":"hi","sessionId":"abc","attachments":[""]}',
+            ),
+        ).toThrow("every attachment id must be a non-empty string");
+    });
+
+    it("rejects an id over MAX_ATTACHMENT_ID_LENGTH", () => {
+        expect(() =>
+            parseRequest(
+                JSON.stringify({
+                    prompt: "hi",
+                    sessionId: "abc",
+                    attachments: ["A".repeat(MAX_ATTACHMENT_ID_LENGTH + 1)],
+                }),
+            ),
+        ).toThrow("each attachment id is at most 32 characters");
+    });
+
+    it("rejects a duplicate attachment id", () => {
+        const id = "A".repeat(24);
+        expect(() =>
+            parseRequest(
+                JSON.stringify({
+                    prompt: "hi",
+                    sessionId: "abc",
+                    attachments: [id, id],
+                }),
+            ),
+        ).toThrow(`duplicate attachment id '${id}'`);
+    });
 });
 
 describe("serializeRequest", () => {
@@ -171,19 +277,51 @@ describe("serializeRequest", () => {
     });
 
     it("serializes an explicit voice mode", () => {
-        expect(serializeRequest("hi", "abc", "voice")).toBe(
+        expect(serializeRequest("hi", "abc", { mode: "voice" })).toBe(
             '{"prompt":"hi","sessionId":"abc","mode":"voice"}',
         );
     });
 
     it("serializes an explicit text mode", () => {
-        expect(serializeRequest("hi", "abc", "text")).toBe(
+        expect(serializeRequest("hi", "abc", { mode: "text" })).toBe(
             '{"prompt":"hi","sessionId":"abc","mode":"text"}',
         );
     });
 
+    it("serializes referenced attachments as an id array", () => {
+        expect(
+            serializeRequest("hi", "abc", {
+                attachments: [
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "BBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                ],
+            }),
+        ).toBe(
+            '{"prompt":"hi","sessionId":"abc","attachments":["AAAAAAAAAAAAAAAAAAAAAAAAAAAA","BBBBBBBBBBBBBBBBBBBBBBBBBBBB"]}',
+        );
+    });
+
+    it("omits an empty attachments list from the wire shape", () => {
+        expect(serializeRequest("hi", "abc", { attachments: [] })).toBe(
+            '{"prompt":"hi","sessionId":"abc"}',
+        );
+    });
+
+    it("round-trips an attachment-carrying prompt through the parser", () => {
+        const raw = serializeRequest("hi", "abc", {
+            mode: "voice",
+            attachments: ["AAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+        });
+        expect(parseRequest(raw)).toEqual({
+            prompt: "hi",
+            sessionId: "abc",
+            mode: "voice",
+            attachments: ["AAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+        });
+    });
+
     it("round-trips a mode-carrying prompt through the parser", () => {
-        const raw = serializeRequest("hi", "abc", "voice");
+        const raw = serializeRequest("hi", "abc", { mode: "voice" });
         expect(parseRequest(raw).mode).toBe("voice");
         expect(parseClientMessage(raw)).toEqual({
             prompt: "hi",

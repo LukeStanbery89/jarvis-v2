@@ -12,6 +12,8 @@
  * it must not drift.
  */
 import {
+    MAX_ATTACHMENTS,
+    MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
     MAX_SESSION_ID_LENGTH,
@@ -115,15 +117,19 @@ const KNOWN_MODES: ReadonlySet<string> = new Set<string>(["text", "voice"]);
  * Parses + validates a ChatPrompt-shaped object.
  *
  * Throws if `prompt` or `sessionId` are not non-empty trimmed strings, if
- * `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters, or if `mode`
- * is present but not `"text"` or `"voice"`. An absent `mode` means `"text"`
- * and is omitted from the parsed frame, so legacy prompts round-trip
- * unchanged.
+ * `sessionId` exceeds {@link MAX_SESSION_ID_LENGTH} characters, if `mode`
+ * is present but not `"text"` or `"voice"`, or if `attachments` is present
+ * but not an array of at most {@link MAX_ATTACHMENTS} unique, non-empty ids
+ * each at most {@link MAX_ATTACHMENT_ID_LENGTH} characters. Absent `mode`
+ * and `attachments` are omitted from the parsed frame, so legacy prompts
+ * round-trip unchanged; an empty `attachments` array is valid and means "no
+ * attachments".
  */
 function validateChatPrompt(request: {
     prompt?: unknown;
     sessionId?: unknown;
     mode?: unknown;
+    attachments?: unknown;
 }): ChatPrompt {
     if (typeof request.prompt !== "string" || request.prompt.trim() === "") {
         throw new Error("expected a non-empty string field 'prompt'");
@@ -139,17 +145,70 @@ function validateChatPrompt(request: {
             `sessionId must be at most ${MAX_SESSION_ID_LENGTH} characters`,
         );
     }
+    const attachments = validateAttachments(request.attachments);
     if (request.mode === undefined) {
-        return { prompt: request.prompt, sessionId: request.sessionId };
+        return attachments === undefined
+            ? { prompt: request.prompt, sessionId: request.sessionId }
+            : {
+                  prompt: request.prompt,
+                  sessionId: request.sessionId,
+                  attachments,
+              };
     }
     if (typeof request.mode !== "string" || !KNOWN_MODES.has(request.mode)) {
         throw new Error("expected 'mode' to be 'text' or 'voice'");
     }
-    return {
-        prompt: request.prompt,
-        sessionId: request.sessionId,
-        mode: request.mode as ChatMode,
-    };
+    return attachments === undefined
+        ? {
+              prompt: request.prompt,
+              sessionId: request.sessionId,
+              mode: request.mode as ChatMode,
+          }
+        : {
+              prompt: request.prompt,
+              sessionId: request.sessionId,
+              mode: request.mode as ChatMode,
+              attachments,
+          };
+}
+
+/**
+ * Validates a prompt's optional `attachments` id list.
+ *
+ * Returns `undefined` for an absent field (so the parsed frame omits the key),
+ * and otherwise a validated array: at most {@link MAX_ATTACHMENTS} entries,
+ * each a non-empty string of at most {@link MAX_ATTACHMENT_ID_LENGTH}
+ * characters, with no duplicates (a repeated id is always a client bug —
+ * analyzing one image twice in a prompt is meaningless).
+ */
+function validateAttachments(value: unknown): string[] | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (!Array.isArray(value)) {
+        throw new Error("expected 'attachments' to be an array of ids");
+    }
+    if (value.length > MAX_ATTACHMENTS) {
+        throw new Error(
+            `at most ${MAX_ATTACHMENTS} attachments may be referenced`,
+        );
+    }
+    const attachments: string[] = [];
+    for (const id of value) {
+        if (typeof id !== "string" || id.trim() === "") {
+            throw new Error("every attachment id must be a non-empty string");
+        }
+        if (id.length > MAX_ATTACHMENT_ID_LENGTH) {
+            throw new Error(
+                `each attachment id is at most ${MAX_ATTACHMENT_ID_LENGTH} characters`,
+            );
+        }
+        if (attachments.includes(id)) {
+            throw new Error(`duplicate attachment id '${id}'`);
+        }
+        attachments.push(id);
+    }
+    return attachments;
 }
 
 /**
@@ -224,6 +283,7 @@ export function parseClientMessage(raw: string): ClientFrame {
         prompt?: unknown;
         sessionId?: unknown;
         mode?: unknown;
+        attachments?: unknown;
     };
     if (msg.type === "auth") {
         return validateAuthRequest({ token: msg.token });
@@ -253,21 +313,40 @@ export function serializeFrame(frame: ServerFrame): string {
 }
 
 /**
+ * Optional extras for {@link serializeRequest}.
+ *
+ * Kept as a named export so callers passing attachments can type their
+ * variable without redeclaring the shape.
+ */
+export interface SerializeRequestOptions {
+    /** The chat mode; omitted keys mean `"text"` on the wire (`mode` absent). */
+    mode?: ChatMode;
+    /** Attachment ids the prompt references; an empty list serializes nothing. */
+    attachments?: string[];
+}
+
+/**
  * Serializes a client chat request to its wire JSON text.
  *
- * With `mode` omitted the two-argument wire shape stays byte-identical to
- * the historical `{"prompt","sessionId"}` frame, so older clients are
- * unaffected; a present `mode` serializes as a third `"mode"` key (including
- * an explicit `"text"`).
+ * The two-argument wire shape stays byte-identical to the historical
+ * `{"prompt","sessionId"}` frame, so older clients are unaffected. A present
+ * `mode` serializes as a `"mode"` key (including an explicit `"text"`), and
+ * non-empty `attachments` as an `"attachments"` array of ids — an empty list
+ * serializes nothing, matching an absent key on the wire.
  */
 export function serializeRequest(
     prompt: string,
     sessionId: string,
-    mode?: ChatMode,
+    options: SerializeRequestOptions = {},
 ): string {
-    return mode === undefined
-        ? JSON.stringify({ prompt, sessionId })
-        : JSON.stringify({ prompt, sessionId, mode });
+    return JSON.stringify({
+        prompt,
+        sessionId,
+        ...(options.mode !== undefined ? { mode: options.mode } : {}),
+        ...(options.attachments?.length
+            ? { attachments: options.attachments }
+            : {}),
+    });
 }
 
 /** Serializes the `auth` handshake frame to its wire JSON text. */

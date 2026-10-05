@@ -18,6 +18,8 @@ export type {
     ServerFrame,
 } from "./types";
 export {
+    MAX_ATTACHMENTS,
+    MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
     MAX_SESSION_ID_LENGTH,
@@ -31,4 +33,5 @@ export {
     serializeFrame,
     serializeHello,
     serializeRequest,
+    SerializeRequestOptions,
 } from "./frame";

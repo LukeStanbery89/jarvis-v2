@@ -101,6 +101,14 @@ export interface ChatPrompt {
      * session's `kind` when it first claims the thread.
      */
     mode?: ChatMode;
+    /**
+     * Ids of previously uploaded attachments this prompt references
+     * (`POST /api/attachments` returns them), when the prompt is about
+     * images. Absent (or empty) for plain text prompts. Ids are opaque to the
+     * protocol — the server resolves them against its attachment store and
+     * rejects ids that do not exist or belong to another user.
+     */
+    attachments?: string[];
 }
 
 /** Longest `sessionId` a client may send in a chat request. */
@@ -120,3 +128,20 @@ export const MAX_CAPABILITIES = 16;
 
 /** Longest single capability token a client may send in a `hello` frame. */
 export const MAX_CAPABILITY_LENGTH = 16;
+
+/**
+ * Longest `attachments` list a prompt may reference.
+ *
+ * A vision-language tool call analyzes one image per id; four bounds the
+ * per-prompt analysis cost without harming any plausible use (screenshots plus
+ * a photo, say).
+ */
+export const MAX_ATTACHMENTS = 4;
+
+/**
+ * Longest single attachment id a prompt may reference.
+ *
+ * Server-generated ids are 18 random bytes — 24 characters of base64url — so
+ * the bound has slack for a future id scheme without re-opening the protocol.
+ */
+export const MAX_ATTACHMENT_ID_LENGTH = 32;

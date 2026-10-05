@@ -191,7 +191,7 @@ export class ChatClient {
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;
             this.rejectPrompt = reject;
-            socket.send(serializeRequest(text, sessionId, mode));
+            socket.send(serializeRequest(text, sessionId, { mode }));
         });
     }
 
