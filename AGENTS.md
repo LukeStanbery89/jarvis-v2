@@ -37,8 +37,9 @@ Run from the repository root:
 | `npm run typecheck`    | Type-check all packages (src + tests)                                  |
 | `npm test`             | Run all package test suites (Vitest)                                   |
 | `npm run test:scripts` | Run the root tooling tests under `scripts/` (Vitest)                   |
-| `npm run check`        | Deps + build + typecheck + test + format check                         |
+| `npm run check`        | Deps + lint + build + typecheck + test + format check                  |
 | `npm run check:deps`   | Verify no package imports an undeclared dependency                     |
+| `npm run lint`         | Lint all TS/TSX sources with ESLint (`lint:fix` to autofix)            |
 | `npm run graph:update` | Rebuild the graphify knowledge graph (AST-only, no LLM cost)           |
 | `npm run graph:health` | Report graphify structural health (duplicate/dangling/self-loop edges) |
 | `npm run format`       | Auto-format all files with Prettier                                    |

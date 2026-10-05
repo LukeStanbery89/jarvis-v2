@@ -35,12 +35,11 @@
  * Run from the repo root: `npm run check:deps`.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { builtinModules, createRequire } from "node:module";
+import { builtinModules } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { transformSync } from "esbuild";
 
-const require = createRequire(import.meta.url);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Workspace package directories, in the order they are reported. */

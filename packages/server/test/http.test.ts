@@ -3,7 +3,6 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
-import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { AppConfig } from "../src/config";
 
 const FAST: AppConfig & { bootstrapToken: string } = {

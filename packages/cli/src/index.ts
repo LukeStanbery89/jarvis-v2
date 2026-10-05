@@ -24,7 +24,6 @@ import { askLoginDetails, loginRequest, type AskHidden } from "./login";
 import {
     loadSessionIds,
     rotateActiveSession,
-    saveSessionIds,
     sessionIdFor,
     type SessionIdentity,
 } from "./session";

@@ -52,18 +52,19 @@ a published tarball.
 
 ## Commands
 
-| Command                | Description                                        |
-| ---------------------- | -------------------------------------------------- |
-| `npm run build`        | Build all packages                                 |
-| `npm run typecheck`    | Type-check all packages (src + tests)              |
-| `npm test`             | Run all package tests                              |
-| `npm run test:scripts` | Run the root tooling tests under `scripts/`        |
-| `npm run check`        | Deps + build + typecheck + test + format check     |
-| `npm run check:deps`   | Verify no package imports an undeclared dependency |
-| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost) |
-| `npm run graph:health` | Report graphify structural health                  |
-| `npm run format`       | Auto-format all files with Prettier                |
-| `npm run format:check` | Verify formatting without modifying files          |
+| Command                | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
+| `npm run build`        | Build all packages                                    |
+| `npm run typecheck`    | Type-check all packages (src + tests)                 |
+| `npm test`             | Run all package tests                                 |
+| `npm run test:scripts` | Run the root tooling tests under `scripts/`           |
+| `npm run check`        | Deps + lint + build + typecheck + test + format check |
+| `npm run check:deps`   | Verify no package imports an undeclared dependency    |
+| `npm run lint`         | Lint all TS/TSX sources with ESLint                   |
+| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost)    |
+| `npm run graph:health` | Report graphify structural health                     |
+| `npm run format`       | Auto-format all files with Prettier                   |
+| `npm run format:check` | Verify formatting without modifying files             |
 
 ## API docs
 
@@ -84,4 +85,7 @@ Formatting is enforced with [Prettier](https://prettier.io) using the rules in
 Format-on-save is configured for VS Code (`.vscode/settings.json`, requires the
 [Prettier extension](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode))
 and for the OpenCode editor (`opencode.json`). Run `npm run check` in CI
-to enforce type-checking, tests, and formatting.
+to enforce dependency declarations, linting, type-checking, tests, and formatting.
+Linting runs from the root (`npm run lint`) with
+[`eslint.config.js`](./eslint.config.js); it is not type-aware, so
+`npm run typecheck` remains the authority on types.
