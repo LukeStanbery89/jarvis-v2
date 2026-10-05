@@ -143,6 +143,16 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/AttachmentTooLarge"
+                "503":
+                    description: >-
+                        Upload capacity is saturated — the server-wide
+                        in-flight semaphore is full, and uploads are rejected
+                        rather than queued. Retry shortly; the body is the
+                        plain error envelope.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
     /api/bootstrap:
         post:
             operationId: bootstrap

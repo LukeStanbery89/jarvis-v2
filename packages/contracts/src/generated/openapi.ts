@@ -590,6 +590,15 @@ export interface operations {
                     "application/json": components["schemas"]["AttachmentTooLarge"];
                 };
             };
+            /** @description Upload capacity is saturated — the server-wide in-flight semaphore is full, and uploads are rejected rather than queued. Retry shortly; the body is the plain error envelope. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     bootstrap: {
