@@ -8,6 +8,7 @@
  * app switches to the chat view.
  */
 import { useState } from "react";
+import { LoaderCircle, LogIn } from "lucide-react";
 import { api, type LoginResult } from "../api";
 
 /** Props for {@link Login}. */
@@ -68,8 +69,17 @@ export function Login({ onSignedIn }: LoginProps) {
                     />
                 </label>
                 {error && <p className="error">{error}</p>}
-                <button type="submit" disabled={submitting}>
-                    {submitting ? "Signing in…" : "Sign in"}
+                <button
+                    type="submit"
+                    className="login-submit"
+                    aria-label="Sign in"
+                    disabled={submitting}
+                >
+                    {submitting ? (
+                        <LoaderCircle size={18} className="spin" />
+                    ) : (
+                        <LogIn size={18} />
+                    )}
                 </button>
             </form>
         </main>

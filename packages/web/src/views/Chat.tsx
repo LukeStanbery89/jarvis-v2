@@ -41,6 +41,16 @@ import { Markdown } from "../Markdown";
 import { ToolCall } from "../components/ToolCall";
 import { MAX_ATTACHMENTS } from "@lukestanbery/jarvis-protocol";
 import { prepareForUpload } from "../downscale/browser";
+import {
+    Image as ImageIcon,
+    LoaderCircle,
+    LogOut,
+    Paperclip,
+    SendHorizontal,
+    SquarePen,
+    Trash2,
+    X,
+} from "lucide-react";
 
 /**
  * The upload budget the downscale policy plans against, in bytes.
@@ -401,11 +411,18 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     throw err;
                 }
             }
+            // The preview comes from the PREPARED bytes — always available
+            // post-downscale. The raw file's data URL is "" for >4 MB files
+            // (too big to preview raw), which used to surface as the
+            // missing-preview note on a fresh upload.
+            const previewUrl = `data:${prepared.mime};base64,${prepared.base64}`;
             setPending((c) =>
                 c.map((p) =>
                     p.id === chipId
                         ? {
                               ...p,
+                              dataUrl:
+                                  p.dataUrl === "" ? previewUrl : p.dataUrl,
                               state: {
                                   kind: "ready",
                                   attachmentId: uploaded.attachmentId,
@@ -416,7 +433,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             );
             setPreviews((prev) => ({
                 ...prev,
-                [uploaded.attachmentId]: dataUrl,
+                [uploaded.attachmentId]: previewUrl,
             }));
         } catch (err) {
             setPending((c) =>
@@ -484,6 +501,9 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         dispatch({ type: "deleted", sessionId: id });
         if (activeIdRef.current === id) {
             setActiveId(null);
+            // The composer unmounts with the thread — pending uploads would
+            // otherwise resurface on the next opened conversation.
+            setPending([]);
         }
         void refreshSessions();
     }
@@ -547,12 +567,24 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             <aside className="sidebar">
                 <div className="sidebar-head">
                     <span>{credential.username}</span>
-                    <button type="button" onClick={signOut}>
-                        Sign out
+                    <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="Sign out"
+                        title="Sign out"
+                        onClick={signOut}
+                    >
+                        <LogOut size={16} />
                     </button>
                 </div>
-                <button type="button" className="new-chat" onClick={newChat}>
-                    + New chat
+                <button
+                    type="button"
+                    className="new-chat"
+                    title="New chat"
+                    onClick={newChat}
+                >
+                    <SquarePen size={16} />
+                    New chat
                 </button>
                 <nav>
                     {entries.map((entry) => (
@@ -580,11 +612,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                             </button>
                             <button
                                 type="button"
-                                className="thread-delete"
+                                className="thread-delete icon-btn"
                                 aria-label={`Delete ${entry.title}`}
+                                title={`Delete ${entry.title}`}
                                 onClick={() => void remove(entry.id)}
                             >
-                                ×
+                                <Trash2 size={16} />
                             </button>
                         </div>
                     ))}
@@ -607,8 +640,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 <div className="transcript" ref={transcriptRef}>
                     {activeThread === null && (
                         <p className="hint">
-                            Pick a conversation or start a new one — JARVIS
-                            answers with rich Markdown in text chats.
+                            Pick a conversation or start a new one
                         </p>
                     )}
                     {activeThread?.messages.map((message) => {
@@ -625,12 +657,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                                                 alt="attached image"
                                             />
                                         ) : (
-                                            <span
+                                            <ImageIcon
                                                 key={attachmentId}
                                                 className="attachment-gone"
-                                            >
-                                                image not retained
-                                            </span>
+                                                size={36}
+                                                role="img"
+                                                aria-label="image not retained"
+                                            />
                                         ),
                                     )}
                                     {message.text}
@@ -661,104 +694,106 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         );
                     })}
                 </div>
-                <div
-                    className="composer"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                        e.preventDefault();
-                        if (activeId !== null && !streaming) {
-                            attachFiles(e.dataTransfer.files);
-                        }
-                    }}
-                >
-                    {pending.length > 0 && (
-                        <div className="pending-attachments">
-                            {pending.map((chip) => (
-                                <span className="chip" key={chip.id}>
-                                    {chip.dataUrl !== "" && (
-                                        <img
-                                            src={chip.dataUrl}
-                                            alt={chip.name}
-                                            className="attachment-thumb"
-                                        />
-                                    )}
-                                    <span>
-                                        {chip.state.kind === "uploading" &&
-                                            `uploading ${chip.name}…`}
-                                        {chip.state.kind === "ready" &&
-                                            chip.name}
-                                        {chip.state.kind === "failed" &&
-                                            `${chip.name}: ${chip.state.reason}`}
+                {activeId !== null && (
+                    <div
+                        className="composer"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                            e.preventDefault();
+                            if (!streaming) {
+                                attachFiles(e.dataTransfer.files);
+                            }
+                        }}
+                    >
+                        {pending.length > 0 && (
+                            <div className="pending-attachments">
+                                {pending.map((chip) => (
+                                    <span className="chip" key={chip.id}>
+                                        {chip.dataUrl !== "" && (
+                                            <img
+                                                src={chip.dataUrl}
+                                                alt={chip.name}
+                                                className="attachment-thumb"
+                                            />
+                                        )}
+                                        <span>
+                                            {chip.state.kind === "uploading" &&
+                                                `uploading ${chip.name}…`}
+                                            {chip.state.kind === "ready" &&
+                                                chip.name}
+                                            {chip.state.kind === "failed" &&
+                                                `${chip.name}: ${chip.state.reason}`}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            className="chip-remove"
+                                            aria-label={`remove ${chip.name}`}
+                                            onClick={() => detachChip(chip.id)}
+                                        >
+                                            <X size={14} />
+                                        </button>
                                     </span>
-                                    <button
-                                        type="button"
-                                        aria-label={`remove ${chip.name}`}
-                                        onClick={() => detachChip(chip.id)}
-                                    >
-                                        ✕
-                                    </button>
-                                </span>
-                            ))}
-                        </div>
-                    )}
-                    <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        hidden
-                        ref={fileInputRef}
-                        onChange={(e) => {
-                            if (e.target.files !== null) {
-                                attachFiles(e.target.files);
+                                ))}
+                            </div>
+                        )}
+                        <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            hidden
+                            ref={fileInputRef}
+                            onChange={(e) => {
+                                if (e.target.files !== null) {
+                                    attachFiles(e.target.files);
+                                }
+                                e.target.value = "";
+                            }}
+                        />
+                        <button
+                            type="button"
+                            className="attach"
+                            aria-label="attach images"
+                            title="Attach images"
+                            disabled={streaming}
+                            onClick={() => fileInputRef.current?.click()}
+                        >
+                            <Paperclip size={18} />
+                        </button>
+                        <textarea
+                            id="message"
+                            name="message"
+                            value={draft}
+                            placeholder="Message JARVIS…"
+                            disabled={streaming}
+                            ref={composerRef}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={onKeyDown}
+                            onPaste={(e) => {
+                                const files = Array.from(
+                                    e.clipboardData.files,
+                                ).filter((f) => f.type.startsWith("image/"));
+                                if (files.length > 0) {
+                                    e.preventDefault();
+                                    attachFiles(files);
+                                }
+                            }}
+                        />
+                        <button
+                            type="button"
+                            className={
+                                draft.trim() !== "" ? "send active" : "send"
                             }
-                            e.target.value = "";
-                        }}
-                    />
-                    <button
-                        type="button"
-                        className="attach"
-                        aria-label="attach images"
-                        disabled={activeId === null || streaming}
-                        onClick={() => fileInputRef.current?.click()}
-                    >
-                        📎
-                    </button>
-                    <textarea
-                        id="message"
-                        name="message"
-                        value={draft}
-                        placeholder={
-                            activeId === null
-                                ? "Pick or start a conversation…"
-                                : "Message JARVIS…"
-                        }
-                        disabled={activeId === null}
-                        ref={composerRef}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={onKeyDown}
-                        onPaste={(e) => {
-                            const files = Array.from(
-                                e.clipboardData.files,
-                            ).filter((f) => f.type.startsWith("image/"));
-                            if (files.length > 0) {
-                                e.preventDefault();
-                                attachFiles(files);
-                            }
-                        }}
-                    />
-                    <button
-                        type="button"
-                        className={draft.trim() !== "" ? "send active" : "send"}
-                        disabled={
-                            activeId === null ||
-                            streaming ||
-                            draft.trim() === ""
-                        }
-                        onClick={() => void send()}
-                    >
-                        {streaming ? "…" : "Send"}
-                    </button>
-                </div>
+                            disabled={streaming || draft.trim() === ""}
+                            onClick={() => void send()}
+                        >
+                            {streaming ? (
+                                <LoaderCircle size={18} className="spin" />
+                            ) : (
+                                <SendHorizontal size={18} />
+                            )}
+                        </button>
+                    </div>
+                )}
             </section>
         </main>
     );
