@@ -69,8 +69,8 @@ export class AttachmentError extends Error {
 
 /** An attachment's registry entry. */
 interface Entry {
-    /** Owning user's id; the only principal that may `get` it. */
-    userId: string;
+    /** Owning user's numeric row id; the only principal that may `get` it. */
+    userId: number;
     /** Decoded byte size (also what the ledger holds). */
     bytes: number;
     /** Absolute path of the temp file. */
@@ -88,7 +88,7 @@ export interface AttachmentStore {
      * magic-byte sniff, byte-ledger reserve, then the write — a failed write
      * releases the reservation (idempotently), so budget never leaks.
      */
-    put(userId: string, bytes: Buffer): Promise<string>;
+    put(userId: number, bytes: Buffer): Promise<string>;
 
     /**
      * Returns the decoded bytes of attachment `id` for `userId`.
@@ -97,7 +97,17 @@ export interface AttachmentStore {
      * `foreign` — callers map those onto user-safe text rather than
      * distinguishing existence to untrusted parties.
      */
-    get(userId: string, id: string): Promise<Buffer>;
+    get(userId: number, id: string): Promise<Buffer>;
+
+    /**
+     * Checks attachment `id` is resolvable by `userId` without reading it.
+     *
+     * Same checks as {@link get} (existence, expiry, ownership) but no disk
+     * I/O — the socket layer validates every referenced id before claiming a
+     * turn, so a bad id fails fast instead of surfacing mid-stream as a tool
+     * error. Throws {@link AttachmentError} like `get` does.
+     */
+    assertAccessible(userId: number, id: string): void;
 
     /**
      * Drops attachment `id` and returns its bytes to the budget.
@@ -117,11 +127,11 @@ export interface AttachmentStore {
     sweep(now?: number): Promise<number>;
 
     /** Bytes currently held for `userId` (exposed for tests/monitoring). */
-    heldBytes(userId: string): number;
+    heldBytes(userId: number): number;
 }
 
 /** Image format signatures, checked against the decoded bytes. */
-function sniffImageMime(bytes: Buffer): string | null {
+export function sniffImageMime(bytes: Buffer): string | null {
     if (
         bytes.length >= 8 &&
         bytes[0] === 0x89 &&
@@ -207,8 +217,34 @@ export function createAttachmentStore(
 
     const attachmentPath = (id: string): string => path.join(root, id);
 
+    /**
+     * Shared `get`/`assertAccessible` resolution: existence, expiry, then
+     * ownership, in that order — an expired entry answers `expired` even
+     * before it is swept, and a foreign id answers `foreign` without
+     * revealing whether it exists.
+     */
+    const resolveEntry = (userId: number, id: string): Entry => {
+        const entry = registry.get(id);
+        if (!entry) {
+            throw new AttachmentError("unknown", `no attachment '${id}'`);
+        }
+        if (Date.now() >= entry.expiresAt) {
+            throw new AttachmentError(
+                "expired",
+                "attachment expired; upload it again",
+            );
+        }
+        if (entry.userId !== userId) {
+            throw new AttachmentError(
+                "foreign",
+                "attachment belongs to another user",
+            );
+        }
+        return entry;
+    };
+
     return {
-        async put(userId, bytes) {
+        async put(userId: number, bytes) {
             if (bytes.length > config.maxBytes) {
                 throw new AttachmentError(
                     "too-large",
@@ -248,24 +284,13 @@ export function createAttachmentStore(
             return id;
         },
 
-        async get(userId, id) {
-            const entry = registry.get(id);
-            if (!entry) {
-                throw new AttachmentError("unknown", `no attachment '${id}'`);
-            }
-            if (Date.now() >= entry.expiresAt) {
-                throw new AttachmentError(
-                    "expired",
-                    "attachment expired; upload it again",
-                );
-            }
-            if (entry.userId !== userId) {
-                throw new AttachmentError(
-                    "foreign",
-                    "attachment belongs to another user",
-                );
-            }
+        async get(userId: number, id: string) {
+            const entry = resolveEntry(userId, id);
             return readFile(entry.filePath);
+        },
+
+        assertAccessible(userId: number, id: string) {
+            resolveEntry(userId, id);
         },
 
         release(id) {
@@ -312,31 +337,46 @@ export function createAttachmentStore(
 }
 
 /**
- * Empties the attachment root at startup.
+ * Empties pre-process files out of the attachment root at startup.
  *
  * The registry is in-memory, so any file still on disk when the process
  * boots is an orphan nothing can ever resolve; deleting it is the
  * "swept at startup" half of the TTL story (the other half is the lazy
- * `sweep()` on upload). Tolerates a missing directory; other errors are
- * logged, not thrown — attachments are a feature, not a startup dependency.
+ * `sweep()` on upload). Files written by THIS process are never older than
+ * `bootedAt`, so the mtime filter keeps the sweep race-free against an
+ * upload landing while it runs. Tolerates a missing directory; other errors
+ * are logged, not thrown — attachments are a feature, not a startup
+ * dependency.
  */
 export async function sweepOrphanAttachments(
     config: AttachmentConfig,
-): Promise<void> {
+    bootedAt: number = Date.now(),
+): Promise<number> {
     const root = config.dir ?? defaultAttachmentDir();
     try {
         const names = await readdir(root);
+        let removed = 0;
         for (const name of names) {
-            await unlink(path.join(root, name)).catch(() => {});
+            const filePath = path.join(root, name);
+            const st = await stat(filePath).catch(() => null);
+            if (!st || st.mtimeMs >= bootedAt) {
+                continue; // written by this process (or vanished) — keep
+            }
+            await unlink(filePath).catch(() => {});
+            removed += 1;
         }
-        logger.info(
-            `Attachment store: cleared ${names.length} orphan(s) from ${root}`,
-        );
+        if (removed > 0) {
+            logger.info(
+                `Attachment store: cleared ${removed} orphan(s) from ${root}`,
+            );
+        }
+        return removed;
     } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
             logger.warn(
                 `Attachment store startup sweep failed: ${err instanceof Error ? err.message : String(err)}`,
             );
         }
+        return 0;
     }
 }

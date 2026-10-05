@@ -26,7 +26,7 @@
  */
 export class VlCallLimiter {
     /** Per-user timestamp of each call inside the current window. */
-    private readonly hits = new Map<string, number[]>();
+    private readonly hits = new Map<number, number[]>();
 
     constructor(
         private readonly callsPerWindow: number,
@@ -42,7 +42,8 @@ export class VlCallLimiter {
      * degrades to a "try again in Ns" answer instead of an error frame.
      */
     tryAcquire(
-        userId: string,
+        /** The owning user's numeric row id (`AppUser.id`) — stable across username changes. */
+        userId: number,
         now: number = Date.now(),
     ): { ok: true } | { ok: false; retryAfterMs: number } {
         const windowStart = now - this.windowMs;
@@ -71,7 +72,7 @@ export class VlCallLimiter {
  * in the ledger is a programming error, not a recoverable state.
  */
 export class ByteLedger {
-    private readonly held = new Map<string, number>();
+    private readonly held = new Map<number, number>();
 
     constructor(private readonly maxTotalBytes: number) {}
 
@@ -79,7 +80,7 @@ export class ByteLedger {
      * Reserves `bytes` for `userId`, or returns `false` when the user's live
      * total would exceed the budget. Zero-byte reservations always succeed.
      */
-    tryReserve(userId: string, bytes: number): boolean {
+    tryReserve(userId: number, bytes: number): boolean {
         const current = this.held.get(userId) ?? 0;
         if (current + bytes > this.maxTotalBytes) {
             return false;
@@ -89,13 +90,13 @@ export class ByteLedger {
     }
 
     /** Returns `bytes` to `userId`'s budget, flooring at zero. */
-    release(userId: string, bytes: number): void {
+    release(userId: number, bytes: number): void {
         const current = this.held.get(userId) ?? 0;
         this.held.set(userId, Math.max(0, current - bytes));
     }
 
     /** Bytes currently held by `userId`. */
-    heldBytes(userId: string): number {
+    heldBytes(userId: number): number {
         return this.held.get(userId) ?? 0;
     }
 }

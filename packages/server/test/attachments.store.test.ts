@@ -178,6 +178,13 @@ describe("sweepOrphanAttachments", () => {
         const dir = mkdtempSync(path.join(tmpdir(), "jarvis-att-"));
         writeFileSync(path.join(dir, "orphan-a"), "x");
         writeFileSync(path.join(dir, "orphan-b"), "y");
+        // Backdate to simulate a previous process's leftovers: the sweep
+        // deletes only files older than boot (the mtime filter is what keeps
+        // it race-free against an upload landing while it runs).
+        const { utimesSync } = await import("node:fs");
+        const old = new Date(Date.now() - 60_000);
+        utimesSync(path.join(dir, "orphan-a"), old, old);
+        utimesSync(path.join(dir, "orphan-b"), old, old);
         await sweepOrphanAttachments({ ...DEFAULT_ATTACHMENT_CONFIG, dir });
         const { readdirSync } = await import("node:fs");
         expect(readdirSync(dir)).toEqual([]);
@@ -189,7 +196,7 @@ describe("sweepOrphanAttachments", () => {
                 ...DEFAULT_ATTACHMENT_CONFIG,
                 dir: path.join(tmpdir(), "jarvis-att-does-not-exist"),
             }),
-        ).resolves.toBeUndefined();
+        ).resolves.toBe(0);
     });
 
     it("defaultAttachmentDir lives under tmpdir", () => {

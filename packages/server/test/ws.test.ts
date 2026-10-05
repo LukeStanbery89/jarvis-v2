@@ -209,7 +209,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "hello-cap-thread");
-        expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
+        expect(call?.[2]).toEqual({
+            capabilities: ["markdown", "image"],
+            attachmentIds: [],
+        });
     });
 
     it("answers a voice-mode prompt with empty capabilities and claims the thread as voice", async () => {
@@ -225,7 +228,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "voice-thread");
-        expect(call?.[2]).toEqual({ capabilities: [] });
+        expect(call?.[2]).toEqual({
+            capabilities: [],
+            attachmentIds: [],
+        });
         expect(store.getSessionByThread("voice-thread")?.kind).toBe("voice");
     });
 
@@ -245,7 +251,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "text-explicit-thread");
-        expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
+        expect(call?.[2]).toEqual({
+            capabilities: ["markdown", "image"],
+            attachmentIds: [],
+        });
         expect(store.getSessionByThread("text-explicit-thread")?.kind).toBe(
             "text",
         );
@@ -320,7 +329,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "hello-prompt-auth-thread");
-        expect(call?.[2]).toEqual({ capabilities: ["markdown"] });
+        expect(call?.[2]).toEqual({
+            capabilities: ["markdown"],
+            attachmentIds: [],
+        });
     });
 
     it("rejects a hello after a prompt", async () => {
@@ -350,7 +362,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "hello-badauth-thread");
-        expect(call?.[2]).toEqual({ capabilities: ["markdown", "image"] });
+        expect(call?.[2]).toEqual({
+            capabilities: ["markdown", "image"],
+            attachmentIds: [],
+        });
     });
 
     it("accepts a hello with an empty capabilities list (plain text)", async () => {
@@ -365,7 +380,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "hello-empty-thread");
-        expect(call?.[2]).toEqual({ capabilities: [] });
+        expect(call?.[2]).toEqual({
+            capabilities: [],
+            attachmentIds: [],
+        });
     });
 
     it("rejects a second hello frame", async () => {
@@ -411,7 +429,10 @@ describe("hello capability handshake", () => {
         const call = vi
             .mocked(runAgent)
             .mock.calls.find((c) => c[1] === "plain-guest-thread");
-        expect(call?.[2]).toEqual({ capabilities: [] });
+        expect(call?.[2]).toEqual({
+            capabilities: [],
+            attachmentIds: [],
+        });
     });
 });
 

@@ -110,6 +110,13 @@ export interface TurnOptions {
     systemPrompt: string;
     /** Caps the number of model/tool turns in one run, aborting a runaway agent. */
     recursionLimit: number;
+    /**
+     * Extra per-turn values merged into the graph's `configurable`, exposed
+     * to tool runtime callbacks (`ToolRuntime.configurable`). Used for
+     * caller-scoped context the tools need — e.g. `attachmentOwner` (#10) —
+     * rather than module-level state; values live for this invocation only.
+     */
+    configurable?: Record<string, unknown>;
 }
 
 /**
@@ -132,8 +139,9 @@ export async function* streamAgentTurn(
     graph: AgentGraph,
     prompt: string,
     sessionId: string,
-    { systemPrompt, recursionLimit }: TurnOptions,
+    options: TurnOptions,
 ): AsyncGenerator<AgentEvent> {
+    const { systemPrompt, recursionLimit, configurable } = options;
     const prior = await graph.getState({
         configurable: { thread_id: sessionId },
     });
@@ -151,6 +159,7 @@ export async function* streamAgentTurn(
             // prunes stale clock exchanges from the prefix only, so the fresh
             // tool result of the in-flight turn stays visible.
             historyBoundary: history.length,
+            ...configurable,
         },
         recursionLimit,
     };
