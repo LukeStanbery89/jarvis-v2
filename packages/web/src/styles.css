@@ -319,17 +319,11 @@ textarea::placeholder {
 
 /* A reloaded transcript keeps only ids — bytes are transient. */
 .attachment-gone {
-    display: inline-block;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-    font-style: italic;
-    color: var(--primary-dim);
-    background: var(--primary-wash);
-    border: 1px dashed var(--primary-border);
-    border-radius: 6px;
+    display: block;
 }
 
-.msg.user .attachment-thumb {
+.msg.user .attachment-thumb,
+.msg.user .attachment-gone {
     margin-bottom: 0.35rem;
 }
 

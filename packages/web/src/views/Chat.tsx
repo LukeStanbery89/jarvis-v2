@@ -42,6 +42,7 @@ import { ToolCall } from "../components/ToolCall";
 import { MAX_ATTACHMENTS } from "@lukestanbery/jarvis-protocol";
 import { prepareForUpload } from "../downscale/browser";
 import {
+    Image as ImageIcon,
     LoaderCircle,
     LogOut,
     Paperclip,
@@ -410,11 +411,18 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     throw err;
                 }
             }
+            // The preview comes from the PREPARED bytes — always available
+            // post-downscale. The raw file's data URL is "" for >4 MB files
+            // (too big to preview raw), which used to surface as the
+            // missing-preview note on a fresh upload.
+            const previewUrl = `data:${prepared.mime};base64,${prepared.base64}`;
             setPending((c) =>
                 c.map((p) =>
                     p.id === chipId
                         ? {
                               ...p,
+                              dataUrl:
+                                  p.dataUrl === "" ? previewUrl : p.dataUrl,
                               state: {
                                   kind: "ready",
                                   attachmentId: uploaded.attachmentId,
@@ -425,7 +433,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             );
             setPreviews((prev) => ({
                 ...prev,
-                [uploaded.attachmentId]: dataUrl,
+                [uploaded.attachmentId]: previewUrl,
             }));
         } catch (err) {
             setPending((c) =>
@@ -649,12 +657,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                                                 alt="attached image"
                                             />
                                         ) : (
-                                            <span
+                                            <ImageIcon
                                                 key={attachmentId}
                                                 className="attachment-gone"
-                                            >
-                                                image not retained
-                                            </span>
+                                                size={36}
+                                                role="img"
+                                                aria-label="image not retained"
+                                            />
                                         ),
                                     )}
                                     {message.text}
