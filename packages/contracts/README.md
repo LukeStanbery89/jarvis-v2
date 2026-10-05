@@ -38,12 +38,15 @@ validate representative real frames against each message payload.
 
 ## REST spec inventory (`spec/openapi.yaml`)
 
-22 operations covering `GET /health` and the 21 `/api` management routes,
-mirroring the handlers in `packages/server/src/http/authRoutes.ts`:
+23 operations covering `GET /health`, the 21 `/api` management routes, and the
+`POST /api/attachments` upload route (#10). The management routes mirror the
+handlers in `packages/server/src/http/authRoutes.ts`; the attachment route is
+owned by `packages/server/src/http/attachmentRoutes.ts`:
 
 | Tag              | Operations (operationId)                                                               |
 | ---------------- | -------------------------------------------------------------------------------------- |
 | `Health`         | `GET /health` (`healthCheck`)                                                          |
+| `Attachments`    | `POST /api/attachments` (`attachmentUpload`)                                           |
 | `Bootstrap`      | `POST /api/bootstrap` (`bootstrap`)                                                    |
 | `Authentication` | `POST /api/auth/login` (`authLogin`), `POST /api/session` (`sessionLogin`)             |
 | `Session`        | `GET`/`DELETE /api/session` (`sessionGet`/`sessionLogout`)                             |
@@ -56,7 +59,9 @@ mirroring the handlers in `packages/server/src/http/authRoutes.ts`:
 Key shapes in `components.schemas`: `User`, `Device` (nullable `lastSeenAt`),
 `IssuedDevice` (one-time `token`), `AuthResult` (shared by bootstrap + device
 login), `Session` (optional `csrfToken` for cookie vs bearer), `SessionLogin`,
-`MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `Error`. Auth is a
+`MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `Error`, plus the
+attachment trio (`AttachmentUpload` with its deliberate no-`pattern` base64
+field, `AttachmentCreated`, `AttachmentTooLarge`). Auth is a
 device-token bearer OR the `jarvis_session` cookie (`bearerToken` and `session`
 security schemes), with optional `x-csrf-token` on cookie-authenticated state
 changes and a required `x-bootstrap-token` on bootstrap. Error responses reuse

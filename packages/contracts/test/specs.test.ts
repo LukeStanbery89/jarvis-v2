@@ -39,6 +39,29 @@ describe("OpenAPI spec (REST)", () => {
         const doc = readSpec(OPENAPI_SPEC);
         expect(doc).toHaveProperty("paths");
     });
+
+    it("declares the upload-saturation 503 on POST /api/attachments (#71)", () => {
+        const doc = readSpec(OPENAPI_SPEC);
+        const post = (
+            (doc.paths as Record<string, Record<string, unknown>>)[
+                "/api/attachments"
+            ] as Record<string, Record<string, unknown>>
+        ).post;
+        // The route answers 503 when the upload semaphore is saturated; the
+        // declaration must exist (or the contract-verify mode would flag a
+        // real 503 as a response violation) and reference the shared Error
+        // envelope, since the body is `{ error }`.
+        const responses = post.responses as Record<string, unknown>;
+        expect(responses["503"]).toBeDefined();
+        expect(responses["503"]).toMatchObject({
+            description: expect.stringMatching(/saturat/i),
+            content: {
+                "application/json": {
+                    schema: { $ref: "#/components/schemas/Error" },
+                },
+            },
+        });
+    });
 });
 
 describe("AsyncAPI spec (WebSocket)", () => {
