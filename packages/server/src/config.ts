@@ -159,9 +159,9 @@ export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
  * deliberately `undefined` by default: first-owner setup stays disabled until
  * the operator sets the environment variable, so a fresh server never races an
  * anonymous admin. `host`, `tlsCertPath`, `tlsKeyPath`, `httpRedirectPort`,
- * and `loginRateLimit` are optional so hand-built configs (tests) can omit
- * them; `getAppConfig` always fills them in, and consumers fall back to
- * defaults when absent.
+ * `loginRateLimit`, `corsOrigins`, and `trustProxyCidrs` are optional so
+ * hand-built configs (tests) can omit them; `getAppConfig` always fills them in,
+ * and consumers fall back to defaults when absent.
  */
 export interface AppConfig {
     /** Path of the app database (`JARVIS_DB_PATH`). */
@@ -212,6 +212,63 @@ export interface AppConfig {
      * (`npm run dev`) and the contract tests turn it on.
      */
     readonly apiContractVerify?: boolean;
+    /**
+     * Exact browser origins permitted to call the REST API cross-origin
+     * (`JARVIS_CORS_ORIGINS`), comma-separated. Unset or empty **denies all
+     * cross-origin browser requests** — the server emits no
+     * `Access-Control-Allow-Origin`, so the browser blocks them and
+     * same-origin clients (including the SPAs this server hosts) are
+     * unaffected. Entries are normalized (see {@link normalizeOrigin}); a
+     * literal `*` is not supported, because the API is credentialed and
+     * browsers reject `*` alongside credentials anyway.
+     */
+    readonly corsOrigins?: readonly string[];
+    /**
+     * IPs and subnets whose `X-Forwarded-For` header is believed when
+     * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
+     *
+     * Unset or empty trusts nothing, which is the safe default: `req.ip` is
+     * then the socket address, so per-IP rate limiting is correct but every
+     * client behind a reverse proxy shares one bucket. Populating this makes
+     * those buckets per-client again. Entries that fail to parse never match,
+     * so a typo fails closed rather than open. See `src/http/cors.ts` and
+     * {@link AppConfig.corsOrigins} for the cross-origin story.
+     */
+    readonly trustProxyCidrs?: readonly string[];
+}
+
+/**
+ * Splits a comma-separated env var into trimmed, non-empty entries.
+ *
+ * Returns `undefined` for absent/blank input so callers can distinguish
+ * "unset" from "set but empty" without a second parse.
+ */
+function csv(raw: string | undefined): string[] | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    const parts = raw
+        .split(",")
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+    return parts.length > 0 ? parts : [];
+}
+
+/**
+ * Normalizes a configured CORS origin to the exact form a browser sends in
+ * `Origin`, so an operator's trailing slash does not silently fail to match.
+ *
+ * The scheme and host are case-insensitive and an origin carries no path, so
+ * lowercasing and dropping a single trailing `/` is safe and lossless.
+ * Anything else is passed through untouched (including a malformed entry,
+ * which simply never matches).
+ */
+export function normalizeOrigin(origin: string): string {
+    const trimmed = origin.trim();
+    if (trimmed.endsWith("/")) {
+        return trimmed.replace(/\/+$/, "").toLowerCase();
+    }
+    return trimmed.toLowerCase();
 }
 
 export function getAppConfig(): AppConfig {
@@ -253,5 +310,9 @@ export function getAppConfig(): AppConfig {
             ),
         },
         apiContractVerify: process.env.JARVIS_API_CONTRACT === "verify",
+        corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
+        trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(
+            (cidr) => cidr.toLowerCase(),
+        ),
     };
 }
