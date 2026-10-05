@@ -30,18 +30,19 @@ Future client types (voice, etc.) should be added as new packages under `package
 
 Run from the repository root:
 
-| Command                | Description                                                  |
-| ---------------------- | ------------------------------------------------------------ |
-| `npm install`          | Install all workspace dependencies                           |
-| `npm run build`        | Build all packages (`tsc`, plus `vite build` for the portal) |
-| `npm run typecheck`    | Type-check all packages (src + tests)                        |
-| `npm test`             | Run all package test suites (Vitest)                         |
-| `npm run test:scripts` | Run the root tooling tests under `scripts/` (Vitest)         |
-| `npm run check`        | Deps + build + typecheck + test + format check               |
-| `npm run check:deps`   | Verify no package imports an undeclared dependency           |
-| `npm run graph:update` | Rebuild the graphify knowledge graph (AST-only, no LLM cost) |
-| `npm run format`       | Auto-format all files with Prettier                          |
-| `npm run format:check` | Verify formatting without modifying files                    |
+| Command                | Description                                                            |
+| ---------------------- | ---------------------------------------------------------------------- |
+| `npm install`          | Install all workspace dependencies                                     |
+| `npm run build`        | Build all packages (`tsc`, plus `vite build` for the portal)           |
+| `npm run typecheck`    | Type-check all packages (src + tests)                                  |
+| `npm test`             | Run all package test suites (Vitest)                                   |
+| `npm run test:scripts` | Run the root tooling tests under `scripts/` (Vitest)                   |
+| `npm run check`        | Deps + build + typecheck + test + format check                         |
+| `npm run check:deps`   | Verify no package imports an undeclared dependency                     |
+| `npm run graph:update` | Rebuild the graphify knowledge graph (AST-only, no LLM cost)           |
+| `npm run graph:health` | Report graphify structural health (duplicate/dangling/self-loop edges) |
+| `npm run format`       | Auto-format all files with Prettier                                    |
+| `npm run format:check` | Verify formatting without modifying files                              |
 
 ## Conventions
 
@@ -90,3 +91,21 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - The graph needs no manual upkeep: a post-commit hook rebuilds it automatically (AST-only, no API cost). Run `npm run graph:update` only if the graph is unexpectedly stale or you want to force a re-cluster after a large refactor.
+- Check structural health with `npm run graph:health` (`graphify diagnose multigraph`). See the baseline below before treating any number as a regression — the post-commit hook rebuilds on every commit, so the counts drift naturally.
+
+### Known graph health baseline
+
+As of the 2026-10-04 rebuild (1617 nodes, 2964 edges, 93 communities), `npm run graph:health` reports **0** missing/dangling endpoints, **0** exact duplicate edges, and **0** same-endpoint collapses in both `--directed` and default modes. The graph is a plain `Graph`/`DiGraph`, not a `MultiDiGraph`, so collapse is structurally impossible. The original full build reported 2 dangling / 107 duplicates / 222 directed + 247 undirected collapses; the AST rebuild cleared all of them.
+
+Two self-loops remain, both genuine recursion — neither indicates a defect in this repo:
+
+| Node                                                 | Cause                                                              |
+| ---------------------------------------------------- | ------------------------------------------------------------------ |
+| `packages/server/src/llm/tools/math.ts` `unary()`    | Genuine recursion (line 67 calls `unary()` to fold unary `+`/`-`). |
+| `scripts/check-dependencies.mjs` `listSourceFiles()` | Genuine recursion (walks subdirectories).                          |
+
+A build once reported four. The other two were one graphify extractor bug — a member call whose method name matched a local function was resolved to the local one, so `window.confirm(message)` in `packages/portal/src/components/ui.tsx` and `socket.close()` in `packages/web/src/ChatClient.ts` each produced a false self-loop on the same-named function in the same file. `this.method()` calls resolve correctly, so the fault is receiver-scoped. Filed upstream as [Graphify-Labs/graphify#4082](https://github.com/Graphify-Labs/graphify/issues/4082); 2 of 387 `calls` edges were affected.
+
+If a later build reports those two again, they are the known artifact and can be pruned from `graph.json` by hand. That edit is local-only — `graphify-out/` is gitignored, and a full re-extraction or `graphify cluster-only` regenerates the graph, so expect to redo it after a broad rebuild.
+
+The report's "isolated node" count is also mostly noise. Of 705 nodes with ≤1 connection, 311 come from `package.json` config keys (`name`, `version`, `workspaces`) and most of the rest are interface method declarations in `packages/auth/src/store.ts` (declared at lines 88–125, implemented at lines 520–691), which graphify models as separate nodes. Real signal: 0 duplicate node keys across 1617 nodes, and 4 genuinely zero-degree nodes (two `vite-env.d.ts`, two untyped). Do not restructure working code to raise the connectivity score.

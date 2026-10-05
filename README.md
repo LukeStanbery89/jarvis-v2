@@ -61,6 +61,7 @@ a published tarball.
 | `npm run check`        | Deps + build + typecheck + test + format check     |
 | `npm run check:deps`   | Verify no package imports an undeclared dependency |
 | `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost) |
+| `npm run graph:health` | Report graphify structural health                  |
 | `npm run format`       | Auto-format all files with Prettier                |
 | `npm run format:check` | Verify formatting without modifying files          |
 
