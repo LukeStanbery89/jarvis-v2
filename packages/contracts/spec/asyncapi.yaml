@@ -190,6 +190,12 @@ components:
                 `"voice"` always yields plain conversational text. The server
                 records the mode as the session's `kind` when it first claims
                 the thread (write-once: later prompts do not re-claim it).
+                The optional `attachments` lists ids of images uploaded
+                earlier via `POST /api/attachments` that this prompt is about
+                (at most 4, each ≤32 characters, no duplicates); the server
+                resolves them before the turn starts — an unknown, expired, or
+                foreign id is answered with an error frame, and analyzing
+                images requires an authenticated socket (guests are refused).
                 Sending this without authenticating first makes the socket a
                 guest whose claimed sessions are deleted when it disconnects.
             payload:
@@ -216,6 +222,21 @@ components:
                             when omitted. Voice prompts yield plain
                             conversational text regardless of the client's
                             declared rendering capabilities.
+                    attachments:
+                        type: array
+                        maxItems: 4
+                        uniqueItems: true
+                        items:
+                            type: string
+                            pattern: \S
+                            maxLength: 32
+                        description: >-
+                            Ids of images uploaded earlier via
+                            `POST /api/attachments` that this prompt is
+                            about; omitted (or empty) for plain text
+                            prompts. Ids are opaque — the server resolves
+                            them and refuses unknown, expired, or foreign
+                            ones before running the turn.
             examples:
                 - payload:
                       prompt: What's on my calendar today?
@@ -224,6 +245,11 @@ components:
                       prompt: What's on my calendar today?
                       sessionId: s-2026-09-25-morning
                       mode: voice
+                - payload:
+                      prompt: What's in this screenshot?
+                      sessionId: s-2026-09-25-morning
+                      attachments:
+                          - q83hZxLm5sVvT1yKwB9dE2nA
         chunk:
             title: Response chunk
             summary: One streamed token of the assistant's reply
