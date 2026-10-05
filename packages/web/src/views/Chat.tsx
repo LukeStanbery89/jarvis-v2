@@ -493,6 +493,9 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         dispatch({ type: "deleted", sessionId: id });
         if (activeIdRef.current === id) {
             setActiveId(null);
+            // The composer unmounts with the thread — pending uploads would
+            // otherwise resurface on the next opened conversation.
+            setPending([]);
         }
         void refreshSessions();
     }
@@ -601,12 +604,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                             </button>
                             <button
                                 type="button"
-                                className="thread-delete icon-btn small"
+                                className="thread-delete icon-btn"
                                 aria-label={`Delete ${entry.title}`}
                                 title={`Delete ${entry.title}`}
                                 onClick={() => void remove(entry.id)}
                             >
-                                <Trash2 size={14} />
+                                <Trash2 size={16} />
                             </button>
                         </div>
                     ))}
@@ -682,110 +685,106 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         );
                     })}
                 </div>
-                <div
-                    className="composer"
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                        e.preventDefault();
-                        if (activeId !== null && !streaming) {
-                            attachFiles(e.dataTransfer.files);
-                        }
-                    }}
-                >
-                    {pending.length > 0 && (
-                        <div className="pending-attachments">
-                            {pending.map((chip) => (
-                                <span className="chip" key={chip.id}>
-                                    {chip.dataUrl !== "" && (
-                                        <img
-                                            src={chip.dataUrl}
-                                            alt={chip.name}
-                                            className="attachment-thumb"
-                                        />
-                                    )}
-                                    <span>
-                                        {chip.state.kind === "uploading" &&
-                                            `uploading ${chip.name}…`}
-                                        {chip.state.kind === "ready" &&
-                                            chip.name}
-                                        {chip.state.kind === "failed" &&
-                                            `${chip.name}: ${chip.state.reason}`}
+                {activeId !== null && (
+                    <div
+                        className="composer"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                            e.preventDefault();
+                            if (!streaming) {
+                                attachFiles(e.dataTransfer.files);
+                            }
+                        }}
+                    >
+                        {pending.length > 0 && (
+                            <div className="pending-attachments">
+                                {pending.map((chip) => (
+                                    <span className="chip" key={chip.id}>
+                                        {chip.dataUrl !== "" && (
+                                            <img
+                                                src={chip.dataUrl}
+                                                alt={chip.name}
+                                                className="attachment-thumb"
+                                            />
+                                        )}
+                                        <span>
+                                            {chip.state.kind === "uploading" &&
+                                                `uploading ${chip.name}…`}
+                                            {chip.state.kind === "ready" &&
+                                                chip.name}
+                                            {chip.state.kind === "failed" &&
+                                                `${chip.name}: ${chip.state.reason}`}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            className="chip-remove"
+                                            aria-label={`remove ${chip.name}`}
+                                            onClick={() => detachChip(chip.id)}
+                                        >
+                                            <X size={14} />
+                                        </button>
                                     </span>
-                                    <button
-                                        type="button"
-                                        className="chip-remove"
-                                        aria-label={`remove ${chip.name}`}
-                                        onClick={() => detachChip(chip.id)}
-                                    >
-                                        <X size={14} />
-                                    </button>
-                                </span>
-                            ))}
-                        </div>
-                    )}
-                    <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        hidden
-                        ref={fileInputRef}
-                        onChange={(e) => {
-                            if (e.target.files !== null) {
-                                attachFiles(e.target.files);
-                            }
-                            e.target.value = "";
-                        }}
-                    />
-                    <button
-                        type="button"
-                        className="attach"
-                        aria-label="attach images"
-                        title="Attach images"
-                        disabled={activeId === null || streaming}
-                        onClick={() => fileInputRef.current?.click()}
-                    >
-                        <Paperclip size={18} />
-                    </button>
-                    <textarea
-                        id="message"
-                        name="message"
-                        value={draft}
-                        placeholder={
-                            activeId === null
-                                ? "Pick or start a conversation…"
-                                : "Message JARVIS…"
-                        }
-                        disabled={activeId === null}
-                        ref={composerRef}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={onKeyDown}
-                        onPaste={(e) => {
-                            const files = Array.from(
-                                e.clipboardData.files,
-                            ).filter((f) => f.type.startsWith("image/"));
-                            if (files.length > 0) {
-                                e.preventDefault();
-                                attachFiles(files);
-                            }
-                        }}
-                    />
-                    <button
-                        type="button"
-                        className={draft.trim() !== "" ? "send active" : "send"}
-                        disabled={
-                            activeId === null ||
-                            streaming ||
-                            draft.trim() === ""
-                        }
-                        onClick={() => void send()}
-                    >
-                        {streaming ? (
-                            <LoaderCircle size={18} className="spin" />
-                        ) : (
-                            <SendHorizontal size={18} />
+                                ))}
+                            </div>
                         )}
-                    </button>
-                </div>
+                        <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            hidden
+                            ref={fileInputRef}
+                            onChange={(e) => {
+                                if (e.target.files !== null) {
+                                    attachFiles(e.target.files);
+                                }
+                                e.target.value = "";
+                            }}
+                        />
+                        <button
+                            type="button"
+                            className="attach"
+                            aria-label="attach images"
+                            title="Attach images"
+                            disabled={streaming}
+                            onClick={() => fileInputRef.current?.click()}
+                        >
+                            <Paperclip size={18} />
+                        </button>
+                        <textarea
+                            id="message"
+                            name="message"
+                            value={draft}
+                            placeholder="Message JARVIS…"
+                            disabled={streaming}
+                            ref={composerRef}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={onKeyDown}
+                            onPaste={(e) => {
+                                const files = Array.from(
+                                    e.clipboardData.files,
+                                ).filter((f) => f.type.startsWith("image/"));
+                                if (files.length > 0) {
+                                    e.preventDefault();
+                                    attachFiles(files);
+                                }
+                            }}
+                        />
+                        <button
+                            type="button"
+                            className={
+                                draft.trim() !== "" ? "send active" : "send"
+                            }
+                            disabled={streaming || draft.trim() === ""}
+                            onClick={() => void send()}
+                        >
+                            {streaming ? (
+                                <LoaderCircle size={18} className="spin" />
+                            ) : (
+                                <SendHorizontal size={18} />
+                            )}
+                        </button>
+                    </div>
+                )}
             </section>
         </main>
     );

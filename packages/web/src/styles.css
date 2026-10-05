@@ -11,6 +11,7 @@
        All hierarchy is alpha of the one hue on black; red is the single
        functional exception (errors). */
     --primary: #00ddff;
+    --primary-faint: rgba(0, 221, 255, 0.35);
     --primary-dim: rgba(0, 221, 255, 0.6);
     --primary-border: rgba(0, 221, 255, 0.3);
     --primary-wash: rgba(0, 221, 255, 0.08);
@@ -29,6 +30,12 @@ body {
     background: var(--bg);
     min-height: 100dvh;
     color: var(--text);
+}
+
+/* Placeholder text sits on the faintest rung of the hue's alpha ladder. */
+input::placeholder,
+textarea::placeholder {
+    color: var(--primary-faint);
 }
 
 /* --- Sign-in gate --- */
@@ -240,6 +247,17 @@ body {
     align-self: flex-start;
     background: var(--panel);
     border: 1px solid var(--primary);
+}
+
+/* Markdown blocks (p, ul, …) carry their own margins — trimming the first
+   and last makes the bubble's effective padding match the plain-text user
+   bubble instead of reading a paragraph margin taller. */
+.msg.assistant > :first-child {
+    margin-top: 0;
+}
+
+.msg.assistant > :last-child {
+    margin-bottom: 0;
 }
 
 .msg.assistant.error {
