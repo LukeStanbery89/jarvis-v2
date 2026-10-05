@@ -15,3 +15,67 @@ jobs:
                   cache: npm
             - run: npm ci
             - run: npm run check
+
+    # Builds the production image and proves the server actually boots inside
+    # it (#28). `npm run check` cannot catch Dockerfile regressions — it never
+    # builds the image, and a broken prod-dependency install or a missing
+    # `spec/` artifact would only surface at deploy time.
+    docker:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: docker/setup-buildx-action@v3
+
+            - name: Build the server image
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  file: ./Dockerfile
+                  # Load into the local daemon so the smoke test can run it.
+                  # `push`/`cache` variants would skip that.
+                  load: true
+                  tags: jarvis-server:ci
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+
+            - name: Start the server
+              run: |
+                  docker run -d --name jarvis-ci -p 54321:54321 jarvis-server:ci
+
+            # /health is model-free, so this needs no LLM. Retried because the
+            # agent graph builds a SQLite checkpointer at startup before the
+            # listener binds.
+            - name: Wait for /health
+              run: |
+                  for i in $(seq 1 30); do
+                    if curl -fsS http://localhost:54321/health | grep -q '"ok":true'; then
+                      echo "healthy after ${i}s"
+                      exit 0
+                    fi
+                    sleep 1
+                  done
+                  echo "server never became healthy; logs follow"
+                  docker logs jarvis-ci
+                  exit 1
+
+            - name: Persisted state landed in the volume path
+              run: |
+                  # Guards the HOME-based default: both SQLite files must be
+                  # created under /home/jarvis/.jarvis with no path env vars set.
+                  docker exec jarvis-ci sh -c \
+                    'ls /home/jarvis/.jarvis/jarvis.sqlite /home/jarvis/.jarvis/checkpoints.sqlite'
+
+            - name: Runs as a non-root user
+              run: |
+                  # A root-owned container would let a compromised dependency
+                  # write to the mounted volume as root.
+                  test "$(docker exec jarvis-ci id -u)" = "10001"
+
+            - name: Boot logs
+              if: always()
+              run: docker logs jarvis-ci || true
+
+            - name: Clean up
+              if: always()
+              run: docker rm -f jarvis-ci || true

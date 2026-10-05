@@ -40,6 +40,68 @@ the `PORT` environment variable:
 PORT=8080 npm run dev
 ```
 
+### Docker
+
+The repository root ships a production image and a compose file:
+
+```sh
+docker compose up -d --build
+curl http://localhost:54321/health        # -> {"ok":true}
+```
+
+The image builds only the five packages the server loads at runtime —
+`protocol`, `logger`, `auth`, `contracts`, and `server` — and ships no
+compilers or dev dependencies. It runs as non-root uid `10001` with a
+`HEALTHCHECK` against `/health`. Clients (#29) are separate deployments.
+
+Four things are worth knowing:
+
+- **`LLM_BASE_URL` must not stay `localhost`.** Inside a container `localhost`
+  is the container, not your machine, so the default `http://localhost:1234/v1`
+  cannot reach a host-side LM Studio. Compose sets
+  `http://host.docker.internal:1234/v1` for you; override it for any other
+  OpenAI-compatible endpoint.
+- **State is a named volume.** `jarvis-data` mounts at
+  `/home/jarvis/.jarvis`, and because the image sets `HOME` the defaults for
+  `JARVIS_DB_PATH` and `JARVIS_CHECKPOINT_PATH` resolve inside it. Both SQLite
+  files survive `docker compose down && up`.
+- **Bootstrap is off by default.** Set `JARVIS_BOOTSTRAP_TOKEN` (in a `.env`
+  beside the compose file, or as an environment variable at `up` time) before
+  calling `POST /api/bootstrap`; until then it returns `409`.
+- **No SPAs are baked in.** `/` answers `Hello World` and `/web` is unmounted.
+  To serve them, build them on the host and mount the directories — see below.
+
+#### Serving the SPAs from the image
+
+Build the SPA bundles on the host (they are not in the image), then mount them
+and point the server at the mount points:
+
+```sh
+npm run build -w @lukestanbery/jarvis-portal -w @lukestanbery/jarvis-web
+```
+
+```yaml
+volumes:
+    - ./packages/portal/dist:/srv/portal:ro
+    - ./packages/web/dist:/srv/web:ro
+environment:
+    JARVIS_PORTAL_DIR: /srv/portal
+    JARVIS_WEB_DIR: /srv/web
+```
+
+A directory is mounted only when it contains `index.html`, so a wrong path
+degrades to `Hello World` and a warning rather than failing to boot.
+
+#### Container environment reference
+
+Everything in the configuration table below applies unchanged inside the
+container, with two differences:
+
+| Variable                                   | In the container                                          |
+| ------------------------------------------ | --------------------------------------------------------- |
+| `LLM_BASE_URL`                             | Must point off-container (`host.docker.internal:1234/v1`) |
+| `JARVIS_DB_PATH`, `JARVIS_CHECKPOINT_PATH` | Default to `/home/jarvis/.jarvis`, on the volume          |
+
 ### Configuration
 
 The model is reached via LangChain (`@langchain/openai`) pointed at an
