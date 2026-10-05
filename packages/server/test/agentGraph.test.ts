@@ -10,7 +10,8 @@ import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import type { Runnable } from "@langchain/core/runnables";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import { tool, type StructuredToolInterface } from "@langchain/core/tools";
+import { z } from "zod";
 import {
     createAgentGraph,
     prunedClockHistory,
@@ -126,6 +127,112 @@ describe("createAgentGraph", () => {
             text: "The time is 2026-09-20.",
         });
         expect(model.callInputs).toHaveLength(2);
+    });
+
+    it("never streams messages from a model invoked inside a tool (#70)", async () => {
+        // Reproduces the analyzeImage shape: a REAL ChatOpenAI invoked inside
+        // the tool (the VL call). LangGraph's messages mode emits that nested
+        // model's response too — tagged with the tools node — and forwarding
+        // it streamed the tool's output text as a phantom assistant reply.
+        // A scripted BaseChatModel does NOT reproduce the leak (its messages
+        // never enter the messages-mode stream), which is why the nested model
+        // here is the real ChatOpenAI class against a mock OpenAI endpoint.
+        const { createServer: createHttpServer } = await import("node:http");
+        // LangGraph's messages-mode callback handler declares streaming, so
+        // a ChatOpenAI nested inside the graph is forced into SSE mode — the
+        // exact mechanism that leaked the VL output in production. The mock
+        // answers both shapes.
+        const mock = createHttpServer((req, res) => {
+            let body = "";
+            req.on("data", (c) => (body += c));
+            req.on("end", () => {
+                const streaming = JSON.parse(body || "{}").stream === true;
+                if (streaming) {
+                    res.setHeader("Content-Type", "text/event-stream");
+                    const chunk = (delta: object) =>
+                        `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
+                    res.write(chunk({ role: "assistant" }));
+                    res.write(chunk({ content: "nested secrets" }));
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                } else {
+                    res.setHeader("Content-Type", "application/json");
+                    res.end(
+                        JSON.stringify({
+                            choices: [
+                                {
+                                    message: {
+                                        role: "assistant",
+                                        content: "nested secrets",
+                                    },
+                                },
+                            ],
+                        }),
+                    );
+                }
+            });
+        });
+        await new Promise<void>((resolve) =>
+            mock.listen(0, "127.0.0.1", () => resolve()),
+        );
+        const addr = mock.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        const { ChatOpenAI } = await import("@langchain/openai");
+        const nested = new ChatOpenAI({
+            apiKey: "test",
+            model: "nested-model",
+            configuration: { baseURL: `http://127.0.0.1:${port}/v1` },
+        });
+        const echoViaModel = tool(
+            async () => {
+                await nested.invoke([new HumanMessage("nested ask")]);
+                return "tool-done";
+            },
+            {
+                name: "echoViaModel",
+                description: "Invokes a nested model, returns fixed text.",
+                schema: z.object({}),
+            },
+        );
+        const model = new ScriptedChatModel([
+            new AIMessage({
+                content: "",
+                tool_calls: [{ name: "echoViaModel", args: {}, id: "call-n" }],
+            }),
+            new AIMessage({ content: "The final answer." }),
+        ]);
+        const graph = createAgentGraph({
+            model: model as unknown as Parameters<
+                typeof createAgentGraph
+            >[0]["model"],
+            tools: [echoViaModel] as StructuredToolInterface[],
+            checkpointer: new MemorySaver(),
+        });
+        const events = await collect(
+            streamAgentTurn(graph, "run the tool", "nested-t1", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+
+        // The nested model's text must never surface as a token — the tool's
+        // output reaches the client exactly once, via the toolResult event.
+        const leaked = events.filter(
+            (e) =>
+                (e as { type: string; text?: string }).type === "token" &&
+                (e as { text?: string }).text?.includes("nested secrets"),
+        );
+        expect(leaked).toEqual([]);
+        expect(events).toEqual([
+            { type: "tool", name: "echoViaModel", args: {} },
+            {
+                type: "toolResult",
+                name: "echoViaModel",
+                output: "tool-done",
+            },
+            { type: "token", text: "The final answer." },
+        ]);
+        await new Promise<void>((resolve) => mock.close(() => resolve()));
     });
 
     it("persists context between turns on the same thread", async () => {
