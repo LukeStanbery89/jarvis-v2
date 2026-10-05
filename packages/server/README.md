@@ -128,6 +128,8 @@ variables:
 | `JARVIS_RATE_MAX_FAILURES` | `10` | Attempts per `(ip, username)` before a lockout |
 | `JARVIS_RATE_MAX_IP_FAILURES` | `100` | **Currently inert** — parsed but never read; see the known gap below |
 | `JARVIS_RATE_LOCKOUT_MS` | `60000` | Base lockout; doubles per repeat (backoff, ×32 cap) |
+| `JARVIS_CORS_ORIGINS` | unset (deny all cross-origin) | Comma-separated exact origins allowed to call `/api` cross-origin; no wildcard |
+| `JARVIS_TRUST_PROXY_CIDRS` | unset (trust none) | IPs/subnets whose `X-Forwarded-For` is believed for `req.ip` |
 | `JARVIS_SESSION_TTL_MS` | `2592000000` (30 days) | Absolute lifetime of a cookie session (no sliding) |
 | `JARVIS_API_CONTRACT` | unset | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated) |
 | `JARVIS_LOG_LEVEL` | `info` (`silent` under tests) | Log verbosity: `silent` \| `debug` \| `info` \| `warn` \| `error` |
@@ -211,6 +213,74 @@ endpoint inherits whichever transport the HTTP server uses, so `/ws` is
 `wss://` under TLS. Local state under `~/.jarvis` is tightened on startup: the
 directory becomes `0700` and each SQLite database `0600`, so account hashes
 and conversation checkpoints aren't world-readable on a shared machine.
+
+### Cross-origin and reverse proxy
+
+Most deployments never need this section. If the browser loads the SPAs **from this
+server** (the default: `/` and `/web`) or through the Vite dev server's `/api` + `/ws`
+proxy, every request is same-origin and the settings below do nothing. They matter
+only when a SPA is served from a _different_ origin than the API (issue #63).
+
+#### Allowing a cross-origin browser client
+
+`JARVIS_CORS_ORIGINS` is a comma-separated list of **exact** origins. Unset or empty
+**denies all cross-origin requests** — no `Access-Control-Allow-*` header is emitted,
+so the browser blocks them and same-origin clients are untouched. Origins are matched
+case-insensitively with a trailing `/` ignored, so `https://Desk.example.com/` and
+`https://desk.example.com` are the same entry.
+
+```sh
+JARVIS_CORS_ORIGINS=https://desk.example.com,http://laptop.local:5173
+```
+
+There is deliberately **no wildcard**. The API is credentialed (bearer device token
+_and_ session cookie), browsers reject `Access-Control-Allow-Origin: *` on credentialed
+requests anyway, and honoring one would hand a credentialed API to any site the user
+visits. A literal `*` in the list is dropped with a startup warning. An origin that is
+not on the list gets no CORS header rather than a 403, so a refused request does not
+confirm that the allowlist exists.
+
+Preflight (`OPTIONS`) is answered with `204` **before** the OpenAPI contract validator,
+which matters: the validator rejects `OPTIONS` against paths that declare only
+`POST`/`GET`, so a preflight that reached it would fail instead of unlocking the real
+request.
+
+The `/ws` upgrade is unaffected — browsers do not gate WebSockets on `Origin`, and the
+socket authenticates with its `auth` frame instead.
+
+#### Cookie auth does not work cross-origin
+
+This is a deliberate decision, not an omission. `setSessionCookie` emits
+`SameSite=Strict`, which browsers never send on cross-site requests. The alternative,
+`SameSite=None`, is **itself rejected by browsers without `Secure`** — and the default
+posture is plain HTTP on a LAN, so enabling it would silently break cookie auth
+everywhere rather than only cross-origin.
+
+**Cross-origin browser clients must therefore authenticate with a device token**
+(`Authorization: Bearer …`), which travels in a header and is unaffected by
+SameSite. That is already how `packages/web` works (bearer token in `localStorage`, no
+cookies, no CSRF). `packages/portal` authenticates with the cookie session
+(`credentials: "same-origin"`) and therefore remains **same-origin only**; moving it
+cross-origin would mean switching it to device tokens, not relaxing the cookie.
+
+#### Behind a reverse proxy
+
+`req.ip` is the socket address unless a proxy is trusted, so with a reverse proxy in
+front every client shares one address — which collapses the credential throttle's
+per-`(ip, username)` and per-`ip` keys into a single bucket (see
+[Rate limiting](#rate-limiting)).
+
+List the proxy's addresses to fix that:
+
+```sh
+JARVIS_TRUST_PROXY_CIDRS=172.16.0.0/12,10.0.0.5
+```
+
+Prefer a CIDR allowlist over a hop count or an unbounded trust: `X-Forwarded-For` is
+client-controlled, so trusting it from anyone is a spoofing vector that would let a
+caller forge a fresh rate-limit identity per request. Entries that fail to parse never
+match, so a typo fails closed (trusting nothing) rather than open. Set this to the
+Docker network's subnet when the proxy is a container.
 
 ### Logging
 

@@ -107,6 +107,16 @@ The server also serves the built web chat SPA (`@lukestanbery/jarvis-web`) at `/
   `connect-src 'self'`.
 - Requests under `/web` are skipped by the portal SPA fallback (which is `/web`-boundary aware — `/webfoo` still gets the portal shell), so with the web client unbuilt or disabled `GET /web` is an honest 404, never the portal shell. `GET /web` itself 301s to `/web/` before serving `index.html` (standard `express.static` directory redirect); note that redirect response carries `serve-static`'s own strict `Content-Security-Policy: default-src 'none'` (browsers follow it and get the real headers on the target).
 
+## Cross-origin and reverse proxy
+
+Only relevant when a browser SPA is served from a **different origin** than the API (issue #63). The default deployments — SPAs served from `/` and `/web`, and the Vite dev server's `/api` + `/ws` proxy — are all same-origin and ignore these settings.
+
+- `JARVIS_CORS_ORIGINS` is a comma-separated allowlist of **exact** origins. Unset or empty **denies all cross-origin requests** (no `Access-Control-*` header is emitted), so same-origin clients are unaffected. Origins are normalized case-insensitively with a trailing `/` dropped.
+- **No wildcard, ever.** The API is credentialed (bearer token _and_ cookie); browsers reject `Access-Control-Allow-Origin: *` on credentialed requests anyway, and a literal `*` entry is dropped with a warning. A disallowed origin gets no header rather than a 403, so a refusal does not confirm the allowlist exists.
+- Preflight is answered with `204` **before** `mountContractValidator`, which is load-bearing: the validator rejects `OPTIONS` against paths declaring only `POST`/`GET`, so a preflight reaching it would fail with a validation error instead of unlocking the real request. Keep the CORS mount first in `createApp`.
+- `JARVIS_TRUST_PROXY_CIDRS` lists the IPs/subnets whose `X-Forwarded-For` is believed, so `req.ip` is the real client rather than the proxy — without it every client behind a proxy shares one rate-limit bucket. Unset trusts nothing; unparseable entries never match, so a typo fails closed.
+- **Cookie auth does not work cross-origin, by decision.** `setSessionCookie` emits `SameSite=Strict`, never sent cross-site, and `SameSite=None` is itself rejected without `Secure` (the default posture is plain HTTP). Cross-origin browser clients must use device-token auth; `packages/web` already does, while `packages/portal` (cookie session) stays same-origin.
+
 ## Chat protocol
 
 The wire protocol (frame shapes, the ≤128-char `sessionId` and ≤128-char `token` bounds, and all
@@ -154,13 +164,14 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 ## Source layout
 
 - `src/index.ts` — process entry: loads `.env` via `import "dotenv/config"` (first import, so `config.ts` sees the file; real env always wins), config, `openAppDatabase` (from `@lukestanbery/jarvis-auth`), `createApp`, `attachChatServer` — hands the app to the listener seam.
-- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification; `defaultWebDir`.
+- `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification; `corsOrigins` (`JARVIS_CORS_ORIGINS`, normalized via `normalizeOrigin`) and `trustProxyCidrs` (`JARVIS_TRUST_PROXY_CIDRS`) hold the cross-origin posture; `defaultWebDir`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, the
   portal static serving + SPA fallback capped with a strict CSP (only when `portalDir` holds `index.html`), and
   (when `webDir` holds `index.html`) the `/web` web chat mount with a widened CSP + `/web`-scoped SPA fallback;
-  `createHttpsRedirectApp`.
+  `createHttpsRedirectApp`. Sets `app.set("trust proxy", …)` from `trustProxyCidrs` and mounts
+  `createCorsMiddleware` **before** `express.json()` and the contract validator — both orderings are load-bearing.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
   `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls);
   `AuthedRequest` derives from the auth `AuthContext` union (`guest | authed | session`) so `authed(req).jarv` is
@@ -172,6 +183,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   logged + generic 500).
 - `src/http/cookies.ts` — cookie parsing + the `jarvis_session` cookie name/attributes (`__Host-` under TLS).
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, session, me, devices, users, sessions, prefs).
+- `src/http/cors.ts` — `createCorsMiddleware(origins?)`: the cross-origin policy (exact-origin allowlist, `Vary: Origin`, 204 preflight). Denies all cross-origin when the list is unset/empty; never emits `*`. Must stay mounted ahead of `express.json()` and the contract validator.
 - `src/http/rateLimit.ts` — the credential throttle (`RateLimiter`): one in-memory instance shared by every credential endpoint, isolated by key namespace (`login:` / `bootstrap:`), fixed window + per-key lockout with exponential backoff. Counts attempts at admission (before scrypt) and clears a key on success. In-memory per process; trusts `req.ip` as-is. Not reusable as a quota — see the rate-limiting section of `README.md`.
 - `@lukestanbery/jarvis-auth` (workspace dep) — app database + credential crypto (see its README): `openAppDatabase`
   (backed by `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`) exposes `AppDatabase` as the intersection of three role

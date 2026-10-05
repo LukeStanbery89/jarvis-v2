@@ -27,6 +27,8 @@ afterEach(() => {
     delete process.env.JARVIS_API_CONTRACT;
     delete process.env.JARVIS_PORTAL_DIR;
     delete process.env.JARVIS_WEB_DIR;
+    delete process.env.JARVIS_CORS_ORIGINS;
+    delete process.env.JARVIS_TRUST_PROXY_CIDRS;
 });
 
 describe("getServerPort", () => {
@@ -131,5 +133,63 @@ describe("getAppConfig", () => {
             portalDir: undefined,
             webDir: undefined,
         });
+    });
+});
+
+describe("cross-origin configuration (#63)", () => {
+    it("denies all cross-origin requests when JARVIS_CORS_ORIGINS is unset", () => {
+        delete process.env.JARVIS_CORS_ORIGINS;
+        expect(getAppConfig().corsOrigins).toBeUndefined();
+    });
+
+    it("treats a blank or comma-only list as no configured origins", () => {
+        process.env.JARVIS_CORS_ORIGINS = "";
+        expect(getAppConfig().corsOrigins).toEqual([]);
+        process.env.JARVIS_CORS_ORIGINS = " , , ";
+        expect(getAppConfig().corsOrigins).toEqual([]);
+    });
+
+    it("parses a comma-separated allowlist, trimming whitespace", () => {
+        process.env.JARVIS_CORS_ORIGINS =
+            "https://desk.example.com, http://laptop.local:5173 ";
+        expect(getAppConfig().corsOrigins).toEqual([
+            "https://desk.example.com",
+            "http://laptop.local:5173",
+        ]);
+    });
+
+    it("normalizes an origin to the form a browser sends", () => {
+        // A trailing slash or mixed case in the operator's config must still
+        // match `Origin: http://Laptop.local:5173`.
+        process.env.JARVIS_CORS_ORIGINS =
+            "http://Laptop.local:5173/,https://Desk.Example.COM";
+        expect(getAppConfig().corsOrigins).toEqual([
+            "http://laptop.local:5173",
+            "https://desk.example.com",
+        ]);
+    });
+
+    it("keeps a non-default port and the scheme intact", () => {
+        process.env.JARVIS_CORS_ORIGINS = "http://192.168.1.10:8080";
+        expect(getAppConfig().corsOrigins).toEqual([
+            "http://192.168.1.10:8080",
+        ]);
+    });
+
+    it("trusts no proxies when JARVIS_TRUST_PROXY_CIDRS is unset", () => {
+        delete process.env.JARVIS_TRUST_PROXY_CIDRS;
+        expect(getAppConfig().trustProxyCidrs).toBeUndefined();
+        process.env.JARVIS_TRUST_PROXY_CIDRS = "  ";
+        expect(getAppConfig().trustProxyCidrs).toEqual([]);
+    });
+
+    it("parses trusted proxies as IPs and subnets", () => {
+        process.env.JARVIS_TRUST_PROXY_CIDRS =
+            "172.16.0.0/12, 10.0.0.5 , 192.168.0.0/16";
+        expect(getAppConfig().trustProxyCidrs).toEqual([
+            "172.16.0.0/12",
+            "10.0.0.5",
+            "192.168.0.0/16",
+        ]);
     });
 });

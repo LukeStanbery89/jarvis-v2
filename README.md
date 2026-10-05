@@ -137,11 +137,29 @@ reaches `/ws` directly. Tracked in
 [#65](https://github.com/LukeStanbery89/jarvis-v2/issues/65).
 
 All throttles are in-memory and per-process. They trust `req.ip` as-is, so **behind a
-reverse proxy the per-`ip` budget becomes a global lockout** — see
-[#63](https://github.com/LukeStanbery89/jarvis-v2/issues/63).
+reverse proxy the per-`ip` budget becomes a global lockout** — set
+`JARVIS_TRUST_PROXY_CIDRS` to your proxy's IPs/subnets so throttling sees real clients.
+Tracked in [#63](https://github.com/LukeStanbery89/jarvis-v2/issues/63).
 
 Full keys, budgets, and semantics:
 [`packages/server/README.md`](./packages/server/README.md#rate-limiting).
+
+## Cross-origin clients
+
+Not needed for the default setups — the portal at `/` and the web client at `/web` are
+served by this server, and both Vite dev servers proxy `/api` and `/ws`, so every
+request is same-origin.
+
+It matters only when a browser SPA is hosted on a _different_ origin than the API. Set
+`JARVIS_CORS_ORIGINS` to a comma-separated list of exact origins; unset means all
+cross-origin requests are denied. There is no wildcard, because the API is credentialed
+(bearer token _and_ cookie). Cookie sessions do **not** work cross-origin — the cookie
+is `SameSite=Strict`, and `SameSite=None` is rejected by browsers without HTTPS — so
+cross-origin browser clients must use device-token auth, which is what the web chat
+client already does.
+
+See
+[`packages/server/README.md`](./packages/server/README.md#cross-origin-and-reverse-proxy).
 
 ## Code style
 
