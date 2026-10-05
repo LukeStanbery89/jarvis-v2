@@ -12,9 +12,21 @@
 // `config.ts` reads it. Real environment variables always win over the file.
 import "dotenv/config";
 import { createApp } from "./app";
-import { getAppConfig, getServerPort, DEFAULT_HOST } from "./config";
+import {
+    getAppConfig,
+    getLlmConfig,
+    getServerPort,
+    DEFAULT_HOST,
+    DEFAULT_ATTACHMENT_CONFIG,
+} from "./config";
 import { attachChatServer } from "./ws";
 import { initAgentGraph } from "./agent";
+import { createVisionModel } from "./llm/visionModel";
+import {
+    createAttachmentStore,
+    sweepOrphanAttachments,
+} from "./attachments/store";
+import { InFlightLimiter, VlCallLimiter } from "./attachments/limiters";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 
@@ -22,9 +34,21 @@ const port = getServerPort();
 const appConfig = getAppConfig();
 const host = appConfig.host ?? DEFAULT_HOST;
 
-initAgentGraph();
+const attachmentConfig = appConfig.attachments ?? DEFAULT_ATTACHMENT_CONFIG;
+// Clear last process's orphans before anything can upload; the mtime filter
+// keeps this race-free against a request that lands while it runs.
+void sweepOrphanAttachments(attachmentConfig);
+const attachments = createAttachmentStore(attachmentConfig);
+const inFlight = new InFlightLimiter(attachmentConfig.maxInflight);
+const vlLimiter = new VlCallLimiter(attachmentConfig.vlCallsPerMin);
+
+initAgentGraph({
+    attachments,
+    vision: createVisionModel(getLlmConfig()),
+    vlLimiter,
+});
 const store = openAppDatabase(appConfig.appDbPath);
-const webApp = createApp(store, appConfig);
+const webApp = createApp(store, appConfig, attachments, inFlight);
 
 const { server } = createJarvisServer(webApp, {
     port,
@@ -33,4 +57,7 @@ const { server } = createJarvisServer(webApp, {
     tlsKeyPath: appConfig.tlsKeyPath,
     redirectPort: appConfig.httpRedirectPort,
 });
-attachChatServer(server, store, { turnTimeoutMs: appConfig.turnTimeoutMs });
+attachChatServer(server, store, {
+    turnTimeoutMs: appConfig.turnTimeoutMs,
+    attachments,
+});

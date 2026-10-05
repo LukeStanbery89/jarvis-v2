@@ -19,7 +19,8 @@ import {
     type AgentEvent,
     type AgentGraph,
 } from "./llm/agentGraph";
-import { tools } from "./llm/tools";
+import { createTools } from "./llm/tools";
+import type { ToolDeps } from "./llm/tools";
 import { getLlmConfig } from "./config";
 import { logger } from "./logger";
 import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
@@ -38,6 +39,21 @@ export interface RunAgentOptions {
      * (or pass `[]`) for a plain-text client.
      */
     capabilities?: ClientCapability[];
+    /**
+     * Ids of uploaded images this prompt references (#10). Deduplicated and
+     * appended to the turn's `HumanMessage` as an `[attachments: …]` marker
+     * the model reads; the `analyzeImage` tool resolves ids against the
+     * attachment store on use.
+     */
+    attachmentIds?: string[];
+    /**
+     * The authenticated user's numeric row id (`AppUser.id`), present on
+     * every authenticated turn so the `analyzeImage` tool can enforce
+     * ownership (including follow-up turns asking about an image uploaded in
+     * an earlier one). Absent for guests — attachment-carrying prompts never
+     * reach the agent for them.
+     */
+    attachmentOwner?: number;
 }
 
 /**
@@ -74,6 +90,25 @@ const TIME_CALL_RULE =
     "the same reply, and never reuse or repeat a value you already gave " +
     "earlier in this conversation — the clock only moves forward, so an " +
     "earlier answer is stale.";
+
+/**
+ * Image-analysis hygiene appended to every conditioned system prompt (#10).
+ *
+ * The chat model cannot see images, so an attachment-carrying question is
+ * answerable only through the `analyzeImage` tool. Without explicit
+ * instruction, small local models either hallucinate about unseen images or
+ * paraphrase the id (breaking the lookup), so this pins the expected behavior:
+ * exact id pass-through, answer from the tool's description, and the
+ * re-upload path when an image has expired.
+ */
+const IMAGE_ANALYSIS_RULE =
+    "When the user's message includes an [attachments: …] list and their " +
+    "question is about what those images show, call analyzeImage with the " +
+    "exact attachmentId from that list (never an id you invent or truncate) " +
+    "and their question as the query. Base your answer on the tool's " +
+    "returned description of the image — never guess about image contents. " +
+    "If the tool reports an image unavailable or expired, tell the user and " +
+    "ask them to upload it again.";
 
 /**
  * Derives a system prompt that admits the formats a capable client renders.
@@ -115,7 +150,7 @@ export function systemPromptForCapabilities(
         notes.length === 0
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}${rendering}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}${rendering}`;
 }
 
 let graph: AgentGraph | null = null;
@@ -128,8 +163,13 @@ let graph: AgentGraph | null = null;
  * the existing instance. The graph is a singleton: one checkpointer (the
  * SQLite store at `JARVIS_CHECKPOINT_PATH`) backs every session thread, and
  * every turn reuses the same compiled graph instance.
+ *
+ * `deps` carries the process-level wiring for optional tools — the
+ * attachment store, vision model, and VL quota for `analyzeImage`. They are
+ * injected here (never constructed inside the graph module, per review
+ * finding B4); omitting them registers only the baseline tools.
  */
-export function initAgentGraph(): AgentGraph {
+export function initAgentGraph(deps?: ToolDeps): AgentGraph {
     if (graph) {
         return graph;
     }
@@ -140,7 +180,7 @@ export function initAgentGraph(): AgentGraph {
     ensurePrivateFile(checkpointPath);
     graph = createAgentGraph({
         model: createChatModel(),
-        tools,
+        tools: createTools(deps),
         checkpointer: saver,
     });
     logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
@@ -168,23 +208,53 @@ function getAgentGraph(): AgentGraph {
  *
  * When `options.capabilities` lists render guarantees (from the socket's
  * `hello` frame), the system prompt is conditioned on them via
- * {@link systemPromptForCapabilities}.
+ * {@link systemPromptForCapabilities}. When `options.attachmentIds` is
+ * present, the ids are deduplicated and appended to the turn's
+ * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
+ * `analyzeImage` tool reads ids from), and `options.attachmentOwner` is
+ * exposed to tool runtime callbacks so the tool can enforce ownership.
  */
+/**
+ * Appends the attachment marker to a prompt (#10).
+ *
+ * Pure and exported so the dedupe/marker rules are unit-testable without a
+ * graph: ids are deduplicated (a repeated id is a client bug, and the model
+ * would offer it twice), empty strings are dropped, and a prompt with no
+ * surviving ids is returned byte-identical. The marker is the model-facing
+ * list the `analyzeImage` tool reads ids from.
+ */
+export function withAttachmentMarker(
+    prompt: string,
+    attachmentIds: string[],
+): string {
+    const ids = [...new Set(attachmentIds)].filter((id) => id.length > 0);
+    return ids.length > 0
+        ? `${prompt}\n\n[attachments: ${ids.join(", ")}]`
+        : prompt;
+}
+
 export async function* runAgent(
     prompt: string,
     sessionId: string,
     options: RunAgentOptions = {},
 ): AsyncGenerator<AgentEvent> {
+    const markedPrompt = withAttachmentMarker(
+        prompt,
+        options.attachmentIds ?? [],
+    );
     logger.sensitive(
         "Running agent turn",
-        JSON.stringify({ prompt, sessionId }),
+        JSON.stringify({ prompt: markedPrompt, sessionId }),
     );
     const { systemPrompt, agentMaxTurns } = getLlmConfig();
-    yield* streamAgentTurn(getAgentGraph(), prompt, sessionId, {
+    yield* streamAgentTurn(getAgentGraph(), markedPrompt, sessionId, {
         systemPrompt: systemPromptForCapabilities(
             systemPrompt,
             options.capabilities ?? [],
         ),
         recursionLimit: agentMaxTurns,
+        configurable: options.attachmentOwner
+            ? { attachmentOwner: options.attachmentOwner }
+            : undefined,
     });
 }

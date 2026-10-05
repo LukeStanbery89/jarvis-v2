@@ -58,6 +58,23 @@ fresh `sessionId` locally; the server row appears after the first prompt.
 Threads are trimmed to their most recent 200 messages, and on localStorage
 quota exhaustion the oldest whole thread is evicted once.
 
+## Image attachments
+
+The composer's 📎 button, clipboard paste, and drag-and-drop all attach
+images (#10). Each attachment is prepared client-side before upload
+(`src/downscale/policy.ts` decides; `src/downscale/browser.ts` executes):
+in-budget PNG/JPEG within the 2048px clamp upload byte-for-byte, everything
+else is re-encoded — PNG sources stay PNG (lossless, so screenshots and
+glyphs stay crisp), photos go JPEG, with pixel/quality rungs stepped until
+the result fits the 4 MiB budget. Uploads go to `POST /api/attachments`
+(bearer auth, no CSRF — the client has no CSRF secret by design) and the
+returned id rides the prompt's `attachments` list.
+
+Attachment bytes are transient server-side (60-minute TTL): the transcript
+keeps only the ids, so a reloaded thread shows a muted "image not retained"
+note where the preview was. Image analysis requires signing in — it is
+refused on guest sockets.
+
 ## Client capabilities and chat mode
 
 On connect the client sends a first-frame `hello` announcement

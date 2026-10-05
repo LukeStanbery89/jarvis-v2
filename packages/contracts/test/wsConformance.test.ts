@@ -32,6 +32,7 @@ import Ajv from "ajv";
 import { load as loadYaml } from "js-yaml";
 import {
     MAX_CAPABILITIES,
+    MAX_ATTACHMENT_ID_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     parseClientMessage,
@@ -243,16 +244,42 @@ describe("AsyncAPI conformance: protocol frames", () => {
 
         it("validates a voice-mode chat prompt through the serializer", () => {
             expectWireConformant(
-                () => serializeRequest("Hello", "s-morning", "voice"),
+                () => serializeRequest("Hello", "s-morning", { mode: "voice" }),
                 MESSAGE_FOR_CLIENT.chatPrompt,
             );
         });
 
         it("validates an explicit text-mode chat prompt through the serializer", () => {
             expectWireConformant(
-                () => serializeRequest("Hello", "s-morning", "text"),
+                () => serializeRequest("Hello", "s-morning", { mode: "text" }),
                 MESSAGE_FOR_CLIENT.chatPrompt,
             );
+        });
+
+        it("validates an attachment-referencing chat prompt through the serializer", () => {
+            // A prompt about an uploaded image: the id list must satisfy the
+            // spec's `attachments` schema (≤4 entries, ≤32 chars, unique).
+            expectWireConformant(
+                () =>
+                    serializeRequest(
+                        "What's in this screenshot?",
+                        "s-morning",
+                        {
+                            attachments: ["q83hZxLm5sVvT1yKwB9dE2nA"],
+                        },
+                    ),
+                MESSAGE_FOR_CLIENT.chatPrompt,
+            );
+        });
+
+        it("round-trips an attachment id at the protocol's max length", () => {
+            const id = "A".repeat(MAX_ATTACHMENT_ID_LENGTH);
+            const raw = serializeRequest("hi", "s", { attachments: [id] });
+            expect(parseClientMessage(raw)).toEqual({
+                prompt: "hi",
+                sessionId: "s",
+                attachments: [id],
+            });
         });
 
         it("validates a hello capability announcement through the serializer", () => {

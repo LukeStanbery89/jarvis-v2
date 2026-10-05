@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload an image for analysis in a chat prompt
+         * @description Accepts a base64-encoded image and returns an id the client references in a chat prompt's `attachments` list (see the `/ws` AsyncAPI document). The bytes are validated by magic-byte sniffing, never by the request's declared type. Stored transiently with a fixed TTL — attachment bytes are not readable back and are swept on expiry; prompts referencing an expired id get an error frame. Requires authentication: guest sockets cannot upload, and the per-user storage and vision-model budgets are keyed on the caller. Cookie callers must send `x-csrf-token`.
+         */
+        post: operations["attachmentUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bootstrap": {
         parameters: {
             query?: never;
@@ -320,6 +340,27 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A base64-encoded image upload. Only `data` is meaningful — the type is decided by magic-byte sniffing of the decoded bytes, never by a declared mime. */
+        AttachmentUpload: {
+            /** @description Base64-encoded image bytes (PNG, JPEG, GIF, or WebP). `maxLength` corresponds to the server's decoded-byte cap (4 MiB → 5,592,408 base64 characters); oversize bodies are answered `413` by the route, not by shape validation. Deliberately no `pattern`: a regex over megabytes of base64 is real CPU on every request, and a broken encoding surfaces as a decode failure (403), not a shape violation. */
+            data: string;
+        };
+        /** @description The id to reference in a chat prompt's `attachments` list. */
+        AttachmentCreated: {
+            /** @description Opaque attachment id (a 24-character base64url string in the current implementation). The protocol accepts ids up to 32 characters, leaving slack for a future scheme. */
+            attachmentId: string;
+        };
+        /** @description Rejection for a too-large upload or an exhausted budget. */
+        AttachmentTooLarge: {
+            error: string;
+            /**
+             * @description Machine-readable reason a client branches on.
+             * @enum {string}
+             */
+            code: "ATTACHMENT_TOO_LARGE";
+            /** @description The per-attachment cap in decoded bytes. */
+            maxBytes: number;
+        };
         /** @description User-safe error envelope returned by the JSON error handler. */
         Error: {
             error: string;
@@ -494,6 +535,60 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    attachmentUpload: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
+                "x-csrf-token"?: components["parameters"]["XCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachmentUpload"];
+            };
+        };
+        responses: {
+            /** @description Attachment stored. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentCreated"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid `x-csrf-token` for a cookie-authenticated request, or the bytes are not a recognized image. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Decoded bytes exceed the per-attachment cap, or the caller is over their total-attachment budget. The body carries the cap so a client can retry smaller. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentTooLarge"];
+                };
             };
         };
     };

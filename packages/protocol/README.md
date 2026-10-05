@@ -31,16 +31,18 @@ npm install @lukestanbery/jarvis-protocol
 | `interface AuthRequest`         | The `auth` handshake: `{ type: "auth", token }`                                           |
 | `interface ClientHello`         | The capability announcement: `{ type: "hello", capabilities }`                            |
 | `interface AuthResult`          | The `authResult` payload: `{ user, device }`                                              |
-| `interface ChatPrompt`          | A client request: `{ prompt, sessionId, mode? }`                                          |
+| `interface ChatPrompt`          | A client request: `{ prompt, sessionId, mode?, attachments? }`                            |
 | `MAX_SESSION_ID_LENGTH`         | `128` — longest allowed `sessionId`                                                       |
 | `MAX_TOKEN_LENGTH`              | `128` — longest allowed device `token`                                                    |
 | `MAX_CAPABILITIES`              | `16` — longest allowed `capabilities` list in a `hello` frame                             |
 | `MAX_CAPABILITY_LENGTH`         | `16` — longest allowed single capability token                                            |
+| `MAX_ATTACHMENTS`               | `4` — longest allowed `attachments` list in a prompt                                      |
+| `MAX_ATTACHMENT_ID_LENGTH`      | `32` — longest allowed single attachment id                                               |
 | `parseFrame(raw)`               | Parses a server frame; throws on malformed/unrecognized payload                           |
 | `parseClientMessage(raw)`       | Parses + validates a client message into an `AuthRequest`, `ClientHello`, or `ChatPrompt` |
 | `parseRequest(raw)`             | Parses + validates a client request (non-empty strings, ≤128 id)                          |
 | `serializeFrame(frame)`         | Serializes a `ServerFrame` to wire JSON                                                   |
-| `serializeRequest(p,sid,mode?)` | Serializes a client request to wire JSON (byte-identical without `mode`)                  |
+| `serializeRequest(p,sid,opts?)` | Serializes a client request to wire JSON; `opts` is `{ mode?, attachments? }`             |
 | `serializeAuth(token)`          | Serializes an `auth` handshake to wire JSON                                               |
 | `serializeHello(caps[])`        | Serializes a `hello` capability announcement to wire JSON                                 |
 
@@ -59,12 +61,16 @@ JSON text frames over `/ws`:
       `html`, `image`, `link`, ≤16 tokens). The server stores the declaration
       for the socket's lifetime and conditions the agent's output on it; an
       empty list ("plain text only") is valid, and `hello` may precede `auth`.
-    - `{ "prompt": "<text>", "sessionId": "<id>", "mode": "text" | "voice" }` —
+    - `{ "prompt": "<text>", "sessionId": "<id>", "mode": "text" | "voice", "attachments": ["<id>", …] }` —
       `sessionId` (required, ≤128 chars) names the LangGraph conversation
       thread; `mode` is optional and defaults to `"text"`. `"text"` prompts
       are answered using the client's declared capabilities; `"voice"` prompts
       are always answered with plain conversational text. The server records
       the mode as the session's `kind` when it first claims the thread.
+      `attachments` is an optional list of at most 4 ids (each ≤32 chars,
+      unique) referencing images uploaded earlier via `POST /api/attachments`
+      that this prompt is about; ids are opaque here — the server resolves
+      them against its attachment store and rejects unknown or foreign ids.
 - Server → Client:
     - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output" } }`
       frames while the agent calls tools,

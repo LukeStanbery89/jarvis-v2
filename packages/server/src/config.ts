@@ -21,6 +21,38 @@ export const DEFAULT_LLM_TEMPERATURE = 0;
 export const DEFAULT_AGENT_MAX_TURNS = 10;
 
 /**
+ * Default vision-language model used by the `analyzeImage` tool.
+ *
+ * Distinct from {@link DEFAULT_LLM_MODEL} on purpose: the chat model is a
+ * small text-only model, while image analysis needs a VL model. Must name a
+ * model on the same OpenAI-compatible server (`LLM_BASE_URL`) that accepts
+ * `image_url` content parts; the server warns at startup when the name is
+ * absent from `/v1/models`.
+ */
+export const DEFAULT_LLM_VL_MODEL = "qwen3.6-35b-a3b-splash";
+
+/** Default cap for one vision-language analysis call, in output tokens. */
+export const DEFAULT_LLM_VL_MAX_TOKENS = 1024;
+
+/** Default hard cap for one vision-language analysis call, in milliseconds. */
+export const DEFAULT_LLM_VL_TIMEOUT_MS = 60_000;
+
+/** Default TTL for uploaded attachments, in milliseconds (60 minutes). */
+export const DEFAULT_ATTACHMENT_TTL_MS = 60 * 60_000;
+
+/** Default per-attachment cap in decoded bytes (4 MiB). */
+export const DEFAULT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
+
+/** Default per-user total across live attachments, in bytes (200 MiB). */
+export const DEFAULT_ATTACHMENT_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+
+/** Default vision-language analysis calls allowed per user per minute. */
+export const DEFAULT_ATTACHMENT_VL_CALLS_PER_MIN = 10;
+
+/** Default concurrent uploads in flight (server-wide). */
+export const DEFAULT_ATTACHMENT_MAX_INFLIGHT = 4;
+
+/**
  * Default location of the LangGraph checkpoint database.
  *
  * Each WebSocket session (identified by its `sessionId`) maps to one graph
@@ -95,6 +127,12 @@ export interface LlmConfig {
     systemPrompt: string;
     agentMaxTurns: number;
     checkpointPath: string;
+    /** Vision-language model the `analyzeImage` tool calls (`LLM_VL_MODEL`). */
+    vlModel: string;
+    /** Output-token cap for one VL analysis call (`LLM_VL_MAX_TOKENS`). */
+    vlMaxTokens: number;
+    /** Wall-clock cap for one VL analysis call (`LLM_VL_TIMEOUT_MS`). */
+    vlTimeoutMs: number;
 }
 
 /**
@@ -122,6 +160,13 @@ export function getLlmConfig(): LlmConfig {
         ),
         checkpointPath:
             process.env.JARVIS_CHECKPOINT_PATH ?? defaultCheckpointPath(),
+        vlModel: process.env.LLM_VL_MODEL ?? DEFAULT_LLM_VL_MODEL,
+        vlMaxTokens: Number(
+            process.env.LLM_VL_MAX_TOKENS ?? DEFAULT_LLM_VL_MAX_TOKENS,
+        ),
+        vlTimeoutMs: Number(
+            process.env.LLM_VL_TIMEOUT_MS ?? DEFAULT_LLM_VL_TIMEOUT_MS,
+        ),
     };
 }
 
@@ -224,6 +269,15 @@ export interface AppConfig {
      */
     readonly corsOrigins?: readonly string[];
     /**
+     * Resource controls for transient image attachments (`JARVIS_ATTACHMENT_*`).
+     *
+     * Optional so hand-built configs (tests) can omit it;
+     * {@link DEFAULT_ATTACHMENT_CONFIG} fills the gaps. These are quotas, not
+     * rate limiting — see the rate-limiting section of the package README for
+     * why the two are separate mechanisms.
+     */
+    readonly attachments?: AttachmentConfig;
+    /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
      *
@@ -238,12 +292,63 @@ export interface AppConfig {
 }
 
 /**
+ * Resource controls for transient image attachments (#10).
+ *
+ * These bound per-user temp-disk and vision-model compute; they are quotas,
+ * deliberately separate from `RateLimitConfig` (whose success-clears-key
+ * semantics are wrong for "N held" or "N per minute" budgets).
+ */
+export interface AttachmentConfig {
+    /** How long an uploaded attachment stays readable (`JARVIS_ATTACHMENT_TTL_MINUTES`). */
+    readonly ttlMs: number;
+    /** Decoded-byte cap for one attachment (`JARVIS_ATTACHMENT_MAX_BYTES`). */
+    readonly maxBytes: number;
+    /** Per-user total across live attachments (`JARVIS_ATTACHMENT_MAX_TOTAL_BYTES`). */
+    readonly maxTotalBytes: number;
+    /** Vision-model analysis calls per user per minute (`JARVIS_ATTACHMENT_VL_CALLS_PER_MIN`). */
+    readonly vlCallsPerMin: number;
+    /** Concurrent uploads in flight, server-wide (`JARVIS_ATTACHMENT_MAX_INFLIGHT`). */
+    readonly maxInflight: number;
+    /**
+     * Root directory holding attachment files; created on demand and
+     * mode-verified at use (`JARVIS_ATTACHMENT_DIR`). Defaults under
+     * `os.tmpdir()`.
+     */
+    readonly dir?: string;
+}
+
+/** LAN-reasonable attachment defaults (see the individual constants). */
+export const DEFAULT_ATTACHMENT_CONFIG: AttachmentConfig = {
+    ttlMs: DEFAULT_ATTACHMENT_TTL_MS,
+    maxBytes: DEFAULT_ATTACHMENT_MAX_BYTES,
+    maxTotalBytes: DEFAULT_ATTACHMENT_MAX_TOTAL_BYTES,
+    vlCallsPerMin: DEFAULT_ATTACHMENT_VL_CALLS_PER_MIN,
+    maxInflight: DEFAULT_ATTACHMENT_MAX_INFLIGHT,
+};
+
+/**
+ * Parses a minutes-valued env var into milliseconds.
+ *
+ * Returns `undefined` for absent input so `numberOr` can apply its fallback;
+ * a non-numeric or non-positive value also yields `undefined` (the fallback),
+ * matching `numberOr`'s own recovery behavior.
+ */
+function minutesToMs(raw: string | undefined): number | undefined {
+    if (raw === undefined) {
+        return undefined;
+    }
+    const minutes = Number(raw);
+    return Number.isFinite(minutes) && minutes > 0
+        ? minutes * 60_000
+        : undefined;
+}
+
+/**
  * Splits a comma-separated env var into trimmed, non-empty entries.
  *
  * Returns `undefined` for absent/blank input so callers can distinguish
  * "unset" from "set but empty" without a second parse.
- */
-function csv(raw: string | undefined): string[] | undefined {
+ */ function csv(raw: string | undefined): string[] | undefined {
     if (raw === undefined) {
         return undefined;
     }
@@ -310,6 +415,37 @@ export function getAppConfig(): AppConfig {
             ),
         },
         apiContractVerify: process.env.JARVIS_API_CONTRACT === "verify",
+        attachments:
+            process.env.JARVIS_ATTACHMENT_TTL_MINUTES === undefined &&
+            process.env.JARVIS_ATTACHMENT_MAX_BYTES === undefined &&
+            process.env.JARVIS_ATTACHMENT_MAX_TOTAL_BYTES === undefined &&
+            process.env.JARVIS_ATTACHMENT_VL_CALLS_PER_MIN === undefined &&
+            process.env.JARVIS_ATTACHMENT_MAX_INFLIGHT === undefined &&
+            process.env.JARVIS_ATTACHMENT_DIR === undefined
+                ? undefined
+                : {
+                      ttlMs:
+                          minutesToMs(
+                              process.env.JARVIS_ATTACHMENT_TTL_MINUTES,
+                          ) ?? DEFAULT_ATTACHMENT_TTL_MS,
+                      maxBytes: numberOr(
+                          process.env.JARVIS_ATTACHMENT_MAX_BYTES,
+                          DEFAULT_ATTACHMENT_MAX_BYTES,
+                      ),
+                      maxTotalBytes: numberOr(
+                          process.env.JARVIS_ATTACHMENT_MAX_TOTAL_BYTES,
+                          DEFAULT_ATTACHMENT_MAX_TOTAL_BYTES,
+                      ),
+                      vlCallsPerMin: numberOr(
+                          process.env.JARVIS_ATTACHMENT_VL_CALLS_PER_MIN,
+                          DEFAULT_ATTACHMENT_VL_CALLS_PER_MIN,
+                      ),
+                      maxInflight: numberOr(
+                          process.env.JARVIS_ATTACHMENT_MAX_INFLIGHT,
+                          DEFAULT_ATTACHMENT_MAX_INFLIGHT,
+                      ),
+                      dir: process.env.JARVIS_ATTACHMENT_DIR || undefined,
+                  },
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(
             (cidr) => cidr.toLowerCase(),

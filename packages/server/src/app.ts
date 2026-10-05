@@ -7,7 +7,6 @@ import type {
 } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { AppConfig } from "./config";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import { createAuthRouter } from "./http/authRoutes";
 import {
@@ -15,7 +14,32 @@ import {
     mountContractValidator,
 } from "./http/contractValidation";
 import { createCorsMiddleware } from "./http/cors";
+import { createAttachmentRouter } from "./http/attachmentRoutes";
+import type { AttachmentStore } from "./attachments/store";
+import type { InFlightLimiter } from "./attachments/limiters";
+import { DEFAULT_ATTACHMENT_MAX_BYTES, type AppConfig } from "./config";
 import { logger } from "./logger";
+
+/** Returns `413` with the {@link AttachmentTooLarge} contract shape. */
+const attachmentBodyTooLarge = (_appConfig: AppConfig, maxBytes: number) => {
+    const handler: ErrorRequestHandler = (err, _req, res, next) => {
+        if (
+            typeof err === "object" &&
+            err !== null &&
+            ((err as { type?: string }).type === "entity.too.large" ||
+                (err as { statusCode?: number }).statusCode === 413)
+        ) {
+            res.status(413).json({
+                error: "request body too large",
+                code: "ATTACHMENT_TOO_LARGE",
+                maxBytes,
+            });
+            return;
+        }
+        next(err);
+    };
+    return handler;
+};
 
 /**
  * Creates the Express app that serves the HTTP endpoints.
@@ -36,7 +60,12 @@ import { logger } from "./logger";
  * Machine health checks use `GET /health` regardless, so monitoring never
  * depends on either SPA being present.
  */
-export function createApp(store: AppDatabase, appConfig: AppConfig) {
+export function createApp(
+    store: AppDatabase,
+    appConfig: AppConfig,
+    attachments?: AttachmentStore,
+    inFlight?: InFlightLimiter,
+) {
     const app = express();
 
     // Believe X-Forwarded-For only from the configured proxy hops (#63). Set
@@ -56,6 +85,26 @@ export function createApp(store: AppDatabase, appConfig: AppConfig) {
     // paths (see the module doc for the full ordering rationale).
     app.use(createCorsMiddleware(appConfig.corsOrigins));
 
+    // The attachment upload parser mounts FIRST (when the surface is wired):
+    // it must claim `/api/attachments` bodies before the global 100 KB parser
+    // marks them read, and before the validator, whose own body-size posture
+    // is not the enforcement point (review findings B1/B2). The limit is the
+    // base64 bound of the decoded cap plus JSON-overhead slack.
+    if (attachments) {
+        const maxBytes =
+            appConfig.attachments?.maxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+        app.use(
+            "/api/attachments",
+            express.json({ limit: Math.ceil(maxBytes / 3) * 4 + 65_536 }),
+        );
+        // Maps the parser's own (raw-byte) rejections onto the same
+        // AttachmentTooLarge shape the route answers with (R10).
+        app.use(
+            "/api/attachments",
+            attachmentBodyTooLarge(appConfig, maxBytes),
+        );
+    }
+
     app.use(express.json());
 
     // Runtime contract gate: /api request shapes always, /api + /health
@@ -65,6 +114,16 @@ export function createApp(store: AppDatabase, appConfig: AppConfig) {
     app.get("/health", (req, res) => {
         res.status(200).json({ ok: true });
     });
+
+    // The attachments router mounts after the validator (so its request and
+    // response shapes stay contract-checked) but as its own path-scoped
+    // router, ahead of the management API.
+    if (attachments && inFlight) {
+        app.use(
+            "/api/attachments",
+            createAttachmentRouter(store, appConfig, attachments, inFlight),
+        );
+    }
 
     app.use("/api", createAuthRouter(store, appConfig));
 

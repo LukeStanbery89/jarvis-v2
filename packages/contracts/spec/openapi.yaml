@@ -41,6 +41,8 @@ security: []
 tags:
     - name: Account
       description: The current user (`GET /api/me`) — identity + owned devices.
+    - name: Attachments
+      description: Transient image uploads referenced by chat prompts (`POST /api/attachments`).
     - name: Authentication
       description: Credential logins — device-token (`POST /api/auth/login`) and cookie (`POST /api/session`).
     - name: Bootstrap
@@ -83,6 +85,64 @@ paths:
                         Non-GET requests answered by Express's default 404. The
                         body is an HTML error page (not modeled); a JSON 404
                         handler lands with the runtime-validation phase.
+    /api/attachments:
+        post:
+            operationId: attachmentUpload
+            summary: Upload an image for analysis in a chat prompt
+            description: >-
+                Accepts a base64-encoded image and returns an id the client
+                references in a chat prompt's `attachments` list (see the
+                `/ws` AsyncAPI document). The bytes are validated by
+                magic-byte sniffing, never by the request's declared type.
+                Stored transiently with a fixed TTL — attachment bytes are not
+                readable back and are swept on expiry; prompts referencing an
+                expired id get an error frame. Requires authentication: guest
+                sockets cannot upload, and the per-user storage and
+                vision-model budgets are keyed on the caller. Cookie callers
+                must send `x-csrf-token`.
+            tags: [Attachments]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/AttachmentUpload"
+            responses:
+                "201":
+                    description: Attachment stored.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/AttachmentCreated"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: >-
+                        Missing or invalid `x-csrf-token` for a
+                        cookie-authenticated request, or the bytes are not a
+                        recognized image.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "413":
+                    description: >-
+                        Decoded bytes exceed the per-attachment cap, or the
+                        caller is over their total-attachment budget. The body
+                        carries the cap so a client can retry smaller.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/AttachmentTooLarge"
     /api/bootstrap:
         post:
             operationId: bootstrap
@@ -1020,6 +1080,55 @@ components:
             schema:
                 type: string
     schemas:
+        AttachmentUpload:
+            type: object
+            description: >-
+                A base64-encoded image upload. Only `data` is meaningful —
+                the type is decided by magic-byte sniffing of the decoded
+                bytes, never by a declared mime.
+            required: [data]
+            properties:
+                data:
+                    type: string
+                    description: >-
+                        Base64-encoded image bytes (PNG, JPEG, GIF, or WebP).
+                        `maxLength` corresponds to the server's decoded-byte
+                        cap (4 MiB → 5,592,408 base64 characters); oversize
+                        bodies are answered `413` by the route, not by shape
+                        validation. Deliberately no `pattern`: a regex over
+                        megabytes of base64 is real CPU on every request, and
+                        a broken encoding surfaces as a decode failure (403),
+                        not a shape violation.
+                    maxLength: 5592408
+        AttachmentCreated:
+            type: object
+            description: The id to reference in a chat prompt's `attachments` list.
+            required: [attachmentId]
+            properties:
+                attachmentId:
+                    type: string
+                    description: >-
+                        Opaque attachment id (a 24-character base64url string
+                        in the current implementation). The protocol accepts
+                        ids up to 32 characters, leaving slack for a future
+                        scheme.
+                    minLength: 1
+                    maxLength: 32
+        AttachmentTooLarge:
+            type: object
+            description: Rejection for a too-large upload or an exhausted budget.
+            required: [error, code, maxBytes]
+            properties:
+                error:
+                    type: string
+                code:
+                    type: string
+                    enum:
+                        - ATTACHMENT_TOO_LARGE
+                    description: Machine-readable reason a client branches on.
+                maxBytes:
+                    type: integer
+                    description: The per-attachment cap in decoded bytes.
         Error:
             type: object
             description: User-safe error envelope returned by the JSON error handler.

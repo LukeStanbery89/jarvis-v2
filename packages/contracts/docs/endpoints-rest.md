@@ -6,6 +6,7 @@ Source of truth: `spec/openapi.yaml` (regenerate with
 | Method | Path | Auth | Summary |
 | ------ | ---- | ---- | ------- |
 | `GET` | `/health` | none | Machine health check |
+| `POST` | `/api/attachments` | device token or web session | Upload an image for analysis in a chat prompt |
 | `POST` | `/api/bootstrap` | x-bootstrap-token header | Bootstrap the first-owner account |
 | `POST` | `/api/auth/login` | none | Log in with username and password for a device token |
 | `POST` | `/api/session` | none | Log in with username and password for a cookie session |

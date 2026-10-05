@@ -27,6 +27,13 @@ export interface UserMessage {
     role: "user";
     text: string;
     at: number;
+    /**
+     * Attachment ids the turn referenced (#10), when it carried images. Only
+     * the ids persist — attachment bytes are transient on the server, so a
+     * reloaded transcript shows a muted "image not retained" note instead of
+     * a preview.
+     */
+    attachmentIds?: string[];
 }
 
 /**

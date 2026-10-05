@@ -47,6 +47,7 @@ import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
 import type { AgentEvent } from "./agent";
 import { toServerFrame } from "./transport";
+import type { AttachmentStore } from "./attachments/store";
 import { logger } from "./logger";
 
 /** The identity every socket starts with and failed auth falls back to. */
@@ -74,6 +75,12 @@ interface ConnectionState {
 export interface AttachmentOptions {
     /** Hard cap for one agent turn before the server aborts it. */
     turnTimeoutMs: number;
+    /**
+     * The process-wide attachment store (#10), present when the attachment
+     * surface is wired. Prompts referencing attachments are rejected when it
+     * is absent — a server without the surface has no ids to resolve.
+     */
+    attachments?: AttachmentStore;
 }
 
 /**
@@ -249,6 +256,37 @@ async function handlePrompt(
         }
     }
     const mode: ChatMode = prompt.mode ?? "text";
+    const attachmentIds = prompt.attachments ?? [];
+    if (attachmentIds.length > 0) {
+        // Image analysis requires authentication: a guest would otherwise get
+        // an unbounded meter on the vision model (the decisions table pins
+        // this). Answered BEFORE the session claim so a guest's failed
+        // attachment prompt never creates a ledger row (R9).
+        if (!options.attachments) {
+            sendError(socket, "image analysis is not available on this server");
+            return;
+        }
+        if (conn.ctx.kind !== "authed") {
+            sendError(socket, "image analysis requires signing in");
+            return;
+        }
+        // Fail fast on unknown/expired/foreign ids — before the turn claims
+        // the thread, so the client sees the error immediately instead of as
+        // a tool result mid-stream (R9).
+        for (const id of new Set(attachmentIds)) {
+            try {
+                options.attachments.assertAccessible(conn.ctx.user.id, id);
+            } catch (err) {
+                sendError(
+                    socket,
+                    err instanceof Error
+                        ? err.message
+                        : "attachment unavailable",
+                );
+                return;
+            }
+        }
+    }
     const turn = await sessions.runTurn({
         sessionId: prompt.sessionId,
         actor: conn.ctx,
@@ -262,6 +300,8 @@ async function handlePrompt(
                 options.turnTimeoutMs,
                 conn.capabilities,
                 mode,
+                attachmentIds,
+                conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
             ),
     });
     respondToTurn(socket, turn, prompt.sessionId);
@@ -393,6 +433,8 @@ async function streamEventsToSocket(
     turnTimeoutMs: number,
     capabilities: ClientCapability[],
     mode: ChatMode,
+    attachmentIds: string[],
+    attachmentOwner: number | undefined,
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -411,6 +453,8 @@ async function streamEventsToSocket(
     try {
         generator = runAgent(prompt, sessionId, {
             capabilities: mode === "voice" ? [] : capabilities,
+            attachmentIds,
+            attachmentOwner,
         });
         try {
             for await (const event of generator) {
