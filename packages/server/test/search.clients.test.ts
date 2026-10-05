@@ -31,7 +31,9 @@ const opts = {
 
 describe("tavily client", () => {
     it("sends the query, topic, and bearer auth; normalizes results", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse(TAVILY_BODY));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse(TAVILY_BODY),
+        );
         const provider = createTavilyClient({ ...opts, fetchImpl });
         const answer = await provider.search("what is cyan", "general");
         expect(answer).toEqual({
@@ -60,7 +62,9 @@ describe("tavily client", () => {
     });
 
     it("passes the vertical through as the tavily topic", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse(TAVILY_BODY));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse(TAVILY_BODY),
+        );
         const provider = createTavilyClient({ ...opts, fetchImpl });
         await provider.search("fed rate", "news");
         expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body)).topic).toBe(
@@ -69,7 +73,9 @@ describe("tavily client", () => {
     });
 
     it("maps a non-OK status to a typed error without the API key", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse("nope", 401));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse("nope", 401),
+        );
         const provider = createTavilyClient({ ...opts, fetchImpl });
         const err = await provider.search("q", "general").catch((e) => e);
         expect(err).toBeInstanceOf(SearchError);
@@ -88,7 +94,9 @@ describe("tavily client", () => {
     });
 
     it("maps a missing results array to a typed error", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse('{"foo":1}'));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse('{"foo":1}'),
+        );
         const provider = createTavilyClient({ ...opts, fetchImpl });
         await expect(provider.search("q", "general")).rejects.toMatchObject({
             message: "tavily response missing results array",
@@ -117,7 +125,9 @@ const serperOpts = {
 
 describe("serper client", () => {
     it("sends the query with the X-API-KEY header; normalizes organic + answerBox", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse(SERPER_BODY));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse(SERPER_BODY),
+        );
         const provider = createSerperClient({ ...serperOpts, fetchImpl });
         const answer = await provider.search("what is cyan", "general");
         expect(answer).toEqual({
@@ -143,7 +153,7 @@ describe("serper client", () => {
     });
 
     it("routes verticals to their endpoint paths", async () => {
-        const fetchImpl = vi.fn(async () =>
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
             jsonResponse(
                 JSON.stringify({
                     images: [
@@ -169,7 +179,7 @@ describe("serper client", () => {
     });
 
     it("uses /video for the videos vertical (serper's path name)", async () => {
-        const fetchImpl = vi.fn(async () =>
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
             jsonResponse(
                 JSON.stringify({ videos: [{ title: "v", link: "l" }] }),
             ),
@@ -182,7 +192,9 @@ describe("serper client", () => {
     });
 
     it("maps a non-OK status to a typed error without the API key", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse("denied", 403));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse("denied", 403),
+        );
         const provider = createSerperClient({ ...serperOpts, fetchImpl });
         const err = await provider.search("q", "general").catch((e) => e);
         expect(err.message).toBe("serper returned 403");
@@ -190,7 +202,9 @@ describe("serper client", () => {
     });
 
     it("maps a response with no known result array to a typed error", async () => {
-        const fetchImpl = vi.fn(async () => jsonResponse('{"unexpected":[]}'));
+        const fetchImpl = vi.fn(async (..._args: Parameters<typeof fetch>) =>
+            jsonResponse('{"unexpected":[]}'),
+        );
         const provider = createSerperClient({ ...serperOpts, fetchImpl });
         await expect(provider.search("q", "general")).rejects.toMatchObject({
             message: "serper response has no result array",

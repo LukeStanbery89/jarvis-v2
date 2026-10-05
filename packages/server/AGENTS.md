@@ -200,6 +200,9 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
 - `src/llm/chatModel.ts` — the chat model: one of the two modules that know `@langchain/openai` (the other is `visionModel.ts`).
 - `src/llm/visionModel.ts` — the vision-language model the `analyzeImage` tool calls (#10): non-streaming, bounded by an AbortSignal timeout, reasoning discarded.
+- `src/llm/tools/search/` — the web-search providers (#9): hand-rolled Tavily + Serper fetch clients behind one normalized shape; keys are env secrets, never logged or in error text.
+- `src/llm/tools/webSearch.ts` — the `webSearch` tool: Tavily-first routing (free quota) with Serper fallback, per-user call quota checked before any fetch. Registered only when a provider key is configured.
+- `src/rate/fixedWindowQuota.ts` — the generic per-user fixed-window quota (VL calls, search calls); `VlCallLimiter` is its domain-named alias.
 - `src/llm/tools/` — the tool implementations; `analyzeImage.ts` resolves attachment ids and enforces ownership via `ToolRuntime.configurable`.
 - `test/` — Vitest suites: `app.test.ts` (health + portal/web serving), `ws.test.ts` (frames + handshakes), `agent.test.ts` (capability prompt conditioning), `http.test.ts`, `sessionManager.test.ts`, `contract.test.ts`.
 
