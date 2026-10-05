@@ -14,7 +14,6 @@ import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
-import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { AppConfig } from "../src/config";
 
 const VERIFY: AppConfig = {

@@ -1,6 +1,6 @@
 import type { AddressInfo } from "net";
 import { afterEach, describe, expect, it } from "vitest";
-import { createServer, type Server } from "node:http";
+import { createServer } from "node:http";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
