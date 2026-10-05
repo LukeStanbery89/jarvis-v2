@@ -126,7 +126,7 @@ variables:
 | `JARVIS_WEB_DIR` | `packages/web/dist` | Built web chat client root served at `/web`; empty string disables it |
 | `JARVIS_RATE_WINDOW_MS` | `900000` (15 min) | Attempt-accumulation window for login/bootstrap |
 | `JARVIS_RATE_MAX_FAILURES` | `10` | Attempts per `(ip, username)` before a lockout |
-| `JARVIS_RATE_MAX_IP_FAILURES` | `100` | Aggregate attempts per IP before a lockout |
+| `JARVIS_RATE_MAX_IP_FAILURES` | `100` | **Currently inert** — parsed but never read; see the known gap below |
 | `JARVIS_RATE_LOCKOUT_MS` | `60000` | Base lockout; doubles per repeat (backoff, ×32 cap) |
 | `JARVIS_SESSION_TTL_MS` | `2592000000` (30 days) | Absolute lifetime of a cookie session (no sliding) |
 | `JARVIS_API_CONTRACT` | unset | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated) |
@@ -179,16 +179,8 @@ it as `Authorization: Bearer <token>` (for the `/api` routes) or as the
 device name rotates the token (the old one stops working); use distinct
 `deviceName`s for distinct clients. A failed login is indistinguishable from an
 unknown username (same error, uniform response time), so account existence
-can't be probed. Login and bootstrap are rate-limited per
-`(ip, username)` and per `ip`: after `JARVIS_RATE_MAX_FAILURES` attempts (or
-`JARVIS_RATE_MAX_IP_FAILURES` across usernames) within
-`JARVIS_RATE_WINDOW_MS`, the client is locked out for
-`JARVIS_RATE_LOCKOUT_MS` (doubling on repeat violations) and receives
-`429 too many attempts; try again later`. Every attempt — right or wrong — is
-counted at admission (before the expensive scrypt verify), so a burst of
-concurrent guesses can't race past the budget; a successful login resets the
-counter. The limiter is in-memory per process and trusts `req.ip` — set
-`app.set("trust proxy", …)` if you ever front the server with a reverse proxy.
+can't be probed. Both login and bootstrap are throttled — see
+[Rate limiting](#rate-limiting) for the keys, budgets, and lockout behavior.
 
 ### REST contract validation
 
@@ -233,6 +225,93 @@ token tracing suppressed). Payloads are logged verbatim only in development:
 `NODE_ENV`, including unset) stay redacted even if `JARVIS_LOG_LEVEL=debug` is
 forced. Override either way with `JARVIS_LOG_SENSITIVE=full|redacted`. The
 option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDebug`).
+
+## Rate limiting
+
+Every throttle the server applies lives in this section — this is the single source of
+truth. Two independent mechanisms exist, because they answer different questions and
+must not be interchanged.
+
+### Credential throttle — `src/http/rateLimit.ts`
+
+Guards the expensive password-verification path against guessing.
+
+There is exactly **one** `RateLimiter` instance, built from `appConfig.loginRateLimit`
+and shared by every credential endpoint. Endpoints stay isolated by **key namespace**
+(`login:` vs `bootstrap:`), not by separate limiters or configs.
+
+| Endpoint                                    | Key                     | Budget                                                                  |
+| ------------------------------------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `POST /api/auth/login`, `POST /api/session` | `login:<ip>:<username>` | `JARVIS_RATE_MAX_FAILURES` (10) per window                              |
+| `POST /api/auth/login`, `POST /api/session` | `login:<ip>`            | `JARVIS_RATE_MAX_FAILURES` (10) per window — aggregate across usernames |
+| `POST /api/bootstrap`                       | `bootstrap:<ip>`        | `JARVIS_RATE_MAX_FAILURES` (10) per window                              |
+
+Login admits **both** keys on every attempt
+(`limiter.admit(userKey) ?? limiter.admit(ipKey)`), so a request must clear the
+per-username budget _and_ the per-IP aggregate budget.
+
+Behavior:
+
+- **Fixed window.** Attempts accumulate over `JARVIS_RATE_WINDOW_MS` (15 min) and the
+  counter resets when the window lapses, so a client that stops misbehaving recovers on
+  its own.
+- **Every attempt counts, right or wrong.** `admit()` increments _before_ the expensive
+  scrypt verify runs. Node's single thread serializes the increment, so a burst of
+  concurrent guesses cannot all observe a pre-limit count while their verifications are
+  still in flight.
+- **Success clears the key.** `recordSuccess()` deletes the entry, so a legitimate user
+  is never punished for repeated correct logins.
+- **Lockout backs off.** Crossing the budget locks the key for
+  `JARVIS_RATE_LOCKOUT_MS` (60 s), doubling (×2, ×4, …) on each repeat up to ×32, and
+  resets the counter to zero for the next window.
+- Refusals are `429` with `too many attempts; try again later`.
+
+#### Known gap: `JARVIS_RATE_MAX_IP_FAILURES` is dead config
+
+`RateLimitConfig.maxIpFailures` is parsed from the environment and defaulted to `100`,
+but `RateLimiter.admit()` never reads it — it compares every key against `maxFailures`
+only. The per-IP aggregate budget is therefore **`maxFailures` (10)**, not 100, on both
+the login and bootstrap paths.
+
+Consequences:
+
+- `JARVIS_RATE_MAX_IP_FAILURES` has no effect. Changing it is a no-op.
+- The per-IP cap is 10× tighter than documented, so **any IP that produces 10 failed
+  attempts in 15 minutes is locked out entirely** — including a whole household or
+  office behind one NAT address, where unrelated users lock each other out.
+
+Tracked in [#66](https://github.com/LukeStanbery89/jarvis-v2/issues/66). The table above
+documents the behavior that exists today, not the intent.
+
+### Not rate limited
+
+Worth stating explicitly, because these are the surfaces that cost real CPU:
+
+| Surface                                                        | Bounded by                                                                                                                            | Not bounded by                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `/ws` chat turns                                               | concurrency only — a per-thread lock (one turn per `sessionId`), one streaming turn per socket, and `JARVIS_TURN_TIMEOUT_MS` per turn | **prompt frequency** — a socket can submit turns back-to-back indefinitely |
+| REST resources (`/api/users`, `/api/devices`, `/api/prefs`, …) | authentication and ownership checks                                                                                                   | any request-rate ceiling                                                   |
+
+The `/ws` gap is tracked in [#65](https://github.com/LukeStanbery89/jarvis-v2/issues/65).
+Guest sockets (a `/ws` socket that sends a prompt without an `auth` frame) are
+unauthenticated and therefore the most exposed.
+
+### Scope and caveats
+
+- **State is in-memory only**, per process. The server is single-instance by design, so
+  this is adequate for the LAN posture; a process restart simply resets every counter.
+  There is no distributed or persisted state.
+- **The credential throttle trusts `req.ip` as-is.** Behind a reverse proxy every request
+  appears to originate from the proxy, which collapses the per-`ip` budget into a
+  **global** lockout — one attacker locks out everyone. Set
+  `app.set("trust proxy", …)` when fronting the server with a proxy. Tracked in
+  [#63](https://github.com/LukeStanbery89/jarvis-v2/issues/63).
+- **Prefer identity keys for new limiters.** Any throttle added later should key on the
+  resolved user identity rather than `req.ip`, so it is correct behind a proxy by
+  construction.
+- `RateLimiter` is deliberately **not** reused for quotas. Its `admit()` increments on
+  every call and `recordSuccess()` deletes the key, so a success-and-release cycle
+  counts against the budget — wrong semantics for "N per minute" or "N bytes held".
 
 ### Endpoints
 

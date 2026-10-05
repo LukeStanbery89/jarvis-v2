@@ -122,6 +122,27 @@ WebSocket surfaces are machine-checked against `openapi.yaml` / `asyncapi.yaml`
 Browse the local references with `npm run docs:serve -w @lukestanbery/jarvis-contracts`
 (builds to `.docs/`; also published to GitHub Pages when the specs change).
 
+## Rate limiting
+
+Only the credential endpoints are throttled: `POST /api/auth/login`,
+`POST /api/session`, and `POST /api/bootstrap` are rate-limited per
+`(ip, username)` and per `ip`, with lockout and exponential backoff
+(`JARVIS_RATE_*`).
+
+**The `/ws` chat path is not frequency-limited.** It is bounded by concurrency (one
+turn per `sessionId`, one streaming turn per socket) and by
+`JARVIS_TURN_TIMEOUT_MS` per turn, but a client can submit prompts back-to-back
+indefinitely. This matters for cross-machine deployments, where every client machine
+reaches `/ws` directly. Tracked in
+[#65](https://github.com/LukeStanbery89/jarvis-v2/issues/65).
+
+All throttles are in-memory and per-process. They trust `req.ip` as-is, so **behind a
+reverse proxy the per-`ip` budget becomes a global lockout** — see
+[#63](https://github.com/LukeStanbery89/jarvis-v2/issues/63).
+
+Full keys, budgets, and semantics:
+[`packages/server/README.md`](./packages/server/README.md#rate-limiting).
+
 ## Code style
 
 Formatting is enforced with [Prettier](https://prettier.io) using the rules in
