@@ -3,7 +3,9 @@
  *
  * The agent's tool traffic (frames `tool`/`toolResult`) is shown as a
  * compact "Ran tool" disclosure instead of raw JSON — the transcript stays
- * readable while the details remain inspectable.
+ * readable while the details remain inspectable. String outputs (a tool's
+ * textual answer, like `analyzeImage`'s description) render verbatim;
+ * structured outputs render as pretty-printed JSON.
  */
 
 /** Props for {@link ToolCall}. */
@@ -30,15 +32,18 @@ function hasVisibleArgs(args: unknown): boolean {
     return true;
 }
 
+/** Formats a tool notice's payload: strings verbatim, everything else as JSON. */
+function renderPayload(value: unknown): string {
+    return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
 /** One collapsible tool notice in the transcript. */
 export function ToolCall({ name, args, output }: ToolCallProps) {
     return (
         <details className="tool-call">
             <summary>{`Ran tool ${name}`}</summary>
-            {hasVisibleArgs(args) && <pre>{JSON.stringify(args, null, 2)}</pre>}
-            {output !== undefined && (
-                <pre>{JSON.stringify(output, null, 2)}</pre>
-            )}
+            {hasVisibleArgs(args) && <pre>{renderPayload(args)}</pre>}
+            {output !== undefined && <pre>{renderPayload(output)}</pre>}
         </details>
     );
 }
