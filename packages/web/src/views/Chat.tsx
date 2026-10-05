@@ -629,8 +629,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 <div className="transcript" ref={transcriptRef}>
                     {activeThread === null && (
                         <p className="hint">
-                            Pick a conversation or start a new one — JARVIS
-                            answers with rich Markdown in text chats.
+                            Pick a conversation or start a new one
                         </p>
                     )}
                     {activeThread?.messages.map((message) => {
@@ -739,7 +738,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     />
                     <button
                         type="button"
-                        className="attach icon-btn"
+                        className="attach"
                         aria-label="attach images"
                         title="Attach images"
                         disabled={activeId === null || streaming}

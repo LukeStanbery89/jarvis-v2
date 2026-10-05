@@ -93,6 +93,13 @@ body {
     cursor: default;
 }
 
+/* Icon-only submit: center the glyph in the button. */
+.login button.login-submit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .error {
     color: var(--error);
     font-weight: 600;
@@ -283,15 +290,6 @@ body {
     border-radius: 8px;
 }
 
-.chip button {
-    padding: 0 0.25rem;
-    font: inherit;
-    background: none;
-    border: none;
-    color: var(--primary-dim);
-    cursor: pointer;
-}
-
 .attachment-thumb {
     width: 2.2rem;
     height: 2.2rem;
@@ -379,7 +377,7 @@ body {
     font: inherit;
     background: transparent;
     color: var(--primary);
-    border: 1px solid transparent;
+    border: 1px solid var(--primary-border);
     border-radius: 6px;
     cursor: pointer;
 }
@@ -392,6 +390,7 @@ body {
 
 .icon-btn:hover {
     background: var(--primary-wash);
+    border-color: var(--primary);
 }
 
 .icon-btn:disabled {
@@ -401,6 +400,11 @@ body {
 
 /* The attach button sits in the composer row beside the textarea. */
 .composer button.attach {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.6rem;
+    padding: 0;
     color: var(--primary);
     background: transparent;
     border: 1px solid var(--primary-border);
@@ -433,16 +437,20 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
     padding: 0;
     font: inherit;
     background: none;
-    border: none;
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
     color: var(--primary-dim);
     cursor: pointer;
 }
 
 .chip .chip-remove:hover {
     color: var(--primary);
+    border-color: var(--primary);
 }
 
 /* Streaming/submitting indicator (LoaderCircle). */
