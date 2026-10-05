@@ -7,16 +7,16 @@
         sans-serif;
     line-height: 1.5;
 
-    /* J.A.R.V.I.S. holographic blue (#4d9fff) on dark translucent panels. */
-    --jarvis-blue: #4d9fff;
-    --jarvis-blue-hot: #66adff;
-    --jarvis-blue-deep: #2f7ee0;
-    --panel: #10182a;
-    --panel-raised: #16203a;
-    --panel-border: #4d9fff33;
-    --bg: #0a1020;
-    --text: #cdd9f0;
-    --text-dim: #9aa8c6;
+    /* Dual-chromatic theme: pure black + holographic cyan (#00ddff).
+       All hierarchy is alpha of the one hue on black; red is the single
+       functional exception (errors). */
+    --primary: #00ddff;
+    --primary-dim: rgba(0, 221, 255, 0.6);
+    --primary-border: rgba(0, 221, 255, 0.3);
+    --primary-wash: rgba(0, 221, 255, 0.08);
+    --panel: #000000;
+    --bg: #000000;
+    --text: var(--primary);
     --error: #ff6b6b;
 }
 
@@ -26,7 +26,7 @@
 
 body {
     margin: 0;
-    background: linear-gradient(180deg, #0a1020 0%, #0d1530 100%);
+    background: var(--bg);
     min-height: 100dvh;
     color: var(--text);
 }
@@ -43,7 +43,7 @@ body {
     margin: 0 0 1.25rem;
     font-size: 1.5rem;
     letter-spacing: 0.08em;
-    color: var(--jarvis-blue);
+    color: var(--primary);
 }
 
 .login form {
@@ -64,28 +64,28 @@ body {
     font: inherit;
     background: var(--panel);
     color: var(--text);
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--primary-border);
     border-radius: 6px;
 }
 
 .login input:focus {
     outline: none;
-    border-color: var(--jarvis-blue);
+    border-color: var(--primary);
 }
 
 .login button {
     padding: 0.5rem;
     font: inherit;
     font-weight: 600;
-    color: #071020;
-    background: var(--jarvis-blue);
-    border: 1px solid var(--jarvis-blue-deep);
+    color: #000;
+    background: var(--primary);
+    border: 1px solid var(--primary);
     border-radius: 6px;
     cursor: pointer;
 }
 
 .login button:hover {
-    background: var(--jarvis-blue-hot);
+    box-shadow: 0 0 10px rgba(0, 221, 255, 0.45);
 }
 
 .login button:disabled {
@@ -114,7 +114,7 @@ body {
     gap: 0.5rem;
     padding: 1rem 0.75rem;
     background: var(--panel);
-    border-right: 1px solid var(--panel-border);
+    border-right: 1px solid var(--primary-border);
     overflow-y: auto;
 }
 
@@ -123,7 +123,7 @@ body {
     align-items: center;
     justify-content: space-between;
     font-weight: 600;
-    color: var(--jarvis-blue);
+    color: var(--primary);
 }
 
 .sidebar nav {
@@ -153,18 +153,18 @@ body {
 }
 
 .thread-open:hover {
-    background: var(--panel-raised);
+    background: var(--primary-wash);
 }
 
 .thread-open.active {
-    background: var(--jarvis-blue-deep);
-    color: #fff;
+    background: var(--primary);
+    color: #000;
 }
 
 .thread-delete {
     border: 0;
     background: transparent;
-    color: var(--text-dim);
+    color: var(--primary-dim);
     cursor: pointer;
 }
 
@@ -176,15 +176,15 @@ body {
     padding: 0.4rem;
     font: inherit;
     font-weight: 600;
-    color: #071020;
-    background: var(--jarvis-blue);
-    border: 1px solid var(--jarvis-blue-deep);
+    color: #000;
+    background: var(--primary);
+    border: 1px solid var(--primary);
     border-radius: 6px;
     cursor: pointer;
 }
 
 .new-chat:hover {
-    background: var(--jarvis-blue-hot);
+    box-shadow: 0 0 10px rgba(0, 221, 255, 0.45);
 }
 
 .conversation {
@@ -199,9 +199,9 @@ body {
     margin: 0;
     padding: 0.4rem 1rem;
     font-weight: 600;
-    color: var(--jarvis-blue);
+    color: var(--primary);
     background: var(--panel);
-    border-bottom: 1px solid var(--panel-border);
+    border-bottom: 1px solid var(--primary-border);
 }
 
 .transcript {
@@ -222,14 +222,14 @@ body {
 
 .msg.user {
     align-self: flex-end;
-    background: var(--jarvis-blue-deep);
-    color: #fff;
+    background: var(--primary);
+    color: #000;
 }
 
 .msg.assistant {
     align-self: flex-start;
     background: var(--panel);
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--primary);
 }
 
 .msg.assistant.error {
@@ -241,7 +241,7 @@ body {
     align-self: flex-start;
     max-width: 46rem;
     font-size: 0.85rem;
-    color: var(--text-dim);
+    color: var(--primary-dim);
 }
 
 .tool-call summary {
@@ -257,7 +257,7 @@ body {
     gap: 0.5rem;
     padding: 0.75rem 1rem;
     background: var(--panel);
-    border-top: 1px solid var(--panel-border);
+    border-top: 1px solid var(--primary-border);
     flex-wrap: wrap;
 }
 
@@ -275,8 +275,8 @@ body {
     gap: 0.4rem;
     padding: 0.25rem 0.5rem;
     font-size: 0.8rem;
-    background: var(--panel-raised);
-    border: 1px solid var(--panel-border);
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
     border-radius: 8px;
 }
 
@@ -285,7 +285,7 @@ body {
     font: inherit;
     background: none;
     border: none;
-    color: var(--text-dim);
+    color: var(--primary-dim);
     cursor: pointer;
 }
 
@@ -303,9 +303,9 @@ body {
     padding: 0.25rem 0.5rem;
     font-size: 0.75rem;
     font-style: italic;
-    color: var(--text-dim);
-    background: var(--panel-raised);
-    border: 1px dashed var(--panel-border);
+    color: var(--primary-dim);
+    background: var(--primary-wash);
+    border: 1px dashed var(--primary-border);
     border-radius: 6px;
 }
 
@@ -321,14 +321,14 @@ body {
     font: inherit;
     background: var(--bg);
     color: var(--text);
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--primary-border);
     border-radius: 6px;
     resize: vertical;
 }
 
 .composer textarea:focus {
     outline: none;
-    border-color: var(--jarvis-blue);
+    border-color: var(--primary);
 }
 
 .composer button {
@@ -341,23 +341,23 @@ body {
 }
 
 .composer button.send:disabled {
-    background: var(--panel-raised);
-    color: var(--text-dim);
-    border-color: var(--panel-border);
+    background: var(--primary-wash);
+    color: var(--primary-dim);
+    border-color: var(--primary-border);
     cursor: default;
 }
 
 .composer button.send.active {
-    background: var(--jarvis-blue);
-    border-color: var(--jarvis-blue-deep);
-    color: #071020;
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #000;
 }
 
 .composer button.send.active:hover {
-    background: var(--jarvis-blue-hot);
+    box-shadow: 0 0 10px rgba(0, 221, 255, 0.45);
 }
 
 .hint {
     margin: 2rem auto;
-    color: var(--text-dim);
+    color: var(--primary-dim);
 }
