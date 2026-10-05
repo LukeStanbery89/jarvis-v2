@@ -158,7 +158,9 @@ describe("trusted proxies and per-IP throttling (#63)", () => {
             windowMs: 60_000,
             maxFailures: 1,
             lockoutMs: 60_000,
-            maxIpFailures: 100,
+            // Bootstrap is keyed purely by IP, so its budget is the ip-kind
+            // one (#66) — single-attempt per client is what these tests walk.
+            maxIpFailures: 1,
         },
         trustProxyCidrs,
     });

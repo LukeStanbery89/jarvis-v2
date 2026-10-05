@@ -146,7 +146,7 @@ export function createAuthRouter(
                 );
             }
             const ipKey = `${BOOTSTRAP_KEY_PREFIX}${req.ip ?? "unknown"}`;
-            const blocked = limiter.admit(ipKey);
+            const blocked = limiter.admit(ipKey, "ip");
             if (blocked) {
                 throw new AuthError(
                     "RATE_LIMITED",
@@ -558,7 +558,8 @@ async function verifyCredentials(
     const ip = req.ip ?? "unknown";
     const userKey = `${LOGIN_KEY_PREFIX}${ip}:${username}`;
     const ipKey = `${LOGIN_KEY_PREFIX}${ip}`;
-    const blocked = limiter.admit(userKey) ?? limiter.admit(ipKey);
+    const blocked =
+        limiter.admit(userKey, "username") ?? limiter.admit(ipKey, "ip");
     if (blocked) {
         throw new AuthError(
             "RATE_LIMITED",

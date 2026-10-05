@@ -258,7 +258,9 @@ describe("bootstrap", () => {
                 windowMs: 60_000,
                 maxFailures: 3,
                 lockoutMs: 60_000,
-                maxIpFailures: 100,
+                // Bootstrap is keyed purely by IP, so its budget is the
+                // ip-kind one (#66) — set it to the lockout the test walks.
+                maxIpFailures: 3,
             },
         };
         const freshApp = createApp(freshStore, cfg);
