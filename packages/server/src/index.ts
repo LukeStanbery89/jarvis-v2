@@ -22,13 +22,17 @@ import {
 import { attachChatServer } from "./ws";
 import { initAgentGraph } from "./agent";
 import { createVisionModel } from "./llm/visionModel";
+import { createTavilyClient } from "./llm/tools/search/tavily";
+import { createSerperClient } from "./llm/tools/search/serper";
 import {
     createAttachmentStore,
     sweepOrphanAttachments,
 } from "./attachments/store";
 import { InFlightLimiter, VlCallLimiter } from "./attachments/limiters";
+import { FixedWindowQuota } from "./rate/fixedWindowQuota";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
+import { logger } from "./logger";
 
 const port = getServerPort();
 const appConfig = getAppConfig();
@@ -42,10 +46,48 @@ const attachments = createAttachmentStore(attachmentConfig);
 const inFlight = new InFlightLimiter(attachmentConfig.maxInflight);
 const vlLimiter = new VlCallLimiter(attachmentConfig.vlCallsPerMin);
 
+// Web search (#9): present only when at least one provider key is
+// configured; providers stay in priority order (Tavily's free quota first).
+const searchProviders = appConfig.search
+    ? [
+          ...(appConfig.search.tavilyApiKey
+              ? [
+                    createTavilyClient({
+                        apiKey: appConfig.search.tavilyApiKey,
+                        maxResults: appConfig.search.maxResults,
+                        timeoutMs: appConfig.search.timeoutMs,
+                    }),
+                ]
+              : []),
+          ...(appConfig.search.serperApiKey
+              ? [
+                    createSerperClient({
+                        apiKey: appConfig.search.serperApiKey,
+                        maxResults: appConfig.search.maxResults,
+                        timeoutMs: appConfig.search.timeoutMs,
+                    }),
+                ]
+              : []),
+      ]
+    : [];
+const searchDeps =
+    searchProviders.length > 0
+        ? {
+              providers: searchProviders,
+              quota: new FixedWindowQuota(appConfig.search!.callsPerMin),
+          }
+        : undefined;
+logger.info(
+    searchProviders.length > 0
+        ? `Web search active: ${searchProviders.map((p) => p.name).join(" + ")}`
+        : "Web search disabled (no provider API keys configured)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
     vlLimiter,
+    ...(searchDeps ? { search: searchDeps } : {}),
 });
 const store = openAppDatabase(appConfig.appDbPath);
 const webApp = createApp(store, appConfig, attachments, inFlight);

@@ -48,12 +48,14 @@ export interface RunAgentOptions {
     attachmentIds?: string[];
     /**
      * The authenticated user's numeric row id (`AppUser.id`), present on
-     * every authenticated turn so the `analyzeImage` tool can enforce
-     * ownership (including follow-up turns asking about an image uploaded in
-     * an earlier one). Absent for guests — attachment-carrying prompts never
-     * reach the agent for them.
+     * every authenticated turn so user-scoped tools can enforce ownership
+     * and per-user quotas (the `analyzeImage` tool checks attachment
+     * ownership — including follow-up turns asking about an image uploaded
+     * in an earlier one; the `webSearch` tool keys its call quota on it).
+     * Absent for guests — attachment-carrying prompts never reach the agent
+     * for them.
      */
-    attachmentOwner?: number;
+    userId?: number;
 }
 
 /**
@@ -211,8 +213,9 @@ function getAgentGraph(): AgentGraph {
  * {@link systemPromptForCapabilities}. When `options.attachmentIds` is
  * present, the ids are deduplicated and appended to the turn's
  * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
- * `analyzeImage` tool reads ids from), and `options.attachmentOwner` is
- * exposed to tool runtime callbacks so the tool can enforce ownership.
+ * `analyzeImage` tool reads ids from), and `options.userId` is exposed to
+ * tool runtime callbacks so user-scoped tools can enforce ownership and
+ * quotas.
  */
 /**
  * Appends the attachment marker to a prompt (#10).
@@ -253,8 +256,6 @@ export async function* runAgent(
             options.capabilities ?? [],
         ),
         recursionLimit: agentMaxTurns,
-        configurable: options.attachmentOwner
-            ? { attachmentOwner: options.attachmentOwner }
-            : undefined,
+        configurable: options.userId ? { userId: options.userId } : undefined,
     });
 }
