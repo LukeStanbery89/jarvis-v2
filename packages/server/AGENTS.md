@@ -191,16 +191,19 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
   shared row-ownership policy), `errors.ts`, `types.ts`, `fs.ts`.
 - `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + prompt framing. The session lifecycle (claim, ownership
-  guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`.
+  guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`. Prompts referencing attachments (#10) require an authenticated socket and pre-turn id validation against the attachment store.
+- `src/attachments/store.ts` — the transient attachment store (#10): ids, TTL, ownership, magic bytes; factory-created, injected (never built inside the agent graph).
+- `src/attachments/limiters.ts` — attachment quotas (VL calls/min, held bytes, upload semaphore); NOT `RateLimiter` reuse.
 - `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer; `systemPromptForCapabilities` conditions the system prompt on the client's declared rendering capabilities and always appends two fixed hygiene paragraphs (one well-formed tool call at a time, and exactly one `getCurrentTime` call per time/date/weekday ask with the question passed verbatim so it returns the requested facet) so emulated tool calling doesn't fragment calls or reuse stale time answers.
 - `src/transport.ts` — `AgentEvent → ServerFrame` mapping.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
-- `src/llm/chatModel.ts` — the only module that knows `@langchain/openai`.
-- `src/llm/tools/` — the tool implementations.
+- `src/llm/chatModel.ts` — the chat model: one of the two modules that know `@langchain/openai` (the other is `visionModel.ts`).
+- `src/llm/visionModel.ts` — the vision-language model the `analyzeImage` tool calls (#10): non-streaming, bounded by an AbortSignal timeout, reasoning discarded.
+- `src/llm/tools/` — the tool implementations; `analyzeImage.ts` resolves attachment ids and enforces ownership via `ToolRuntime.configurable`.
 - `test/` — Vitest suites: `app.test.ts` (health + portal/web serving), `ws.test.ts` (frames + handshakes), `agent.test.ts` (capability prompt conditioning), `http.test.ts`, `sessionManager.test.ts`, `contract.test.ts`.
 
-`src/ws.ts` is the only module that touches the agent seam; `src/llm/chatModel.ts` is the only module that knows
-`@langchain/openai`; nothing outside `@lukestanbery/jarvis-auth` hashes or compares secrets (within it, only
+`src/ws.ts` is the only module that touches the agent seam; exactly two modules know `@langchain/openai`
+(`chatModel.ts` for chat, `visionModel.ts` for image analysis); nothing outside `@lukestanbery/jarvis-auth` hashes or compares secrets (within it, only
 `crypto.ts` holds the primitives — the REST layer reaches password crypto solely through the `credential.ts` seam).
 
 ## Logging

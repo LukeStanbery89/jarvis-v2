@@ -2,9 +2,9 @@
  * The vision-language model boundary for image analysis (#10).
  *
  * The ONE module that constructs a second `ChatOpenAI` for the VL model —
- * just as `chatModel.ts` is the only module that knows `@langchain/openai`
- * for the chat path, this is the only one that knows it for image analysis.
- * The two models differ in every knob that matters: the chat model streams
+ * exactly two modules know about `@langchain/openai`: `chatModel.ts` for the
+ * chat path, this one for image analysis. The two models differ in every
+ * knob that matters: the chat model streams
  * tokens for the client, this one runs a single blocking call whose text
  * result goes back to the agent as a tool result.
  *

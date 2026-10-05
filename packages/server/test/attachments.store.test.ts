@@ -35,21 +35,21 @@ const cfg = (over: Partial<AttachmentConfig> = {}): AttachmentConfig => ({
 describe("createAttachmentStore.put", () => {
     it("round-trips an image through put/get by id", async () => {
         const store = createAttachmentStore(cfg());
-        const id = await store.put("user-1", PNG);
+        const id = await store.put(1, PNG);
         expect(id).toHaveLength(24);
-        expect(await store.get("user-1", id)).toEqual(PNG);
+        expect(await store.get(1, id)).toEqual(PNG);
     });
 
     it("generates unguessable ids (two puts differ)", async () => {
         const store = createAttachmentStore(cfg());
-        const a = await store.put("user-1", PNG);
-        const b = await store.put("user-1", PNG);
+        const a = await store.put(1, PNG);
+        const b = await store.put(1, PNG);
         expect(a).not.toBe(b);
     });
 
     it("rejects a payload over the per-attachment cap", async () => {
         const store = createAttachmentStore(cfg({ maxBytes: 10 }));
-        const err = await store.put("user-1", PNG).catch((e) => e);
+        const err = await store.put(1, PNG).catch((e) => e);
         expect(err).toBeInstanceOf(AttachmentError);
         expect((err as AttachmentError).code).toBe("too-large");
     });
@@ -57,7 +57,7 @@ describe("createAttachmentStore.put", () => {
     it("rejects non-image bytes by magic-byte sniff, not declared type", async () => {
         const store = createAttachmentStore(cfg());
         const fake = Buffer.from("definitely not an image at all");
-        const err = await store.put("user-1", fake).catch((e) => e);
+        const err = await store.put(1, fake).catch((e) => e);
         expect((err as AttachmentError).code).toBe("unsupported");
         // Also: a GIF/PNG/JPEG/WebP header without a valid payload is still
         // accepted by the sniff (the runtime validates content later).
@@ -65,18 +65,18 @@ describe("createAttachmentStore.put", () => {
             Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
             Buffer.alloc(16),
         ]);
-        expect(await store.put("user-1", jpegHeader)).toHaveLength(24);
+        expect(await store.put(1, jpegHeader)).toHaveLength(24);
     });
 
     it("refuses when the user's byte budget is exhausted", async () => {
         const store = createAttachmentStore(
             cfg({ maxTotalBytes: PNG.length + 1 }),
         );
-        await store.put("user-1", PNG);
-        const err = await store.put("user-1", PNG).catch((e) => e);
+        await store.put(1, PNG);
+        const err = await store.put(1, PNG).catch((e) => e);
         expect((err as AttachmentError).code).toBe("over-budget");
         // budget still holds exactly the first reservation
-        expect(store.heldBytes("user-1")).toBe(PNG.length);
+        expect(store.heldBytes(1)).toBe(PNG.length);
     });
 
     it("releases the reservation when the write fails", async () => {
@@ -85,10 +85,10 @@ describe("createAttachmentStore.put", () => {
         const broken = path.join(dir, "root");
         writeFileSync(broken, "not a directory");
         const store = createAttachmentStore(cfg({ dir: broken }));
-        const err = await store.put("user-1", PNG).catch((e) => e);
+        const err = await store.put(1, PNG).catch((e) => e);
         expect(err).toBeInstanceOf(Error);
         expect(err).not.toBeInstanceOf(AttachmentError); // a raw fs error
-        expect(store.heldBytes("user-1")).toBe(0); // budget never reserved
+        expect(store.heldBytes(1)).toBe(0); // budget never reserved
     });
 
     it("fails loudly when the root directory is group/other-accessible", async () => {
@@ -96,10 +96,10 @@ describe("createAttachmentStore.put", () => {
         mkdirSync(dir, { recursive: true });
         chmodSync(dir, 0o755);
         const store = createAttachmentStore(cfg({ dir }));
-        await expect(store.put("user-1", PNG)).rejects.toThrow(
+        await expect(store.put(1, PNG)).rejects.toThrow(
             /group\/other-accessible/,
         );
-        expect(store.heldBytes("user-1")).toBe(0);
+        expect(store.heldBytes(1)).toBe(0);
         chmodSync(dir, 0o700);
     });
 });
@@ -107,22 +107,22 @@ describe("createAttachmentStore.put", () => {
 describe("createAttachmentStore.get", () => {
     it("throws typed 'unknown' for a never-stored id", async () => {
         const store = createAttachmentStore(cfg());
-        const err = await store.get("user-1", "nope").catch((e) => e);
+        const err = await store.get(1, "nope").catch((e) => e);
         expect((err as AttachmentError).code).toBe("unknown");
     });
 
     it("throws typed 'foreign' for another user's attachment", async () => {
         const store = createAttachmentStore(cfg());
-        const id = await store.put("user-1", PNG);
-        const err = await store.get("user-2", id).catch((e) => e);
+        const id = await store.put(1, PNG);
+        const err = await store.get(2, id).catch((e) => e);
         expect((err as AttachmentError).code).toBe("foreign");
     });
 
     it("throws typed 'expired' once the TTL lapses", async () => {
         const store = createAttachmentStore(cfg({ ttlMs: 1000 }));
-        const id = await store.put("user-1", PNG);
+        const id = await store.put(1, PNG);
         await store.sweep(Date.now() + 2001);
-        const err = await store.get("user-1", id).catch((e) => e);
+        const err = await store.get(1, id).catch((e) => e);
         expect((err as AttachmentError).code).toBe("unknown"); // swept = gone
     });
 });
@@ -130,20 +130,20 @@ describe("createAttachmentStore.get", () => {
 describe("createAttachmentStore.release and sweep", () => {
     it("release returns the bytes to the budget and makes the id unknown", async () => {
         const store = createAttachmentStore(cfg());
-        const id = await store.put("user-1", PNG);
+        const id = await store.put(1, PNG);
         store.release(id);
-        expect(store.heldBytes("user-1")).toBe(0);
-        await expect(store.get("user-1", id)).rejects.toMatchObject({
+        expect(store.heldBytes(1)).toBe(0);
+        await expect(store.get(1, id)).rejects.toMatchObject({
             code: "unknown",
         });
     });
 
     it("release is idempotent (R2) — double release never double-frees", async () => {
         const store = createAttachmentStore(cfg());
-        const id = await store.put("user-1", PNG);
+        const id = await store.put(1, PNG);
         store.release(id);
         store.release(id);
-        expect(store.heldBytes("user-1")).toBe(0);
+        expect(store.heldBytes(1)).toBe(0);
     });
 
     it("release of a never-stored id is a no-op", () => {
@@ -153,23 +153,23 @@ describe("createAttachmentStore.release and sweep", () => {
 
     it("sweep deletes only expired entries and tolerates ENOENT", async () => {
         const store = createAttachmentStore(cfg({ ttlMs: 1000 }));
-        const live = await store.put("user-1", PNG);
-        const dead = await store.put("user-1", PNG);
+        const live = await store.put(1, PNG);
+        const dead = await store.put(1, PNG);
         // Simulate the file already vanishing.
         rmSync(path.join(cfg().dir ?? "", dead), { force: true });
         const swept = await store.sweep(Date.now() + 2001);
         expect(swept).toBe(2); // both expired (same ttl); ENOENT tolerated
-        await expect(store.get("user-1", live)).rejects.toMatchObject({
+        await expect(store.get(1, live)).rejects.toMatchObject({
             code: "unknown",
         });
-        expect(store.heldBytes("user-1")).toBe(0);
+        expect(store.heldBytes(1)).toBe(0);
     });
 
     it("sweep keeps live entries", async () => {
         const store = createAttachmentStore(cfg({ ttlMs: 60_000 }));
-        const id = await store.put("user-1", PNG);
+        const id = await store.put(1, PNG);
         expect(await store.sweep(Date.now() + 1000)).toBe(0);
-        expect(await store.get("user-1", id)).toEqual(PNG);
+        expect(await store.get(1, id)).toEqual(PNG);
     });
 });
 

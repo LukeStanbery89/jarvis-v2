@@ -1,23 +1,11 @@
 import request from "supertest";
-import {
-    afterAll,
-    beforeAll,
-    afterEach,
-    describe,
-    expect,
-    it,
-    vi,
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { createAnalyzeImageTool } from "../src/llm/tools/analyzeImage";
 import { createVisionModel } from "../src/llm/visionModel";
 import { withAttachmentMarker } from "../src/agent";
 import { createAttachmentStore } from "../src/attachments/store";
-import {
-    ByteLedger,
-    InFlightLimiter,
-    VlCallLimiter,
-} from "../src/attachments/limiters";
+import { InFlightLimiter, VlCallLimiter } from "../src/attachments/limiters";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AttachmentStore } from "../src/attachments/store";
 import type { VisionModel } from "../src/llm/visionModel";

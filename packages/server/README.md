@@ -112,11 +112,20 @@ variables:
 | `LLM_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible base URL |
 | `LLM_MODEL` | `qwen/qwen3-4b-2507` | Model served by the server |
 | `LLM_TEMPERATURE` | `0` | Sampling temperature |
-| `LLM_SYSTEM_PROMPT` | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends two fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer) plus capability notes — see the Chat protocol section |
+| `LLM_SYSTEM_PROMPT` | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends two fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer) plus capability notes — see the Chat protocol section (the image-analysis rule is a third) |
 | `JARVIS_AGENT_MAX_TURNS` | `10` | Max agent loop steps per turn (tools + model calls) |
 | `JARVIS_CHECKPOINT_PATH` | `~/.jarvis/checkpoints.sqlite` | SQLite checkpoint file for conversation persistence |
 | `JARVIS_DB_PATH` | `~/.jarvis/jarvis.sqlite` | App database: users, devices, sessions, prefs |
 | `JARVIS_TURN_TIMEOUT_MS` | `120000` | Hard cap for one agent turn before it is aborted |
+| `LLM_VL_MODEL` | `qwen3.6-35b-a3b-splash` | Vision-language model the `analyzeImage` tool calls (must accept `image_url` parts) |
+| `LLM_VL_MAX_TOKENS` | `1024` | Output-token cap for one image analysis |
+| `LLM_VL_TIMEOUT_MS` | `60000` | Wall-clock cap for one image analysis (abort bound) |
+| `JARVIS_ATTACHMENT_TTL_MINUTES` | `60` | How long an uploaded image stays analyzable |
+| `JARVIS_ATTACHMENT_MAX_BYTES` | `4194304` (4 MiB) | Decoded-byte cap per attachment |
+| `JARVIS_ATTACHMENT_MAX_TOTAL_BYTES` | `209715200` (200 MiB) | Per-user total across live attachments |
+| `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` | `10` | Vision-analysis calls per user per minute |
+| `JARVIS_ATTACHMENT_MAX_INFLIGHT` | `4` | Concurrent uploads server-wide |
+| `JARVIS_ATTACHMENT_DIR` | `<tmpdir>/jarvis-attachments` | Attachment root (mode-verified private; emptied at boot) |
 | `JARVIS_BOOTSTRAP_TOKEN` | unset | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
 | `JARVIS_HOST` | `0.0.0.0` | Bind address (all interfaces = LAN posture) |
 | `JARVIS_TLS_CERT` | unset | PEM certificate path — enables HTTPS serving |
@@ -383,6 +392,68 @@ unauthenticated and therefore the most exposed.
   every call and `recordSuccess()` deletes the key, so a success-and-release cycle
   counts against the budget — wrong semantics for "N per minute" or "N bytes held".
 
+## Image analysis
+
+Chat prompts can reference uploaded images (#10). The chat model is text-only;
+it answers image questions by delegating to a vision-language (VL) model
+through the `analyzeImage` tool — the analysis text is all that reaches the
+conversation, never the image bytes.
+
+```
+ web composer                        server                            LM Studio
+ ────────────                        ──────                            ─────────
+ 📎 / paste / drag-drop
+   downscale if over budget ────────▶ POST /api/attachments
+   (pure policy + canvas adapter)      requireAuth + requireCsrf
+                                       magic-byte sniff, byte caps
+                                       ◀── 201 { attachmentId }
+ prompt { attachments: [id] } ──────▶ ws.ts: auth required for image prompts;
+                                       ids validated BEFORE the turn claims
+                                       the thread (unknown/expired/foreign
+                                       → immediate error frame)
+                                       └─▶ model sees [attachments: …] and
+                                            calls analyzeImage ──────────▶ VL model
+                                            ◀── analysis text ────────────  (non-streaming)
+                                       ◀── chunk … done
+```
+
+What the surface guarantees:
+
+- **Authentication is required end to end.** Guests cannot upload, and a
+  prompt carrying attachment ids on a guest socket is refused _before_ the
+  session ledger row is claimed. The VL-call quota, byte budgets, and
+  ownership checks all key on the authenticated `user.id`.
+- **Bytes are transient by design.** Uploads live under
+  `<tmpdir>/jarvis-attachments` (private-mode verified at use — a
+  group/other-accessible root fails startup of the store loudly), expire
+  after `JARVIS_ATTACHMENT_TTL_MINUTES`, and are swept at boot (files from a
+  previous process are orphans nothing can resolve) and after each upload.
+  Transcripts keep only the ids — a reloaded thread shows "image not
+  retained" rather than a preview.
+- **Quotas are not rate limiting.** The VL-call limiter (per user, per
+  minute), the per-user byte ledger, and the upload semaphore are quota
+  mechanisms with different semantics than the credential throttle — see
+  [Rate limiting](#rate-limiting) for the distinction and why
+  `RateLimiter` is deliberately not reused here.
+- **Uploads are validated by content, not declaration.** The store sniffs
+  magic bytes (PNG/JPEG/GIF/WebP); a declared mime is never trusted, so
+  crafted non-image bytes are refused with 403 before any storage.
+- **The VL runtime must accept images.** `LLM_VL_MODEL` must name a model on
+  the same endpoint that accepts OpenAI `image_url` content parts. The server
+  verifies reachability at startup when configured; note that LM Studio
+  builds differ in which formats their ingest accepts (the current build
+  rejects WebP — the web client therefore re-encodes PNG sources as PNG and
+  photos as JPEG).
+- **Reasoning never leaks.** The default VL model is a reasoning model; its
+  chain-of-thought is discarded and only the final analysis returns.
+
+The web chat client implements the upload flow (📎, paste, drag-and-drop,
+`data:` previews, one stricter-budget retry on a 413). The protocol and the
+store are client-agnostic — a CLI or camera client can reference attachments
+without touching the wire shape; non-browser clients cannot downscale, so
+they must stay under the per-attachment cap themselves (hard-rejected above
+it).
+
 ### Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
@@ -400,6 +471,7 @@ table — "web session" is the `jarvis_session` cookie):
 | `WS`     | `/ws`                      | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
 | `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header          | Create the first (owner) account + device token                                          |
 | `POST`   | `/api/auth/login`          | none                                | Username + password → a (rotating) device token                                          |
+| `POST`   | `/api/attachments`         | device token or web session         | Upload a base64 image → `{ attachmentId }` for an image-analysis prompt (transient, TTL) |
 | `GET`    | `/api/me`                  | device token or web session         | Current user + their devices                                                             |
 | `POST`   | `/api/devices`             | device token or web session         | Provision a new device token for the caller                                              |
 | `DELETE` | `/api/devices/{id}`        | device token or web session         | Revoke a device (own, or any as owner)                                                   |
@@ -430,13 +502,16 @@ and exchange JSON text frames:
       fragments calls into empty-arg or misnamed invocations), and make exactly one `getCurrentTime` call per
       time/date/weekday ask, passing the user's question verbatim so the tool returns just the requested facet,
       never reusing a value answered earlier (small local models otherwise reuse a stale timestamp from the
-      conversation history or over-report facets that weren't asked for). Must be the very first frame.
+      conversation history or over-report facets that weren't asked for). Since the image-analysis surface (#10),
+      a third fixed paragraph pins how to answer attachment-carrying prompts: call `analyzeImage` with the exact id
+      from the message's `[attachments: …]` list and answer from the tool's description, never by guessing. Must be
+      the very first frame.
     - **First frame (or immediately after `hello`), optional:** `{ "type": "auth", "token": "<device token>" }`
       — authenticates as an account. The server replies with one
       `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. Never
       authenticate → the socket is a **guest** (ephemeral, identity-independent
       chats).
-    - `{ "prompt": "<your prompt>", "sessionId": "<id>", "mode": "text"|"voice" }` —
+    - `{ "prompt": "<your prompt>", "sessionId": "<id>", "mode": "text"|"voice", "attachments": ["<id>"] }` —
       the `sessionId` names the conversation thread. Reuse it to continue an earlier
       conversation (bounded to 128 characters); each distinct id is isolated.
       The optional `mode` (default `"text"`) picks the chat style: text prompts
