@@ -127,4 +127,5 @@ echo "Hello" | jarvis   # stdout = the assistant's reply, diagnostics on stderr
 
 Log lines look like `2026-09-20 12:00:00 [INFO] cli — ...`, colored by level.
 The default level is `info`; override it with the `JARVIS_LOG_LEVEL`
-environment variable (`debug` | `info` | `warn` | `error`).
+environment variable (`silent` | `debug` | `info` | `warn` | `error`). Under a
+test runner the default is `silent`, so `npm test` prints only test output.

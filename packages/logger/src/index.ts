@@ -13,6 +13,11 @@
  * package, see the package README). The default level is `info`, overridable
  * per logger, via the `JARVIS_LOG_LEVEL` env var, or per-instance `level`.
  *
+ * Under a test runner (`VITEST` set, which Vitest does for every worker) the
+ * default drops to `silent`, so a test suite's log output never interleaves with
+ * the reporter's. `JARVIS_LOG_LEVEL` still wins, so `JARVIS_LOG_LEVEL=debug npm test`
+ * shows the logs a test emits.
+ *
  * Sensitive payloads (user prompts, response text) are logged through the
  * `sensitive`/`sensitiveDebug` methods. Payloads are `[REDACTED]` by default;
  * they are only rendered in full when the logger runs in development
@@ -21,8 +26,8 @@
 import { createConsola, LogLevels } from "consola/core";
 import type { ConsolaReporter, LogObject } from "consola/core";
 
-/** Supported log levels, from quietest to most verbose. */
-export type LogLevel = "error" | "warn" | "info" | "debug";
+/** Supported log levels, from quietest to most verbose. `silent` emits nothing. */
+export type LogLevel = "silent" | "error" | "warn" | "info" | "debug";
 
 /**
  * Whether sensitive payloads are rendered verbatim (`"full"`) or as
@@ -41,7 +46,10 @@ export interface Writable {
 export interface LoggerOptions {
     /** Tag attributed to every emitted line (for example `"server"` or `"cli"`). */
     tag: string;
-    /** Minimum level to emit. Defaults to `JARVIS_LOG_LEVEL` env, else `"info"`. */
+    /**
+     * Minimum level to emit. Defaults to the `JARVIS_LOG_LEVEL` env var, else
+     * `"silent"` under a test runner and `"info"` everywhere else.
+     */
     level?: LogLevel;
     /**
      * Whether to colorize the `[LEVEL]` label. Defaults to auto-detection:
@@ -91,10 +99,17 @@ export interface Logger {
     sensitiveDebug(event: string, detail: unknown): void;
 }
 
-const LEVELS: readonly LogLevel[] = ["error", "warn", "info", "debug"];
+const LEVELS: readonly LogLevel[] = [
+    "silent",
+    "error",
+    "warn",
+    "info",
+    "debug",
+];
 
 /** Maps our `LogLevel` names onto Consola's numeric severities. */
 const LEVEL_TO_NUMBER: Record<LogLevel, number> = {
+    silent: LogLevels.silent,
     error: LogLevels.error,
     warn: LogLevels.warn,
     info: LogLevels.info,
@@ -242,7 +257,15 @@ function colorize(code: number, text: string): string {
     return `\u001b[${code}m${text}\u001b[0m`;
 }
 
-/** Resolves the effective level from an explicit value or the environment. */
+/**
+ * Resolves the effective level from an explicit value, the environment, or the
+ * runtime context.
+ *
+ * Precedence: `options.level`, then `JARVIS_LOG_LEVEL`, then `"silent"` when
+ * running under a test runner, else `"info"`. An unrecognized
+ * `JARVIS_LOG_LEVEL` is ignored rather than fatal, so a typo degrades to the
+ * runtime default instead of silencing or un-silencing logging unexpectedly.
+ */
 function resolveLevel(explicit: LogLevel | undefined): LogLevel {
     if (explicit) {
         return explicit;
@@ -252,9 +275,23 @@ function resolveLevel(explicit: LogLevel | undefined): LogLevel {
             ? process.env.JARVIS_LOG_LEVEL
             : undefined;
     const normalized = fromEnv?.toLowerCase();
-    return (LEVELS as readonly string[]).includes(normalized ?? "")
-        ? (normalized as LogLevel)
-        : "info";
+    if ((LEVELS as readonly string[]).includes(normalized ?? "")) {
+        return normalized as LogLevel;
+    }
+    return isTestRunner() ? "silent" : "info";
+}
+
+/**
+ * Whether this process is running under a test runner.
+ *
+ * Vitest exports `VITEST=true` to every worker, which is what makes the
+ * silent default reliable here: the level is resolved when a package's
+ * `src/logger.ts` is first imported, which happens inside the test process.
+ * Suites that need to assert on output (or debug a noisy test) pass an
+ * explicit `level` or set `JARVIS_LOG_LEVEL`.
+ */
+function isTestRunner(): boolean {
+    return typeof process !== "undefined" && process.env.VITEST !== undefined;
 }
 
 /**

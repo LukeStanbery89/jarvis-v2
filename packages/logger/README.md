@@ -51,17 +51,35 @@ colorized by level when colors are enabled:
 
 ## Configuration
 
-| Option      | Default                         | Description                                                                           |
-| ----------- | ------------------------------- | ------------------------------------------------------------------------------------- |
-| `tag`       | — (required)                    | Text attributed to every line, e.g. `"server"`                                        |
-| `level`     | `JARVIS_LOG_LEVEL`, else `info` | `error` \| `warn` \| `info` \| `debug`                                                |
-| `color`     | auto-detected                   | Colors the `[LEVEL]` label; honors `NO_COLOR` / `FORCE_COLOR`, on by default for TTYs |
-| `stream`    | stdout/stderr by level          | Writable stream for all output (Node); see below                                      |
-| `sensitive` | `redacted`                      | `"full"` renders payloads verbatim; `"redacted"` scrubs them (see below)              |
+| Option      | Default                                                    | Description                                                                           |
+| ----------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `tag`       | — (required)                                               | Text attributed to every line, e.g. `"server"`                                        |
+| `level`     | `JARVIS_LOG_LEVEL`, else `silent` under tests, else `info` | `silent` \| `error` \| `warn` \| `info` \| `debug`                                    |
+| `color`     | auto-detected                                              | Colors the `[LEVEL]` label; honors `NO_COLOR` / `FORCE_COLOR`, on by default for TTYs |
+| `stream`    | stdout/stderr by level                                     | Writable stream for all output (Node); see below                                      |
+| `sensitive` | `redacted`                                                 | `"full"` renders payloads verbatim; `"redacted"` scrubs them (see below)              |
 
 The `JARVIS_LOG_LEVEL` environment variable sets the level for every logger
 that does not pass an explicit `level`. Debug output is the only level hidden
 at the default; raise it with `JARVIS_LOG_LEVEL=debug`.
+
+### Silent under tests
+
+Under a test runner (`VITEST` set, which Vitest does in every worker) the
+default level is `silent`, so `npm test` output is only test output. Loggers
+are constructed when a package's `src/logger.ts` is first imported, which
+happens inside the test process, so the default applies automatically with no
+setup file or env var per package.
+
+Both overrides still win over it:
+
+```bash
+JARVIS_LOG_LEVEL=debug npm test        # see everything a test emits
+```
+
+or pass an explicit `level` to `createLogger` when a test asserts on output.
+A test that needs the production default should `delete process.env.VITEST`
+first, which is what this package's own suite does.
 
 ## Sensitive payloads
 
