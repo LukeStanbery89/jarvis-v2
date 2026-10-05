@@ -35,6 +35,13 @@ export class ApiError extends Error {
     constructor(
         readonly status: number,
         message: string,
+        /**
+         * Machine-readable reason from the error body, when the server sends
+         * one (the attachment 413's `code` — e.g. `ATTACHMENT_TOO_LARGE`).
+         */
+        readonly code?: string,
+        /** The cap the server reports alongside a size rejection, in bytes. */
+        readonly maxBytes?: number,
     ) {
         super(message);
         this.name = "ApiError";
@@ -86,12 +93,21 @@ export function createApi(
         });
         if (!res.ok) {
             let message = res.statusText || "request failed";
+            let code: string | undefined;
+            let maxBytes: number | undefined;
             try {
-                message = (await res.json()).error ?? message;
+                const body = (await res.json()) as {
+                    error?: string;
+                    code?: string;
+                    maxBytes?: number;
+                };
+                message = body.error ?? message;
+                code = body.code;
+                maxBytes = body.maxBytes;
             } catch {
                 // non-JSON error body; keep the statusText message
             }
-            throw new ApiError(res.status, message);
+            throw new ApiError(res.status, message, code, maxBytes);
         }
         if (res.status === 204) {
             return undefined as T;
@@ -125,6 +141,23 @@ export function createApi(
                 `/api/sessions/${encodeURIComponent(threadId)}`,
                 { token },
             );
+        },
+        /**
+         * Uploads one base64-encoded image and returns its attachment id
+         * (#10) — the id a prompt references in its `attachments` list.
+         * Bearer-authenticated, no CSRF token (R8: the web client has no
+         * CSRF secret by design). Rejects with {@link ApiError}: 413 carries
+         * `code: "ATTACHMENT_TOO_LARGE"` + `maxBytes`, 403 non-image bytes,
+         * 503 upload capacity saturated.
+         */
+        async uploadAttachment(
+            token: string,
+            base64: string,
+        ): Promise<{ attachmentId: string }> {
+            return request("POST", "/api/attachments", {
+                token,
+                body: { data: base64 },
+            });
         },
     };
 }

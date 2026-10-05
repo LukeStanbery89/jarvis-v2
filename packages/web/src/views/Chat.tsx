@@ -39,10 +39,42 @@ import { ChatClient, type ChatStatus } from "../ChatClient";
 import { webSocketUrl } from "../wsUrl";
 import { Markdown } from "../Markdown";
 import { ToolCall } from "../components/ToolCall";
+import { MAX_ATTACHMENTS } from "@lukestanbery/jarvis-protocol";
+import { prepareForUpload } from "../downscale/browser";
+
+/**
+ * The upload budget the downscale policy plans against, in bytes.
+ *
+ * Mirrors the server's per-attachment cap (`DEFAULT_ATTACHMENT_MAX_BYTES`,
+ * 4 MiB decoded). There is no endpoint exposing the cap, so the two constants
+ * must stay in sync; a drifted server answer surfaces as a 413 and the send
+ * path retries once with a stricter budget, so drift degrades gracefully.
+ */
+const UPLOAD_BUDGET_BYTES = 4 * 1024 * 1024;
+
+/** One image attached to the composer, through its upload lifecycle. */
+interface PendingImage {
+    /** Local chip id (not the server attachment id). */
+    id: string;
+    name: string;
+    /** `data:` preview (R6 — not `blob:`, no revoke bookkeeping). */
+    dataUrl: string;
+    /** Upload state: in flight, resolved id, or failure text. */
+    state:
+        | { kind: "uploading" }
+        | { kind: "ready"; attachmentId: string }
+        | { kind: "failed"; reason: string };
+}
 
 /** Transcript-store actions, all flowing through the pure threads helpers. */
 type ThreadsAction =
-    | { type: "user"; sessionId: string; text: string; at: number }
+    | {
+          type: "user";
+          sessionId: string;
+          text: string;
+          at: number;
+          attachmentIds?: string[];
+      }
     | { type: "chunk"; sessionId: string; text: string; at: number }
     | {
           type: "tool";
@@ -71,6 +103,9 @@ function threadsReducer(map: ThreadMap, action: ThreadsAction): ThreadMap {
                 role: "user",
                 text: action.text,
                 at: action.at,
+                ...(action.attachmentIds?.length
+                    ? { attachmentIds: action.attachmentIds }
+                    : {}),
             });
         case "chunk":
             return appendChunk(map, action.sessionId, action.text, action.at);
@@ -137,6 +172,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     const [status, setStatus] = useState<ChatStatus>("connecting");
     const [banner, setBanner] = useState<string | null>(null);
     const [streaming, setStreaming] = useState(false);
+    /** Images attached to the composer, with their upload lifecycle (#10). */
+    const [pending, setPending] = useState<PendingImage[]>([]);
+    /** In-session attachment previews: attachmentId → data: URL (not persisted). */
+    const [previews, setPreviews] = useState<Record<string, string>>({});
 
     /** Latest thread map for the throttled persister. */
     const threadsRef = useRef(threads);
@@ -149,6 +188,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     onAuthRejectedRef.current = onAuthRejected;
     /** The scrolling transcript container (auto-scroll target). */
     const transcriptRef = useRef<HTMLDivElement | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
     /** The composer textarea (refocused after each turn so chat stays fluid). */
     const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -302,6 +342,128 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         }
     }, [streaming]);
 
+    /** Attaches image files: prepare (downscale if needed), then upload. */
+    function attachFiles(files: FileList | File[]): void {
+        for (const file of Array.from(files)) {
+            if (!file.type.startsWith("image/")) {
+                setBanner(`${file.name} is not an image`);
+                continue;
+            }
+            if (pending.length >= MAX_ATTACHMENTS) {
+                setBanner(`At most ${MAX_ATTACHMENTS} images per message`);
+                break;
+            }
+            const id = crypto.randomUUID();
+            setPending((current) => [
+                ...current,
+                {
+                    id,
+                    name: file.name || "pasted image",
+                    dataUrl: "",
+                    state: { kind: "uploading" },
+                },
+            ]);
+            void prepareAndUpload(file, id);
+        }
+    }
+
+    /** Prepares one file (policy + re-encode) and uploads it, retrying a 413 once stricter. */
+    async function prepareAndUpload(file: File, chipId: string): Promise<void> {
+        const dataUrl = await readAsDataUrl(file).catch(() => "");
+        setPending((c) =>
+            c.map((p) => (p.id === chipId ? { ...p, dataUrl } : p)),
+        );
+        try {
+            let prepared = await prepareForUpload(file, UPLOAD_BUDGET_BYTES);
+            let uploaded: { attachmentId: string };
+            try {
+                uploaded = await api.uploadAttachment(
+                    credential.token,
+                    prepared.base64,
+                );
+            } catch (err) {
+                // One retry at half the reported cap — the "stricter budget"
+                // rung for a file that slipped past the client-side policy.
+                if (
+                    err instanceof ApiError &&
+                    err.status === 413 &&
+                    err.code === "ATTACHMENT_TOO_LARGE"
+                ) {
+                    prepared = await prepareForUpload(
+                        file,
+                        Math.floor((err.maxBytes ?? UPLOAD_BUDGET_BYTES) / 2),
+                    );
+                    uploaded = await api.uploadAttachment(
+                        credential.token,
+                        prepared.base64,
+                    );
+                } else {
+                    throw err;
+                }
+            }
+            setPending((c) =>
+                c.map((p) =>
+                    p.id === chipId
+                        ? {
+                              ...p,
+                              state: {
+                                  kind: "ready",
+                                  attachmentId: uploaded.attachmentId,
+                              },
+                          }
+                        : p,
+                ),
+            );
+            setPreviews((prev) => ({
+                ...prev,
+                [uploaded.attachmentId]: dataUrl,
+            }));
+        } catch (err) {
+            setPending((c) =>
+                c.map((p) =>
+                    p.id === chipId
+                        ? {
+                              ...p,
+                              state: {
+                                  kind: "failed",
+                                  reason:
+                                      err instanceof Error
+                                          ? err.message
+                                          : "upload failed",
+                              },
+                          }
+                        : p,
+                ),
+            );
+        }
+    }
+
+    /** Reads a file as a `data:` URL for its composer chip. */
+    async function readAsDataUrl(file: File): Promise<string> {
+        const blob = await new Promise<Blob | null>((resolve) => {
+            if (file.size <= 4 * 1024 * 1024) {
+                resolve(file);
+            } else {
+                resolve(null); // too big to preview raw; chip shows a note
+            }
+        });
+        if (blob === null) {
+            return "";
+        }
+        return new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () =>
+                reject(reader.error ?? new Error("read failed"));
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /** Drops one pending chip (and its upload, if any). */
+    function detachChip(chipId: string): void {
+        setPending((c) => c.filter((p) => p.id !== chipId));
+    }
+
     /** Starts a fresh conversation (locally; the server row appears on first prompt). */
     function newChat(): void {
         const id = crypto.randomUUID();
@@ -326,10 +488,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         void refreshSessions();
     }
 
-    /** Sends the composer draft as one chat turn. */
+    /** Sends the composer draft (plus any ready attachments) as one chat turn. */
     async function send(): Promise<void> {
         const text = draft.trim();
         const sessionId = activeId;
+        const readyIds = pending
+            .filter((p) => p.state.kind === "ready")
+            .map(
+                (p) =>
+                    (p.state as { kind: "ready"; attachmentId: string })
+                        .attachmentId,
+            );
         if (text === "" || sessionId === null || streaming) {
             return;
         }
@@ -339,10 +508,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             sessionId,
             text,
             at: Date.now(),
+            attachmentIds: readyIds,
         });
+        setPending([]);
         setStreaming(true);
         try {
-            await client.prompt(text, sessionId);
+            await client.prompt(text, sessionId, readyIds);
         } catch (err) {
             dispatch({
                 type: "assistantError",
@@ -442,8 +613,26 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     )}
                     {activeThread?.messages.map((message) => {
                         if (message.role === "user") {
+                            const ids = message.attachmentIds ?? [];
                             return (
                                 <div className="msg user" key={message.id}>
+                                    {ids.map((attachmentId) =>
+                                        previews[attachmentId] ? (
+                                            <img
+                                                key={attachmentId}
+                                                className="attachment-thumb"
+                                                src={previews[attachmentId]}
+                                                alt="attached image"
+                                            />
+                                        ) : (
+                                            <span
+                                                key={attachmentId}
+                                                className="attachment-gone"
+                                            >
+                                                image not retained
+                                            </span>
+                                        ),
+                                    )}
                                     {message.text}
                                 </div>
                             );
@@ -472,7 +661,68 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         );
                     })}
                 </div>
-                <div className="composer">
+                <div
+                    className="composer"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                        e.preventDefault();
+                        if (activeId !== null && !streaming) {
+                            attachFiles(e.dataTransfer.files);
+                        }
+                    }}
+                >
+                    {pending.length > 0 && (
+                        <div className="pending-attachments">
+                            {pending.map((chip) => (
+                                <span className="chip" key={chip.id}>
+                                    {chip.dataUrl !== "" && (
+                                        <img
+                                            src={chip.dataUrl}
+                                            alt={chip.name}
+                                            className="attachment-thumb"
+                                        />
+                                    )}
+                                    <span>
+                                        {chip.state.kind === "uploading" &&
+                                            `uploading ${chip.name}…`}
+                                        {chip.state.kind === "ready" &&
+                                            chip.name}
+                                        {chip.state.kind === "failed" &&
+                                            `${chip.name}: ${chip.state.reason}`}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        aria-label={`remove ${chip.name}`}
+                                        onClick={() => detachChip(chip.id)}
+                                    >
+                                        ✕
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                    <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        hidden
+                        ref={fileInputRef}
+                        onChange={(e) => {
+                            if (e.target.files !== null) {
+                                attachFiles(e.target.files);
+                            }
+                            e.target.value = "";
+                        }}
+                    />
+                    <button
+                        type="button"
+                        className="attach"
+                        aria-label="attach images"
+                        disabled={activeId === null || streaming}
+                        onClick={() => fileInputRef.current?.click()}
+                    >
+                        📎
+                    </button>
                     <textarea
                         id="message"
                         name="message"
@@ -486,6 +736,15 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         ref={composerRef}
                         onChange={(e) => setDraft(e.target.value)}
                         onKeyDown={onKeyDown}
+                        onPaste={(e) => {
+                            const files = Array.from(
+                                e.clipboardData.files,
+                            ).filter((f) => f.type.startsWith("image/"));
+                            if (files.length > 0) {
+                                e.preventDefault();
+                                attachFiles(files);
+                            }
+                        }}
                     />
                     <button
                         type="button"

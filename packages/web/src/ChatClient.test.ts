@@ -193,6 +193,34 @@ describe("ChatClient prompts", () => {
         });
     });
 
+    it("sends attachment ids on the wire frame when provided", async () => {
+        const harness = makeClient();
+        const socket = connected(harness);
+        const pending = harness.client.prompt("look", "s1", ["att-1", "att-2"]);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+        expect(JSON.parse(socket.sent[2])).toEqual({
+            prompt: "look",
+            sessionId: "s1",
+            mode: "text",
+            attachments: ["att-1", "att-2"],
+        });
+    });
+
+    it("omits the attachments key entirely for a plain prompt", async () => {
+        const harness = makeClient();
+        const socket = connected(harness);
+        const pending = harness.client.prompt("hi", "s1", []);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+        expect(JSON.parse(socket.sent[2])).toEqual({
+            prompt: "hi",
+            sessionId: "s1",
+            mode: "text",
+        });
+        expect("attachments" in JSON.parse(socket.sent[2])).toBe(false);
+    });
+
     it("queues a prompt sent while the handshake is still in flight", async () => {
         const harness = makeClient();
         harness.client.connect();
