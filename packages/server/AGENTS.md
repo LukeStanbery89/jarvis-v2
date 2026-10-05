@@ -152,9 +152,10 @@ re-checked against the store on every prompt so a revoked device is cut off imme
 `POST /api/auth/login` and `POST /api/session` are RateLimited against the **same** `login:` quota (per
 `(ip, username)` plus an aggregate per `ip`, exponential backoff) by `src/http/rateLimit.ts`, and both reject
 disabled accounts with 403. `POST /api/bootstrap` shares the same `RateLimiter` instance but is isolated by its own
-`bootstrap:` key namespace. The single source of truth for throttling is the rate-limiting section of this package's
-`README.md` — including the known gap that `JARVIS_RATE_MAX_IP_FAILURES` is parsed but never read, so the per-IP
-cap currently equals `JARVIS_RATE_MAX_FAILURES` (#66). The `/ws` chat path is **not** frequency-limited (#65).
+`bootstrap:` key namespace. Per-username keys enforce `maxFailures`; the aggregate per-IP keys (login and
+bootstrap) enforce `maxIpFailures` — `admit(key, kind)` makes that explicit per call (#66). The single source of
+truth for throttling is the rate-limiting section of this package's `README.md`. The `/ws` chat path is
+**not** frequency-limited (#65).
 The bootstrap token is single-use — a
 `BootstrapGate` in `authRoutes` consumes it after a successful bootstrap, leaving the config object untouched. TLS
 is optional in-node (`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS mode the main listener is HTTPS and a cleartext
