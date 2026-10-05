@@ -141,7 +141,11 @@ re-checked against the store on every prompt so a revoked device is cut off imme
 
 `POST /api/auth/login` and `POST /api/session` are RateLimited against the **same** `login:` quota (per
 `(ip, username)` plus an aggregate per `ip`, exponential backoff) by `src/http/rateLimit.ts`, and both reject
-disabled accounts with 403. `POST /api/bootstrap` is rate-limited separately. The bootstrap token is single-use — a
+disabled accounts with 403. `POST /api/bootstrap` shares the same `RateLimiter` instance but is isolated by its own
+`bootstrap:` key namespace. The single source of truth for throttling is the rate-limiting section of this package's
+`README.md` — including the known gap that `JARVIS_RATE_MAX_IP_FAILURES` is parsed but never read, so the per-IP
+cap currently equals `JARVIS_RATE_MAX_FAILURES` (#66). The `/ws` chat path is **not** frequency-limited (#65).
+The bootstrap token is single-use — a
 `BootstrapGate` in `authRoutes` consumes it after a successful bootstrap, leaving the config object untouched. TLS
 is optional in-node (`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`); in TLS mode the main listener is HTTPS and a cleartext
 redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `src/fs.ts` chmods `~/.jarvis` to
@@ -168,7 +172,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   logged + generic 500).
 - `src/http/cookies.ts` — cookie parsing + the `jarvis_session` cookie name/attributes (`__Host-` under TLS).
 - `src/http/authRoutes.ts` — the `/api` router (bootstrap, login, session, me, devices, users, sessions, prefs).
-- `src/http/rateLimit.ts` — in-memory login/bootstrap throttle (per-`(ip, username)` + per-`ip`, exponential backoff).
+- `src/http/rateLimit.ts` — the credential throttle (`RateLimiter`): one in-memory instance shared by every credential endpoint, isolated by key namespace (`login:` / `bootstrap:`), fixed window + per-key lockout with exponential backoff. Counts attempts at admission (before scrypt) and clears a key on success. In-memory per process; trusts `req.ip` as-is. Not reusable as a quota — see the rate-limiting section of `README.md`.
 - `@lukestanbery/jarvis-auth` (workspace dep) — app database + credential crypto (see its README): `openAppDatabase`
   (backed by `JARVIS_DB_PATH`, `~/.jarvis/jarvis.sqlite`) exposes `AppDatabase` as the intersection of three role
   interfaces — `UserLedger`/`DeviceLedger`/`SessionLedger`; `crypto.ts` (the primitives), `credential.ts` (the
