@@ -571,12 +571,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 </div>
                 <button
                     type="button"
-                    className="new-chat icon-btn"
-                    aria-label="New chat"
+                    className="new-chat"
                     title="New chat"
                     onClick={newChat}
                 >
                     <SquarePen size={16} />
+                    New chat
                 </button>
                 <nav>
                     {entries.map((entry) => (

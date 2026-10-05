@@ -187,12 +187,13 @@ textarea::placeholder {
 }
 
 .new-chat {
-    width: 2.25rem;
-    height: 2.25rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0;
+    gap: 0.4rem;
+    padding: 0.4rem 0.75rem;
+    font: inherit;
+    font-weight: 600;
     color: #000;
     background: var(--primary);
     border: 1px solid var(--primary);
