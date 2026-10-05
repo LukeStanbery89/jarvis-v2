@@ -52,6 +52,41 @@ export const DEFAULT_ATTACHMENT_VL_CALLS_PER_MIN = 10;
 /** Default concurrent uploads in flight (server-wide). */
 export const DEFAULT_ATTACHMENT_MAX_INFLIGHT = 4;
 
+/** Default wall-clock cap for one web-search API call, in milliseconds. */
+export const DEFAULT_SEARCH_TIMEOUT_MS = 15_000;
+
+/** Default number of search results handed to the model. */
+export const DEFAULT_SEARCH_MAX_RESULTS = 5;
+
+/** Default web-search calls allowed per user per minute. */
+export const DEFAULT_SEARCH_CALLS_PER_MIN = 20;
+
+/**
+ * Web-search provider settings (#9).
+ *
+ * Two providers with different economics: Tavily (LLM-optimized, a free
+ * monthly quota) serves the general/news/finance verticals; Serper
+ * (pay-as-you-go Google SERP) serves the verticals Tavily does not have —
+ * images, videos, places, reviews, patents, shopping, scholar.
+ *
+ * The API keys are secrets carried in the environment; they are never
+ * logged and never returned to clients. When NEITHER key is configured the
+ * `search` setting is left undefined and the `webSearch` tool is not
+ * registered at all.
+ */
+export interface SearchConfig {
+    /** Tavily API key (`TAVILY_API_KEY`); enables the Tavily-backed verticals. */
+    readonly tavilyApiKey?: string;
+    /** Serper API key (`SERPER_API_KEY`); enables the Serper-only verticals. */
+    readonly serperApiKey?: string;
+    /** Wall-clock cap for one provider call (`JARVIS_SEARCH_TIMEOUT_MS`). */
+    readonly timeoutMs: number;
+    /** Results handed to the model per call (`JARVIS_SEARCH_MAX_RESULTS`). */
+    readonly maxResults: number;
+    /** Per-user search calls per minute (`JARVIS_SEARCH_CALLS_PER_MIN`). */
+    readonly callsPerMin: number;
+}
+
 /**
  * Default location of the LangGraph checkpoint database.
  *
@@ -278,6 +313,12 @@ export interface AppConfig {
      */
     readonly attachments?: AttachmentConfig;
     /**
+     * Web-search provider settings (#9), present only when at least one
+     * provider API key is configured — no keys, no `webSearch` tool.
+     * Optional so hand-built configs (tests) can omit it.
+     */
+    readonly search?: SearchConfig;
+    /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
      *
@@ -445,6 +486,25 @@ export function getAppConfig(): AppConfig {
                           DEFAULT_ATTACHMENT_MAX_INFLIGHT,
                       ),
                       dir: process.env.JARVIS_ATTACHMENT_DIR || undefined,
+                  },
+        search:
+            !process.env.TAVILY_API_KEY && !process.env.SERPER_API_KEY
+                ? undefined
+                : {
+                      tavilyApiKey: process.env.TAVILY_API_KEY || undefined,
+                      serperApiKey: process.env.SERPER_API_KEY || undefined,
+                      timeoutMs: numberOr(
+                          process.env.JARVIS_SEARCH_TIMEOUT_MS,
+                          DEFAULT_SEARCH_TIMEOUT_MS,
+                      ),
+                      maxResults: numberOr(
+                          process.env.JARVIS_SEARCH_MAX_RESULTS,
+                          DEFAULT_SEARCH_MAX_RESULTS,
+                      ),
+                      callsPerMin: numberOr(
+                          process.env.JARVIS_SEARCH_CALLS_PER_MIN,
+                          DEFAULT_SEARCH_CALLS_PER_MIN,
+                      ),
                   },
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(

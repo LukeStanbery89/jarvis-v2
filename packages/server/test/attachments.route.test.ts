@@ -224,7 +224,7 @@ describe("analyzeImage tool", () => {
         });
         const result = await tool.invoke(
             { attachmentId: "q83hZxLm5sVvT1yKwB9dE2nA", query },
-            { configurable: { attachmentOwner: OWNER } },
+            { configurable: { userId: OWNER } },
         );
         return { result: result as string, vision: fv };
     }
@@ -279,7 +279,7 @@ describe("analyzeImage tool", () => {
             });
             const result = (await tool.invoke(
                 { attachmentId: "abc", query: "q" },
-                { configurable: { attachmentOwner: OWNER } },
+                { configurable: { userId: OWNER } },
             )) as string;
             expect(result).toMatch(/image/i);
             expect(fv.vision.analyze).not.toHaveBeenCalled();

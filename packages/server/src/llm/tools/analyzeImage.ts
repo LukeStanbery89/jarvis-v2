@@ -11,7 +11,7 @@
  *
  * The caller's identity travels through LangGraph's `configurable` (the
  * graph config reaches tool runtime callbacks — verified; there is no
- * AsyncLocalStorage fallback): `ws.ts` stamps `attachmentOwner` on every
+ * AsyncLocalStorage fallback): `ws.ts` stamps `userId` on every
  * authenticated turn, and the tool refuses to run without it. Guests are
  * already rejected at the socket layer for attachment-carrying prompts; this
  * check is defense in depth so a mis-wired graph cannot analyze images
@@ -64,7 +64,7 @@ export function createAnalyzeImageTool(deps: AnalyzeImageDeps) {
             { attachmentId, query },
             runtime: ToolRuntime,
         ): Promise<string> => {
-            const owner = runtime.configurable?.attachmentOwner;
+            const owner = runtime.configurable?.userId;
             if (typeof owner !== "number" || !Number.isInteger(owner)) {
                 logger.warn("analyzeImage called without an attachment owner");
                 return "Image analysis requires signing in. Ask the user to authenticate and retry.";

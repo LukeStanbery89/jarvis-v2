@@ -29,6 +29,11 @@ afterEach(() => {
     delete process.env.JARVIS_WEB_DIR;
     delete process.env.JARVIS_CORS_ORIGINS;
     delete process.env.JARVIS_TRUST_PROXY_CIDRS;
+    delete process.env.TAVILY_API_KEY;
+    delete process.env.SERPER_API_KEY;
+    delete process.env.JARVIS_SEARCH_TIMEOUT_MS;
+    delete process.env.JARVIS_SEARCH_MAX_RESULTS;
+    delete process.env.JARVIS_SEARCH_CALLS_PER_MIN;
 });
 
 describe("getServerPort", () => {
@@ -181,6 +186,31 @@ describe("cross-origin configuration (#63)", () => {
         expect(getAppConfig().trustProxyCidrs).toBeUndefined();
         process.env.JARVIS_TRUST_PROXY_CIDRS = "  ";
         expect(getAppConfig().trustProxyCidrs).toEqual([]);
+    });
+
+    it("omits search config when no provider key is set (#9)", () => {
+        expect(getAppConfig().search).toBeUndefined();
+        process.env.SERPER_API_KEY = "";
+        expect(getAppConfig().search).toBeUndefined();
+    });
+
+    it("parses search config when either provider key is set (#9)", () => {
+        process.env.TAVILY_API_KEY = "tvly-test";
+        expect(getAppConfig().search).toMatchObject({
+            tavilyApiKey: "tvly-test",
+            serperApiKey: undefined,
+        });
+        process.env.SERPER_API_KEY = "serper-test";
+        process.env.JARVIS_SEARCH_TIMEOUT_MS = "5000";
+        process.env.JARVIS_SEARCH_MAX_RESULTS = "3";
+        process.env.JARVIS_SEARCH_CALLS_PER_MIN = "7";
+        expect(getAppConfig().search).toEqual({
+            tavilyApiKey: "tvly-test",
+            serperApiKey: "serper-test",
+            timeoutMs: 5000,
+            maxResults: 3,
+            callsPerMin: 7,
+        });
     });
 
     it("parses trusted proxies as IPs and subnets", () => {

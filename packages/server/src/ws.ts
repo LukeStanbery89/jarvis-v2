@@ -434,7 +434,7 @@ async function streamEventsToSocket(
     capabilities: ClientCapability[],
     mode: ChatMode,
     attachmentIds: string[],
-    attachmentOwner: number | undefined,
+    userId: number | undefined,
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -454,7 +454,7 @@ async function streamEventsToSocket(
         generator = runAgent(prompt, sessionId, {
             capabilities: mode === "voice" ? [] : capabilities,
             attachmentIds,
-            attachmentOwner,
+            userId,
         });
         try {
             for await (const event of generator) {

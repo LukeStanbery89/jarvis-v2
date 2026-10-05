@@ -113,7 +113,7 @@ export interface TurnOptions {
     /**
      * Extra per-turn values merged into the graph's `configurable`, exposed
      * to tool runtime callbacks (`ToolRuntime.configurable`). Used for
-     * caller-scoped context the tools need — e.g. `attachmentOwner` (#10) —
+     * caller-scoped context the tools need — e.g. `userId` (#10, #9) —
      * rather than module-level state; values live for this invocation only.
      */
     configurable?: Record<string, unknown>;

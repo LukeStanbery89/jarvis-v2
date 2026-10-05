@@ -126,6 +126,11 @@ variables:
 | `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` | `10` | Vision-analysis calls per user per minute |
 | `JARVIS_ATTACHMENT_MAX_INFLIGHT` | `4` | Concurrent uploads server-wide |
 | `JARVIS_ATTACHMENT_DIR` | `<tmpdir>/jarvis-attachments` | Attachment root (mode-verified private; emptied at boot) |
+| `TAVILY_API_KEY` | unset | Tavily search key — enables the `general`/`news`/`finance` verticals of `webSearch` |
+| `SERPER_API_KEY` | unset | Serper search key — enables the Serper-only verticals (`images`, `videos`, `places`, `reviews`, `patents`, `shopping`, `scholar`) |
+| `JARVIS_SEARCH_TIMEOUT_MS` | `15000` | Wall-clock cap for one provider search call |
+| `JARVIS_SEARCH_MAX_RESULTS` | `5` | Results handed to the model per search |
+| `JARVIS_SEARCH_CALLS_PER_MIN` | `20` | Per-user search-call quota |
 | `JARVIS_BOOTSTRAP_TOKEN` | unset | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
 | `JARVIS_HOST` | `0.0.0.0` | Bind address (all interfaces = LAN posture) |
 | `JARVIS_TLS_CERT` | unset | PEM certificate path — enables HTTPS serving |
@@ -347,6 +352,20 @@ Behavior:
   resets the counter to zero for the next window.
 - Refusals are `429` with `too many attempts; try again later`.
 
+### Metered-tool quotas — `src/rate/fixedWindowQuota.ts`
+
+Billable or compute-heavy tool calls run on a different mechanism than the
+credential throttle: a **per-user fixed-window quota** whose successful calls
+stay counted (there is no "failure" to forgive — the budget renews only when
+the window lapses). Refusals are returned to the model as retry text ("try
+again in Ns") rather than erroring the turn. The generic machinery is
+`FixedWindowQuota`; each tool instantiates its own.
+
+| Tool                             | Quota         | Budget                                                 |
+| -------------------------------- | ------------- | ------------------------------------------------------ |
+| `analyzeImage` (vision analysis) | `vlLimiter`   | `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` (10/min per user) |
+| `webSearch` (#9)                 | `searchQuota` | `JARVIS_SEARCH_CALLS_PER_MIN` (20/min per user)        |
+
 ### Not rate limited
 
 Worth stating explicitly, because these are the surfaces that cost real CPU:
@@ -438,6 +457,39 @@ store are client-agnostic — a CLI or camera client can reference attachments
 without touching the wire shape; non-browser clients cannot downscale, so
 they must stay under the per-attachment cap themselves (hard-rejected above
 it).
+
+## Web search
+
+The agent answers questions about current or outside knowledge through one
+`webSearch` tool (#9) backed by two providers, chosen for economics and
+coverage:
+
+| Provider                     | Key              | Serves                                                                                                      | Economics                                                                                     |
+| ---------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [Tavily](https://tavily.com) | `TAVILY_API_KEY` | `general`, `news`, `finance`                                                                                | LLM-optimized (synthesized answer + excerpts); **free monthly quota** — the preferred default |
+| [Serper](https://serper.dev) | `SERPER_API_KEY` | `images`, `videos`, `places`, `reviews`, `patents`, `shopping`, `scholar` (+ fallback for Tavily verticals) | Pay-as-you-go Google SERP — spent deliberately, on verticals Tavily does not have             |
+
+The model sees ONE tool with a `kind` parameter; the server routes. A
+Tavily-route search that fails (or runs with no Tavily key configured) falls
+back to Serper; a Serper-only vertical has no fallback. With **no** provider
+key configured the tool is not registered at all — a server that cannot
+search does not pretend to.
+
+Behavior:
+
+- **Metered per user** — `JARVIS_SEARCH_CALLS_PER_MIN` (20/min) through the
+  same fixed-window quota machinery as vision analysis (see
+  [Rate limiting](#rate-limiting)); refusals reach the model as retry text,
+  not error frames.
+- **Bounded per call** — `JARVIS_SEARCH_TIMEOUT_MS` (15 s) aborts a hung
+  provider; `JARVIS_SEARCH_MAX_RESULTS` (5) caps how much lands in the
+  model's context.
+- **Keys are secrets** — carried in the environment, never logged and never
+  included in any error the model or client sees (the broader
+  secret-management design is #27).
+- **Provider responses are untrusted** — both clients normalize defensively
+  and map malformed responses onto model-facing failure text; the model is
+  told to fall back to its own knowledge rather than fail the turn.
 
 ### Endpoints
 
