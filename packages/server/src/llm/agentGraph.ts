@@ -173,7 +173,23 @@ export async function* streamAgentTurn(
         },
     );
 
-    for await (const [message] of stream) {
+    for await (const [message, metadata] of stream) {
+        // Messages-mode emits messages from ANY LangChain runnable inside the
+        // graph — including a model invoked *inside a tool* (the VL call in
+        // `analyzeImage`). Those nested messages are an implementation detail
+        // of the tool: forwarding them would stream the tool's output text as
+        // if the assistant had said it (#70). A tool's output reaches clients
+        // exactly once, via its `toolResult` event — so from the tools node,
+        // only the executed-tool `ToolMessage` passes; nested AI messages are
+        // dropped. Everything from the model node (chat tokens, tool-call
+        // announcements) and every ToolMessage forwards as before. A missing
+        // metadata record forwards too (fail-open), since dropping a real
+        // model message would be worse than relaying a stray one.
+        const node = (metadata as { langgraph_node?: string } | undefined)
+            ?.langgraph_node;
+        if (node === "tools" && message._getType?.() !== "tool") {
+            continue;
+        }
         for (const event of tracked.onMessage(message)) {
             yield event;
         }
