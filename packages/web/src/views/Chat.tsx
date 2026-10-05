@@ -41,6 +41,15 @@ import { Markdown } from "../Markdown";
 import { ToolCall } from "../components/ToolCall";
 import { MAX_ATTACHMENTS } from "@lukestanbery/jarvis-protocol";
 import { prepareForUpload } from "../downscale/browser";
+import {
+    LoaderCircle,
+    LogOut,
+    Paperclip,
+    SendHorizontal,
+    SquarePen,
+    Trash2,
+    X,
+} from "lucide-react";
 
 /**
  * The upload budget the downscale policy plans against, in bytes.
@@ -547,12 +556,24 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             <aside className="sidebar">
                 <div className="sidebar-head">
                     <span>{credential.username}</span>
-                    <button type="button" onClick={signOut}>
-                        Sign out
+                    <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="Sign out"
+                        title="Sign out"
+                        onClick={signOut}
+                    >
+                        <LogOut size={16} />
                     </button>
                 </div>
-                <button type="button" className="new-chat" onClick={newChat}>
-                    + New chat
+                <button
+                    type="button"
+                    className="new-chat icon-btn"
+                    aria-label="New chat"
+                    title="New chat"
+                    onClick={newChat}
+                >
+                    <SquarePen size={16} />
                 </button>
                 <nav>
                     {entries.map((entry) => (
@@ -580,11 +601,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                             </button>
                             <button
                                 type="button"
-                                className="thread-delete"
+                                className="thread-delete icon-btn small"
                                 aria-label={`Delete ${entry.title}`}
+                                title={`Delete ${entry.title}`}
                                 onClick={() => void remove(entry.id)}
                             >
-                                ×
+                                <Trash2 size={14} />
                             </button>
                         </div>
                     ))}
@@ -692,10 +714,11 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                                     </span>
                                     <button
                                         type="button"
+                                        className="chip-remove"
                                         aria-label={`remove ${chip.name}`}
                                         onClick={() => detachChip(chip.id)}
                                     >
-                                        ✕
+                                        <X size={14} />
                                     </button>
                                 </span>
                             ))}
@@ -716,12 +739,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     />
                     <button
                         type="button"
-                        className="attach"
+                        className="attach icon-btn"
                         aria-label="attach images"
+                        title="Attach images"
                         disabled={activeId === null || streaming}
                         onClick={() => fileInputRef.current?.click()}
                     >
-                        📎
+                        <Paperclip size={18} />
                     </button>
                     <textarea
                         id="message"
@@ -756,7 +780,11 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         }
                         onClick={() => void send()}
                     >
-                        {streaming ? "…" : "Send"}
+                        {streaming ? (
+                            <LoaderCircle size={18} className="spin" />
+                        ) : (
+                            <SendHorizontal size={18} />
+                        )}
                     </button>
                 </div>
             </section>
