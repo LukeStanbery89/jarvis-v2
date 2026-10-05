@@ -135,7 +135,7 @@ variables:
 | `JARVIS_WEB_DIR` | `packages/web/dist` | Built web chat client root served at `/web`; empty string disables it |
 | `JARVIS_RATE_WINDOW_MS` | `900000` (15 min) | Attempt-accumulation window for login/bootstrap |
 | `JARVIS_RATE_MAX_FAILURES` | `10` | Attempts per `(ip, username)` before a lockout |
-| `JARVIS_RATE_MAX_IP_FAILURES` | `100` | **Currently inert** — parsed but never read; see the known gap below |
+| `JARVIS_RATE_MAX_IP_FAILURES` | `100` | Aggregate attempts per IP per window — the cap for `login:<ip>` and `bootstrap:<ip>` keys |
 | `JARVIS_RATE_LOCKOUT_MS` | `60000` | Base lockout; doubles per repeat (backoff, ×32 cap) |
 | `JARVIS_CORS_ORIGINS` | unset (deny all cross-origin) | Comma-separated exact origins allowed to call `/api` cross-origin; no wildcard |
 | `JARVIS_TRUST_PROXY_CIDRS` | unset (trust none) | IPs/subnets whose `X-Forwarded-For` is believed for `req.ip` |
@@ -319,15 +319,17 @@ There is exactly **one** `RateLimiter` instance, built from `appConfig.loginRate
 and shared by every credential endpoint. Endpoints stay isolated by **key namespace**
 (`login:` vs `bootstrap:`), not by separate limiters or configs.
 
-| Endpoint                                    | Key                     | Budget                                                                  |
-| ------------------------------------------- | ----------------------- | ----------------------------------------------------------------------- |
-| `POST /api/auth/login`, `POST /api/session` | `login:<ip>:<username>` | `JARVIS_RATE_MAX_FAILURES` (10) per window                              |
-| `POST /api/auth/login`, `POST /api/session` | `login:<ip>`            | `JARVIS_RATE_MAX_FAILURES` (10) per window — aggregate across usernames |
-| `POST /api/bootstrap`                       | `bootstrap:<ip>`        | `JARVIS_RATE_MAX_FAILURES` (10) per window                              |
+| Endpoint                                    | Key                     | Budget                                                                           |
+| ------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------- |
+| `POST /api/auth/login`, `POST /api/session` | `login:<ip>:<username>` | `JARVIS_RATE_MAX_FAILURES` (10) per window                                       |
+| `POST /api/auth/login`, `POST /api/session` | `login:<ip>`            | `JARVIS_RATE_MAX_IP_FAILURES` (100) per window — aggregate across usernames      |
+| `POST /api/bootstrap`                       | `bootstrap:<ip>`        | `JARVIS_RATE_MAX_IP_FAILURES` (100) per window — bootstrap is keyed purely by IP |
 
 Login admits **both** keys on every attempt
-(`limiter.admit(userKey) ?? limiter.admit(ipKey)`), so a request must clear the
-per-username budget _and_ the per-IP aggregate budget.
+(`limiter.admit(userKey, "username") ?? limiter.admit(ipKey, "ip")`), so a request
+must clear the per-username budget _and_ the per-IP aggregate budget; each kind
+checks its own threshold (`admit`'s `kind` parameter picks `maxFailures` vs
+`maxIpFailures` — the limiter never infers it from the key's text).
 
 Behavior:
 
@@ -344,23 +346,6 @@ Behavior:
   `JARVIS_RATE_LOCKOUT_MS` (60 s), doubling (×2, ×4, …) on each repeat up to ×32, and
   resets the counter to zero for the next window.
 - Refusals are `429` with `too many attempts; try again later`.
-
-#### Known gap: `JARVIS_RATE_MAX_IP_FAILURES` is dead config
-
-`RateLimitConfig.maxIpFailures` is parsed from the environment and defaulted to `100`,
-but `RateLimiter.admit()` never reads it — it compares every key against `maxFailures`
-only. The per-IP aggregate budget is therefore **`maxFailures` (10)**, not 100, on both
-the login and bootstrap paths.
-
-Consequences:
-
-- `JARVIS_RATE_MAX_IP_FAILURES` has no effect. Changing it is a no-op.
-- The per-IP cap is 10× tighter than documented, so **any IP that produces 10 failed
-  attempts in 15 minutes is locked out entirely** — including a whole household or
-  office behind one NAT address, where unrelated users lock each other out.
-
-Tracked in [#66](https://github.com/LukeStanbery89/jarvis-v2/issues/66). The table above
-documents the behavior that exists today, not the intent.
 
 ### Not rate limited
 

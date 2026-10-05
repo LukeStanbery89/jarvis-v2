@@ -46,11 +46,19 @@ export class RateLimiter {
      * Reserves one attempt for `key`, returning `null` when the request may
      * proceed or a lockout reason when it must be refused.
      *
+     * `kind` selects the budget the key is checked against — and is explicit
+     * per call because the limiter must not guess it from the key's text:
+     * per-username keys live under `maxFailures`, aggregate per-IP keys
+     * (including bootstrap's) under `maxIpFailures`. Sharing one threshold
+     * silently made the IP cap as tight as the per-username one (#66).
+     *
      * Counting happens here — synchronously, before the caller's slow work —
      * so concurrent requests can't all observe a pre-limit count while their
      * verifications are in flight (see the module doc on the budget model).
      */
-    admit(key: string): string | null {
+    admit(key: string, kind: "username" | "ip"): string | null {
+        const maxFailures =
+            kind === "ip" ? this.config.maxIpFailures : this.config.maxFailures;
         const now = Date.now();
         let entry = this.entries.get(key);
         if (!entry) {
@@ -70,7 +78,7 @@ export class RateLimiter {
         }
         entry.failures += 1;
         entry.lastAttemptAt = now;
-        if (entry.failures > this.config.maxFailures) {
+        if (entry.failures > maxFailures) {
             entry.lockedUntil = now + entry.backoffMs;
             entry.backoffMs = Math.min(
                 entry.backoffMs * 2,
