@@ -15,50 +15,14 @@
  */
 
 /**
- * Fixed-window quota on vision-model analysis calls, keyed by user.
+ * Fixed-window quota on vision-model analysis calls, keyed by user (#10).
  *
- * The only control that bounds compute abuse of the (large) VL model: bytes
- * on disk are cheap, a 35B-parameter inference is not. Unlike the credential
- * throttle, a successful call stays counted — the window must lapse before
- * the budget renews. `tryAcquire` is synchronous, so a burst of concurrent
- * tool calls cannot all observe a pre-limit count (Node serializes the
- * check-and-push).
+ * The generic {@link FixedWindowQuota} machinery under a domain name — the
+ * vision quota is "N successful VL calls per user per window" (see
+ * `src/rate/fixedWindowQuota.ts` for the semantics and the deliberate
+ * difference from `http/rateLimit.ts`).
  */
-export class VlCallLimiter {
-    /** Per-user timestamp of each call inside the current window. */
-    private readonly hits = new Map<number, number[]>();
-
-    constructor(
-        private readonly callsPerWindow: number,
-        private readonly windowMs = 60_000,
-    ) {}
-
-    /**
-     * Reserves one VL call for `userId`, returning `{ ok: true }` or the
-     * reason with when the budget renews.
-     *
-     * The refusal is shaped for the model to relay: the tool turns it into
-     * user-facing text rather than throwing, so a rate-limited analysis
-     * degrades to a "try again in Ns" answer instead of an error frame.
-     */
-    tryAcquire(
-        /** The owning user's numeric row id (`AppUser.id`) — stable across username changes. */
-        userId: number,
-        now: number = Date.now(),
-    ): { ok: true } | { ok: false; retryAfterMs: number } {
-        const windowStart = now - this.windowMs;
-        const live = (this.hits.get(userId) ?? []).filter(
-            (t) => t > windowStart,
-        );
-        if (live.length >= this.callsPerWindow) {
-            const oldest = Math.min(...live);
-            return { ok: false, retryAfterMs: oldest + this.windowMs - now };
-        }
-        live.push(now);
-        this.hits.set(userId, live);
-        return { ok: true };
-    }
-}
+export { FixedWindowQuota as VlCallLimiter } from "../rate/fixedWindowQuota";
 
 /**
  * Per-user ledger of bytes currently held by live attachments.
