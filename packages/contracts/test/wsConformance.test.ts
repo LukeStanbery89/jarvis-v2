@@ -33,6 +33,7 @@ import { load as loadYaml } from "js-yaml";
 import {
     MAX_CAPABILITIES,
     MAX_ATTACHMENT_ID_LENGTH,
+    MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     parseClientMessage,
@@ -40,6 +41,7 @@ import {
     serializeAuth,
     serializeFrame,
     serializeHello,
+    serializeLocation,
     serializeRequest,
 } from "@lukestanbery/jarvis-protocol";
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
@@ -68,11 +70,12 @@ const SERVER_FRAME_KEYS = [
     "authResult",
 ] as const satisfies readonly FrameKeys<ServerFrame>[];
 
-/** Client message names (not a `ClientFrame` key — it is a union of three shapes). */
+/** Client message names (not `ClientFrame` keys — it is a union of four shapes). */
 const CLIENT_MESSAGE_NAMES = [
     "authHandshake",
     "chatPrompt",
     "clientHello",
+    "locationFrame",
 ] as const;
 
 /**
@@ -100,6 +103,7 @@ const MESSAGE_FOR_CLIENT: Record<string, string> = {
     authHandshake: "authHandshake",
     chatPrompt: "chatPrompt",
     clientHello: "clientHello",
+    locationFrame: "locationFrame",
 };
 
 // ---------------------------------------------------------------------------
@@ -306,6 +310,43 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 MESSAGE_FOR_CLIENT.clientHello,
             );
         });
+
+        it("validates a location device report through the serializer", () => {
+            expectWireConformant(
+                () => serializeLocation(45.5231, -122.6765),
+                MESSAGE_FOR_CLIENT.locationFrame,
+            );
+        });
+
+        it("validates a labeled location device report", () => {
+            expectWireConformant(
+                () => serializeLocation(45.5231, -122.6765, "Portland, OR"),
+                MESSAGE_FOR_CLIENT.locationFrame,
+            );
+        });
+
+        it("validates coordinates at the geographic range boundaries", () => {
+            expectWireConformant(
+                () => serializeLocation(90, 180),
+                MESSAGE_FOR_CLIENT.locationFrame,
+            );
+            expectWireConformant(
+                () => serializeLocation(-90, -180),
+                MESSAGE_FOR_CLIENT.locationFrame,
+            );
+        });
+
+        it("validates a label at MAX_LOCATION_LABEL_LENGTH", () => {
+            expectWireConformant(
+                () =>
+                    serializeLocation(
+                        0,
+                        0,
+                        "x".repeat(MAX_LOCATION_LABEL_LENGTH),
+                    ),
+                MESSAGE_FOR_CLIENT.locationFrame,
+            );
+        });
     });
 
     describe("server → client (real frames from the server transport)", () => {
@@ -414,6 +455,12 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 parseClientMessage(serializeHello(["markdown"])),
             ).not.toThrow();
             expect(() => parseClientMessage(serializeHello([]))).not.toThrow();
+            expect(() =>
+                parseClientMessage(serializeLocation(45.5, -122.7)),
+            ).not.toThrow();
+            expect(() =>
+                parseClientMessage(serializeLocation(0, 0, "Portland")),
+            ).not.toThrow();
         });
     });
 });
@@ -501,6 +548,59 @@ describe("AsyncAPI conformance: spec rejects protocol-invalid frames", () => {
         );
     });
 
+    it("rejects a location report past the north pole", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.locationFrame,
+            asClient({ type: "location", lat: 90.0001, lon: 0 }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a location report past the antimeridian", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.locationFrame,
+            asClient({ type: "location", lat: 0, lon: 180.0001 }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a location report with a missing latitude", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.locationFrame,
+            asClient({ type: "location", lon: 0 }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a location report with a string latitude", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.locationFrame,
+            asClient({ type: "location", lat: "45.5", lon: 0 }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a location report with a whitespace-only label", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.locationFrame,
+            asClient({ type: "location", lat: 0, lon: 0, label: "   " }),
+            parseClientMessage,
+        );
+    });
+
+    it("rejects a location report with a label over MAX_LOCATION_LABEL_LENGTH", () => {
+        expectBothReject(
+            MESSAGE_FOR_CLIENT.locationFrame,
+            asClient({
+                type: "location",
+                lat: 0,
+                lon: 0,
+                label: "x".repeat(MAX_LOCATION_LABEL_LENGTH + 1),
+            }),
+            parseClientMessage,
+        );
+    });
+
     it("rejects a non-string chunk", () => {
         expectBothReject(
             MESSAGE_FOR_KEY.chunk,
@@ -570,6 +670,22 @@ describe("AsyncAPI conformance: the spec is stricter than the parser", () => {
         expectSpecRejects(MESSAGE_FOR_CLIENT.chatPrompt, {
             prompt: "hi",
             sessionId: "s",
+            extra: 1,
+        });
+    });
+
+    it("rejects an extra key on a location frame (parseClientMessage tolerates it)", () => {
+        const wire = JSON.stringify({
+            type: "location",
+            lat: 0,
+            lon: 0,
+            extra: 1,
+        });
+        expect(() => parseClientMessage(wire)).not.toThrow();
+        expectSpecRejects(MESSAGE_FOR_CLIENT.locationFrame, {
+            type: "location",
+            lat: 0,
+            lon: 0,
             extra: 1,
         });
     });

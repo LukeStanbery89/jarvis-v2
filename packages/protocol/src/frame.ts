@@ -16,6 +16,7 @@ import {
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
+    MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
 } from "./types";
@@ -26,6 +27,7 @@ import type {
     ClientCapability,
     ClientFrame,
     ClientHello,
+    ClientLocationFrame,
     ServerFrame,
 } from "./types";
 
@@ -266,20 +268,76 @@ function validateClientHello(request: { capabilities?: unknown }): ClientHello {
 }
 
 /**
+ * Validates a `location` device-report object (#31).
+ *
+ * Throws unless `lat` and `lon` are finite numbers within their geographic
+ * ranges (-90..90 and -180..180 — JSON cannot carry NaN/Infinity, but an
+ * overflow literal like 1e999 parses to `Infinity`, so finiteness is checked
+ * explicitly), and, when `label` is present, unless it is a non-empty
+ * (after trimming) string of at most {@link MAX_LOCATION_LABEL_LENGTH}
+ * characters. An absent label omits the key from the parsed frame; the label
+ * itself is stored verbatim (trims are validation-only, matching every other
+ * protocol string).
+ */
+function validateClientLocation(request: {
+    lat?: unknown;
+    lon?: unknown;
+    label?: unknown;
+}): ClientLocationFrame {
+    if (
+        typeof request.lat !== "number" ||
+        !Number.isFinite(request.lat) ||
+        request.lat < -90 ||
+        request.lat > 90
+    ) {
+        throw new Error("expected a finite 'lat' between -90 and 90");
+    }
+    if (
+        typeof request.lon !== "number" ||
+        !Number.isFinite(request.lon) ||
+        request.lon < -180 ||
+        request.lon > 180
+    ) {
+        throw new Error("expected a finite 'lon' between -180 and 180");
+    }
+    if (request.label === undefined) {
+        return { type: "location", lat: request.lat, lon: request.lon };
+    }
+    if (typeof request.label !== "string" || request.label.trim() === "") {
+        throw new Error("expected 'label' to be a non-empty string");
+    }
+    if (request.label.length > MAX_LOCATION_LABEL_LENGTH) {
+        throw new Error(
+            `label must be at most ${MAX_LOCATION_LABEL_LENGTH} characters`,
+        );
+    }
+    return {
+        type: "location",
+        lat: request.lat,
+        lon: request.lon,
+        label: request.label,
+    };
+}
+
+/**
  * Parses one raw client message into a typed {@link ClientFrame}.
  *
  * A `type: "auth"` message is validated as the first-frame handshake, a
- * `type: "hello"` message as the first-frame capability announcement, and
- * anything else as a legacy {@link ChatPrompt} (which may carry an optional
- * `mode`). Throws on malformed JSON (or a non-object) or shape violations;
- * the thrown message is surfaced to users by the server's error frames and
- * must not drift.
+ * `type: "hello"` message as the first-frame capability announcement, a
+ * `type: "location"` message as the device-location report, and anything
+ * else as a legacy {@link ChatPrompt} (which may carry an optional `mode`).
+ * Throws on malformed JSON (or a non-object) or shape violations; the thrown
+ * message is surfaced to users by the server's error frames and must not
+ * drift.
  */
 export function parseClientMessage(raw: string): ClientFrame {
     const msg = parseJson(raw) as {
         type?: unknown;
         token?: unknown;
         capabilities?: unknown;
+        lat?: unknown;
+        lon?: unknown;
+        label?: unknown;
         prompt?: unknown;
         sessionId?: unknown;
         mode?: unknown;
@@ -290,6 +348,9 @@ export function parseClientMessage(raw: string): ClientFrame {
     }
     if (msg.type === "hello") {
         return validateClientHello({ capabilities: msg.capabilities });
+    }
+    if (msg.type === "location") {
+        return validateClientLocation(msg);
     }
     return validateChatPrompt(msg);
 }
@@ -360,4 +421,24 @@ export function serializeHello(capabilities: ClientCapability[]): string {
         type: "hello",
         capabilities,
     } satisfies ClientHello);
+}
+
+/**
+ * Serializes a `location` device-report frame (#31) to its wire JSON text.
+ *
+ * The caller passes already-rounded coordinates (the web client rounds to
+ * four decimals, ~11 m); this function does no math. An absent `label`
+ * serializes nothing, matching an absent key on the wire.
+ */
+export function serializeLocation(
+    lat: number,
+    lon: number,
+    label?: string,
+): string {
+    return JSON.stringify({
+        type: "location",
+        lat,
+        lon,
+        ...(label !== undefined ? { label } : {}),
+    } satisfies ClientLocationFrame);
 }

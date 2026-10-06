@@ -15,6 +15,7 @@ export type {
     ClientCapability,
     ClientFrame,
     ClientHello,
+    ClientLocationFrame,
     ServerFrame,
 } from "./types";
 export {
@@ -22,6 +23,7 @@ export {
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
+    MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
 } from "./types";
@@ -32,6 +34,7 @@ export {
     serializeAuth,
     serializeFrame,
     serializeHello,
+    serializeLocation,
     serializeRequest,
     SerializeRequestOptions,
 } from "./frame";
