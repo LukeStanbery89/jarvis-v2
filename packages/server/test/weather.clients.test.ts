@@ -1,11 +1,16 @@
 /**
  * Tests for the OpenWeather weather client (#31): request shapes, units,
- * location routing (text query vs device coordinates), defensive
- * normalization (absent phenomena, forecast aggregation), and typed failure
- * modes. The key must never appear in an error message.
+ * location routing (text query vs device coordinates), the q normalization +
+ * 404 US-state fallback, defensive normalization (absent phenomena, forecast
+ * aggregation), and typed failure modes. The key must never appear in an
+ * error message.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOpenWeatherClient } from "../src/llm/tools/weather/openweather";
+import {
+    createOpenWeatherClient,
+    normalizeQuery,
+    usStateFallback,
+} from "../src/llm/tools/weather/openweather";
 import { WeatherError } from "../src/llm/tools/weather/types";
 
 /** Builds a mock fetch returning `body` as JSON (or throwing on raw). */
@@ -31,6 +36,35 @@ function mockJsonFetch(
                 headers: { "Content-Type": "application/json" },
             },
         );
+    };
+    return { fetch: impl as unknown as typeof fetch, calls };
+}
+
+/**
+ * Builds a mock fetch answering a SEQUENCE of responses in order (for the
+ * 404-fallback tests); an exhausted sequence fails the call loudly so an
+ * unexpected extra request can never pass silently.
+ */
+function mockJsonRespond(responses: { status?: number; body: unknown }[]): {
+    fetch: typeof fetch;
+    calls: { url: string; init: RequestInit }[];
+} {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const queue = [...responses];
+    const impl = async (...args: Parameters<typeof fetch>) => {
+        const [input, init] = args;
+        calls.push({
+            url: String(input),
+            init: (init ?? {}) as RequestInit,
+        });
+        const respond = queue.shift();
+        if (!respond) {
+            throw new Error("unexpected extra request in test");
+        }
+        return new Response(JSON.stringify(respond.body), {
+            status: respond.status ?? 200,
+            headers: { "Content-Type": "application/json" },
+        });
     };
     return { fetch: impl as unknown as typeof fetch, calls };
 }
@@ -216,7 +250,7 @@ describe("openweather failures", () => {
                 .catch((e: unknown) => e);
             expect(err).toBeInstanceOf(WeatherError);
             expect((err as Error).message).toBe(
-                `openweather returned ${status}`,
+                `openweather returned ${status} (x)`,
             );
             expect((err as Error).message).not.toContain(OPTS.apiKey);
         }
@@ -277,6 +311,127 @@ describe("openweather failures", () => {
         await expect(client.current({ query: "X" })).rejects.toThrow(
             "missing location name",
         );
+    });
+});
+
+describe("openweather q handling", () => {
+    it("normalizes comma spacing for the q parameter", async () => {
+        const { fetch, calls } = mockJsonFetch({ body: CURRENT_BODY });
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        await client.current({ query: "Aurora, IL" });
+        expect(calls[0]?.url).toContain("q=Aurora%2CIL");
+        expect(calls[0]?.url).not.toContain("%20");
+    });
+
+    it("retries a 404'd City,XX query in the 3-segment US form", async () => {
+        const { fetch, calls } = mockJsonRespond([
+            { status: 404, body: { cod: "404", message: "city not found" } },
+            { status: 200, body: CURRENT_BODY },
+        ]);
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        const result = await client.current({ query: "Aurora, IL" });
+        expect(calls).toHaveLength(2);
+        expect(calls[0]?.url).toContain("q=Aurora%2CIL");
+        expect(calls[1]?.url).toContain("q=Aurora%2CIL%2CUS");
+        expect(result.name).toBe("Portland");
+    });
+
+    it("does not retry when the first query succeeds (country-style 2-letter)", async () => {
+        const { fetch, calls } = mockJsonRespond([
+            { status: 200, body: CURRENT_BODY },
+        ]);
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        await client.current({ query: "Berlin, DE" });
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.url).toContain("q=Berlin%2CDE");
+    });
+
+    it("does not retry 3-segment, plain, or coordinate lookups on 404", async () => {
+        for (const query of [
+            "Aurora,IL,US",
+            "Aurora",
+            "Aurora,Illinois",
+        ] as const) {
+            const { fetch, calls } = mockJsonRespond([
+                {
+                    status: 404,
+                    body: { cod: "404", message: "city not found" },
+                },
+            ]);
+            const client = createOpenWeatherClient({
+                ...OPTS,
+                fetchImpl: fetch,
+            });
+            await expect(client.current({ query })).rejects.toThrow(
+                WeatherError,
+            );
+            expect(calls).toHaveLength(1);
+        }
+        const { fetch, calls } = mockJsonRespond([
+            { status: 404, body: { cod: "404", message: "x" } },
+        ]);
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        await expect(
+            client.current({ lat: 45.5, lon: -122.6 }),
+        ).rejects.toThrow(WeatherError);
+        expect(calls).toHaveLength(1);
+    });
+
+    it("enriches HTTP errors with the provider's reason, never the key", async () => {
+        const { fetch } = mockJsonRespond([
+            {
+                status: 401,
+                body: { cod: 401, message: `Invalid API key ${OPTS.apiKey}.` },
+            },
+        ]);
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        const err = (await client
+            .current({ query: "X" })
+            .catch((e: unknown) => e)) as Error;
+        expect(err).toBeInstanceOf(WeatherError);
+        expect(err.message).toBe(
+            "openweather returned 401 (Invalid API key [redacted].)",
+        );
+        expect(err.message).not.toContain(OPTS.apiKey);
+    });
+
+    it("keeps the bare status line when the error body is unreadable", async () => {
+        const impl = (async () =>
+            new Response("<html>gateway</html>", {
+                status: 502,
+            })) as unknown as typeof fetch;
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: impl });
+        await expect(client.current({ query: "X" })).rejects.toThrow(
+            "openweather returned 502",
+        );
+    });
+
+    it("falls back through both scope endpoints", async () => {
+        const { fetch, calls } = mockJsonRespond([
+            { status: 404, body: { cod: "404", message: "city not found" } },
+            { status: 200, body: FORECAST_BODY },
+        ]);
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        const result = await client.forecast({ query: "Aurora, IL" });
+        expect(calls).toHaveLength(2);
+        expect(calls[0]?.url).toContain("/forecast?");
+        expect(result.days).toHaveLength(2);
+    });
+});
+
+describe("normalizeQuery / usStateFallback", () => {
+    it("trims segments and drops empties", () => {
+        expect(normalizeQuery("Aurora, IL")).toBe("Aurora,IL");
+        expect(normalizeQuery(" Chicago , , IL ")).toBe("Chicago,IL");
+        expect(normalizeQuery("Portland")).toBe("Portland");
+    });
+
+    it("proposes the US-state retry only for the 2-letter 2-segment shape", () => {
+        expect(usStateFallback("Aurora,IL")).toBe("Aurora,IL,US");
+        expect(usStateFallback("Berlin,DE")).toBe("Berlin,DE,US"); // shape matches; never reached (first try succeeds)
+        expect(usStateFallback("Aurora,IL,US")).toBeUndefined();
+        expect(usStateFallback("Aurora,Illinois")).toBeUndefined();
+        expect(usStateFallback("Aurora")).toBeUndefined();
     });
 });
 

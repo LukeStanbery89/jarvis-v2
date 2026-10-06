@@ -12,6 +12,11 @@
  * (Geocoding API → coordinates) doubles the calls per request. Coordinate
  * queries go straight to `lat`/`lon`. Either way the response carries the
  * resolved place `name`, so display needs no reverse geocoding.
+ *
+ * Text queries are normalized ({@link normalizeQuery}) because the provider's
+ * `q` is comma-strict, and a 404 on a `City,XX` shape gets exactly one
+ * {@link usStateFallback} retry — the observed production failure mode
+ * ("Aurora, IL" → `IL` read as Israel → 404, while `Aurora,IL,US` resolves).
  */
 import {
     WeatherError,
@@ -22,6 +27,7 @@ import {
     type WeatherProvider,
     type WeatherUnits,
 } from "./types";
+import { logger } from "../../../logger";
 
 /** OpenWeather's 2.5 data root (current weather + forecast share it). */
 const OPENWEATHER_BASE = "https://api.openweathermap.org/data/2.5";
@@ -53,9 +59,11 @@ function asString(value: unknown): string {
  *
  * Shared transport for both scopes: builds the query (`appid` + `units` plus
  * `q` or `lat`/`lon`), applies the timeout, and maps transport/HTTP/JSON
- * failures onto typed `WeatherError`s. Status text is the raw code ("401"
- * covers an unactivated or wrong key; "404" an unresolvable place) — the key
- * itself never appears in any message.
+ * failures onto typed `WeatherError`s. HTTP errors carry the status on the
+ * error (the fallback logic keys on it) and, when the provider includes one,
+ * its short reason in the message ("404 (city not found)") — that text lands
+ * in the server's warn log only; the model-facing text stays generic. The
+ * key never appears in any message, and the debug request line omits it.
  */
 async function getJson(
     path: string,
@@ -63,7 +71,13 @@ async function getJson(
     opts: OpenWeatherOptions,
     signal?: AbortSignal,
 ): Promise<unknown> {
-    const query = new URLSearchParams({ appid: opts.apiKey, ...params });
+    const { appid, ...visible } = { appid: opts.apiKey, ...params };
+    logger.debug(
+        `openweather GET ${path} ${Object.entries(visible)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(" ")}`,
+    );
+    const query = new URLSearchParams({ appid, ...visible });
     const effectiveSignal = signal ?? AbortSignal.timeout(opts.timeoutMs);
     let response: Response;
     try {
@@ -78,12 +92,44 @@ async function getJson(
         );
     }
     if (!response.ok) {
-        throw new WeatherError(`openweather returned ${response.status}`);
+        throw new WeatherError(
+            await httpReason(response, opts.apiKey),
+            response.status,
+        );
     }
     try {
         return await response.json();
     } catch {
         throw new WeatherError("openweather returned invalid JSON");
+    }
+}
+
+/**
+ * Extracts the provider's own short reason from an error response body.
+ *
+ * OpenWeather answers `{"cod":"404","message":"city not found"}`; the
+ * message is worth surfacing (it distinguishes an unresolvable place from
+ * an unactivated key) but is untrusted text, so it is scrubbed before being
+ * appended: any occurrence of the actual key value is replaced first
+ * (exact-match redaction — the strongest guarantee), then URL-shaped
+ * `apikey=…` fragments, then the whole thing is length-capped. Reading the
+ * body can itself fail — that path still yields the bare status line.
+ */
+async function httpReason(response: Response, apiKey: string): Promise<string> {
+    const bare = `openweather returned ${response.status}`;
+    try {
+        const body = (await response.json()) as { message?: unknown };
+        if (typeof body.message !== "string" || body.message.trim() === "") {
+            return bare;
+        }
+        const reason = body.message
+            .split(apiKey)
+            .join("[redacted]")
+            .replace(/apikey=[^&\s"']*/gi, "apikey=[redacted]")
+            .slice(0, 120);
+        return `${bare} (${reason})`;
+    } catch {
+        return bare;
     }
 }
 
@@ -298,11 +344,50 @@ function normalizeStep(raw: unknown): ForecastStep {
 }
 
 /**
+ * Normalizes a free-text place for OpenWeather's `q` parameter.
+ *
+ * Pure and exported for tests. The provider's `q` is comma-strict —
+ * `City,ST,CC` with no spaces (a 404 on `"Aurora, IL"` was the observed
+ * failure) — so whitespace around segments is trimmed and empty segments
+ * dropped. Ambiguity is deliberately NOT resolved here: a 2-letter second
+ * segment reads as a country code on the wire (`IL` = Israel, not Illinois),
+ * which the {@link usStateFallback} retries correctly on 404.
+ */
+export function normalizeQuery(query: string): string {
+    return query
+        .split(",")
+        .map((segment) => segment.trim())
+        .filter((segment) => segment.length > 0)
+        .join(",");
+}
+
+/**
+ * The retried form for a 404'd 2-segment text query, when one applies.
+ *
+ * Pure and exported for tests. OpenWeather reads `City,ST` state codes ONLY
+ * in the 3-segment `City,ST,CC` form; a bare 2-letter second segment is
+ * parsed as a country code, so `"Aurora,IL"` (Israel) 404s while
+ * `"Aurora,IL,US"` resolves. When a normalized query is exactly
+ * `City,XX` — the shape the model produces naturally from "Aurora, IL" —
+ * the `City,XX,US` interpretation is the retry. Country-style 2-letter
+ * queries ("Berlin,DE" → Germany) resolve on the FIRST try, so the retry
+ * only ever fires on the genuinely-failing shape, at most one extra call.
+ */
+export function usStateFallback(q: string): string | undefined {
+    const parts = q.split(",");
+    if (parts.length === 2 && /^[A-Za-z]{2}$/.test(parts[1] ?? "")) {
+        return `${parts[0]},${parts[1]?.toUpperCase()},US`;
+    }
+    return undefined;
+}
+
+/**
  * Builds the OpenWeather provider.
  *
  * `current` and `forecast` share one transport ({@link getJson}) and differ
- * only in endpoint and location params; text queries go out as `q=`, device
- * coordinates as `lat`/`lon`.
+ * only in endpoint and location params; text queries go out as `q=`
+ * ({@link normalizeQuery}-normalized) with one {@link usStateFallback}
+ * retry on 404, device coordinates as `lat`/`lon`.
  */
 export function createOpenWeatherClient(
     opts: OpenWeatherOptions,
@@ -311,11 +396,41 @@ export function createOpenWeatherClient(
         location: WeatherLocation,
     ): Record<string, string> =>
         "query" in location
-            ? { q: location.query }
+            ? { q: normalizeQuery(location.query) }
             : {
                   lat: String(location.lat),
                   lon: String(location.lon),
               };
+    /**
+     * One provider call with the bounded 404 fallback: a 404 on a
+     * 2-segment `City,XX` query retries once as `City,XX,US` (see
+     * {@link usStateFallback}); every other failure, and every coordinate
+     * lookup, is single-shot.
+     */
+    const getWithFallback = async (
+        path: string,
+        params: Record<string, string>,
+        signal?: AbortSignal,
+    ): Promise<unknown> => {
+        try {
+            return await getJson(path, params, opts, signal);
+        } catch (err) {
+            const q = params.q;
+            if (
+                !(err instanceof WeatherError) ||
+                err.status !== 404 ||
+                q === undefined
+            ) {
+                throw err;
+            }
+            const retried = usStateFallback(q);
+            if (retried === undefined) {
+                throw err;
+            }
+            logger.debug(`openweather 404 on q=${q}; retrying as q=${retried}`);
+            return getJson(path, { ...params, q: retried }, opts, signal);
+        }
+    };
     return {
         name: "openweather",
         async current(
@@ -323,12 +438,14 @@ export function createOpenWeatherClient(
             signal?: AbortSignal,
         ): Promise<CurrentConditions> {
             return normalizeCurrent(
-                await getJson(
+                (await getWithFallback(
                     "/weather",
-                    { units: opts.units, ...locationParams(location) },
-                    opts,
+                    {
+                        units: opts.units,
+                        ...locationParams(location),
+                    },
                     signal,
-                ),
+                )) as Parameters<typeof normalizeCurrent>[0],
             );
         },
         async forecast(
@@ -336,12 +453,14 @@ export function createOpenWeatherClient(
             signal?: AbortSignal,
         ): Promise<Forecast> {
             return normalizeForecast(
-                await getJson(
+                (await getWithFallback(
                     "/forecast",
-                    { units: opts.units, ...locationParams(location) },
-                    opts,
+                    {
+                        units: opts.units,
+                        ...locationParams(location),
+                    },
                     signal,
-                ),
+                )) as Parameters<typeof normalizeForecast>[0],
             );
         },
     };

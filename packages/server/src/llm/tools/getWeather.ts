@@ -190,8 +190,18 @@ export function createGetWeatherTool(deps: WeatherDeps) {
                 runtime.configurable?.location as DeviceLocation | undefined,
             );
             if (!target) {
+                logger.debug(
+                    "getWeather has no location source (no argument, no device report)",
+                );
                 return ASK_FOR_CITY;
             }
+            logger.debug(
+                `getWeather target: ${
+                    "query" in target
+                        ? `q=${target.query}`
+                        : `lat/lon ~${target.lat.toFixed(2)},${target.lon.toFixed(2)}`
+                } (scope ${scope ?? "now"})`,
+            );
             const effectiveScope = scope ?? "now";
             try {
                 if (effectiveScope === "forecast") {
@@ -222,7 +232,9 @@ export function createGetWeatherTool(deps: WeatherDeps) {
                 "and rain chances. Pass the place the user named as `location` " +
                 "('Portland', 'Tokyo, JP'); OMIT `location` entirely when the " +
                 "user does not name one — the server knows the device's " +
-                "location and will use it. Use `scope: 'forecast'` only when " +
+                "location and will use it. If a lookup fails, retry once with " +
+                "a plainer name or a 2-letter country code ('Chicago,US'). " +
+                "Use `scope: 'forecast'` only when " +
                 "the user asks about coming days; conditions right now are " +
                 "the default. Use it for ANY weather question — never answer " +
                 "weather from memory.",

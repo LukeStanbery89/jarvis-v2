@@ -108,10 +108,20 @@ export interface WeatherProvider {
     ): Promise<Forecast>;
 }
 
-/** Why a weather call failed; drives the tool's user-facing error text. */
+/**
+ * Why a weather call failed; drives the tool's user-facing error text.
+ *
+ * The optional `status` carries the provider's HTTP status when the failure
+ * was an HTTP one — the client's fallback logic (the 2-segment US-state
+ * retry) keys on it instead of matching message text.
+ */
 export class WeatherError extends Error {
-    constructor(message: string) {
+    /** The provider's HTTP status, when the failure was an HTTP response. */
+    readonly status?: number;
+
+    constructor(message: string, status?: number) {
         super(message);
         this.name = "WeatherError";
+        this.status = status;
     }
 }

@@ -229,8 +229,9 @@ async function handleFrame(
  * Updates the socket's memory-only location for subsequent turns; the latest
  * report wins, so a client may refresh mid-conversation (it traveled, or
  * granted permission late). No reply frame — the update is silent by design.
- * Coordinates are never logged at precision: the debug line says only that a
- * report arrived, because a location is sensitive user data.
+ * Logged at INFO (a significant consent event the operator needs to see
+ * during setup) but WITHOUT coordinates: the optional label name only,
+ * because a location is sensitive user data.
  */
 function handleLocation(
     conn: ConnectionState,
@@ -241,7 +242,7 @@ function handleLocation(
         lon: frame.lon,
         ...(frame.label !== undefined ? { label: frame.label } : {}),
     };
-    logger.debug(
+    logger.info(
         `Socket reported device location${frame.label ? ` (${frame.label})` : ""}`,
     );
 }
