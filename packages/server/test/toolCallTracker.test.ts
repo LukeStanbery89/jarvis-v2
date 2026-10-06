@@ -121,6 +121,83 @@ describe("ToolCallTracker", () => {
         ).toEqual([{ type: "tool", name: "x", args: {} }]);
     });
 
+    it("drops the whitespace filler that would open a chat bubble", () => {
+        // LM Studio answers tool-calling turns with bare `\n\n` before it
+        // emits the call, and the client opens a *new* assistant bubble on
+        // the first chunk after a tool — so forwarding it drew an empty
+        // bubble above the tool call, and again below its result.
+        expect(
+            track(
+                new AIMessage({ content: "\n\n" }),
+                new AIMessage({ content: "\n\n" }),
+                new AIMessage({ content: "Hello" }),
+            ),
+        ).toEqual([{ type: "token", text: "Hello" }]);
+    });
+
+    it("re-opens the text segment at every tool boundary", () => {
+        const events = track(
+            new AIMessage({ content: "\n\n" }),
+            COMPLETE_CALL,
+            new ToolMessage({
+                content: "accepted",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({ content: "\n\n" }),
+            new AIMessage({ content: "Done." }),
+        );
+        expect(events).toEqual([
+            { type: "tool", name: "getCurrentTime", args: {} },
+            {
+                type: "toolResult",
+                name: "getCurrentTime",
+                output: "accepted",
+            },
+            { type: "token", text: "Done." },
+        ]);
+    });
+
+    it("drops filler after a result even when the segment already held text", () => {
+        const events = track(
+            new AIMessage({ content: "Checking." }),
+            COMPLETE_CALL,
+            new ToolMessage({
+                content: "ok",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({ content: "\n\n" }),
+            new AIMessage({ content: "Done." }),
+        );
+        expect(events).toEqual([
+            { type: "token", text: "Checking." },
+            { type: "tool", name: "getCurrentTime", args: {} },
+            { type: "toolResult", name: "getCurrentTime", output: "ok" },
+            { type: "token", text: "Done." },
+        ]);
+    });
+
+    it("streams whitespace that sits inside a segment untouched", () => {
+        expect(
+            track(
+                new AIMessage({ content: "First" }),
+                new AIMessage({ content: "\n\n" }),
+                new AIMessage({ content: "second" }),
+            ),
+        ).toEqual([
+            { type: "token", text: "First" },
+            { type: "token", text: "\n\n" },
+            { type: "token", text: "second" },
+        ]);
+    });
+
+    it("yields nothing at all for a turn of pure filler", () => {
+        // ws.ts counts a turn with no prose as an empty response; suppressing
+        // the filler here must not mask that — it must still see zero tokens.
+        expect(track(new AIMessage({ content: "\n\n" }))).toEqual([]);
+    });
+
     it("reassembles LM Studio's id-once/index-elsewhere stream into one call", () => {
         // Regression reproducing the real wire capture: LM Studio sends the
         // call id only on the first delta; argument deltas carry just the

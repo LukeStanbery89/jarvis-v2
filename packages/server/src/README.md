@@ -131,7 +131,12 @@ without a live model.
   request and the ToolNode's to run, bounded by `JARVIS_AGENT_MAX_TURNS`. The
   streamed `messages`-mode output is flattened into `AgentEvent`s
   (`token`/`tool`/`toolResult`) by `streamAgentTurn` + the `ToolCallTracker`,
-  so transports never see graph internals.
+  so transports never see graph internals. The tracker also decides what a
+  `token` may open with: whitespace-only filler (the `\n\n` a local model
+  emits around its tool calls) is dropped until real text arrives, and every
+  tool frame re-opens that rule, because a client starts a new assistant
+  bubble after each tool — forwarding the filler drew empty chat bubbles
+  ahead of the call.
 - **One active response per connection.** A second prompt arriving while a
   response is streaming is rejected with an error frame (see protocol in the
   package README); `active` lives per-connection inside `attachChatServer`. On
