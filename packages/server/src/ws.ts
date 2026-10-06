@@ -459,6 +459,17 @@ async function handleAuth(
  * for location-aware tools; a guest turn carries no `userId`, so metered
  * tools refuse guests regardless of any location.
  *
+ * The turn's `token` events are assembled as they stream, so two things can be
+ * done once the stream ends: the whole response is logged in one
+ * `logger.sensitive` event (visible verbatim in development), and a turn that
+ * produced **no prose at all** — whitespace-only chunks included — is reported
+ * as `the model returned an empty response` instead of a bare `done`. That
+ * empty-answer case is a real model failure, not a client bug: a reasoning
+ * model that spends its whole output budget thinking returns an `AIMessage`
+ * with empty `content`, which the tracker correctly turns into zero tokens, and
+ * the client would otherwise render a permanently blank bubble with no
+ * explanation.
+ *
  * The timeout error is emitted by the timer itself; the in-flight generator is
  * `return()`d shortly after, which drains when its current await settles.
  * Draining is **best-effort on a hung model**: `return()` cannot interrupt a
@@ -481,6 +492,11 @@ async function streamEventsToSocket(
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
+    // The turn's assembled answer and tool-call count, kept so the response
+    // can be logged once as a whole (rather than only as per-token debug
+    // lines) and so a turn that produced no prose at all is detectable.
+    let responseText = "";
+    let toolCallCount = 0;
     const finishWithError = (message: string) => {
         if (finished) {
             return;
@@ -506,6 +522,11 @@ async function streamEventsToSocket(
                     return;
                 }
                 logAgentEvent(event);
+                if (event.type === "token") {
+                    responseText += event.text;
+                } else if (event.type === "tool") {
+                    toolCallCount += 1;
+                }
                 sendFrame(socket, toServerFrame(event));
             }
         } catch (err) {
@@ -519,6 +540,17 @@ async function streamEventsToSocket(
             return;
         }
         logger.debug("Agent stream complete");
+        logger.sensitive("Agent response", {
+            text: responseText,
+            toolCalls: toolCallCount,
+        });
+        if (responseText.trim() === "") {
+            logger.warn(
+                `Agent produced no response text after ${toolCallCount} tool call(s); reporting an empty response`,
+            );
+            finishWithError("the model returned an empty response");
+            return;
+        }
         if (socket.readyState !== WebSocket.OPEN) {
             return;
         }

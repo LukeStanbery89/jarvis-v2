@@ -24,6 +24,24 @@ vi.mock("../src/agent", () => ({
                 output: "2026-09-20T00:00:00.000Z",
             };
         }
+        // A turn that calls a tool and then answers nothing: the shape a
+        // reasoning model produces when it spends its whole output budget
+        // thinking (#31 manual testing).
+        if (prompt === "silent") {
+            yield { type: "tool", name: "getCurrentTime", args: {} };
+            yield {
+                type: "toolResult",
+                name: "getCurrentTime",
+                output: "2026-09-20T00:00:00.000Z",
+            };
+            return;
+        }
+        // Whitespace-only prose: the leading newline a reasoning model streams
+        // before its tool call, with no answer after the result.
+        if (prompt === "blank") {
+            yield { type: "token", text: "\n\n" };
+            return;
+        }
         if (prompt === "slow") {
             await new Promise((resolve) => setTimeout(resolve, 300));
             yield { type: "token", text: "slow" };
@@ -116,6 +134,27 @@ describe("chat websocket", () => {
         expect(error).toMatch(/model request failed/);
         expect(done).toBe(true);
         expect(chunks).toEqual([]);
+    });
+
+    it("reports an empty response when the model answers nothing after a tool call", async () => {
+        const { chunks, toolResults, done, error } = await exchange({
+            prompt: "silent",
+            sessionId: SESSION_ID,
+        });
+        expect(error).toMatch(/empty response/i);
+        expect(done).toBe(true);
+        expect(chunks).toEqual([]);
+        expect(toolResults).toHaveLength(1);
+    });
+
+    it("treats a whitespace-only response as empty", async () => {
+        const { chunks, done, error } = await exchange({
+            prompt: "blank",
+            sessionId: SESSION_ID,
+        });
+        expect(chunks).toEqual(["\n\n"]);
+        expect(error).toMatch(/empty response/i);
+        expect(done).toBe(true);
     });
 
     it("rejects a new prompt while the previous response is streaming", async () => {
