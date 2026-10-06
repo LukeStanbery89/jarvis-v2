@@ -314,6 +314,26 @@ token tracing suppressed). Payloads are logged verbatim only in development:
 forced. Override either way with `JARVIS_LOG_SENSITIVE=full|redacted`. The
 option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDebug`).
 
+Each chat turn is logged at two levels: every token as it streams
+(`sensitiveDebug("LLM token", …)`), and the assembled answer once the stream
+ends (`sensitive("Agent response", { text, toolCalls })`) — one line per turn,
+which is what you want when reading a transcript in development.
+
+### Empty model responses
+
+A turn that ends with **no prose at all** (whitespace-only chunks included)
+answers `{"error": "the model returned an empty response"}` + `done`, and logs
+a warning naming the tool-call count. This is a model failure being reported,
+not a client bug: reasoning-tuned models (the Qwen3 family, for instance) can
+spend their entire output budget in the reasoning channel and return an
+`AIMessage` whose `content` is empty, which the tracker correctly turns into
+zero `token` events. Without the guard the client renders a permanently blank
+bubble with no explanation. Note that LM Studio's OpenAI-compatible endpoint
+ignores both `reasoning_budget: 0` and
+`chat_template_kwargs: { enable_thinking: false }`, so this cannot be switched
+off per request — the model itself has to be loaded with thinking disabled, or
+answered by a non-reasoning model.
+
 ## Rate limiting
 
 Every throttle the server applies lives in this section — this is the single source of
@@ -510,6 +530,17 @@ used.
   argument (the user named a place) wins; then the device's reported
   location (a `location` frame from the web client, used by coordinates);
   then the model is told to ask the user which city.
+- **An argument that names nothing falls through, and says so** — `location`
+  is not length-validated, and a stand-in value (`current`, `here`, `my
+location`, `unknown`, …) is treated as step 2 rather than step 1. Small
+  models pass those instead of omitting the field, and searching OpenWeather
+  for a city called "Current" only 404s. Every discard logs a `warn` naming
+  the _classification_ (`blank` / `placeholder`) and where it fell back to —
+  never the discarded value, which can echo user text. The match is
+  whole-string over a deliberately narrow list, so real places that read like
+  stand-ins (`Local`, OH; `Na`, China; `Default`, Derbyshire; `Hereford`)
+  still resolve as queries: a wrong answer about the wrong city is worse than
+  one failed lookup.
 - **Device location is automatic and memory-only** — the web client
   requests a browser-geolocation fix on load (the browser's own permission
   prompt is the consent gate; a sidebar MapPin is the opt-out), rounded to

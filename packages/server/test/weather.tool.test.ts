@@ -3,14 +3,16 @@
  * per-user quota gate, scope routing, the model-facing formatters, and
  * failure text. The provider is scripted, never live.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     createGetWeatherTool,
+    discardedLocationReason,
     formatCurrentConditions,
     formatForecast,
     localClock,
     resolveLocation,
 } from "../src/llm/tools/getWeather";
+import { logger } from "../src/logger";
 import { WeatherError } from "../src/llm/tools/weather/types";
 import type {
     CurrentConditions,
@@ -288,5 +290,140 @@ describe("resolveLocation", () => {
 
     it("returns undefined with neither source", () => {
         expect(resolveLocation(undefined, undefined)).toBeUndefined();
+    });
+
+    it("keeps a real place the user named", () => {
+        expect(resolveLocation("Paris", { lat: 45.5, lon: -122.6 })).toEqual({
+            query: "Paris",
+        });
+    });
+
+    it("treats a placeholder argument as no place named", () => {
+        const device = { lat: 45.5, lon: -122.6 };
+        expect(resolveLocation("current", device)).toEqual({
+            lat: 45.5,
+            lon: -122.6,
+        });
+        expect(resolveLocation("Here.", device)).toEqual({
+            lat: 45.5,
+            lon: -122.6,
+        });
+        expect(resolveLocation("My Current Location", device)).toEqual({
+            lat: 45.5,
+            lon: -122.6,
+        });
+        expect(resolveLocation("current", undefined)).toBeUndefined();
+    });
+
+    it("does not mistake a real place for a placeholder", () => {
+        const device = { lat: 45.5, lon: -122.6 };
+        // The near-misses that are genuine places: `Local` (Ohio), `Na`
+        // (China), `Default` (Derbyshire), `Hereford`. A wrong answer about the
+        // wrong city is worse than one failed lookup, so these must survive.
+        for (const place of [
+            "Current River",
+            "Hereford",
+            "Local",
+            "Na",
+            "Default",
+            "Nearby",
+        ]) {
+            expect(resolveLocation(place, device)).toEqual({ query: place });
+        }
+    });
+});
+
+describe("discardedLocationReason", () => {
+    it("reports nothing when the argument was absent or named a place", () => {
+        expect(discardedLocationReason(undefined)).toBe("");
+        expect(discardedLocationReason("Chicago, US")).toBe("");
+    });
+
+    it("classifies an empty or whitespace argument as blank", () => {
+        expect(discardedLocationReason("")).toBe("blank");
+        expect(discardedLocationReason("   ")).toBe("blank");
+    });
+
+    it("classifies a stand-in as a placeholder", () => {
+        for (const value of [
+            "current",
+            "CURRENT",
+            "current.",
+            "Here",
+            "my location",
+            "the user's location",
+            "N/A",
+            "unknown",
+        ]) {
+            expect(discardedLocationReason(value)).toBe("placeholder");
+        }
+    });
+});
+
+describe("getWeather discarded-argument warning", () => {
+    it("warns without echoing the discarded value when the model passes a placeholder", async () => {
+        const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+        try {
+            const fake = fakeProvider({});
+            await run(
+                { provider: fake.provider },
+                { location: "current" },
+                {
+                    configurable: {
+                        userId: 7,
+                        location: { lat: 45.5, lon: -122.6 },
+                    },
+                },
+            );
+            const messages = warn.mock.calls.map((call) => String(call[0]));
+            expect(
+                messages.some(
+                    (message) =>
+                        message.includes("placeholder") &&
+                        message.includes("device coordinates"),
+                ),
+            ).toBe(true);
+            // The classification is logged; the argument itself never is.
+            expect(messages.join("\n")).not.toContain("current");
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it("warns that it will ask the user when a placeholder has nothing to fall back to", async () => {
+        const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+        try {
+            const fake = fakeProvider({});
+            const result = await run(
+                { provider: fake.provider },
+                { location: "here" },
+            );
+            expect(fake.currentCalls).toHaveLength(0);
+            expect(result).toBe(
+                "No location is available for this user. Ask the user which city they want the weather for.",
+            );
+            expect(
+                warn.mock.calls
+                    .map((call) => String(call[0]))
+                    .some((message) => message.includes("asking the user")),
+            ).toBe(true);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it("stays quiet when the model names a real place", async () => {
+        const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+        try {
+            const fake = fakeProvider({});
+            await run({ provider: fake.provider }, { location: "Chicago, US" });
+            expect(
+                warn.mock.calls.map((call) => String(call[0])),
+            ).not.toContainEqual(
+                expect.stringContaining("discarded") as unknown as string,
+            );
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

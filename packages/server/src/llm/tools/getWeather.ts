@@ -11,7 +11,12 @@
  * 3. neither → the model is told to ask the user which city.
  *
  * The argument wins deliberately: a user who names a place means that place,
- * even mid-travel with a device fix flowing. Calls are metered per user —
+ * even mid-travel with a device fix flowing. An argument that names *nothing*
+ * — blank, or a stand-in like `current`/`here` — counts as step 2 rather than
+ * step 1: small models pass those instead of omitting the field, and searching
+ * OpenWeather for a city called "Current" only 404s.
+ *
+ * Calls are metered per user —
  * the fixed-window quota is checked BEFORE any provider fetch, and its
  * refusal returns model-facing retry text rather than throwing. Provider
  * failures surface as actionable model-facing text too, never as raw
@@ -189,6 +194,14 @@ export function createGetWeatherTool(deps: WeatherDeps) {
                 location,
                 runtime.configurable?.location as DeviceLocation | undefined,
             );
+            const discarded = discardedLocationReason(location);
+            if (discarded) {
+                logger.warn(
+                    `getWeather discarded a ${discarded} model location argument; falling back to ${
+                        target ? "device coordinates" : "asking the user"
+                    }`,
+                );
+            }
             if (!target) {
                 logger.debug(
                     "getWeather has no location source (no argument, no device report)",
@@ -232,16 +245,19 @@ export function createGetWeatherTool(deps: WeatherDeps) {
                 "and rain chances. Pass the place the user named as `location` " +
                 "('Portland', 'Tokyo, JP'); OMIT `location` entirely when the " +
                 "user does not name one — the server knows the device's " +
-                "location and will use it. If a lookup fails, retry once with " +
+                "location and will use it. Never pass a stand-in like " +
+                "'current' or 'here' for a place: those count as no place " +
+                "named. If a lookup fails, retry once with " +
                 "a plainer name or a 2-letter country code ('Chicago,US'). " +
                 "Use `scope: 'forecast'` only when " +
                 "the user asks about coming days; conditions right now are " +
-                "the default. Use it for ANY weather question — never answer " +
-                "weather from memory.",
+                "the default. If the user asked for ONE value (temperature, " +
+                "humidity, wind, conditions), answer with just that value and " +
+                "do not repeat the rest. Use it for ANY weather question — " +
+                "never answer weather from memory.",
             schema: z.object({
                 location: z
                     .string()
-                    .min(1)
                     .optional()
                     .describe(
                         "The place the user named, verbatim or lightly " +
@@ -263,20 +279,102 @@ export function createGetWeatherTool(deps: WeatherDeps) {
  * Resolves the tool's location target (#31).
  *
  * Pure and exported for tests — the fallback order is load-bearing: an
- * explicit (non-blank) model argument wins over the device report, the
- * device report becomes a coordinate lookup, and neither leaves the model
- * to ask the user.
+ * explicit (non-blank, non-placeholder) model argument wins over the device
+ * report, the device report becomes a coordinate lookup, and neither leaves
+ * the model to ask the user.
  */
 export function resolveLocation(
     argument: string | undefined,
     device: DeviceLocation | undefined,
 ): { query: string } | { lat: number; lon: number } | undefined {
     const named = argument?.trim();
-    if (named) {
+    if (named && !isPlaceholderLocation(named)) {
         return { query: named };
     }
     if (device && Number.isFinite(device.lat) && Number.isFinite(device.lon)) {
         return { lat: device.lat, lon: device.lon };
     }
     return undefined;
+}
+
+/**
+ * Classifies a `location` argument that had to be thrown away.
+ *
+ * `"blank"` for an empty/whitespace argument, `"placeholder"` for a stand-in
+ * like `current`, and `""` when there was nothing to discard — the argument was
+ * absent, or it named a real place. Pure and exported for tests.
+ *
+ * The tool logs this at `warn` (the *classification* only, never the value —
+ * a discarded blank argument can still echo user text): a model that fills the
+ * field with a stand-in is a model-behavior signal worth seeing at the default
+ * log level, not just under `debug`.
+ */
+export function discardedLocationReason(
+    argument: string | undefined,
+): "" | "blank" | "placeholder" {
+    const named = argument?.trim();
+    if (!named) {
+        return argument === undefined ? "" : "blank";
+    }
+    return isPlaceholderLocation(named) ? "placeholder" : "";
+}
+
+/**
+ * Placeholder values a model passes instead of omitting `location`.
+ *
+ * Small models reach for the word they were reaching *for* rather than leaving
+ * the argument out — `current` is the common one, then `here` and `my
+ * location`. All of them mean "the user named no place", so they fall through
+ * to the device report exactly as an omitted argument does. Forwarding one
+ * would search OpenWeather for a city literally named "Current" and 404.
+ *
+ * Matching is whole-string, which is the coarse part of this: the list holds
+ * only strings that are effectively never a place a person would ask about.
+ * Deliberately excluded are the near-misses that are — `Local` (Ohio),
+ * `Hereford`, `Default` (Derbyshire), `Na` (China) — plus the vague-but-real
+ * `nearby` / `any` / `around here`, which are too plausible as user phrasing to
+ * discard. A false negative costs one failed lookup; a false positive silently
+ * answers about the wrong place, so only the obvious stand-ins belong here.
+ *
+ * Compared after lowercasing, collapsing whitespace, dropping trailing
+ * punctuation, and stripping a leading `the `.
+ */
+const PLACEHOLDER_LOCATIONS = new Set([
+    "blank",
+    "current",
+    "current conditions",
+    "current location",
+    "current position",
+    "current weather",
+    "device location",
+    "here",
+    "my area",
+    "my current location",
+    "my location",
+    "my position",
+    "n/a",
+    "none",
+    "not applicable",
+    "null",
+    "undefined",
+    "unknown",
+    "unspecified",
+    "user location",
+    "user's location",
+]);
+
+/**
+ * True when a `location` argument is a stand-in for "no place named".
+ *
+ * Pure and exported for tests.
+ */
+export function isPlaceholderLocation(value: string): boolean {
+    return PLACEHOLDER_LOCATIONS.has(
+        value
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .replace(/^the\s+/, "")
+            .replace(/[.!?,;:]+$/, ""),
+    );
 }
