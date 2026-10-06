@@ -137,6 +137,10 @@ re-declares frames.
       thread; the optional `mode` (default `"text"`) picks the chat style: text prompts use the socket's declared
       capabilities, voice prompts always yield plain conversational text (effective capabilities are emptied).
       Sending a prompt without authenticating makes the socket a guest for its lifetime.
+    - **Any time, refreshable:** `{ "type": "location", "lat": <n>, "lon": <n>, "label"?: "<place>" }` (#31) —
+      the device's whereabouts for location-aware tools (the `getWeather` tool). Lat/lon are finite within
+      their geographic ranges; the optional label is ≤64 chars. The latest report wins for subsequent turns;
+      kept in memory for the socket's lifetime only, never persisted, never logged at coordinate precision.
 - Server → Client per prompt: `tool`/`toolResult` frames while the agent calls tools, then `chunk` frames, then
   `{ "done": true }`. Errors: `{ "error": "<message>" }` + `{ "done": true }`.
 - Rejections: a prompt while a previous turn is streaming, a concurrent turn on the same thread across sockets
@@ -191,7 +195,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   interfaces — `UserLedger`/`DeviceLedger`/`SessionLedger`; `crypto.ts` (the primitives), `credential.ts` (the
   `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
   shared row-ownership policy), `errors.ts`, `types.ts`, `fs.ts`.
-- `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + prompt framing. The session lifecycle (claim, ownership
+- `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + `location` device reports (#31) + prompt framing. The session lifecycle (claim, ownership
   guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`. Prompts referencing attachments (#10) require an authenticated socket and pre-turn id validation against the attachment store.
 - `src/attachments/store.ts` — the transient attachment store (#10): ids, TTL, ownership, magic bytes; factory-created, injected (never built inside the agent graph).
 - `src/attachments/limiters.ts` — attachment quotas (VL calls/min, held bytes, upload semaphore); NOT `RateLimiter` reuse.
@@ -202,7 +206,9 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/llm/visionModel.ts` — the vision-language model the `analyzeImage` tool calls (#10): non-streaming, bounded by an AbortSignal timeout, reasoning discarded.
 - `src/llm/tools/search/` — the web-search providers (#9): hand-rolled Tavily + Serper fetch clients behind one normalized shape; keys are env secrets, never logged or in error text.
 - `src/llm/tools/webSearch.ts` — the `webSearch` tool: Tavily-first routing (free quota) with Serper fallback, per-user call quota checked before any fetch. Registered only when a provider key is configured.
-- `src/rate/fixedWindowQuota.ts` — the generic per-user fixed-window quota (VL calls, search calls); `VlCallLimiter` is its domain-named alias.
+- `src/llm/tools/weather/` — the OpenWeather provider (#31): normalized current/forecast shapes, defensive parsing (absent phenomena → undefined), forecast steps folded into days by LOCAL date. Keys are env secrets, never logged or in error text.
+- `src/llm/tools/getWeather.ts` — the `getWeather` tool: { location?, scope? }; location falls through model argument → device coordinates (the socket's latest `location` frame via `configurable.location`) → "ask the user which city". Per-user call quota checked before any fetch. Registered only when `OPENWEATHER_API_KEY` is configured.
+- `src/rate/fixedWindowQuota.ts` — the generic per-user fixed-window quota (VL calls, search calls, weather calls); `VlCallLimiter` is its domain-named alias.
 - `src/llm/tools/` — the tool implementations; `analyzeImage.ts` resolves attachment ids and enforces ownership via `ToolRuntime.configurable`.
 - `test/` — Vitest suites: `app.test.ts` (health + portal/web serving), `ws.test.ts` (frames + handshakes), `agent.test.ts` (capability prompt conditioning), `http.test.ts`, `sessionManager.test.ts`, `contract.test.ts`.
 

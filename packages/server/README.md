@@ -131,6 +131,10 @@ variables:
 | `JARVIS_SEARCH_TIMEOUT_MS` | `15000` | Wall-clock cap for one provider search call |
 | `JARVIS_SEARCH_MAX_RESULTS` | `5` | Results handed to the model per search |
 | `JARVIS_SEARCH_CALLS_PER_MIN` | `20` | Per-user search-call quota |
+| `OPENWEATHER_API_KEY` | unset | OpenWeather key — enables the `getWeather` tool (current + 5-day forecast) |
+| `JARVIS_WEATHER_UNITS` | `imperial` | Unit system reported to the model (`metric` supported) |
+| `JARVIS_WEATHER_TIMEOUT_MS` | `10000` | Wall-clock cap for one provider weather call |
+| `JARVIS_WEATHER_CALLS_PER_MIN` | `10` | Per-user weather-call quota |
 | `JARVIS_BOOTSTRAP_TOKEN` | unset | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
 | `JARVIS_HOST` | `0.0.0.0` | Bind address (all interfaces = LAN posture) |
 | `JARVIS_TLS_CERT` | unset | PEM certificate path — enables HTTPS serving |
@@ -361,10 +365,11 @@ the window lapses). Refusals are returned to the model as retry text ("try
 again in Ns") rather than erroring the turn. The generic machinery is
 `FixedWindowQuota`; each tool instantiates its own.
 
-| Tool                             | Quota         | Budget                                                 |
-| -------------------------------- | ------------- | ------------------------------------------------------ |
-| `analyzeImage` (vision analysis) | `vlLimiter`   | `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` (10/min per user) |
-| `webSearch` (#9)                 | `searchQuota` | `JARVIS_SEARCH_CALLS_PER_MIN` (20/min per user)        |
+| Tool                             | Quota          | Budget                                                 |
+| -------------------------------- | -------------- | ------------------------------------------------------ |
+| `analyzeImage` (vision analysis) | `vlLimiter`    | `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` (10/min per user) |
+| `webSearch` (#9)                 | `searchQuota`  | `JARVIS_SEARCH_CALLS_PER_MIN` (20/min per user)        |
+| `getWeather` (#31)               | `weatherQuota` | `JARVIS_WEATHER_CALLS_PER_MIN` (10/min per user)       |
 
 ### Not rate limited
 
@@ -491,6 +496,39 @@ Behavior:
   and map malformed responses onto model-facing failure text; the model is
   told to fall back to its own knowledge rather than fail the turn.
 
+## Weather
+
+The agent answers weather questions through one `getWeather` tool (#31) backed
+by the [OpenWeather](https://openweathermap.org) free tier — current
+conditions (`/data/2.5/weather`) and the 5-day/3-hour forecast
+(`/data/2.5/forecast`, folded into per-day min/max + headline condition
+server-side so the model sees days, not 40 raw steps). 60 calls/minute
+account-wide, no card required; paid tiers (hourly/16-day, One Call) are not
+used.
+
+- **Location resolves in three steps** — the model's explicit `location`
+  argument (the user named a place) wins; then the device's reported
+  location (a `location` frame from the web client, used by coordinates);
+  then the model is told to ask the user which city.
+- **Device location is consent-gated and memory-only** — the web client's
+  MapPin toggle (default OFF) gates a browser-geolocation request, rounded
+  to four decimals (~11 m); the server keeps the latest report for the
+  socket's lifetime only and never persists it. Browser geolocation requires
+  a **secure context** (HTTPS or localhost) — over plain HTTP the toggle
+  reports "unsupported" and the tool asks for a city (the TLS work is a
+  separate issue).
+- **Metered per user** — `JARVIS_WEATHER_CALLS_PER_MIN` (10/min) through the
+  same fixed-window quota machinery (see [Rate limiting](#rate-limiting)).
+- **Bounded per call** — `JARVIS_WEATHER_TIMEOUT_MS` (10 s).
+- **Units** — `JARVIS_WEATHER_UNITS` (`imperial` default, `metric`
+  supported; Kelvin deliberately unsupported).
+- **Keys are secrets** — same posture as search: env-only, never logged,
+  never in error text.
+- **Fresh keys take time** — a newly created OpenWeather key answers 401 for
+  10 minutes–2 hours before activation; the provider's reason lands in the
+  server's warn log while the model just reports weather being unavailable.
+- With **no** key configured the tool is not registered at all.
+
 ### Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
@@ -556,6 +594,11 @@ and exchange JSON text frames:
       always yield plain conversational text. The mode is recorded as the
       session's `kind` when the thread is first claimed (write-once).
       A `hello` or `auth` frame arriving after this is rejected.
+    - `{ "type": "location", "lat": <number>, "lon": <number>, "label"?: "<place>" }` (#31) —
+      the device's whereabouts (any time, refreshable; the latest report wins
+      for subsequent turns). Feeds the `getWeather` tool so a locationless
+      "what's the weather?" works without asking for a city. Kept in memory
+      for the socket's lifetime only; never persisted. See [Weather](#weather).
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).
