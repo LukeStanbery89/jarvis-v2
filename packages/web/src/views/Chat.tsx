@@ -42,9 +42,18 @@ import { ToolCall } from "../components/ToolCall";
 import { MAX_ATTACHMENTS } from "@lukestanbery/jarvis-protocol";
 import { prepareForUpload } from "../downscale/browser";
 import {
+    describeLocationState,
+    isLocationSupported,
+    readLocationPref,
+    requestLocation,
+    writeLocationPref,
+    type LocationUiState,
+} from "../location";
+import {
     Image as ImageIcon,
     LoaderCircle,
     LogOut,
+    MapPin,
     Paperclip,
     SendHorizontal,
     SquarePen,
@@ -186,6 +195,15 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     const [pending, setPending] = useState<PendingImage[]>([]);
     /** In-session attachment previews: attachmentId → data: URL (not persisted). */
     const [previews, setPreviews] = useState<Record<string, string>>({});
+    /**
+     * The location-consent toggle (#31), persisted across sessions; OFF by
+     * default so the browser's permission prompt never ambushes anyone.
+     */
+    const [locationOn, setLocationOn] = useState(() =>
+        readLocationPref(localStorage),
+    );
+    /** Why the pin looks the way it does (tooltip text lives in location.ts). */
+    const [locationState, setLocationState] = useState<LocationUiState>("off");
 
     /** Latest thread map for the throttled persister. */
     const threadsRef = useRef(threads);
@@ -268,6 +286,40 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             client.close();
         };
     }, [client, refreshSessions]);
+
+    // Location sharing (#31): each toggle-on drives one geolocation request
+    // and (on success) one `location` frame through the chat client. The
+    // browser's own permission prompt is the second gate; "denied" and
+    // "unsupported" are displayed, never retried in a loop — the user can
+    // flip the toggle again after fixing permissions or serving over HTTPS.
+    useEffect(() => {
+        if (!locationOn) {
+            setLocationState("off");
+            return;
+        }
+        if (!isLocationSupported(navigator)) {
+            setLocationState("unsupported");
+            return;
+        }
+        let cancelled = false;
+        setLocationState("locating");
+        void requestLocation(navigator.geolocation).then((result) => {
+            if (cancelled) {
+                return;
+            }
+            if (result.kind === "granted") {
+                client.sendLocation(result.position.lat, result.position.lon);
+                setLocationState("active");
+            } else if (result.kind === "denied") {
+                setLocationState("denied");
+            } else {
+                setLocationState("failed");
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [locationOn, client]);
 
     // Throttled trailing persistence: at most one write per 300ms burst of
     // chunk updates (the timer always reads the latest map via the ref), a
@@ -562,20 +614,43 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         onSignedOut();
     }
 
+    /** Flips the location-consent toggle and persists it (#31). */
+    function toggleLocation(): void {
+        const next = !locationOn;
+        setLocationOn(next);
+        writeLocationPref(localStorage, next);
+    }
+
     return (
         <main className="chat">
             <aside className="sidebar">
                 <div className="sidebar-head">
                     <span>{credential.username}</span>
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label="Sign out"
-                        title="Sign out"
-                        onClick={signOut}
-                    >
-                        <LogOut size={16} />
-                    </button>
+                    <span className="sidebar-actions">
+                        <button
+                            type="button"
+                            className={
+                                locationState === "active"
+                                    ? "icon-btn location active"
+                                    : "icon-btn location"
+                            }
+                            aria-pressed={locationOn}
+                            aria-label={describeLocationState(locationState)}
+                            title={describeLocationState(locationState)}
+                            onClick={toggleLocation}
+                        >
+                            <MapPin size={16} />
+                        </button>
+                        <button
+                            type="button"
+                            className="icon-btn"
+                            aria-label="Sign out"
+                            title="Sign out"
+                            onClick={signOut}
+                        >
+                            <LogOut size={16} />
+                        </button>
+                    </span>
                 </div>
                 <button
                     type="button"

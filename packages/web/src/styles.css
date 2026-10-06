@@ -411,6 +411,21 @@ textarea::placeholder {
     cursor: default;
 }
 
+/* The location-consent pin (#31): dim until actively sharing. */
+.sidebar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.icon-btn.location {
+    color: var(--primary-dim);
+}
+
+.icon-btn.location.active {
+    color: var(--primary);
+}
+
 /* The attach button sits in the composer row beside the textarea. */
 .composer button.attach {
     display: inline-flex;
