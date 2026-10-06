@@ -307,7 +307,9 @@ function normalizeStep(raw: unknown): ForecastStep {
 export function createOpenWeatherClient(
     opts: OpenWeatherOptions,
 ): WeatherProvider {
-    const locationParams = (location: WeatherLocation) =>
+    const locationParams = (
+        location: WeatherLocation,
+    ): Record<string, string> =>
         "query" in location
             ? { q: location.query }
             : {

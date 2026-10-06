@@ -13,7 +13,10 @@
  * handshake comes first (both,
  * at most once each, before any prompt) or not at all — any other opening,
  * or no auth, runs the socket as a **guest** (ephemeral,
- * identity-independent chats). Afterwards clients send JSON prompt frames and
+ * identity-independent chats). At any point in the socket's lifetime a client
+ * may send a `location` device report (#31) — kept in memory, refreshable,
+ * and forwarded to location-aware tools on subsequent turns. Afterwards
+ * clients send JSON prompt frames and
  * receive chunk/done frames back. The frame shapes and parse/serialize logic
  * live in `@lukestanbery/jarvis-protocol` — the single source of truth for
  * the wire protocol — so the server never re-declares them.
@@ -37,15 +40,18 @@ import {
     type ClientCapability,
     type ClientFrame,
 } from "@lukestanbery/jarvis-protocol";
-import type { ClientHello } from "@lukestanbery/jarvis-protocol";
-import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
+import type {
+    ClientHello,
+    ClientLocationFrame,
+    ServerFrame,
+} from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "@lukestanbery/jarvis-auth";
 import type { AppDatabase, AuthContext } from "@lukestanbery/jarvis-auth";
 import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
 import { createSessionManager } from "./sessionManager";
 import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
-import type { AgentEvent } from "./agent";
+import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
 import type { AttachmentStore } from "./attachments/store";
 import { logger } from "./logger";
@@ -63,6 +69,12 @@ interface ConnectionState {
     promptSeen: boolean;
     /** Render capabilities declared by a `hello` frame (empty for plain text). */
     capabilities: ClientCapability[];
+    /**
+     * The device's latest reported location (#31), from `location` frames.
+     * Memory-only for the socket's lifetime — never persisted; refreshable
+     * (the latest frame wins for subsequent turns).
+     */
+    location?: DeviceLocation;
     /** Resolved identity: the account + presenting device, or guest. */
     ctx: AuthContext;
     /** Token hash of the authenticating device (for per-prompt revocation checks). */
@@ -184,10 +196,11 @@ export function attachChatServer(
  * Handles one already-parsed frame.
  *
  * An `auth` frame resolves the socket's identity, a `hello` frame records the
- * socket's render capabilities (both only valid in the opening slot), and a
- * prompt claims its session and streams the agent's events over the socket.
- * Returns a promise that settles when the response is fully streamed (or the
- * frame was rejected).
+ * socket's render capabilities (both only valid in the opening slot), a
+ * `location` frame updates the device's whereabouts (any time, refreshable),
+ * and a prompt claims its session and streams the agent's events over the
+ * socket. Returns a promise that settles when the response is fully streamed
+ * (or the frame was rejected).
  */
 async function handleFrame(
     socket: WebSocket,
@@ -200,12 +213,37 @@ async function handleFrame(
     if ("type" in frame) {
         if (frame.type === "hello") {
             await handleHello(socket, conn, frame);
+        } else if (frame.type === "location") {
+            handleLocation(conn, frame);
         } else {
             await handleAuth(socket, conn, store, frame.token);
         }
         return;
     }
     await handlePrompt(socket, conn, store, sessions, frame, options);
+}
+
+/**
+ * Records a `location` device report (#31).
+ *
+ * Updates the socket's memory-only location for subsequent turns; the latest
+ * report wins, so a client may refresh mid-conversation (it traveled, or
+ * granted permission late). No reply frame — the update is silent by design.
+ * Coordinates are never logged at precision: the debug line says only that a
+ * report arrived, because a location is sensitive user data.
+ */
+function handleLocation(
+    conn: ConnectionState,
+    frame: ClientLocationFrame,
+): void {
+    conn.location = {
+        lat: frame.lat,
+        lon: frame.lon,
+        ...(frame.label !== undefined ? { label: frame.label } : {}),
+    };
+    logger.debug(
+        `Socket reported device location${frame.label ? ` (${frame.label})` : ""}`,
+    );
 }
 
 /**
@@ -302,6 +340,7 @@ async function handlePrompt(
                 mode,
                 attachmentIds,
                 conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
+                conn.location,
             ),
     });
     respondToTurn(socket, turn, prompt.sessionId);
@@ -415,7 +454,9 @@ async function handleAuth(
  * to the agent so it can shape output for what this client can render —
  * except under `mode: "voice"`, where the effective capabilities are empty so
  * the model answers in plain conversational text (rich formatting is
- * text-mode-only).
+ * text-mode-only). The device's latest reported location (#31) rides along
+ * for location-aware tools; a guest turn carries no `userId`, so metered
+ * tools refuse guests regardless of any location.
  *
  * The timeout error is emitted by the timer itself; the in-flight generator is
  * `return()`d shortly after, which drains when its current await settles.
@@ -435,6 +476,7 @@ async function streamEventsToSocket(
     mode: ChatMode,
     attachmentIds: string[],
     userId: number | undefined,
+    location: DeviceLocation | undefined,
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -455,6 +497,7 @@ async function streamEventsToSocket(
             capabilities: mode === "voice" ? [] : capabilities,
             attachmentIds,
             userId,
+            location,
         });
         try {
             for await (const event of generator) {

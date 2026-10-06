@@ -15,9 +15,11 @@ import { calculate } from "./math";
 import { getCurrentTime } from "./time";
 import { createAnalyzeImageTool } from "./analyzeImage";
 import { createWebSearchTool } from "./webSearch";
+import { createGetWeatherTool } from "./getWeather";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
+import type { WeatherDeps } from "./getWeather";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -27,6 +29,12 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * API key is configured — no keys, no `webSearch` tool.
      */
     search?: WebSearchDeps;
+    /**
+     * Weather wiring (#31): the configured OpenWeather provider, the per-user
+     * call quota, and the unit system. Present only when the OpenWeather API
+     * key is configured — no key, no `getWeather` tool.
+     */
+    weather?: WeatherDeps;
 }
 
 /**
@@ -47,6 +55,9 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
     ];
     if (deps.search) {
         tools.push(createWebSearchTool(deps.search));
+    }
+    if (deps.weather) {
+        tools.push(createGetWeatherTool(deps.weather));
     }
     return tools;
 }

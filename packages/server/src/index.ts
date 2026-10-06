@@ -24,6 +24,7 @@ import { initAgentGraph } from "./agent";
 import { createVisionModel } from "./llm/visionModel";
 import { createTavilyClient } from "./llm/tools/search/tavily";
 import { createSerperClient } from "./llm/tools/search/serper";
+import { createOpenWeatherClient } from "./llm/tools/weather/openweather";
 import {
     createAttachmentStore,
     sweepOrphanAttachments,
@@ -83,11 +84,31 @@ logger.info(
         : "Web search disabled (no provider API keys configured)",
 );
 
+// Weather (#31): present only when the OpenWeather key is configured — no
+// key, no getWeather tool.
+const weatherDeps = appConfig.weather
+    ? {
+          provider: createOpenWeatherClient({
+              apiKey: appConfig.weather.apiKey,
+              units: appConfig.weather.units,
+              timeoutMs: appConfig.weather.timeoutMs,
+          }),
+          quota: new FixedWindowQuota(appConfig.weather.callsPerMin),
+          units: appConfig.weather.units,
+      }
+    : undefined;
+logger.info(
+    weatherDeps
+        ? `Weather active: openweather (${weatherDeps.units})`
+        : "Weather disabled (no OPENWEATHER_API_KEY configured)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
     vlLimiter,
     ...(searchDeps ? { search: searchDeps } : {}),
+    ...(weatherDeps ? { weather: weatherDeps } : {}),
 });
 const store = openAppDatabase(appConfig.appDbPath);
 const webApp = createApp(store, appConfig, attachments, inFlight);
