@@ -13,6 +13,8 @@ instance, using the same seams the weather (#31) and search (#9) tools establish
 | First slice  | Read status **and** basic control (lights, switches, climate)                                                                                                                                                                              |
 | Write safety | Execute immediately, reported as **accepted, never verified** (HA's service body is dispatch-time state); the tool description tells the model to confirm ambiguous or destructive asks in words first and to call `get` for current state |
 | Tool shape   | **One** tool (`homeAssistant`) with an `action` argument                                                                                                                                                                                   |
+| Discovery    | `lights` and `switches` are `action` values on that one tool (domain + name-fragment heuristic for lights; `switch` minus `_led` for switches), not separate tools                                                                         |
+| Empty tokens | `JARVIS_HA_LIGHT_TOKENS=""` ⇒ `lights` matches nothing and says so (fail-closed, same posture as an empty read-domain list)                                                                                                                |
 
 ## Reference implementation
 
@@ -90,7 +92,8 @@ untouched (same as #9/#31, which only touched specs for the frames they added).
 
 ```ts
 homeAssistant({
-    action: "list" | "get" | "turn_on" | "turn_off" | "toggle"
+    action: "list" | "lights" | "switches" | "get"
+          | "turn_on" | "turn_off" | "toggle"
           | "set_brightness" | "set_temperature",
     entity_id?: string,   // required for get / turn_* / toggle / set_*
     query?: string,       // list: name or domain substring filter
@@ -101,6 +104,15 @@ homeAssistant({
 - `list` is **bounded**: at most 40 entities, alphabetically sorted, with a count
   of what was omitted. A large instance has thousands of states and must never be
   dumped into the model's context.
+- `lights` and `switches` are **category discovery**. A light is not a domain on
+  every installation (the requester's own house models every lamp as `switch.*`,
+  leaving `light` empty) and nothing in the REST payload marks one, so `lights`
+  matches the `light`/`switch` domains against `JARVIS_HA_LIGHT_TOKENS`
+  fragments in the id and friendly name, while `switches` lists the `switch`
+  domain minus the `_led` shadow children integrations create beside a real
+  fixture. Both are bounded and both state how many of the readable entities
+  they matched, so an empty answer reads as "none here" rather than "the house
+  has none".
 - `get` returns one entity's state plus the attributes worth showing
   (temperature target, brightness, battery).
 - `set_brightness` requires `light.*`; `set_temperature` requires `climate.*`.
@@ -165,7 +177,8 @@ homeAssistant({
 | `JARVIS_HA_CALLS_PER_MIN`     | `10`                                                                    |                             |
 | `JARVIS_HA_TIMEOUT_MS`        | `10000`                                                                 |                             |
 | `JARVIS_HA_CACHE_TTL_MS`      | `15000`                                                                 | State snapshot freshness    |
-| `JARVIS_HA_LIST_LIMIT`        | `40`                                                                    | Ceiling on `list` output    |
+| `JARVIS_HA_LIST_LIMIT`        | `40`                                                                    | Ceiling per read call       |
+| `JARVIS_HA_LIGHT_TOKENS`      | `light,lamp,bulb,strip,ceiling,sconce,luminaire,fixture`                | What counts as a light      |
 
 ## Test plan
 
@@ -176,15 +189,22 @@ homeAssistant({
   resolves.
 - Tool: quota refusal; each action's routing; `get` on an unknown entity; a control
   call for an out-of-read-list entity; `set_brightness` on a `switch.*`;
-  `list` truncation with a count; `list` with a `query` filter; formatter output.
-  A write's result contains the accepted action and no state whatsoever, and an
-  entity reading `unavailable`/`unknown` refuses without a service call.
+  `list` truncation with a count; `list` with a `query` filter and its
+  denominator; formatter output. `lights`/`switches` cover the token heuristic
+  (native light, switch-named-as-light, `_led` shadow child, non-light domain
+  whose name says otherwise), the non-empty scope sentence, the bounded list,
+  the "a device may be missing" empty result, a narrowed token set, and the
+  empty token set. A write's result contains the accepted action and no state
+  whatsoever, and an entity reading `unavailable`/`unknown` refuses without a
+  service call.
 - `npm run check` from the repo root.
 
 ## Manual verification (before any PR)
 
 1. `HOME_ASSISTANT_URL` + `HOME_ASSISTANT_ACCESS_TOKEN` in `packages/server/.env`.
-2. "What lights are on?" → `list`/filtered read.
+2. "What lights do I have?" → `lights` finds exactly the four the requester's
+   "Lights" label covers; "what switches?" → `switches` lists the switch domain
+   without the `_led` children. "What lights are on?" → `lights` then `get`.
 3. "Turn on the kitchen light" → validated write; the result states the accepted
    action and claims no state. "Is it on now?" → a fresh `get` reports it.
 4. "Set the thermostat to 70" → `set_temperature` on a `climate.*`.

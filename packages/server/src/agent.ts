@@ -143,19 +143,26 @@ const IMAGE_ANALYSIS_RULE =
  * models readily invent a plausible entity and answer from it, which is the
  * worst failure mode here — a confident claim about a real light that was never
  * read, or a write aimed at a guessed target. So this pins the discipline the
- * tool enforces anyway: `list` first to learn the real ids, then act on exactly
- * one id, and never claim a change the tool did not confirm.
+ * tool enforces anyway: discover first to learn the real ids, then act on
+ * exactly one id, and never claim a change the tool did not confirm. The
+ * re-search clause exists because the complementary failure is quiet absence —
+ * a model that reads an empty result once, or remembers a list from earlier in
+ * the conversation, declares the device missing instead of looking again.
  */
 const HOME_CALL_RULE =
     "The homeAssistant tool is your only source of truth about the user's " +
     "house — lights, switches, thermostats, sensors, and their states. Never " +
-    "answer from memory or guess an entity_id. Call action 'list' first to " +
-    "learn the exact entity_ids (optionally with query to narrow it), then " +
-    "call the action you need with one exact entity_id. Report only what the " +
-    "tool returned; if it refuses or reports the home unreachable, say so " +
-    "plainly and never claim a device changed state. When the user asks for " +
-    "something broad or ambiguous ('turn everything off'), confirm what you " +
-    "are about to do before acting.";
+    "answer from memory or guess an entity_id. Call action 'lights' for lights, " +
+    "'switches' for switches, or 'list' first (optionally with query to narrow " +
+    "it) to learn the exact entity_ids, then call the action you need with one " +
+    "exact entity_id. Before you conclude that a device or a whole category is " +
+    "absent, search again in this turn: an empty result proves only that search " +
+    "found nothing, and a list from earlier in this conversation may be stale — " +
+    "re-read rather than remember. Report only what the tool returned in this " +
+    "turn; if it refuses or reports the home unreachable, say so plainly and " +
+    "never claim a device changed state. When the user asks for something broad " +
+    "or ambiguous ('turn everything off'), confirm what you are about to do " +
+    "before acting.";
 
 /**
  * Derives a system prompt that admits the formats a capable client renders.

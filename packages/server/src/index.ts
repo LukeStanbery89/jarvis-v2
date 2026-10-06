@@ -118,11 +118,12 @@ const homeAssistantDeps = appConfig.homeAssistant
           quota: new FixedWindowQuota(appConfig.homeAssistant.callsPerMin),
           controlDomains: appConfig.homeAssistant.controlDomains,
           listLimit: appConfig.homeAssistant.listLimit,
+          lightTokens: appConfig.homeAssistant.lightTokens,
       }
     : undefined;
 logger.info(
     homeAssistantDeps
-        ? `Home Assistant active: ${appConfig.homeAssistant?.url} (read: ${appConfig.homeAssistant?.readDomains.join(", ")}; control: ${appConfig.homeAssistant?.controlDomains.join(", ")})`
+        ? `Home Assistant active: ${appConfig.homeAssistant?.url} (read: ${appConfig.homeAssistant?.readDomains.join(", ")}; control: ${appConfig.homeAssistant?.controlDomains.join(", ")}; lights by ${appConfig.homeAssistant?.lightTokens.join(",")})`
         : "Home Assistant disabled (no HOME_ASSISTANT_URL or HOME_ASSISTANT_ACCESS_TOKEN configured)",
 );
 

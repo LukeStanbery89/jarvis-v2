@@ -10,8 +10,13 @@ import {
     filterEntities,
     findEntity,
     formatEntity,
+    isLightLike,
+    isSwitchLike,
+    renderLights,
     renderList,
+    renderSwitches,
 } from "../src/llm/tools/homeAssistant";
+import { DEFAULT_HA_LIGHT_TOKENS } from "../src/config";
 import { HomeAssistantError } from "../src/llm/tools/homeAssistant/types";
 import type {
     HomeAssistantEntity,
@@ -66,6 +71,14 @@ const MOWER = entity("switch.mower", "off", { friendly_name: "Mower" });
 const KITCHEN_SINK = entity("sensor.kitchen_sink_water", "off", {
     friendly_name: "Kitchen Sink Water",
 });
+/** A light modeled as a switch — the case `action: "lights"` exists for. */
+const GARLAND = entity("switch.garland_lights", "off", {
+    friendly_name: "Garland Lights",
+});
+/** The shadow child integrations create beside `switch.garland_lights`. */
+const GARLAND_LED = entity("switch.garland_lights_led", "on", {
+    friendly_name: "Garland Lights LED",
+});
 
 const HOUSE = [
     LIGHT,
@@ -77,6 +90,9 @@ const HOUSE = [
     MOWER,
     KITCHEN_SINK,
 ];
+
+/** The house as a real installation looks: a light named as a switch, plus LED. */
+const TYPICAL_HOUSE = [...HOUSE, GARLAND, GARLAND_LED];
 
 /** A scripted provider recording every service call; fails when scripted to. */
 function fakeProvider(
@@ -127,6 +143,7 @@ function build(
         quota?: FixedWindowQuota;
         controlDomains?: readonly string[];
         listLimit?: number;
+        lightTokens?: readonly string[];
     } = {},
 ) {
     return createHomeAssistantTool({
@@ -139,6 +156,7 @@ function build(
             "fan",
         ],
         listLimit: overrides.listLimit ?? 40,
+        lightTokens: overrides.lightTokens ?? DEFAULT_HA_LIGHT_TOKENS,
     });
 }
 
@@ -236,6 +254,116 @@ describe("homeAssistant list", () => {
 
         const noMatch = await run({ action: "list", query: "attic" });
         expect(noMatch).toMatch(/nothing matches "attic"/);
+    });
+
+    it("states how much of the house the query left out", async () => {
+        const result = await run({ action: "list", query: "kitchen" });
+        expect(result).toMatch(
+            /^homeAssistant list: 2 of 8 readable entities, filtered by "kitchen":/,
+        );
+    });
+});
+
+describe("homeAssistant lights and switches", () => {
+    it("finds lights wherever they are modeled", async () => {
+        const result = await run(
+            { action: "lights" },
+            { provider: fakeProvider({ entities: TYPICAL_HOUSE }).provider },
+        );
+        expect(result).toMatch(
+            /^homeAssistant lights: 3 of 10 readable entities\./,
+        );
+        expect(result).toContain("Kitchen Light [light.kitchen]");
+        expect(result).toContain("Desk Lamp [light.desk_lamp]");
+        expect(result).toContain("Garland Lights [switch.garland_lights]");
+        expect(result).not.toContain("Coffee Maker");
+        expect(result).not.toContain("Mower");
+        expect(result).not.toContain("garland_lights_led");
+    });
+
+    it("lists the switch domain, minus the shadow children", async () => {
+        const result = await run(
+            { action: "switches" },
+            { provider: fakeProvider({ entities: TYPICAL_HOUSE }).provider },
+        );
+        expect(result).toMatch(
+            /^homeAssistant switches: 3 of 10 readable entities\./,
+        );
+        expect(result).toContain("switch.coffee");
+        expect(result).toContain("switch.mower");
+        expect(result).toContain("switch.garland_lights");
+        expect(result).not.toContain("garland_lights_led");
+        expect(result).not.toContain("light.kitchen");
+    });
+
+    it("reports how it matched, so the model can widen the search", async () => {
+        const result = await run({ action: "lights" });
+        expect(result).toContain("Best-effort match");
+        expect(result).toContain(DEFAULT_HA_LIGHT_TOKENS.join(", "));
+        expect(result).toMatch(/call action 'list' to search/);
+    });
+
+    it("says a category may exist when nothing matched, not that it is empty", async () => {
+        const noSwitches = await run(
+            { action: "switches" },
+            { provider: fakeProvider({ entities: [LIGHT, LAMP] }).provider },
+        );
+        expect(noSwitches).toMatch(
+            /^homeAssistant switches: 0 of 2 readable entities\./,
+        );
+        expect(noSwitches).toMatch(/no switches this server may read/);
+
+        const noLights = await run(
+            { action: "lights" },
+            { provider: fakeProvider({ entities: [COFFEE, MOWER] }).provider },
+        );
+        expect(noLights).toMatch(
+            /^homeAssistant lights: 0 of 2 readable entities matched\./,
+        );
+        expect(noLights).toMatch(/may be missing/);
+        expect(noLights).toMatch(/action 'list'/);
+    });
+
+    it("honours a narrowed light-token set", async () => {
+        const result = await run(
+            { action: "lights" },
+            { lightTokens: ["lamp"] },
+        );
+        expect(result).toContain("Desk Lamp [light.desk_lamp]");
+        expect(result).not.toContain("Kitchen Light [light.kitchen]");
+    });
+
+    it("explains an empty token set instead of reporting no lights", async () => {
+        const result = await run({ action: "lights" }, { lightTokens: [] });
+        expect(result).toMatch(/JARVIS_HA_LIGHT_TOKENS/);
+        expect(result).toMatch(
+            /^homeAssistant lights: 0 of 8 readable entities/,
+        );
+    });
+
+    it("needs no entity id for either discovery action", async () => {
+        expect(await run({ action: "lights" })).not.toMatch(/entity_id/);
+        expect(await run({ action: "switches" })).not.toMatch(/entity_id/);
+    });
+
+    it("bounds both discovery lists and says how many were withheld", async () => {
+        const lights = await run(
+            { action: "lights" },
+            {
+                listLimit: 1,
+                provider: fakeProvider({ entities: TYPICAL_HOUSE }).provider,
+            },
+        );
+        expect(lights).toMatch(/and 2 more not shown/);
+
+        const switches = await run(
+            { action: "switches" },
+            {
+                listLimit: 1,
+                provider: fakeProvider({ entities: TYPICAL_HOUSE }).provider,
+            },
+        );
+        expect(switches).toMatch(/and 2 more not shown/);
     });
 });
 
@@ -537,12 +665,18 @@ describe("homeAssistant formatters", () => {
         expect(line).toBe("sensor.a [sensor.a]: 5 (kWh)");
     });
 
-    it("renders a list with a singular header for one match", () => {
+    it("renders a header that states the denominator, filtered or not", () => {
         expect(renderList([LIGHT], "kitchen", 10)).toMatch(
-            /^homeAssistant list \(1 match\):/,
+            /^homeAssistant list: 1 of 1 readable entities, filtered by "kitchen":/,
         );
         expect(renderList([LIGHT, LAMP], undefined, 10)).toMatch(
-            /^homeAssistant list \(2 matches\):/,
+            /^homeAssistant list: 2 of 2 readable entities:/,
+        );
+        expect(renderList(HOUSE, undefined, 10)).toMatch(
+            /^homeAssistant list: 8 of 8 readable entities:/,
+        );
+        expect(renderList(HOUSE, "light", 10)).toMatch(
+            /^homeAssistant list: 2 of 8 readable entities, filtered by "light":/,
         );
     });
 });
@@ -580,6 +714,64 @@ describe("homeAssistant entity resolution", () => {
         expect(filterEntities(HOUSE, "   ")).toHaveLength(HOUSE.length);
         expect(filterEntities(HOUSE, "climate").map((e) => e.entityId)).toEqual(
             ["climate.living_room"],
+        );
+    });
+});
+
+describe("homeAssistant light and switch detection", () => {
+    const tokens = DEFAULT_HA_LIGHT_TOKENS;
+
+    it("treats a native light as a light even without a name token", () => {
+        const plain = entity("light.toasty", "off", {
+            friendly_name: "Toasty",
+        });
+        expect(isLightLike(plain, tokens)).toBe(true);
+    });
+
+    it("treats a switch as a light only when a name token matches", () => {
+        expect(isLightLike(GARLAND, tokens)).toBe(true);
+        expect(isLightLike(COFFEE, tokens)).toBe(false);
+        expect(isLightLike(MOWER, tokens)).toBe(false);
+    });
+
+    it("rejects other domains even when the name screams light", () => {
+        const sensor = entity("sensor.living_room_light", "5", {
+            friendly_name: "Living Room Light Level",
+        });
+        expect(isLightLike(sensor, tokens)).toBe(false);
+        expect(isLightLike(THERMOSTAT, tokens)).toBe(false);
+    });
+
+    it("keeps shadow children out of both categories", () => {
+        expect(isLightLike(GARLAND_LED, tokens)).toBe(false);
+        expect(isSwitchLike(GARLAND_LED)).toBe(false);
+    });
+
+    it("narrow switches to the switch domain alone", () => {
+        expect(isSwitchLike(GARLAND)).toBe(true);
+        expect(isSwitchLike(COFFEE)).toBe(true);
+        expect(isSwitchLike(LIGHT)).toBe(false);
+        expect(isSwitchLike(TEMP)).toBe(false);
+    });
+
+    it("exposes the same scope sentence from the renderers", () => {
+        expect(renderLights(TYPICAL_HOUSE, tokens, 40)).toMatch(
+            /^homeAssistant lights: 3 of 10 readable entities/,
+        );
+        expect(renderSwitches(TYPICAL_HOUSE, 40)).toMatch(
+            /^homeAssistant switches: 3 of 10 readable entities/,
+        );
+    });
+
+    it("never lists more than the ceiling in either discovery action", () => {
+        const lines = (text: string) =>
+            text
+                .split("\n")
+                .filter((l) => l.startsWith("- ") && !l.startsWith("- …"));
+        expect(lines(renderLights(TYPICAL_HOUSE, tokens, 2))).toHaveLength(2);
+        expect(lines(renderSwitches(TYPICAL_HOUSE, 2))).toHaveLength(2);
+        expect(renderLights(TYPICAL_HOUSE, tokens, 2)).toMatch(
+            /and 1 more not shown/,
         );
     });
 });

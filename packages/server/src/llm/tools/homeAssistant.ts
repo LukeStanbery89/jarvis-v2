@@ -2,10 +2,19 @@
  * The `homeAssistant` tool (#15): the agent's window onto the user's house.
  *
  * One tool with an `action` argument, so the model picks an intent rather than
- * choosing between tool names. Actions split into reads (`list`, `get`) and
- * writes (`turn_on`, `turn_off`, `toggle`, `set_brightness`,
- * `set_temperature`); the read and write paths are deliberately different in
- * what they are allowed to touch (see `controlDomains` below).
+ * choosing between tool names. Actions split into reads (`list`, `lights`,
+ * `switches`, `get`) and writes (`turn_on`, `turn_off`, `toggle`,
+ * `set_brightness`, `set_temperature`); the read and write paths are
+ * deliberately different in what they are allowed to touch (see
+ * `controlDomains` below).
+ *
+ * `lights` and `switches` exist because a light is not a domain on every
+ * instance — a great many are modeled as `switch.*` — and no field in the REST
+ * payload marks one. Rather than making a 4B model derive that category from a
+ * raw list (and give up after one query that matched nothing), the category is
+ * computed here: `lights` is domain-plus-name-token, `switches` is the plain
+ * domain with shadow children dropped. Both are honest about being best-effort,
+ * and every read reports how much of the house it actually saw.
  *
  * **Nothing is written that was not validated first.** Every control action
  * resolves `entity_id` against the instance's domain-filtered snapshot before a
@@ -52,11 +61,15 @@ export interface HomeAssistantDeps {
     controlDomains: readonly string[];
     /** Ceiling on entities listed in one call. */
     listLimit: number;
+    /** Name fragments that make a light a light to `action: "lights"`. */
+    lightTokens: readonly string[];
 }
 
 /** The actions the model can ask for. */
 const ACTIONS = [
     "list",
+    "lights",
+    "switches",
     "get",
     "turn_on",
     "turn_off",
@@ -248,6 +261,18 @@ export function findEntity(
 }
 
 /**
+ * Orders entities the way every read action presents them: by friendly name,
+ * so the model sees a house in A-Z order rather than Home Assistant's registry
+ * order (which shifts whenever a device is added).
+ */
+function byFriendlyName(
+    a: HomeAssistantEntity,
+    b: HomeAssistantEntity,
+): number {
+    return a.friendlyName.localeCompare(b.friendlyName);
+}
+
+/**
  * Filters entities by a free-text query over id and friendly name.
  *
  * Exported for tests. An empty query returns everything; the caller applies the
@@ -265,7 +290,70 @@ export function filterEntities(
                   e.friendlyName.toLowerCase().includes(wanted),
           )
         : [...entities];
-    return matched.sort((a, b) => a.friendlyName.localeCompare(b.friendlyName));
+    return matched.sort(byFriendlyName);
+}
+
+/**
+ * Suffix integrations use for the shadow entity they create beside a real one
+ * (`switch.bedroom_lights` plus `switch.bedroom_lights_led`).
+ *
+ * Both discovery actions drop these: they are a second handle on the same
+ * fixture, so listing them doubles the apparent device count and buries the
+ * entity the user actually means. Ids are lowercase on every Home Assistant
+ * instance, but the comparison lowercases anyway rather than lean on that.
+ */
+const SHADOW_ENTITY_SUFFIX = "_led";
+
+/**
+ * Domains in which `action: "lights"` looks for lights.
+ *
+ * `light` for instances that model them natively, `switch` for the very common
+ * installations that do not — on the requester's instance every light is a
+ * switch and the `light` domain is empty, so filtering on `light` alone would
+ * report zero lights while four sat in plain sight.
+ */
+const LIGHTLIKE_DOMAINS: ReadonlySet<string> = new Set(["light", "switch"]);
+
+/**
+ * Reports whether an entity reads as a light, given the configured name
+ * fragments.
+ *
+ * Exported for tests. Two filters, both load-bearing: the domain filter keeps
+ * a 3D printer out of the list, and the shadow suffix keeps the LED child of
+ * every light out of it. Matching the id *and* the friendly name means a device
+ * called "Luke's Office Lamp" qualifies even though its id is `switch.…`.
+ * Best-effort by construction — a light named only "Kitchen" will be missed —
+ * which is why the result says so and points the model at `list`.
+ */
+export function isLightLike(
+    entity: HomeAssistantEntity,
+    tokens: readonly string[],
+): boolean {
+    const id = entity.entityId.toLowerCase();
+    if (id.endsWith(SHADOW_ENTITY_SUFFIX)) {
+        return false;
+    }
+    if (!LIGHTLIKE_DOMAINS.has(entity.domain)) {
+        return false;
+    }
+    const haystack = `${id} ${entity.friendlyName.toLowerCase()}`;
+    return tokens.some((token) => token !== "" && haystack.includes(token));
+}
+
+/**
+ * Reports whether an entity is a plainly-listable switch: the `switch` domain
+ * minus the shadow children.
+ *
+ * Exported for tests. Deliberately not filtered by name — the point is the
+ * domain itself, so a 3D printer belongs here even though `lights` excludes it.
+ * The two actions overlap by design: a light modeled as a switch appears in
+ * both.
+ */
+export function isSwitchLike(entity: HomeAssistantEntity): boolean {
+    return (
+        entity.domain === "switch" &&
+        !entity.entityId.toLowerCase().endsWith(SHADOW_ENTITY_SUFFIX)
+    );
 }
 
 /**
@@ -316,6 +404,16 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
 
                 if (action === "list") {
                     return renderList(entities, query, deps.listLimit);
+                }
+                if (action === "lights") {
+                    return renderLights(
+                        entities,
+                        deps.lightTokens,
+                        deps.listLimit,
+                    );
+                }
+                if (action === "switches") {
+                    return renderSwitches(entities, deps.listLimit);
                 }
 
                 if (NEEDS_ENTITY.has(action) && !entity_id?.trim()) {
@@ -380,18 +478,25 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
         {
             name: "homeAssistant",
             description:
-                "Read and control the user's Home Assistant instance: list " +
-                "entities, read one entity's state, or turn lights, switches and " +
-                "fans on/off, set light brightness, and set a thermostat's " +
-                "target temperature. Call it for ANY question about the user's " +
-                "home (devices, lights, thermostat, sensors) — never answer from " +
-                "memory. Start with action 'list' (optionally with `query` like " +
-                "'kitchen' or 'light') to learn the exact `entity_id`s; pass an " +
-                "`entity_id` for every other action. A successful write means " +
-                "Home Assistant accepted the request, not that the device " +
-                "changed state — its own state may lag, so use action 'get' " +
-                "before reporting the current state rather than assuming it. " +
-                "Entity values are in the " +
+                "Read and control the user's Home Assistant instance: find " +
+                "the lights or switches, list entities, read one entity's " +
+                "state, or turn lights, switches and fans on/off, set light " +
+                "brightness, and set a thermostat's target temperature. " +
+                "Call it for ANY question about the user's home (devices, " +
+                "lights, thermostat, sensors) — never answer from memory. " +
+                "'What lights do I have' → action 'lights'; 'what switches' " +
+                "→ action 'switches'; anything else starts with action 'list' " +
+                "(optionally with `query` like 'kitchen' or 'sensor' — `query` " +
+                "matches the entity_id as well as the name) to learn the exact " +
+                "`entity_id`s; pass an `entity_id` for every other action. " +
+                "Before concluding that a device or a whole category does not " +
+                "exist, search again in this turn — a result from an earlier " +
+                "turn, or one query that matched nothing, only proves that " +
+                "search found nothing, not that the device is absent. A " +
+                "successful write means Home Assistant accepted the request, " +
+                "not that the device changed state — its own state may lag, so " +
+                "use action 'get' before reporting the current state rather " +
+                "than assuming it. Entity values are in the " +
                 "instance's own unit — pass a number, never a unit string. " +
                 "Confirm sweeping or ambiguous requests in words before acting " +
                 "(e.g. 'turn everything off'), never guess a target, and answer " +
@@ -401,8 +506,9 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
                     .enum(ACTIONS)
                     .describe(
                         "'list' to see entities (optionally filtered by " +
-                            "`query`), 'get' to read one entity, or a write: " +
-                            "'turn_on', 'turn_off', 'toggle', " +
+                            "`query`), 'lights' for the lights, 'switches' for " +
+                            "the switches, 'get' to read one entity, or a " +
+                            "write: 'turn_on', 'turn_off', 'toggle', " +
                             "'set_brightness' (light.*), 'set_temperature' " +
                             "(climate.*)",
                     ),
@@ -411,7 +517,8 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
                     .optional()
                     .describe(
                         "Exact id from action 'list', e.g. 'light.kitchen'. " +
-                            "Required for every action except 'list'",
+                            "Required for every action except 'list', " +
+                            "'lights' and 'switches'",
                     ),
                 query: z
                     .string()
@@ -433,30 +540,122 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
 }
 
 /**
- * Renders the `list` action, bounded so a large instance cannot flood context.
+ * Renders one read action's entity lines beneath the caller's scope sentence,
+ * bounded so a large instance cannot flood context.
  *
- * Exported for tests. When matches are truncated the count of what was left out
- * is stated explicitly — the model must be able to tell "there are no more
- * lights" from "there are more than I showed you".
+ * Exported for tests. When the list ceiling truncates, the count of what was
+ * left out is stated explicitly — the model must be able to tell "there are no
+ * more lights" from "there are more than I showed you".
+ */
+export function renderEntities(
+    matched: readonly HomeAssistantEntity[],
+    scope: string,
+    limit: number,
+    overflowHint: string,
+): string {
+    if (matched.length === 0) {
+        return scope;
+    }
+    const shown = matched.slice(0, limit);
+    const lines = shown.map((entity) => `- ${formatEntity(entity)}`);
+    const omitted = matched.length - shown.length;
+    return omitted > 0
+        ? `${scope}\n${lines.join("\n")}\n- …and ${omitted} more not shown; ${overflowHint}`
+        : `${scope}\n${lines.join("\n")}`;
+}
+
+/**
+ * Renders the `list` action.
+ *
+ * Exported for tests. The header always states the denominator — "9 of 89
+ * readable entities" — because a filtered list that reads like the whole house
+ * is how the model concludes a device does not exist when it merely did not
+ * match.
  */
 export function renderList(
     entities: readonly HomeAssistantEntity[],
     query: string | undefined,
     limit: number,
 ): string {
+    const total = entities.length;
+    if (total === 0) {
+        return "homeAssistant list: this instance has no entities this server may read.";
+    }
     const matched = filterEntities(entities, query);
     if (matched.length === 0) {
-        return query
-            ? `homeAssistant list: nothing matches "${query}". Use action 'list' with no query to see everything available.`
-            : "homeAssistant list: this instance has no entities this server may read.";
+        return `homeAssistant list: nothing matches "${query}" (0 of ${total} readable entities). Use action 'list' with no query to see everything available.`;
     }
-    const shown = matched.slice(0, limit);
-    const lines = shown.map((entity) => `- ${formatEntity(entity)}`);
-    const omitted = matched.length - shown.length;
-    const header = `homeAssistant list (${matched.length} match${matched.length === 1 ? "" : "es"}):`;
-    return omitted > 0
-        ? `${header}\n${lines.join("\n")}\n- …and ${omitted} more not shown; narrow with query.`
-        : `${header}\n${lines.join("\n")}`;
+    const scope = query
+        ? `homeAssistant list: ${matched.length} of ${total} readable entities, filtered by "${query}":`
+        : `homeAssistant list: ${total} of ${total} readable entities:`;
+    return renderEntities(matched, scope, limit, "narrow with query.");
+}
+
+/**
+ * Renders the `lights` action — the discovery pass for a category that is not
+ * a domain on most instances.
+ *
+ * Exported for tests. The header names the basis it matched on and calls itself
+ * best-effort, and the empty case says a device may be missing rather than that
+ * there are no lights: quiet absence is the failure this action exists to
+ * prevent.
+ */
+export function renderLights(
+    entities: readonly HomeAssistantEntity[],
+    tokens: readonly string[],
+    limit: number,
+): string {
+    const total = entities.length;
+    const basis =
+        tokens.length > 0
+            ? `Best-effort match — domains light and switch, name containing ${tokens.join(", ")}, excluding ${SHADOW_ENTITY_SUFFIX} children.`
+            : `No name fragments are configured (JARVIS_HA_LIGHT_TOKENS is empty), so nothing can match. Set it to enable this action.`;
+    const matched = entities
+        .filter((entity) => isLightLike(entity, tokens))
+        .sort(byFriendlyName);
+    if (matched.length === 0) {
+        // With tokens configured an empty answer is a heuristic miss, so it
+        // says so; without them nothing was ever going to match, and blaming
+        // the house for a configuration gap would be a lie.
+        const advice =
+            tokens.length > 0
+                ? "A device with an unrelated name may be missing; call action 'list' to see everything."
+                : "Call action 'list' to see everything.";
+        return `homeAssistant lights: 0 of ${total} readable entities matched. ${basis} ${advice}`;
+    }
+    const scope = `homeAssistant lights: ${matched.length} of ${total} readable entities. ${basis} A device with an unrelated name may be missing; call action 'list' to search.`;
+    return renderEntities(
+        matched,
+        scope,
+        limit,
+        "use action 'list' to search.",
+    );
+}
+
+/**
+ * Renders the `switches` action — the whole `switch` domain, minus shadow
+ * children.
+ *
+ * Exported for tests. Reports the same denominator as the other reads; unlike
+ * `lights` it claims no interpretation, because the domain is the definition.
+ */
+export function renderSwitches(
+    entities: readonly HomeAssistantEntity[],
+    limit: number,
+): string {
+    const total = entities.length;
+    const basis = `Domain switch, excluding ${SHADOW_ENTITY_SUFFIX} children.`;
+    const matched = entities.filter(isSwitchLike).sort(byFriendlyName);
+    if (matched.length === 0) {
+        return `homeAssistant switches: 0 of ${total} readable entities. ${basis} This instance has no switches this server may read.`;
+    }
+    const scope = `homeAssistant switches: ${matched.length} of ${total} readable entities. ${basis}`;
+    return renderEntities(
+        matched,
+        scope,
+        limit,
+        "use action 'list' to search.",
+    );
 }
 
 /**

@@ -142,7 +142,8 @@ variables:
 | `JARVIS_HA_CALLS_PER_MIN` | `10` | Per-user Home Assistant call quota |
 | `JARVIS_HA_TIMEOUT_MS` | `10000` | Wall-clock cap for one HA call |
 | `JARVIS_HA_CACHE_TTL_MS` | `15000` | How long an entity snapshot is reused; `0` disables the cache |
-| `JARVIS_HA_LIST_LIMIT` | `40` | Max entities listed by one `list` call |
+| `JARVIS_HA_LIST_LIMIT` | `40` | Max entities listed by one `list`, `lights` or `switches` call |
+| `JARVIS_HA_LIGHT_TOKENS` | `light,lamp,bulb,strip,ceiling,sconce,luminaire,fixture` | Name fragments that make a light a light to `action: "lights"` |
 | `JARVIS_BOOTSTRAP_TOKEN` | unset | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
 | `JARVIS_HOST` | `0.0.0.0` | Bind address (all interfaces = LAN posture) |
 | `JARVIS_TLS_CERT` | unset | PEM certificate path — enables HTTPS serving |
@@ -582,10 +583,22 @@ answers `on`), so it is discarded rather than handed to the model as a
 post-action truth. The tool therefore reports the **accepted action**, never a
 verified outcome, and the model is told to use `get` for current state.
 
-- **One tool, one `action` argument** — `list`, `get`, `turn_on`, `turn_off`,
-  `toggle`, `set_brightness`, `set_temperature`. The model picks an intent
-  rather than choosing between tool names, which keeps the tool surface small
-  enough for a 4B model to route correctly.
+- **One tool, one `action` argument** — `list`, `lights`, `switches`, `get`,
+  `turn_on`, `turn_off`, `toggle`, `set_brightness`, `set_temperature`. The
+  model picks an intent rather than choosing between tool names, which keeps
+  the tool surface small enough for a 4B model to route correctly.
+- **Lights and switches get their own discovery actions** — a light is not a
+  domain on many installations (the requester's own house models every lamp as
+  `switch.*`, leaving the `light` domain empty), and nothing in the REST payload
+  marks one. `lights` therefore matches the `light`/`switch` domains against the
+  `JARVIS_HA_LIGHT_TOKENS` fragments over both the entity id and the friendly
+  name; `switches` lists the `switch` domain minus the `_led` shadow children
+  that integrations create beside a real fixture. The overlap is intentional — a
+  light modeled as a switch appears in both. Both are honest about being
+  best-effort, both report how many of the readable entities they matched, and
+  an empty result says a device _may be missing_ and points at `list` rather
+  than declaring the house empty: quiet absence is the failure this exists to
+  prevent.
 - **Reads are broad, writes are narrow** — reads span lights, switches,
   climate, fans, sensors, covers, media players and locks
   (`JARVIS_HA_READ_DOMAINS`); writes are limited to light/switch/climate/fan
@@ -610,7 +623,9 @@ verified outcome, and the model is told to use `get` for current state.
   the model that a write means _accepted_, not that the device changed, and to
   call `get` before reporting current state; the `HOME_CALL_RULE` system
   paragraph instructs it to confirm sweeping or ambiguous requests ("turn
-  everything off") in words before acting. Every write is logged at info as an
+  everything off") in words before acting, and to search again before declaring
+  a device or a whole category absent — an empty result proves only that one
+  search found nothing. Every write is logged at info as an
   audit trail of what the assistant did, including the pre-write state it read.
 - **The snapshot is cached, then invalidated** — `GET /api/states` on a mature
   install returns thousands of entities, so the filtered snapshot is reused for

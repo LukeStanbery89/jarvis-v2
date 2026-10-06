@@ -3,6 +3,7 @@ import {
     DEFAULT_HA_CACHE_TTL_MS,
     DEFAULT_HA_CALLS_PER_MIN,
     DEFAULT_HA_CONTROL_DOMAINS,
+    DEFAULT_HA_LIGHT_TOKENS,
     DEFAULT_HA_LIST_LIMIT,
     DEFAULT_HA_READ_DOMAINS,
     DEFAULT_HA_TIMEOUT_MS,
@@ -54,6 +55,7 @@ afterEach(() => {
     delete process.env.JARVIS_HA_TIMEOUT_MS;
     delete process.env.JARVIS_HA_CACHE_TTL_MS;
     delete process.env.JARVIS_HA_LIST_LIMIT;
+    delete process.env.JARVIS_HA_LIGHT_TOKENS;
 });
 
 describe("getServerPort", () => {
@@ -289,6 +291,7 @@ describe("cross-origin configuration (#63)", () => {
             timeoutMs: DEFAULT_HA_TIMEOUT_MS,
             cacheTtlMs: DEFAULT_HA_CACHE_TTL_MS,
             listLimit: DEFAULT_HA_LIST_LIMIT,
+            lightTokens: [...DEFAULT_HA_LIGHT_TOKENS],
         });
     });
 
@@ -310,6 +313,7 @@ describe("cross-origin configuration (#63)", () => {
         process.env.JARVIS_HA_TIMEOUT_MS = "2500";
         process.env.JARVIS_HA_CACHE_TTL_MS = "0";
         process.env.JARVIS_HA_LIST_LIMIT = "5";
+        process.env.JARVIS_HA_LIGHT_TOKENS = " Lamp, SCONCE ,";
         expect(getAppConfig().homeAssistant).toEqual({
             url: "https://ha.example.com",
             accessToken: "ha-token",
@@ -319,6 +323,8 @@ describe("cross-origin configuration (#63)", () => {
             timeoutMs: 2500,
             cacheTtlMs: 0,
             listLimit: 5,
+            // Trimmed and lowercased: matching happens against lowercase ids.
+            lightTokens: ["lamp", "sconce"],
         });
     });
 
@@ -329,11 +335,17 @@ describe("cross-origin configuration (#63)", () => {
         process.env.JARVIS_HA_TIMEOUT_MS = "-1";
         process.env.JARVIS_HA_CACHE_TTL_MS = "forever";
         process.env.JARVIS_HA_LIST_LIMIT = "";
+        // An unparsable list limit falls back; an empty token list is honoured
+        // as-is (see the note beside the expectation below).
+        process.env.JARVIS_HA_LIGHT_TOKENS = "";
         const config = getAppConfig().homeAssistant;
         expect(config?.callsPerMin).toBe(DEFAULT_HA_CALLS_PER_MIN);
         expect(config?.timeoutMs).toBe(DEFAULT_HA_TIMEOUT_MS);
         expect(config?.cacheTtlMs).toBe(DEFAULT_HA_CACHE_TTL_MS);
         expect(config?.listLimit).toBe(DEFAULT_HA_LIST_LIMIT);
+        // Fail-closed, matching the empty read-domains posture: an explicitly
+        // empty list makes 'lights' find nothing rather than guess everything.
+        expect(config?.lightTokens).toEqual([]);
     });
 
     it("parses trusted proxies as IPs and subnets", () => {

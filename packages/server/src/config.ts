@@ -83,6 +83,26 @@ export const DEFAULT_HA_CACHE_TTL_MS = 15_000;
 export const DEFAULT_HA_LIST_LIMIT = 40;
 
 /**
+ * Substrings that make a `light.*`/`switch.*` entity read as a light to the
+ * tool's `lights` action (#15).
+ *
+ * A light is not a domain on every instance — many are modeled as switches —
+ * and no field in the REST payload marks one, so discovery matches these
+ * against the entity id and friendly name. `JARVIS_HA_LIGHT_TOKENS` overrides
+ * the list for an instance whose devices name themselves differently.
+ */
+export const DEFAULT_HA_LIGHT_TOKENS: readonly string[] = [
+    "light",
+    "lamp",
+    "bulb",
+    "strip",
+    "ceiling",
+    "sconce",
+    "luminaire",
+    "fixture",
+];
+
+/**
  * Entity domains the tool may READ by default (#15).
  *
  * Deliberately broader than {@link DEFAULT_HA_CONTROL_DOMAINS}: reading a lock's
@@ -201,6 +221,15 @@ export interface HomeAssistantConfig {
     readonly cacheTtlMs: number;
     /** Ceiling on entities listed per call (`JARVIS_HA_LIST_LIMIT`). */
     readonly listLimit: number;
+    /**
+     * Name fragments that make a light a light to `action: "lights"`
+     * (`JARVIS_HA_LIGHT_TOKENS`).
+     *
+     * Lowercased and trimmed at parse time. An explicitly empty value yields an
+     * empty list — no token matches, so `lights` finds nothing — the same
+     * fail-closed posture as an empty `JARVIS_HA_READ_DOMAINS`.
+     */
+    readonly lightTokens: readonly string[];
 }
 
 /**
@@ -701,6 +730,11 @@ export function getAppConfig(): AppConfig {
                           process.env.JARVIS_HA_LIST_LIMIT,
                           DEFAULT_HA_LIST_LIMIT,
                       ),
+                      // Lowercased so the matcher never compares case.
+                      lightTokens:
+                          csv(process.env.JARVIS_HA_LIGHT_TOKENS)?.map(
+                              (token) => token.toLowerCase(),
+                          ) ?? DEFAULT_HA_LIGHT_TOKENS,
                   },
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(

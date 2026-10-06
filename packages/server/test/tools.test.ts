@@ -3,6 +3,7 @@ import { calculateResult } from "../src/llm/tools/math";
 import { clockFacet, localClock } from "../src/llm/tools/time";
 import { createTools } from "../src/llm/tools";
 import type { ToolDeps } from "../src/llm/tools";
+import { DEFAULT_HA_LIGHT_TOKENS } from "../src/config";
 import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 import type { HomeAssistantProvider } from "../src/llm/tools/homeAssistant/types";
 
@@ -123,6 +124,7 @@ describe("createTools wiring", () => {
                     quota: new FixedWindowQuota(10),
                     controlDomains: ["light"],
                     listLimit: 40,
+                    lightTokens: DEFAULT_HA_LIGHT_TOKENS,
                 },
             }),
         ).toContain("homeAssistant");
