@@ -103,10 +103,12 @@ whole state machine is unit-tested in node (`src/ChatClient.test.ts`).
 
 ## Location sharing (#31)
 
-A MapPin toggle in the sidebar gates device-location sharing for the
-`getWeather` tool. It is **off by default** (persisted in localStorage) so
-the browser's permission prompt never ambushes a user who never opted in;
-when enabled, one geolocation request runs per toggle-on, coordinates are
+Device-location sharing for the `getWeather` tool is **automatic by
+default**: on load a geolocation request runs once, and the browser's own
+permission prompt is the consent gate (the user answers explicitly; the
+browser remembers). The sidebar MapPin is the visible opt-out (persisted in
+localStorage — an explicit "0" suppresses sharing) and doubles as the
+status light. On success, coordinates are
 rounded to four decimals (~11 m), and the result ships as a `location`
 frame — sent immediately (the server accepts them at any point in the
 socket's lifetime) and re-announced after every reconnect, since the

@@ -6,12 +6,13 @@
  * known trap: `.tsx` tests never run under the web package's node
  * configuration, so no behavior may live only inside a component).
  *
- * The flow mirrors the user's consent decision: the toggle (persisted in
- * localStorage, default OFF) gates whether a position is requested at all;
- * the browser's own permission prompt is the second gate; and a secure
- * context is the hard floor — `navigator.geolocation` exists only on HTTPS
- * or localhost, so over plain HTTP the feature reports "unsupported" and
- * the server-side tool falls back to asking for a city.
+ * The flow is automatic (#31): on mount, a supported document requests a
+ * position and ships it as a `location` frame; the browser's own permission
+ * prompt is the consent gate, and the sidebar pin is the visible opt-out
+ * (persisted in localStorage). A secure context is the hard floor —
+ * `navigator.geolocation` exists only on HTTPS or localhost, so over plain
+ * HTTP the pin reports "unsupported" and the server-side tool falls back to
+ * asking for a city.
  *
  * Coordinates are rounded to four decimals (~11 m) before anything leaves
  * the device: weather does not need GPS-grade precision, and the browser is
@@ -45,18 +46,30 @@ export type LocationResult =
     | { kind: "denied" }
     | { kind: "failed"; reason: string };
 
-/** localStorage key for the consent toggle. */
+/** localStorage key for the location-sharing preference. */
 const PREF_KEY = "jarvis.location.enabled";
 
 /**
- * Reads the persisted consent (default OFF — the browser's permission
- * prompt must never ambush a user who never opted in).
+ * Reads the location-sharing preference.
+ *
+ * **Default ON**: the product requirement (#31) is that the device reports
+ * its location automatically — the consent gate is the browser's own
+ * permission prompt (which the user must answer explicitly, and which the
+ * browser remembers), not this flag. The flag exists to OPT OUT: an
+ * explicit `"0"` (the sidebar pin toggled off) suppresses sharing; absent
+ * or `"1"` means enabled.
  */
 export function readLocationPref(storage: Pick<Storage, "getItem">): boolean {
-    return storage.getItem(PREF_KEY) === "1";
+    return storage.getItem(PREF_KEY) !== "0";
 }
 
-/** Persists the consent toggle. */
+/**
+ * Persists the location-sharing preference.
+ *
+ * Writes `"1"`/`"0"` verbatim (rather than clearing on enable) so the
+ * meaning of an absent key stays "never decided" — future policy changes
+ * can distinguish the two.
+ */
 export function writeLocationPref(
     storage: Pick<Storage, "setItem">,
     enabled: boolean,

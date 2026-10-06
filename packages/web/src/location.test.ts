@@ -53,13 +53,15 @@ function fakeGeo(
     } as GeolocationLike;
 }
 
-describe("location consent", () => {
-    it("defaults off and round-trips through the pref", () => {
+describe("location preference", () => {
+    it("defaults on (never-decided means enabled) and round-trips", () => {
         const storage = fakeStorage();
-        expect(readLocationPref(storage)).toBe(false);
+        expect(readLocationPref(storage)).toBe(true);
         writeLocationPref(storage, true);
         expect(readLocationPref(storage)).toBe(true);
         writeLocationPref(storage, false);
+        expect(readLocationPref(storage)).toBe(false);
+        // An explicit "0" persists the opt-out across reloads.
         expect(readLocationPref(storage)).toBe(false);
     });
 });

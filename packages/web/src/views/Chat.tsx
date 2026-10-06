@@ -196,8 +196,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     /** In-session attachment previews: attachmentId → data: URL (not persisted). */
     const [previews, setPreviews] = useState<Record<string, string>>({});
     /**
-     * The location-consent toggle (#31), persisted across sessions; OFF by
-     * default so the browser's permission prompt never ambushes anyone.
+     * The location-sharing preference (#31), persisted across sessions.
+     * ON by default: the device reports its location automatically and the
+     * browser's permission prompt is the consent gate; the pin is the
+     * opt-out.
      */
     const [locationOn, setLocationOn] = useState(() =>
         readLocationPref(localStorage),
@@ -287,11 +289,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         };
     }, [client, refreshSessions]);
 
-    // Location sharing (#31): each toggle-on drives one geolocation request
-    // and (on success) one `location` frame through the chat client. The
-    // browser's own permission prompt is the second gate; "denied" and
-    // "unsupported" are displayed, never retried in a loop — the user can
-    // flip the toggle again after fixing permissions or serving over HTTPS.
+    // Location sharing (#31): automatic by default — on mount (and on every
+    // toggle-on) one geolocation request runs, and on success one `location`
+    // frame goes through the chat client. The browser's permission prompt is
+    // the consent gate; "denied"/"unsupported" are shown in the open (the
+    // sidebar note), never retried in a loop — the user can flip the pin
+    // again after fixing permissions or serving over HTTPS.
     useEffect(() => {
         if (!locationOn) {
             setLocationState("off");
@@ -652,6 +655,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         </button>
                     </span>
                 </div>
+                {locationOn && locationState !== "active" && (
+                    <p className="location-note" role="status">
+                        {locationState === "unsupported" &&
+                            "Location unavailable — HTTPS or localhost required"}
+                        {locationState === "locating" && "Locating…"}
+                        {locationState === "denied" &&
+                            "Location denied — allow it in the browser, then toggle the pin again"}
+                        {locationState === "failed" &&
+                            "Location lookup failed — toggle the pin to retry"}
+                    </p>
+                )}
                 <button
                     type="button"
                     className="new-chat"

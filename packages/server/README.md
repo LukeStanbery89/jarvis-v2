@@ -510,13 +510,14 @@ used.
   argument (the user named a place) wins; then the device's reported
   location (a `location` frame from the web client, used by coordinates);
   then the model is told to ask the user which city.
-- **Device location is consent-gated and memory-only** — the web client's
-  MapPin toggle (default OFF) gates a browser-geolocation request, rounded
-  to four decimals (~11 m); the server keeps the latest report for the
+- **Device location is automatic and memory-only** — the web client
+  requests a browser-geolocation fix on load (the browser's own permission
+  prompt is the consent gate; a sidebar MapPin is the opt-out), rounded to
+  four decimals (~11 m); the server keeps the latest report for the
   socket's lifetime only and never persists it. Browser geolocation requires
-  a **secure context** (HTTPS or localhost) — over plain HTTP the toggle
+  a **secure context** (HTTPS or localhost) — over plain HTTP the client
   reports "unsupported" and the tool asks for a city (the TLS work is a
-  separate issue).
+  separate issue, #79).
 - **Metered per user** — `JARVIS_WEATHER_CALLS_PER_MIN` (10/min) through the
   same fixed-window quota machinery (see [Rate limiting](#rate-limiting)).
 - **Bounded per call** — `JARVIS_WEATHER_TIMEOUT_MS` (10 s).

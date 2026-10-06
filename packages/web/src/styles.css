@@ -426,6 +426,15 @@ textarea::placeholder {
     color: var(--primary);
 }
 
+/* A sharing problem the user must act on (denied/unsupported/…) — stated
+   in the open, not hidden in a tooltip. */
+.location-note {
+    margin: 4px 12px 0;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--primary-dim);
+}
+
 /* The attach button sits in the composer row beside the textarea. */
 .composer button.attach {
     display: inline-flex;
