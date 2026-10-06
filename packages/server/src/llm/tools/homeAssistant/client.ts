@@ -9,8 +9,11 @@
  *   and cached for a short TTL. Without the cache, one conversation turn would
  *   re-fetch and re-summarize the whole house on every call.
  * - `POST /api/services/<domain>/<service>` with `{ entity_id }` — the write
- *   path. Home Assistant answers with the affected entities' post-action states,
- *   which is the freshest truth available and what the tool reports back.
+ *   path. Resolving is the whole of its result: Home Assistant answers with the
+ *   affected entities' states as they stood *at dispatch*, which is not the
+ *   outcome of the write (a `turn_off` routinely answers `on`), so the body is
+ *   discarded rather than reported back as a post-action truth. The snapshot is
+ *   dropped either way, so the next read re-fetches.
  *
  * The long-lived access token goes out as a `Bearer` header and nowhere else: it
  * is never logged, never part of a URL, and scrubbed out of any error text even
@@ -20,7 +23,6 @@ import {
     HomeAssistantError,
     type HomeAssistantEntity,
     type HomeAssistantProvider,
-    type HomeAssistantServiceResult,
 } from "./types";
 import { logger } from "../../../logger";
 
@@ -153,10 +155,15 @@ export function createHomeAssistantClient(
      * Applies the timeout when the caller supplies no signal and maps
      * transport, HTTP, and JSON failures onto typed `HomeAssistantError`s. The
      * request line is logged without headers, so the token never reaches a log.
+     *
+     * `ignoreBody` asserts only that the status was 2xx: the write path needs
+     * nothing from a response whose contents are discarded anyway, so a proxy
+     * that rewrites or strips the body cannot turn a successful write into a
+     * reported failure.
      */
     const request = async (
         path: string,
-        init: { method: "GET" | "POST"; body?: unknown },
+        init: { method: "GET" | "POST"; body?: unknown; ignoreBody?: boolean },
         signal?: AbortSignal,
     ): Promise<unknown> => {
         const effectiveSignal = signal ?? AbortSignal.timeout(opts.timeoutMs);
@@ -197,6 +204,9 @@ export function createHomeAssistantClient(
                     detail ? ` (${detail})` : ""
                 }`,
             );
+        }
+        if (init.ignoreBody) {
+            return undefined;
         }
         try {
             return await response.json();
@@ -263,7 +273,7 @@ export function createHomeAssistantClient(
             action: string,
             value?: number,
             signal?: AbortSignal,
-        ): Promise<HomeAssistantServiceResult> {
+        ): Promise<void> {
             const domain = entityDomain(entityId);
             if (!domain) {
                 throw new HomeAssistantError(
@@ -276,22 +286,17 @@ export function createHomeAssistantClient(
                 // (`brightness_pct`, `temperature`); the tool owns that mapping.
                 body[serviceValueField(action)] = value;
             }
-            const raw = await request(
+            // A non-2xx throws here, so reaching the next line is the acceptance
+            // signal. The body holds the entities' states as of dispatch —
+            // pre-action, and therefore unreportable as an outcome — so it is
+            // not read at all.
+            await request(
                 `/api/services/${encodeURIComponent(domain)}/${encodeURIComponent(action)}`,
-                { method: "POST", body },
+                { method: "POST", body, ignoreBody: true },
                 signal,
             );
-            const entities = Array.isArray(raw)
-                ? raw
-                      .map(normalizeEntity)
-                      .filter(
-                          (entity): entity is HomeAssistantEntity =>
-                              entity !== undefined,
-                      )
-                : [];
             // The snapshot predates this write, so it must not survive it.
             snapshot = null;
-            return { entities };
         },
 
         invalidate(): void {

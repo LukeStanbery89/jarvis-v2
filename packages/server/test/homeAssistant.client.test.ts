@@ -266,7 +266,9 @@ describe("homeAssistant client writes", () => {
             ...BASE,
             fetchImpl: mock.fetch,
         });
-        const result = await client.callService("light.kitchen", "turn_on");
+        await expect(
+            client.callService("light.kitchen", "turn_on"),
+        ).resolves.toBeUndefined();
         expect(mock.calls[0].url).toBe(
             "http://ha.local:8123/api/services/light/turn_on",
         );
@@ -274,7 +276,6 @@ describe("homeAssistant client writes", () => {
         expect(JSON.parse(String(mock.calls[0].init.body))).toEqual({
             entity_id: "light.kitchen",
         });
-        expect(result.entities[0].state).toBe("on");
     });
 
     it("maps brightness to brightness_pct and temperature to temperature", async () => {
@@ -326,14 +327,27 @@ describe("homeAssistant client writes", () => {
         expect(mock.calls).toHaveLength(0);
     });
 
-    it("tolerates a non-array service response", async () => {
+    it("discards the service response body entirely", async () => {
         const mock = mockFetch({ body: { unexpected: true } });
         const client = createHomeAssistantClient({
             ...BASE,
             fetchImpl: mock.fetch,
         });
-        const result = await client.callService("light.kitchen", "turn_on");
-        expect(result.entities).toEqual([]);
+        await expect(
+            client.callService("light.kitchen", "turn_on"),
+        ).resolves.toBeUndefined();
+        expect(mock.calls).toHaveLength(1);
+    });
+
+    it("treats a 2xx write as accepted even when the body is not JSON", async () => {
+        const mock = mockFetch({ text: "<html>rewritten by a proxy</html>" });
+        const client = createHomeAssistantClient({
+            ...BASE,
+            fetchImpl: mock.fetch,
+        });
+        await expect(
+            client.callService("light.kitchen", "turn_off"),
+        ).resolves.toBeUndefined();
     });
 });
 

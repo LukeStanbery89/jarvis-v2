@@ -28,12 +28,6 @@ export interface HomeAssistantEntity {
     readonly attributes: Readonly<Record<string, unknown>>;
 }
 
-/** The result of one service call: Home Assistant's post-action entity states. */
-export interface HomeAssistantServiceResult {
-    /** Entities affected, as reported by Home Assistant after the action. */
-    readonly entities: readonly HomeAssistantEntity[];
-}
-
 /** A configured Home Assistant the tool can call. */
 export interface HomeAssistantProvider {
     /** Instance name for logs and model-facing error text. */
@@ -51,15 +45,19 @@ export interface HomeAssistantProvider {
      * Calls one Home Assistant service (`light/turn_on`) for one entity.
      *
      * `value` carries the service's single payload argument (brightness,
-     * temperature) when the action needs one. Throws
-     * {@link HomeAssistantError} on failure.
+     * temperature) when the action needs one. Returns nothing: Home Assistant
+     * answers with the affected entities' states as they stood *at dispatch*,
+     * which is not the outcome of the write and must never be reported as one
+     * (see the client module doc). Resolving is the success signal — the tool
+     * reports the accepted action and lets a later `entities()`/read report the
+     * state. Throws {@link HomeAssistantError} on failure.
      */
     callService(
         entityId: string,
         action: string,
         value?: number,
         signal?: AbortSignal,
-    ): Promise<HomeAssistantServiceResult>;
+    ): Promise<void>;
     /** Drops the cached snapshot; called by the tool after a write. */
     invalidate(): void;
 }

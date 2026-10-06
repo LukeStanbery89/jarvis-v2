@@ -7,12 +7,12 @@ instance, using the same seams the weather (#31) and search (#9) tools establish
 
 ## Decisions (confirmed with the requester)
 
-| Decision     | Choice                                                                                                            |
-| ------------ | ----------------------------------------------------------------------------------------------------------------- |
-| Transport    | Home Assistant's local REST API + a long-lived access token                                                       |
-| First slice  | Read status **and** basic control (lights, switches, climate)                                                     |
-| Write safety | Execute immediately; the tool description tells the model to confirm ambiguous or destructive asks in words first |
-| Tool shape   | **One** tool (`homeAssistant`) with an `action` argument                                                          |
+| Decision     | Choice                                                                                                                                                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Transport    | Home Assistant's local REST API + a long-lived access token                                                                                                                                                                                |
+| First slice  | Read status **and** basic control (lights, switches, climate)                                                                                                                                                                              |
+| Write safety | Execute immediately, reported as **accepted, never verified** (HA's service body is dispatch-time state); the tool description tells the model to confirm ambiguous or destructive asks in words first and to call `get` for current state |
+| Tool shape   | **One** tool (`homeAssistant`) with an `action` argument                                                                                                                                                                                   |
 
 ## Reference implementation
 
@@ -124,9 +124,14 @@ homeAssistant({
    what the assistant did to the house.
 7. **The snapshot cache is invalidated after a write.** The reference never
    invalidates, so after turning a light on, `list` can report it off for up to
-   the TTL. Home Assistant returns the post-action entity state in its service
-   response, so the confirmation line is taken from that (freshest truth) and the
-   cache is dropped.
+   the TTL. **The confirmation line does not come from the service response:**
+   Home Assistant's 2xx body reports the entities' states as of _dispatch_ (a
+   `turn_off` routinely answers `on`), so reporting it handed the model a
+   contradiction it then tried to explain away. The body is discarded, a resolved
+   call is the acceptance signal, and the tool says only that the request was
+   accepted — the model calls `get` when it needs state. An entity reading
+   `unavailable`/`unknown` is refused before the call for the same reason: an
+   acknowledgement Home Assistant cannot deliver is not a change.
 8. **Temperature values go to Home Assistant in the instance's own unit.** Our
    server's `JARVIS_WEATHER_UNITS` is irrelevant here; HA converts using its
    configured system. `get` therefore surfaces `unit_of_measurement` so the model
@@ -166,17 +171,22 @@ homeAssistant({
 
 - Client: malformed JSON, missing `friendly_name`, non-array `/api/states`, a 401,
   a 500, a timeout, the cache serving a second call and expiring after the TTL, and
-  an assertion that the token appears in no error message.
+  an assertion that the token appears in no error message. Writes additionally
+  assert the response body is discarded — a 2xx whose body is not JSON still
+  resolves.
 - Tool: quota refusal; each action's routing; `get` on an unknown entity; a control
   call for an out-of-read-list entity; `set_brightness` on a `switch.*`;
   `list` truncation with a count; `list` with a `query` filter; formatter output.
+  A write's result contains the accepted action and no state whatsoever, and an
+  entity reading `unavailable`/`unknown` refuses without a service call.
 - `npm run check` from the repo root.
 
 ## Manual verification (before any PR)
 
 1. `HOME_ASSISTANT_URL` + `HOME_ASSISTANT_ACCESS_TOKEN` in `packages/server/.env`.
 2. "What lights are on?" → `list`/filtered read.
-3. "Turn on the kitchen light" → validated write, friendly-name confirmation.
+3. "Turn on the kitchen light" → validated write; the result states the accepted
+   action and claims no state. "Is it on now?" → a fresh `get` reports it.
 4. "Set the thermostat to 70" → `set_temperature` on a `climate.*`.
 5. "Turn on light.kitchn" (typo) → refused, model retries with the right id.
 

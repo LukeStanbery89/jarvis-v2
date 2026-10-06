@@ -576,8 +576,11 @@ The agent reads and lightly controls the user's own Home Assistant instance
 through one `homeAssistant` tool (#15) over the local REST API — two
 endpoints, no new dependency: `GET /api/states` for the snapshot and
 `POST /api/services/<domain>/<service>` with `{"entity_id": …}` for a write.
-Home Assistant answers a write with the affected entities' post-action states,
-which is the freshest truth available and what the tool reports back.
+A write's **status code is the whole result**: the 2xx body reports the
+affected entities' states as they stood _at dispatch_ (a `turn_off` routinely
+answers `on`), so it is discarded rather than handed to the model as a
+post-action truth. The tool therefore reports the **accepted action**, never a
+verified outcome, and the model is told to use `get` for current state.
 
 - **One tool, one `action` argument** — `list`, `get`, `turn_on`, `turn_off`,
   `toggle`, `set_brightness`, `set_temperature`. The model picks an intent
@@ -593,16 +596,22 @@ which is the freshest truth available and what the tool reports back.
 - **Nothing is written that was not validated first** — every write resolves
   `entity_id` against the live snapshot before a service call goes out, so a
   typo, a hallucinated id, or an out-of-scope entity is refused in
-  model-facing prose instead of being sent to the house. A name that matches
-  nothing, or more than one entity, returns the candidates rather than picking
-  one; `set_brightness` requires a `light.*` target, `set_temperature` a
-  `climate.*` one, and a write always names exactly one entity.
-- **Writes execute immediately, with the model told to confirm first** — there
-  is no protocol-level confirmation step. The tool description and the
-  `HOME_CALL_RULE` system paragraph instruct the model to confirm sweeping or
-  ambiguous requests ("turn everything off") in words before acting, and every
-  successful write is logged at info as an audit trail of what the assistant
-  did.
+  model-facing prose instead of being sent to the house. An entity reading
+  `unavailable` or `unknown` is refused for the same reason: Home Assistant
+  acknowledging a command it cannot deliver is not a change. A name that
+  matches nothing, or more than one entity, returns the candidates rather than
+  picking one; `set_brightness` requires a `light.*` target, `set_temperature`
+  a `climate.*` one, and a write always names exactly one entity.
+- **Writes execute immediately, and are reported as accepted, not verified** —
+  there is no protocol-level confirmation step and no post-write polling: a
+  resolved service call is the success signal, and the result says so ("turned
+  off Living Room Light […]; Home Assistant accepted the request") without
+  asserting a state the instance never confirmed. The tool description tells
+  the model that a write means _accepted_, not that the device changed, and to
+  call `get` before reporting current state; the `HOME_CALL_RULE` system
+  paragraph instructs it to confirm sweeping or ambiguous requests ("turn
+  everything off") in words before acting. Every write is logged at info as an
+  audit trail of what the assistant did, including the pre-write state it read.
 - **The snapshot is cached, then invalidated** — `GET /api/states` on a mature
   install returns thousands of entities, so the filtered snapshot is reused for
   `JARVIS_HA_CACHE_TTL_MS` and dropped after a successful write (a validation

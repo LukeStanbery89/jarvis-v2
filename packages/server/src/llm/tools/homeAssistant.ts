@@ -10,15 +10,22 @@
  * **Nothing is written that was not validated first.** Every control action
  * resolves `entity_id` against the instance's domain-filtered snapshot before a
  * service call goes out, so a typo, a hallucinated id, or an out-of-scope entity
- * is refused in model-facing prose instead of being sent to the house. The
+ * is refused in model-facing prose instead of being sent to the house; an entity
+ * reading `unavailable` or `unknown` is refused for the same reason — Home
+ * Assistant acknowledging a command it cannot deliver is not a change. The
  * control domain list is a strict subset of the read list, which is how
  * `lock.*`, `cover.*`, `button.*`, `scene.*` and `script.*` stay readable but
  * unwritable — arming a lock from a model turn is a different risk class than
  * reading its state, and gets its own issue.
  *
- * Writes execute immediately. The tool description tells the model to confirm an
- * ambiguous or sweeping ask in words first, and never to guess a target; every
- * write is logged at info as an audit trail of what the assistant did.
+ * Writes execute immediately and are reported as **accepted, never verified**:
+ * Home Assistant's service response carries the entities' states as of
+ * dispatch (a `turn_off` routinely answers `on`), so that body is discarded and
+ * the tool states only the action and that it was accepted — the model is told
+ * to use action `get` when it needs current state. The tool description tells
+ * the model to confirm an ambiguous or sweeping ask in words first, and never
+ * to guess a target; every write is logged at info as an audit trail of what
+ * the assistant did.
  *
  * The caller's identity arrives through LangGraph's `configurable.userId` — the
  * same verified seam `getWeather`, `webSearch` and `analyzeImage` use — so the
@@ -157,8 +164,8 @@ export function formatEntity(entity: HomeAssistantEntity): string {
  * none — the unit, the current/target temperatures, the brightness, the
  * battery.
  *
- * Exported so the write confirmation can report the same detail as `get`; the
- * two must not drift.
+ * Exported for tests. Read actions (`get`, `list`) are the only reporters of
+ * state, so this must stay in step with {@link formatEntity}.
  */
 export function stateDetails(entity: HomeAssistantEntity): string {
     const attrs = entity.attributes;
@@ -340,21 +347,28 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
                     return `The "${action}" action needs a numeric \`value\`.`;
                 }
 
-                const result = await deps.provider.callService(
+                if (
+                    found.state === "unavailable" ||
+                    found.state === "unknown"
+                ) {
+                    return `${found.friendlyName} [${found.entityId}] currently reads "${found.state}", so Home Assistant will not act on it. Do not claim a change; tell the user the device reads ${found.state}.`;
+                }
+
+                // Resolving is the whole result: HA's response body reports the
+                // states as of dispatch, not as of completion, so reporting it
+                // would hand the model a contradiction ("turned off, and it is
+                // on"). Nothing after this line may assert a post-write state.
+                await deps.provider.callService(
                     found.entityId,
                     SERVICE_FOR_ACTION[action],
                     value,
                 );
                 // The snapshot the validation just used is now stale.
                 deps.provider.invalidate();
-                const settled =
-                    result.entities.find(
-                        (e) => e.entityId === found.entityId,
-                    ) ?? found;
                 logger.info(
-                    `homeAssistant ${action} on ${found.entityId} -> ${settled.state}`,
+                    `homeAssistant ${action} accepted on ${found.entityId} (was ${found.state})`,
                 );
-                return `homeAssistant ${action}: ${pastTense(action)} ${settled.friendlyName} [${settled.entityId}]${valueNote(action, value, found)}. It is now ${settled.state}${stateDetails(settled)}.`;
+                return `homeAssistant ${action}: ${pastTense(action)} ${found.friendlyName} [${found.entityId}]${valueNote(action, value, found)}; Home Assistant accepted the request.`;
             } catch (err) {
                 return failureText(
                     err instanceof HomeAssistantError
@@ -373,7 +387,11 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
                 "home (devices, lights, thermostat, sensors) — never answer from " +
                 "memory. Start with action 'list' (optionally with `query` like " +
                 "'kitchen' or 'light') to learn the exact `entity_id`s; pass an " +
-                "`entity_id` for every other action. Entity values are in the " +
+                "`entity_id` for every other action. A successful write means " +
+                "Home Assistant accepted the request, not that the device " +
+                "changed state — its own state may lag, so use action 'get' " +
+                "before reporting the current state rather than assuming it. " +
+                "Entity values are in the " +
                 "instance's own unit — pass a number, never a unit string. " +
                 "Confirm sweeping or ambiguous requests in words before acting " +
                 "(e.g. 'turn everything off'), never guess a target, and answer " +

@@ -16,7 +16,6 @@ import { HomeAssistantError } from "../src/llm/tools/homeAssistant/types";
 import type {
     HomeAssistantEntity,
     HomeAssistantProvider,
-    HomeAssistantServiceResult,
 } from "../src/llm/tools/homeAssistant/types";
 import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 import { logger } from "../src/logger";
@@ -83,7 +82,7 @@ const HOUSE = [
 function fakeProvider(
     script: {
         entities?: HomeAssistantEntity[] | Error;
-        callService?: HomeAssistantServiceResult | Error;
+        callService?: Error;
     } = {},
 ): {
     provider: HomeAssistantProvider;
@@ -108,22 +107,11 @@ function fakeProvider(
             },
             async callService(entityId, action, value) {
                 calls.push({ entityId, action, value });
-                // Home Assistant echoes the affected entity with its new state
-                // and attributes intact, so the fake does the same.
-                const known = HOUSE.find((e) => e.entityId === entityId);
-                const outcome = script.callService ?? {
-                    entities: [
-                        known
-                            ? entity(entityId, "on", {
-                                  ...known.attributes,
-                              })
-                            : entity(entityId, "on"),
-                    ],
-                };
-                if (outcome instanceof Error) {
-                    throw outcome;
+                // Home Assistant reports acceptance through its status code, so
+                // the fake resolves unless scripted to fail.
+                if (script.callService) {
+                    throw script.callService;
                 }
-                return outcome;
             },
             invalidate() {
                 invalidations += 1;
@@ -296,8 +284,9 @@ describe("homeAssistant writes", () => {
             },
         ]);
         expect(result).toMatch(
-            /turned on Desk Lamp \[light\.desk_lamp\]\. It is now on \(brightness 40%\)\./,
+            /turned on Desk Lamp \[light\.desk_lamp\]; Home Assistant accepted the request\./,
         );
+        expect(result).not.toContain("It is now");
     });
 
     it("resolves a friendly name to its entity", async () => {
@@ -353,30 +342,40 @@ describe("homeAssistant writes", () => {
         const info = vi.spyOn(logger, "info").mockImplementation(() => {});
         await run({ action: "turn_on", entity_id: "light.desk_lamp" });
         expect(info.mock.calls.flat().join(" ")).toMatch(
-            /turn_on on light\.desk_lamp/,
+            /turn_on accepted on light\.desk_lamp/,
         );
     });
 
-    it("reports the post-action state Home Assistant returned", async () => {
-        const fake = fakeProvider({
-            callService: {
-                entities: [entity("light.desk_lamp", "on", { brightness: 64 })],
-            },
+    it("never reports a state, only that the request was accepted", async () => {
+        // Home Assistant's service response is pre-dispatch state (a turn_off
+        // routinely answers `on`); reporting it handed the model a
+        // contradiction. It must not reach the result string at all.
+        const result = await run({
+            action: "turn_off",
+            entity_id: "light.desk_lamp",
         });
-        const result = await run(
-            { action: "turn_on", entity_id: "light.desk_lamp" },
-            { provider: fake.provider },
-        );
-        expect(result).toContain("It is now on (brightness 25%)");
+        expect(result).toContain("turned off Desk Lamp [light.desk_lamp]");
+        expect(result).toContain("Home Assistant accepted the request.");
+        expect(result).not.toMatch(/\bare now\b|\bis now\b|reads/);
     });
 
-    it("falls back to the pre-write state when the response omits the entity", async () => {
-        const fake = fakeProvider({ callService: { entities: [] } });
-        const result = await run(
-            { action: "turn_off", entity_id: "light.desk_lamp" },
-            { provider: fake.provider },
+    it("keeps the pre-write state out of the result even for a value write", async () => {
+        const result = await run({
+            action: "set_brightness",
+            entity_id: "light.kitchen",
+            value: 25,
+        });
+        expect(result).toContain("to 25%");
+        expect(result).toContain("Home Assistant accepted the request.");
+        expect(result).not.toContain("It is now");
+    });
+
+    it("tells the model a write is accepted rather than verified, and how to check", () => {
+        const description = build().description;
+        expect(description).toContain(
+            "accepted the request, not that the device changed state",
         );
-        expect(result).toContain("It is now off");
+        expect(description).toContain("use action 'get'");
     });
 });
 
@@ -449,6 +448,22 @@ describe("homeAssistant write refusals", () => {
         );
         expect(result).toMatch(/Retry with the exact `entity_id`/);
     });
+
+    it.each(["unavailable", "unknown"])(
+        "does not write to an entity reading %s",
+        async (state) => {
+            const fake = fakeProvider({
+                entities: [entity("light.kitchen", state)],
+            });
+            const result = await run(
+                { action: "turn_on", entity_id: "light.kitchen" },
+                { provider: fake.provider },
+            );
+            expect(fake.calls).toEqual([]);
+            expect(result).toContain(`currently reads "${state}"`);
+            expect(result).toMatch(/Do not claim a change/);
+        },
+    );
 });
 
 describe("homeAssistant failures", () => {
