@@ -16,10 +16,12 @@ import { getCurrentTime } from "./time";
 import { createAnalyzeImageTool } from "./analyzeImage";
 import { createWebSearchTool } from "./webSearch";
 import { createGetWeatherTool } from "./getWeather";
+import { createHomeAssistantTool } from "./homeAssistant";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
 import type { WeatherDeps } from "./getWeather";
+import type { HomeAssistantDeps } from "./homeAssistant";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -35,6 +37,13 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * key is configured — no key, no `getWeather` tool.
      */
     weather?: WeatherDeps;
+    /**
+     * Home Assistant wiring (#15): the configured provider, the per-user call
+     * quota, the writable domain list, and the list ceiling. Present only when
+     * both the instance URL and the access token are configured — no
+     * credentials, no `homeAssistant` tool.
+     */
+    homeAssistant?: HomeAssistantDeps;
 }
 
 /**
@@ -58,6 +67,9 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
     }
     if (deps.weather) {
         tools.push(createGetWeatherTool(deps.weather));
+    }
+    if (deps.homeAssistant) {
+        tools.push(createHomeAssistantTool(deps.homeAssistant));
     }
     return tools;
 }

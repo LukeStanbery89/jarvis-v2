@@ -70,6 +70,48 @@ export const DEFAULT_WEATHER_CALLS_PER_MIN = 10;
 /** Default unit system the weather tool reports. */
 export const DEFAULT_WEATHER_UNITS: WeatherUnits = "imperial";
 
+/** Default wall-clock cap for one Home Assistant call, in milliseconds. */
+export const DEFAULT_HA_TIMEOUT_MS = 10_000;
+
+/** Default Home Assistant calls allowed per user per minute. */
+export const DEFAULT_HA_CALLS_PER_MIN = 10;
+
+/** Default freshness of the cached Home Assistant state snapshot. */
+export const DEFAULT_HA_CACHE_TTL_MS = 15_000;
+
+/** Default ceiling on how many entities the tool lists at once. */
+export const DEFAULT_HA_LIST_LIMIT = 40;
+
+/**
+ * Entity domains the tool may READ by default (#15).
+ *
+ * Deliberately broader than {@link DEFAULT_HA_CONTROL_DOMAINS}: reading a lock's
+ * state or a door sensor's value is harmless and useful, while writing to one is
+ * a different risk class. `button`, `scene`, and `script` are absent entirely.
+ */
+export const DEFAULT_HA_READ_DOMAINS: readonly string[] = [
+    "light",
+    "switch",
+    "climate",
+    "fan",
+    "sensor",
+    "binary_sensor",
+    "cover",
+    "media_player",
+    "lock",
+];
+
+/**
+ * Entity domains the tool may WRITE by default (#15) — the writable subset of
+ * {@link DEFAULT_HA_READ_DOMAINS}.
+ */
+export const DEFAULT_HA_CONTROL_DOMAINS: readonly string[] = [
+    "light",
+    "switch",
+    "climate",
+    "fan",
+];
+
 /**
  * Web-search provider settings (#9).
  *
@@ -128,6 +170,37 @@ export interface WeatherConfig {
     readonly timeoutMs: number;
     /** Per-user weather calls per minute (`JARVIS_WEATHER_CALLS_PER_MIN`). */
     readonly callsPerMin: number;
+}
+
+/**
+ * Home Assistant connection settings (#15).
+ *
+ * Both the URL and the long-lived access token are required, and neither has a
+ * default: the URL is a private LAN address that must never be baked into the
+ * source, and a missing token must leave the tool unregistered rather than
+ * failing at request time. When EITHER is missing the `homeAssistant` setting is
+ * undefined and the tool does not exist for this deployment.
+ *
+ * The token is a secret carried in the environment. It is never logged, never
+ * included in error text, and leaves the process only as a request header.
+ */
+export interface HomeAssistantConfig {
+    /** Base URL of the instance, no trailing slash (`HOME_ASSISTANT_URL`). */
+    readonly url: string;
+    /** Long-lived access token (`HOME_ASSISTANT_ACCESS_TOKEN`); a secret. */
+    readonly accessToken: string;
+    /** Domains whose entities may be read (`JARVIS_HA_READ_DOMAINS`). */
+    readonly readDomains: readonly string[];
+    /** Domains whose entities may be written (`JARVIS_HA_CONTROL_DOMAINS`). */
+    readonly controlDomains: readonly string[];
+    /** Per-user calls per minute (`JARVIS_HA_CALLS_PER_MIN`). */
+    readonly callsPerMin: number;
+    /** Wall-clock cap for one call (`JARVIS_HA_TIMEOUT_MS`). */
+    readonly timeoutMs: number;
+    /** How long a fetched state snapshot is reused (`JARVIS_HA_CACHE_TTL_MS`). */
+    readonly cacheTtlMs: number;
+    /** Ceiling on entities listed per call (`JARVIS_HA_LIST_LIMIT`). */
+    readonly listLimit: number;
 }
 
 /**
@@ -368,6 +441,12 @@ export interface AppConfig {
      */
     readonly weather?: WeatherConfig;
     /**
+     * Home Assistant connection settings (#15), present only when BOTH the URL
+     * and the access token are configured — no credentials, no `homeAssistant`
+     * tool. Optional so hand-built configs (tests) can omit it.
+     */
+    readonly homeAssistant?: HomeAssistantConfig;
+    /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
      *
@@ -470,6 +549,16 @@ export function getAppConfig(): AppConfig {
     const numberOr = (raw: string | undefined, fallback: number): number => {
         const value = Number(raw);
         return Number.isFinite(value) && value > 0 ? value : fallback;
+    };
+    /**
+     * Like `numberOr` but accepts 0, for knobs where zero is a real setting
+     * rather than a missing one (the Home Assistant cache TTL: 0 disables
+     * caching, which is how you debug against a live instance without stale
+     * reads).
+     */
+    const zeroOkOr = (raw: string | undefined, fallback: number): number => {
+        const value = Number(raw);
+        return Number.isFinite(value) && value >= 0 ? value : fallback;
     };
     return {
         appDbPath: process.env.JARVIS_DB_PATH ?? defaultAppDbPath(),
@@ -575,6 +664,44 @@ export function getAppConfig(): AppConfig {
                       DEFAULT_WEATHER_CALLS_PER_MIN,
                   ),
               },
+        homeAssistant:
+            !process.env.HOME_ASSISTANT_URL ||
+            !process.env.HOME_ASSISTANT_ACCESS_TOKEN
+                ? undefined
+                : {
+                      // An operator's trailing slash would otherwise produce
+                      // `//api/states`, which Home Assistant 404s.
+                      url: process.env.HOME_ASSISTANT_URL.replace(/\/+$/, ""),
+                      accessToken: process.env.HOME_ASSISTANT_ACCESS_TOKEN,
+                      // Domain lists fall back to the documented defaults on a
+                      // typo, so a bad value narrows or widens rather than
+                      // emptying the tool.
+                      readDomains:
+                          csv(process.env.JARVIS_HA_READ_DOMAINS)?.map(
+                              (domain) => domain.toLowerCase(),
+                          ) ?? DEFAULT_HA_READ_DOMAINS,
+                      controlDomains:
+                          csv(process.env.JARVIS_HA_CONTROL_DOMAINS)?.map(
+                              (domain) => domain.toLowerCase(),
+                          ) ?? DEFAULT_HA_CONTROL_DOMAINS,
+                      callsPerMin: numberOr(
+                          process.env.JARVIS_HA_CALLS_PER_MIN,
+                          DEFAULT_HA_CALLS_PER_MIN,
+                      ),
+                      timeoutMs: numberOr(
+                          process.env.JARVIS_HA_TIMEOUT_MS,
+                          DEFAULT_HA_TIMEOUT_MS,
+                      ),
+                      // 0 is allowed: it turns the snapshot cache off.
+                      cacheTtlMs: zeroOkOr(
+                          process.env.JARVIS_HA_CACHE_TTL_MS,
+                          DEFAULT_HA_CACHE_TTL_MS,
+                      ),
+                      listLimit: numberOr(
+                          process.env.JARVIS_HA_LIST_LIMIT,
+                          DEFAULT_HA_LIST_LIMIT,
+                      ),
+                  },
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(
             (cidr) => cidr.toLowerCase(),

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { calculateResult } from "../src/llm/tools/math";
 import { clockFacet, localClock } from "../src/llm/tools/time";
+import { createTools } from "../src/llm/tools";
+import type { ToolDeps } from "../src/llm/tools";
+import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
+import type { HomeAssistantProvider } from "../src/llm/tools/homeAssistant/types";
 
 const CASES: Array<[string, number]> = [
     ["42", 42],
@@ -96,5 +100,35 @@ describe("localClock", () => {
                   ][instant.getDay()];
         expect(output).toContain(weekday);
         expect(output).toContain(String(instant.getFullYear()));
+    });
+});
+
+describe("createTools wiring", () => {
+    /**
+     * Names of the tools registered for a given dependency set.
+     *
+     * Only the optional dependencies are exercised here — the required
+     * vision/attachment deps are not this test's subject, so a partial set is
+     * cast rather than stubbed through three unrelated fakes.
+     */
+    const names = (deps?: Partial<ToolDeps>): string[] =>
+        createTools(deps as ToolDeps | undefined).map((tool) => tool.name);
+
+    it("registers homeAssistant only when its deps are present (#15)", () => {
+        expect(names()).not.toContain("homeAssistant");
+        expect(
+            names({
+                homeAssistant: {
+                    provider: {} as HomeAssistantProvider,
+                    quota: new FixedWindowQuota(10),
+                    controlDomains: ["light"],
+                    listLimit: 40,
+                },
+            }),
+        ).toContain("homeAssistant");
+    });
+
+    it("always keeps the built-in tools alongside the optional ones", () => {
+        expect(names()).toEqual(["getCurrentTime", "calculate"]);
     });
 });
