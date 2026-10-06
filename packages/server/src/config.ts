@@ -15,7 +15,7 @@ export const DEFAULT_HOST = "0.0.0.0";
 export const DEFAULT_LLM_MODEL = "qwen/qwen3-4b-2507";
 
 /** Default sampling temperature. */
-export const DEFAULT_LLM_TEMPERATURE = 0;
+export const DEFAULT_LLM_TEMPERATURE = 0.15;
 
 /** Default maximum model/tool turns per agent run before the graph aborts. */
 export const DEFAULT_AGENT_MAX_TURNS = 10;
@@ -61,6 +61,15 @@ export const DEFAULT_SEARCH_MAX_RESULTS = 5;
 /** Default web-search calls allowed per user per minute. */
 export const DEFAULT_SEARCH_CALLS_PER_MIN = 20;
 
+/** Default wall-clock cap for one weather API call, in milliseconds. */
+export const DEFAULT_WEATHER_TIMEOUT_MS = 10_000;
+
+/** Default weather calls allowed per user per minute. */
+export const DEFAULT_WEATHER_CALLS_PER_MIN = 10;
+
+/** Default unit system the weather tool reports. */
+export const DEFAULT_WEATHER_UNITS: WeatherUnits = "imperial";
+
 /**
  * Web-search provider settings (#9).
  *
@@ -84,6 +93,40 @@ export interface SearchConfig {
     /** Results handed to the model per call (`JARVIS_SEARCH_MAX_RESULTS`). */
     readonly maxResults: number;
     /** Per-user search calls per minute (`JARVIS_SEARCH_CALLS_PER_MIN`). */
+    readonly callsPerMin: number;
+}
+
+/**
+ * Unit systems the weather tool can report (#31).
+ *
+ * Deliberately narrower than OpenWeather's `standard|metric|imperial` set:
+ * Kelvin ("standard") is useless in conversation, so the config rejects it
+ * rather than letting a stray default put Kelvin in front of the model.
+ */
+export type WeatherUnits = "metric" | "imperial";
+
+/**
+ * Weather provider settings (#31).
+ *
+ * OpenWeather's free tier serves current conditions and the 5-day/3-hour
+ * forecast at 60 calls/minute account-wide (1M/month) — no card required.
+ * One provider, one key; no routing layer.
+ *
+ * The API key is a secret carried in the environment; it is never logged and
+ * never returned to clients. When the key is not configured the `weather`
+ * setting is left undefined and the `getWeather` tool is not registered at
+ * all. Note that freshly created OpenWeather keys stay unactivated for
+ * 10 minutes–2 hours (the provider answers 401 meanwhile) — that is provider
+ * behavior, not a config problem.
+ */
+export interface WeatherConfig {
+    /** OpenWeather API key (`OPENWEATHER_API_KEY`). */
+    readonly apiKey: string;
+    /** Unit system for temperatures and wind (`JARVIS_WEATHER_UNITS`). */
+    readonly units: WeatherUnits;
+    /** Wall-clock cap for one provider call (`JARVIS_WEATHER_TIMEOUT_MS`). */
+    readonly timeoutMs: number;
+    /** Per-user weather calls per minute (`JARVIS_WEATHER_CALLS_PER_MIN`). */
     readonly callsPerMin: number;
 }
 
@@ -319,6 +362,12 @@ export interface AppConfig {
      */
     readonly search?: SearchConfig;
     /**
+     * Weather provider settings (#31), present only when the OpenWeather API
+     * key is configured — no key, no `getWeather` tool. Optional so hand-built
+     * configs (tests) can omit it.
+     */
+    readonly weather?: WeatherConfig;
+    /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
      *
@@ -506,6 +555,26 @@ export function getAppConfig(): AppConfig {
                           DEFAULT_SEARCH_CALLS_PER_MIN,
                       ),
                   },
+        weather: !process.env.OPENWEATHER_API_KEY
+            ? undefined
+            : {
+                  apiKey: process.env.OPENWEATHER_API_KEY,
+                  // Unknown values fall back to the default unit rather
+                  // than erroring — same silent-recovery posture as
+                  // numberOr, so a typo can never break the server start.
+                  units:
+                      process.env.JARVIS_WEATHER_UNITS === "metric"
+                          ? "metric"
+                          : DEFAULT_WEATHER_UNITS,
+                  timeoutMs: numberOr(
+                      process.env.JARVIS_WEATHER_TIMEOUT_MS,
+                      DEFAULT_WEATHER_TIMEOUT_MS,
+                  ),
+                  callsPerMin: numberOr(
+                      process.env.JARVIS_WEATHER_CALLS_PER_MIN,
+                      DEFAULT_WEATHER_CALLS_PER_MIN,
+                  ),
+              },
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(
             (cidr) => cidr.toLowerCase(),

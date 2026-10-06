@@ -4,6 +4,8 @@ import {
     DEFAULT_PORT,
     DEFAULT_RATE_LIMIT_CONFIG,
     DEFAULT_TURN_TIMEOUT_MS,
+    DEFAULT_WEATHER_CALLS_PER_MIN,
+    DEFAULT_WEATHER_TIMEOUT_MS,
     defaultAppDbPath,
     defaultPortalDir,
     defaultWebDir,
@@ -34,6 +36,10 @@ afterEach(() => {
     delete process.env.JARVIS_SEARCH_TIMEOUT_MS;
     delete process.env.JARVIS_SEARCH_MAX_RESULTS;
     delete process.env.JARVIS_SEARCH_CALLS_PER_MIN;
+    delete process.env.OPENWEATHER_API_KEY;
+    delete process.env.JARVIS_WEATHER_UNITS;
+    delete process.env.JARVIS_WEATHER_TIMEOUT_MS;
+    delete process.env.JARVIS_WEATHER_CALLS_PER_MIN;
 });
 
 describe("getServerPort", () => {
@@ -211,6 +217,37 @@ describe("cross-origin configuration (#63)", () => {
             maxResults: 3,
             callsPerMin: 7,
         });
+    });
+
+    it("omits weather config when no OpenWeather key is set (#31)", () => {
+        expect(getAppConfig().weather).toBeUndefined();
+        process.env.OPENWEATHER_API_KEY = "";
+        expect(getAppConfig().weather).toBeUndefined();
+    });
+
+    it("parses weather config when the OpenWeather key is set (#31)", () => {
+        process.env.OPENWEATHER_API_KEY = "ow-test";
+        expect(getAppConfig().weather).toEqual({
+            apiKey: "ow-test",
+            units: "imperial",
+            timeoutMs: DEFAULT_WEATHER_TIMEOUT_MS,
+            callsPerMin: DEFAULT_WEATHER_CALLS_PER_MIN,
+        });
+        process.env.JARVIS_WEATHER_UNITS = "metric";
+        process.env.JARVIS_WEATHER_TIMEOUT_MS = "5000";
+        process.env.JARVIS_WEATHER_CALLS_PER_MIN = "7";
+        expect(getAppConfig().weather).toEqual({
+            apiKey: "ow-test",
+            units: "metric",
+            timeoutMs: 5000,
+            callsPerMin: 7,
+        });
+    });
+
+    it("falls back to the default weather unit on an unknown value (#31)", () => {
+        process.env.OPENWEATHER_API_KEY = "ow-test";
+        process.env.JARVIS_WEATHER_UNITS = "kelvin";
+        expect(getAppConfig().weather?.units).toBe("imperial");
     });
 
     it("parses trusted proxies as IPs and subnets", () => {
