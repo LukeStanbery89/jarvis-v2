@@ -12,6 +12,10 @@
  * - Executed tools become `toolResult` events, keyed to the call that made
  *   them; a call that was never announced (e.g. args never parsed during
  *   streaming) is announced at result time.
+ * - Whitespace-only text that opens a segment is dropped: a local model
+ *   emits `\n\n` around its tool calls, and on a client the first chunk after
+ *   a tool opens a *new* assistant bubble, so forwarding it drew an empty chat
+ *   bubble before the call had even run.
  *
  * It owns both the lookup map of pending calls and the dedupe set, which is
  * what makes the announced-exactly-once guarantee possible.
@@ -49,6 +53,18 @@ export class ToolCallTracker {
     /** Maps a real call id onto the tracked entry key that accumulates it. */
     private readonly keyByCallId = new Map<string, string>();
     private readonly announced = new Set<string>();
+    /**
+     * Whether the current text segment has produced visible content yet.
+     *
+     * A segment opens with the turn and re-opens at every tool boundary,
+     * because a `tool` frame is a message boundary on the client: the next
+     * chunk it receives starts a fresh assistant bubble rather than continuing
+     * the old one. Until a segment shows real text, whitespace-only content is
+     * filler nobody can see — dropping it is what keeps an empty bubble from
+     * appearing ahead of a tool call. Once text has arrived, whitespace is
+     * ordinary formatting and streams through untouched.
+     */
+    private textStarted = false;
 
     /** Converts one streamed message into the events it implies. */
     onMessage(message: BaseMessage): AgentEvent[] {
@@ -101,7 +117,7 @@ export class ToolCallTracker {
                         args: (call.args ?? {}) as Record<string, unknown>,
                         callId: call.id,
                     });
-                    events.push({
+                    this.pushToolCall(events, {
                         type: "tool",
                         name: call.name,
                         args: call.args ?? {},
@@ -154,7 +170,11 @@ export class ToolCallTracker {
                     // announce the call a second time.
                     if (name && callId && !this.announced.has(callId)) {
                         this.announced.add(callId);
-                        events.push({ type: "tool", name, args: parsed });
+                        this.pushToolCall(events, {
+                            type: "tool",
+                            name,
+                            args: parsed,
+                        });
                     }
                 } else {
                     this.tracked.set(key, {
@@ -171,9 +191,30 @@ export class ToolCallTracker {
             message.content.length > 0 &&
             !(chunks && chunks.length > 0)
         ) {
-            events.push({ type: "token", text: message.content });
+            const text = message.content;
+            const visible = text.trim() !== "";
+            if (visible || this.textStarted) {
+                // Inside this branch the text either shows something (opening
+                // the segment) or follows text that already did — so the
+                // segment has started either way.
+                this.textStarted = true;
+                events.push({ type: "token", text });
+            }
         }
         return events;
+    }
+
+    /**
+     * Pushes a `tool` announcement and re-opens the text segment.
+     *
+     * The announcement is a message boundary on the client: the chunk that
+     * follows it opens a new assistant bubble, so the filler a model emits
+     * around a call must be judged against that fresh segment rather than
+     * against the prose that preceded the call.
+     */
+    private pushToolCall(events: AgentEvent[], event: AgentEvent): void {
+        events.push(event);
+        this.textStarted = false;
     }
 
     /**
@@ -182,6 +223,10 @@ export class ToolCallTracker {
      * during streaming).
      */
     private onToolResult(message: ToolMessage): AgentEvent[] {
+        // The result is the other half of the boundary: text that streamed
+        // between the announcement and this result opened its own bubble, and
+        // anything arriving now opens another one.
+        this.textStarted = false;
         const id = message.tool_call_id;
         const key = id ? this.keyByCallId.get(id) : undefined;
         const pending =

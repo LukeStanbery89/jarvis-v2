@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+    DEFAULT_HA_CACHE_TTL_MS,
+    DEFAULT_HA_CALLS_PER_MIN,
+    DEFAULT_HA_CONTROL_DOMAINS,
+    DEFAULT_HA_LIGHT_TOKENS,
+    DEFAULT_HA_LIST_LIMIT,
+    DEFAULT_HA_READ_DOMAINS,
+    DEFAULT_HA_TIMEOUT_MS,
     DEFAULT_HOST,
     DEFAULT_PORT,
     DEFAULT_RATE_LIMIT_CONFIG,
@@ -40,6 +47,15 @@ afterEach(() => {
     delete process.env.JARVIS_WEATHER_UNITS;
     delete process.env.JARVIS_WEATHER_TIMEOUT_MS;
     delete process.env.JARVIS_WEATHER_CALLS_PER_MIN;
+    delete process.env.HOME_ASSISTANT_URL;
+    delete process.env.HOME_ASSISTANT_ACCESS_TOKEN;
+    delete process.env.JARVIS_HA_READ_DOMAINS;
+    delete process.env.JARVIS_HA_CONTROL_DOMAINS;
+    delete process.env.JARVIS_HA_CALLS_PER_MIN;
+    delete process.env.JARVIS_HA_TIMEOUT_MS;
+    delete process.env.JARVIS_HA_CACHE_TTL_MS;
+    delete process.env.JARVIS_HA_LIST_LIMIT;
+    delete process.env.JARVIS_HA_LIGHT_TOKENS;
 });
 
 describe("getServerPort", () => {
@@ -248,6 +264,88 @@ describe("cross-origin configuration (#63)", () => {
         process.env.OPENWEATHER_API_KEY = "ow-test";
         process.env.JARVIS_WEATHER_UNITS = "kelvin";
         expect(getAppConfig().weather?.units).toBe("imperial");
+    });
+
+    it("omits home assistant config unless the URL and token are both set (#15)", () => {
+        expect(getAppConfig().homeAssistant).toBeUndefined();
+        process.env.HOME_ASSISTANT_URL = "http://ha.local:8123";
+        expect(getAppConfig().homeAssistant).toBeUndefined();
+        delete process.env.HOME_ASSISTANT_URL;
+        process.env.HOME_ASSISTANT_ACCESS_TOKEN = "ha-token";
+        expect(getAppConfig().homeAssistant).toBeUndefined();
+        process.env.HOME_ASSISTANT_URL = "http://ha.local:8123";
+        process.env.HOME_ASSISTANT_ACCESS_TOKEN = "";
+        expect(getAppConfig().homeAssistant).toBeUndefined();
+    });
+
+    it("parses home assistant config with every default (#15)", () => {
+        process.env.HOME_ASSISTANT_URL = "http://ha.local:8123/";
+        process.env.HOME_ASSISTANT_ACCESS_TOKEN = "ha-token";
+        expect(getAppConfig().homeAssistant).toEqual({
+            // The trailing slash is stripped so path joins never double up.
+            url: "http://ha.local:8123",
+            accessToken: "ha-token",
+            readDomains: [...DEFAULT_HA_READ_DOMAINS],
+            controlDomains: [...DEFAULT_HA_CONTROL_DOMAINS],
+            callsPerMin: DEFAULT_HA_CALLS_PER_MIN,
+            timeoutMs: DEFAULT_HA_TIMEOUT_MS,
+            cacheTtlMs: DEFAULT_HA_CACHE_TTL_MS,
+            listLimit: DEFAULT_HA_LIST_LIMIT,
+            lightTokens: [...DEFAULT_HA_LIGHT_TOKENS],
+        });
+    });
+
+    it("reads are broader than the controllable domains (#15)", () => {
+        const every = DEFAULT_HA_READ_DOMAINS.filter(
+            (domain) => !DEFAULT_HA_CONTROL_DOMAINS.includes(domain),
+        );
+        expect(every).toContain("lock");
+        expect(every).toContain("cover");
+        expect(every).not.toContain("light");
+    });
+
+    it("overrides every home assistant knob (#15)", () => {
+        process.env.HOME_ASSISTANT_URL = "https://ha.example.com";
+        process.env.HOME_ASSISTANT_ACCESS_TOKEN = "ha-token";
+        process.env.JARVIS_HA_READ_DOMAINS = "light, sensor";
+        process.env.JARVIS_HA_CONTROL_DOMAINS = "light";
+        process.env.JARVIS_HA_CALLS_PER_MIN = "3";
+        process.env.JARVIS_HA_TIMEOUT_MS = "2500";
+        process.env.JARVIS_HA_CACHE_TTL_MS = "0";
+        process.env.JARVIS_HA_LIST_LIMIT = "5";
+        process.env.JARVIS_HA_LIGHT_TOKENS = " Lamp, SCONCE ,";
+        expect(getAppConfig().homeAssistant).toEqual({
+            url: "https://ha.example.com",
+            accessToken: "ha-token",
+            readDomains: ["light", "sensor"],
+            controlDomains: ["light"],
+            callsPerMin: 3,
+            timeoutMs: 2500,
+            cacheTtlMs: 0,
+            listLimit: 5,
+            // Trimmed and lowercased: matching happens against lowercase ids.
+            lightTokens: ["lamp", "sconce"],
+        });
+    });
+
+    it("falls back to the defaults for an unparsable override (#15)", () => {
+        process.env.HOME_ASSISTANT_URL = "http://ha.local:8123";
+        process.env.HOME_ASSISTANT_ACCESS_TOKEN = "ha-token";
+        process.env.JARVIS_HA_CALLS_PER_MIN = "lots";
+        process.env.JARVIS_HA_TIMEOUT_MS = "-1";
+        process.env.JARVIS_HA_CACHE_TTL_MS = "forever";
+        process.env.JARVIS_HA_LIST_LIMIT = "";
+        // An unparsable list limit falls back; an empty token list is honoured
+        // as-is (see the note beside the expectation below).
+        process.env.JARVIS_HA_LIGHT_TOKENS = "";
+        const config = getAppConfig().homeAssistant;
+        expect(config?.callsPerMin).toBe(DEFAULT_HA_CALLS_PER_MIN);
+        expect(config?.timeoutMs).toBe(DEFAULT_HA_TIMEOUT_MS);
+        expect(config?.cacheTtlMs).toBe(DEFAULT_HA_CACHE_TTL_MS);
+        expect(config?.listLimit).toBe(DEFAULT_HA_LIST_LIMIT);
+        // Fail-closed, matching the empty read-domains posture: an explicitly
+        // empty list makes 'lights' find nothing rather than guess everything.
+        expect(config?.lightTokens).toEqual([]);
     });
 
     it("parses trusted proxies as IPs and subnets", () => {

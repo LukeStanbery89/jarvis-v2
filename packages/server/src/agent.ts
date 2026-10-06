@@ -136,13 +136,46 @@ const IMAGE_ANALYSIS_RULE =
     "ask them to upload it again.";
 
 /**
+ * Home-call hygiene appended to every conditioned system prompt (#15).
+ *
+ * The assistant has no memory of the user's house: nothing about which lights
+ * exist, their names, or their states can come from the model. Small local
+ * models readily invent a plausible entity and answer from it, which is the
+ * worst failure mode here — a confident claim about a real light that was never
+ * read, or a write aimed at a guessed target. So this pins the discipline the
+ * tool enforces anyway: discover first to learn the real ids, then act on
+ * exactly one id, and never claim a change the tool did not confirm. The
+ * re-search clause exists because the complementary failure is quiet absence —
+ * a model that reads an empty result once, or remembers a list from earlier in
+ * the conversation, declares the device missing instead of looking again.
+ */
+const HOME_CALL_RULE =
+    "The homeAssistant tool is your only source of truth about the user's " +
+    "house — lights, switches, thermostats, sensors, and their states. Never " +
+    "answer from memory or guess an entity_id. Call action 'lights' for lights, " +
+    "'switches' for switches, or 'list' first (optionally with query to narrow " +
+    "it) to learn the exact entity_ids, then call the action you need with one " +
+    "exact entity_id. Before you conclude that a device or a whole category is " +
+    "absent, search again in this turn: an empty result proves only that search " +
+    "found nothing, and a list from earlier in this conversation may be stale — " +
+    "re-read rather than remember. Report only what the tool returned in this " +
+    "turn; if it refuses or reports the home unreachable, say so plainly and " +
+    "never claim a device changed state. When the user asks for something broad " +
+    "or ambiguous ('turn everything off'), confirm what you are about to do " +
+    "before acting.";
+
+/**
  * Derives a system prompt that admits the formats a capable client renders.
  *
  * Pure (and exported) so the conditioning rules are unit-testable without a
  * model. The fixed hygiene paragraphs — tool-call discipline
- * ({@link TOOL_CALL_RULES}) and clock freshness ({@link TIME_CALL_RULE}) — are
- * always appended: both are server concerns, independent of the client's
- * rendering capabilities and of any `LLM_SYSTEM_PROMPT` override. Capability
+ * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
+ * lookups ({@link IMAGE_ANALYSIS_RULE}), and Home Assistant calls
+ * ({@link HOME_CALL_RULE}) — are always appended: all are server concerns,
+ * independent of the client's rendering capabilities and of any
+ * `LLM_SYSTEM_PROMPT` override. (The Home rule is unconditional even though
+ * the tool is optional: a model that cannot see a tool is never misled by
+ * instruction it cannot follow.) Capability
  * notes are appended as one paragraph only when the client actually declared
  * the token.
  */
@@ -175,7 +208,7 @@ export function systemPromptForCapabilities(
         notes.length === 0
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}${rendering}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}${rendering}`;
 }
 
 let graph: AgentGraph | null = null;

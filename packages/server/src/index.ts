@@ -25,6 +25,7 @@ import { createVisionModel } from "./llm/visionModel";
 import { createTavilyClient } from "./llm/tools/search/tavily";
 import { createSerperClient } from "./llm/tools/search/serper";
 import { createOpenWeatherClient } from "./llm/tools/weather/openweather";
+import { createHomeAssistantClient } from "./llm/tools/homeAssistant/client";
 import {
     createAttachmentStore,
     sweepOrphanAttachments,
@@ -103,12 +104,36 @@ logger.info(
         : "Weather disabled (no OPENWEATHER_API_KEY configured)",
 );
 
+// Home Assistant (#15): present only when the URL and access token are both
+// configured — no credentials, no homeAssistant tool.
+const homeAssistantDeps = appConfig.homeAssistant
+    ? {
+          provider: createHomeAssistantClient({
+              url: appConfig.homeAssistant.url,
+              accessToken: appConfig.homeAssistant.accessToken,
+              readDomains: appConfig.homeAssistant.readDomains,
+              timeoutMs: appConfig.homeAssistant.timeoutMs,
+              cacheTtlMs: appConfig.homeAssistant.cacheTtlMs,
+          }),
+          quota: new FixedWindowQuota(appConfig.homeAssistant.callsPerMin),
+          controlDomains: appConfig.homeAssistant.controlDomains,
+          listLimit: appConfig.homeAssistant.listLimit,
+          lightTokens: appConfig.homeAssistant.lightTokens,
+      }
+    : undefined;
+logger.info(
+    homeAssistantDeps
+        ? `Home Assistant active: ${appConfig.homeAssistant?.url} (read: ${appConfig.homeAssistant?.readDomains.join(", ")}; control: ${appConfig.homeAssistant?.controlDomains.join(", ")}; lights by ${appConfig.homeAssistant?.lightTokens.join(",")})`
+        : "Home Assistant disabled (no HOME_ASSISTANT_URL or HOME_ASSISTANT_ACCESS_TOKEN configured)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
     vlLimiter,
     ...(searchDeps ? { search: searchDeps } : {}),
     ...(weatherDeps ? { weather: weatherDeps } : {}),
+    ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
 });
 const store = openAppDatabase(appConfig.appDbPath);
 const webApp = createApp(store, appConfig, attachments, inFlight);
