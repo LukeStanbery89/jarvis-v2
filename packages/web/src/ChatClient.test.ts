@@ -334,3 +334,61 @@ describe("ChatClient prompts", () => {
         }
     });
 });
+
+describe("ChatClient.sendLocation (#31)", () => {
+    it("sends a location frame on a ready socket", () => {
+        const harness = makeClient();
+        const socket = connected(harness);
+        harness.client.sendLocation(45.523198, -122.676512);
+        const last = JSON.parse(socket.sent[socket.sent.length - 1]!);
+        expect(last).toEqual({
+            type: "location",
+            lat: 45.523198,
+            lon: -122.676512,
+        });
+    });
+
+    it("stores the report and re-sends it after a reconnect handshake", async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = makeClient();
+            connected(harness);
+            harness.client.sendLocation(45.5, -122.6);
+            harness.sockets[0]!.drop();
+            await vi.advanceTimersByTimeAsync(1_000);
+            const reconnected = harness.sockets[1]!;
+            reconnected.open();
+            reconnected.receive({ authResult: { user: "u", device: "d" } });
+            const frames = reconnected.sent.map((raw) => JSON.parse(raw));
+            expect(frames[0]).toEqual({
+                type: "hello",
+                capabilities: ["markdown"],
+            });
+            expect(frames[1]).toEqual({ type: "auth", token: "tok" });
+            expect(frames[2]).toEqual({
+                type: "location",
+                lat: 45.5,
+                lon: -122.6,
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("sends a report immediately even mid-handshake, without duplicating it", () => {
+        const harness = makeClient();
+        harness.client.connect();
+        const socket = harness.sockets[0]!;
+        socket.open();
+        // The server accepts location frames at any point in the socket's
+        // lifetime, so a report during the handshake goes straight out.
+        harness.client.sendLocation(45.5, -122.6);
+        let frames = socket.sent.map((raw) => JSON.parse(raw));
+        expect(frames).toHaveLength(3);
+        expect(frames[2]).toEqual({ type: "location", lat: 45.5, lon: -122.6 });
+        // The authResult-triggered re-send must NOT duplicate it.
+        socket.receive({ authResult: { user: "u", device: "d" } });
+        frames = socket.sent.map((raw) => JSON.parse(raw));
+        expect(frames).toHaveLength(3);
+    });
+});

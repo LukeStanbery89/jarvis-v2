@@ -6,12 +6,13 @@
 # tests prove real frames still match it.
 #
 # Phase 5: full spec. One message per frame (`clientHello`, `authHandshake`,
-# `chatPrompt`, `chunk`, `toolCall`, `toolResult`, `done`, `error`,
-# `authResult`) so docs and conformance tests can address each frame
+# `chatPrompt`, `locationFrame`, `chunk`, `toolCall`, `toolResult`, `done`,
+# `error`, `authResult`) so docs and conformance tests can address each frame
 # individually. Payloads are strict (`additionalProperties: false`) and encode
 # the protocol's value bounds (`\S` non-empty-after-trim, 128-char
-# `sessionId`/`token` caps, the `hello` capability enum/caps). Edit it in
-# lockstep with `packages/protocol` — the conformance tests fail otherwise.
+# `sessionId`/`token` caps, the `hello` capability enum/caps, the #31
+# `location` lat/lon ranges). Edit it in lockstep with `packages/protocol` —
+# the conformance tests fail otherwise.
 asyncapi: 3.1.0
 info:
     title: J.A.R.V.I.S. Chat API
@@ -52,6 +53,8 @@ channels:
                 $ref: "#/components/messages/authHandshake"
             chatPrompt:
                 $ref: "#/components/messages/chatPrompt"
+            locationFrame:
+                $ref: "#/components/messages/locationFrame"
             authResult:
                 $ref: "#/components/messages/authResult"
             chunk:
@@ -70,7 +73,7 @@ operations:
         channel:
             $ref: "#/channels/ws"
         title: Send a client frame
-        summary: Auth handshake, capability announcement, or chat prompt
+        summary: Auth handshake, capability announcement, location report, or chat prompt
         description: >-
             The client's first frame may be the `auth` handshake, the `hello`
             capability announcement, or a prompt. `hello` must open the socket
@@ -78,13 +81,17 @@ operations:
             arrives at most once and before any prompt. Skipping auth makes
             the socket a guest for its lifetime; a later auth is rejected.
             Every other frame is a chat prompt naming the LangGraph thread
-            (`sessionId`, ≤128 chars) to continue. One turn at a time: a
-            prompt while a previous turn is streaming — on this socket or any
-            other sharing the thread — is answered with an `error` frame.
+            (`sessionId`, ≤128 chars) to continue, or — at any point in the
+            socket's lifetime, refreshable — a `location` device report
+            (#31) so location-aware tools can answer locationless questions.
+            One turn at a time: a prompt while a previous turn is streaming —
+            on this socket or any other sharing the thread — is answered with
+            an `error` frame.
         messages:
             - $ref: "#/channels/ws/messages/clientHello"
             - $ref: "#/channels/ws/messages/authHandshake"
             - $ref: "#/channels/ws/messages/chatPrompt"
+            - $ref: "#/channels/ws/messages/locationFrame"
     receiveServerFrame:
         action: receive
         channel:
@@ -250,6 +257,55 @@ components:
                       sessionId: s-2026-09-25-morning
                       attachments:
                           - q83hZxLm5sVvT1yKwB9dE2nA
+        locationFrame:
+            title: Device location report
+            summary: The client's current location for location-aware tools
+            description: >-
+                Telling the server where this device's user is (#31) so
+                location-aware tools — e.g. the `getWeather` weather tool —
+                can answer locationless questions without asking for a city.
+                May be sent at any point in the socket's lifetime and is
+                refreshable: the latest frame wins for subsequent turns. The
+                server keeps the report for the socket's lifetime only —
+                never persisted to the database, a transcript, or logs at
+                coordinate precision. `lat` is a finite number within
+                [-90, 90] and `lon` a finite number within [-180, 180]; the
+                optional `label` is a non-empty string of at most 64
+                characters for clients that know a place name (browser
+                geolocation typically does not — the weather provider's
+                resolved location name is used instead).
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - type
+                    - lat
+                    - lon
+                properties:
+                    type:
+                        const: location
+                    lat:
+                        type: number
+                        minimum: -90
+                        maximum: 90
+                    lon:
+                        type: number
+                        minimum: -180
+                        maximum: 180
+                    label:
+                        type: string
+                        pattern: \S
+                        maxLength: 64
+            examples:
+                - payload:
+                      type: location
+                      lat: 45.5231
+                      lon: -122.6765
+                - payload:
+                      type: location
+                      lat: 45.5231
+                      lon: -122.6765
+                      label: Portland, OR
         chunk:
             title: Response chunk
             summary: One streamed token of the assistant's reply

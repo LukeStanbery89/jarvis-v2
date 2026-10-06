@@ -131,6 +131,10 @@ variables:
 | `JARVIS_SEARCH_TIMEOUT_MS` | `15000` | Wall-clock cap for one provider search call |
 | `JARVIS_SEARCH_MAX_RESULTS` | `5` | Results handed to the model per search |
 | `JARVIS_SEARCH_CALLS_PER_MIN` | `20` | Per-user search-call quota |
+| `OPENWEATHER_API_KEY` | unset | OpenWeather key — enables the `getWeather` tool (current + 5-day forecast) |
+| `JARVIS_WEATHER_UNITS` | `imperial` | Unit system reported to the model (`metric` supported) |
+| `JARVIS_WEATHER_TIMEOUT_MS` | `10000` | Wall-clock cap for one provider weather call |
+| `JARVIS_WEATHER_CALLS_PER_MIN` | `10` | Per-user weather-call quota |
 | `JARVIS_BOOTSTRAP_TOKEN` | unset | One-time setup credential; see the `@lukestanbery/jarvis-auth` README |
 | `JARVIS_HOST` | `0.0.0.0` | Bind address (all interfaces = LAN posture) |
 | `JARVIS_TLS_CERT` | unset | PEM certificate path — enables HTTPS serving |
@@ -310,6 +314,26 @@ token tracing suppressed). Payloads are logged verbatim only in development:
 forced. Override either way with `JARVIS_LOG_SENSITIVE=full|redacted`. The
 option is provided by `@lukestanbery/jarvis-logger` (`sensitive` / `sensitiveDebug`).
 
+Each chat turn is logged at two levels: every token as it streams
+(`sensitiveDebug("LLM token", …)`), and the assembled answer once the stream
+ends (`sensitive("Agent response", { text, toolCalls })`) — one line per turn,
+which is what you want when reading a transcript in development.
+
+### Empty model responses
+
+A turn that ends with **no prose at all** (whitespace-only chunks included)
+answers `{"error": "the model returned an empty response"}` + `done`, and logs
+a warning naming the tool-call count. This is a model failure being reported,
+not a client bug: reasoning-tuned models (the Qwen3 family, for instance) can
+spend their entire output budget in the reasoning channel and return an
+`AIMessage` whose `content` is empty, which the tracker correctly turns into
+zero `token` events. Without the guard the client renders a permanently blank
+bubble with no explanation. Note that LM Studio's OpenAI-compatible endpoint
+ignores both `reasoning_budget: 0` and
+`chat_template_kwargs: { enable_thinking: false }`, so this cannot be switched
+off per request — the model itself has to be loaded with thinking disabled, or
+answered by a non-reasoning model.
+
 ## Rate limiting
 
 Every throttle the server applies lives in this section — this is the single source of
@@ -361,10 +385,11 @@ the window lapses). Refusals are returned to the model as retry text ("try
 again in Ns") rather than erroring the turn. The generic machinery is
 `FixedWindowQuota`; each tool instantiates its own.
 
-| Tool                             | Quota         | Budget                                                 |
-| -------------------------------- | ------------- | ------------------------------------------------------ |
-| `analyzeImage` (vision analysis) | `vlLimiter`   | `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` (10/min per user) |
-| `webSearch` (#9)                 | `searchQuota` | `JARVIS_SEARCH_CALLS_PER_MIN` (20/min per user)        |
+| Tool                             | Quota          | Budget                                                 |
+| -------------------------------- | -------------- | ------------------------------------------------------ |
+| `analyzeImage` (vision analysis) | `vlLimiter`    | `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN` (10/min per user) |
+| `webSearch` (#9)                 | `searchQuota`  | `JARVIS_SEARCH_CALLS_PER_MIN` (20/min per user)        |
+| `getWeather` (#31)               | `weatherQuota` | `JARVIS_WEATHER_CALLS_PER_MIN` (10/min per user)       |
 
 ### Not rate limited
 
@@ -491,6 +516,51 @@ Behavior:
   and map malformed responses onto model-facing failure text; the model is
   told to fall back to its own knowledge rather than fail the turn.
 
+## Weather
+
+The agent answers weather questions through one `getWeather` tool (#31) backed
+by the [OpenWeather](https://openweathermap.org) free tier — current
+conditions (`/data/2.5/weather`) and the 5-day/3-hour forecast
+(`/data/2.5/forecast`, folded into per-day min/max + headline condition
+server-side so the model sees days, not 40 raw steps). 60 calls/minute
+account-wide, no card required; paid tiers (hourly/16-day, One Call) are not
+used.
+
+- **Location resolves in three steps** — the model's explicit `location`
+  argument (the user named a place) wins; then the device's reported
+  location (a `location` frame from the web client, used by coordinates);
+  then the model is told to ask the user which city.
+- **An argument that names nothing falls through, and says so** — `location`
+  is not length-validated, and a stand-in value (`current`, `here`, `my
+location`, `unknown`, …) is treated as step 2 rather than step 1. Small
+  models pass those instead of omitting the field, and searching OpenWeather
+  for a city called "Current" only 404s. Every discard logs a `warn` naming
+  the _classification_ (`blank` / `placeholder`) and where it fell back to —
+  never the discarded value, which can echo user text. The match is
+  whole-string over a deliberately narrow list, so real places that read like
+  stand-ins (`Local`, OH; `Na`, China; `Default`, Derbyshire; `Hereford`)
+  still resolve as queries: a wrong answer about the wrong city is worse than
+  one failed lookup.
+- **Device location is automatic and memory-only** — the web client
+  requests a browser-geolocation fix on load (the browser's own permission
+  prompt is the consent gate; a sidebar MapPin is the opt-out), rounded to
+  four decimals (~11 m); the server keeps the latest report for the
+  socket's lifetime only and never persists it. Browser geolocation requires
+  a **secure context** (HTTPS or localhost) — over plain HTTP the client
+  reports "unsupported" and the tool asks for a city (the TLS work is a
+  separate issue, #79).
+- **Metered per user** — `JARVIS_WEATHER_CALLS_PER_MIN` (10/min) through the
+  same fixed-window quota machinery (see [Rate limiting](#rate-limiting)).
+- **Bounded per call** — `JARVIS_WEATHER_TIMEOUT_MS` (10 s).
+- **Units** — `JARVIS_WEATHER_UNITS` (`imperial` default, `metric`
+  supported; Kelvin deliberately unsupported).
+- **Keys are secrets** — same posture as search: env-only, never logged,
+  never in error text.
+- **Fresh keys take time** — a newly created OpenWeather key answers 401 for
+  10 minutes–2 hours before activation; the provider's reason lands in the
+  server's warn log while the model just reports weather being unavailable.
+- With **no** key configured the tool is not registered at all.
+
 ### Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
@@ -556,6 +626,11 @@ and exchange JSON text frames:
       always yield plain conversational text. The mode is recorded as the
       session's `kind` when the thread is first claimed (write-once).
       A `hello` or `auth` frame arriving after this is rejected.
+    - `{ "type": "location", "lat": <number>, "lon": <number>, "label"?: "<place>" }` (#31) —
+      the device's whereabouts (any time, refreshable; the latest report wins
+      for subsequent turns). Feeds the `getWeather` tool so a locationless
+      "what's the weather?" works without asking for a city. Kept in memory
+      for the socket's lifetime only; never persisted. See [Weather](#weather).
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).

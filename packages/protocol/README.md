@@ -22,29 +22,32 @@ npm install @lukestanbery/jarvis-protocol
 
 ## API
 
-| Export                          | Description                                                                               |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `type ServerFrame`              | Union of every frame the server sends to a chat client                                    |
-| `type ClientFrame`              | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt`      |
-| `type ClientCapability`         | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares        |
-| `type ChatMode`                 | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`)               |
-| `interface AuthRequest`         | The `auth` handshake: `{ type: "auth", token }`                                           |
-| `interface ClientHello`         | The capability announcement: `{ type: "hello", capabilities }`                            |
-| `interface AuthResult`          | The `authResult` payload: `{ user, device }`                                              |
-| `interface ChatPrompt`          | A client request: `{ prompt, sessionId, mode?, attachments? }`                            |
-| `MAX_SESSION_ID_LENGTH`         | `128` — longest allowed `sessionId`                                                       |
-| `MAX_TOKEN_LENGTH`              | `128` — longest allowed device `token`                                                    |
-| `MAX_CAPABILITIES`              | `16` — longest allowed `capabilities` list in a `hello` frame                             |
-| `MAX_CAPABILITY_LENGTH`         | `16` — longest allowed single capability token                                            |
-| `MAX_ATTACHMENTS`               | `4` — longest allowed `attachments` list in a prompt                                      |
-| `MAX_ATTACHMENT_ID_LENGTH`      | `32` — longest allowed single attachment id                                               |
-| `parseFrame(raw)`               | Parses a server frame; throws on malformed/unrecognized payload                           |
-| `parseClientMessage(raw)`       | Parses + validates a client message into an `AuthRequest`, `ClientHello`, or `ChatPrompt` |
-| `parseRequest(raw)`             | Parses + validates a client request (non-empty strings, ≤128 id)                          |
-| `serializeFrame(frame)`         | Serializes a `ServerFrame` to wire JSON                                                   |
-| `serializeRequest(p,sid,opts?)` | Serializes a client request to wire JSON; `opts` is `{ mode?, attachments? }`             |
-| `serializeAuth(token)`          | Serializes an `auth` handshake to wire JSON                                               |
-| `serializeHello(caps[])`        | Serializes a `hello` capability announcement to wire JSON                                 |
+| Export                              | Description                                                                                                      |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `type ServerFrame`                  | Union of every frame the server sends to a chat client                                                           |
+| `type ClientFrame`                  | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame`      |
+| `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares                               |
+| `type ChatMode`                     | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`)                                      |
+| `interface AuthRequest`             | The `auth` handshake: `{ type: "auth", token }`                                                                  |
+| `interface ClientHello`             | The capability announcement: `{ type: "hello", capabilities }`                                                   |
+| `interface AuthResult`              | The `authResult` payload: `{ user, device }`                                                                     |
+| `interface ChatPrompt`              | A client request: `{ prompt, sessionId, mode?, attachments? }`                                                   |
+| `interface ClientLocationFrame`     | The device-location report (#31): `{ type: "location", lat, lon, label? }`                                       |
+| `MAX_SESSION_ID_LENGTH`             | `128` — longest allowed `sessionId`                                                                              |
+| `MAX_TOKEN_LENGTH`                  | `128` — longest allowed device `token`                                                                           |
+| `MAX_CAPABILITIES`                  | `16` — longest allowed `capabilities` list in a `hello` frame                                                    |
+| `MAX_CAPABILITY_LENGTH`             | `16` — longest allowed single capability token                                                                   |
+| `MAX_ATTACHMENTS`                   | `4` — longest allowed `attachments` list in a prompt                                                             |
+| `MAX_ATTACHMENT_ID_LENGTH`          | `32` — longest allowed single attachment id                                                                      |
+| `MAX_LOCATION_LABEL_LENGTH`         | `64` — longest allowed optional place-name `label` in a `location` frame                                         |
+| `parseFrame(raw)`                   | Parses a server frame; throws on malformed/unrecognized payload                                                  |
+| `parseClientMessage(raw)`           | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, or `ChatPrompt` |
+| `parseRequest(raw)`                 | Parses + validates a client request (non-empty strings, ≤128 id)                                                 |
+| `serializeFrame(frame)`             | Serializes a `ServerFrame` to wire JSON                                                                          |
+| `serializeRequest(p,sid,opts?)`     | Serializes a client request to wire JSON; `opts` is `{ mode?, attachments? }`                                    |
+| `serializeAuth(token)`              | Serializes an `auth` handshake to wire JSON                                                                      |
+| `serializeHello(caps[])`            | Serializes a `hello` capability announcement to wire JSON                                                        |
+| `serializeLocation(lat,lon,label?)` | Serializes a `location` device report to wire JSON (#31)                                                         |
 
 ## Chat protocol
 
@@ -71,6 +74,13 @@ JSON text frames over `/ws`:
       unique) referencing images uploaded earlier via `POST /api/attachments`
       that this prompt is about; ids are opaque here — the server resolves
       them against its attachment store and rejects unknown or foreign ids.
+    - Any time, refreshable (#31): `{ "type": "location", "lat": <number>, "lon": <number>, "label": "<place>" }`
+      — the device's whereabouts (`lat` finite within ±90, `lon` within
+      ±180, optional place-name `label` ≤64 chars) so location-aware tools
+      (e.g. `getWeather`) can answer locationless questions without asking
+      for a city. The latest frame wins for subsequent turns; the server
+      keeps it for the socket's lifetime only and never persists it. Clients
+      without a location source simply never send it.
 - Server → Client:
     - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output" } }`
       frames while the agent calls tools,
@@ -80,10 +90,11 @@ JSON text frames over `/ws`:
 - Invalid input or model failure: `{ "error": "<message>" }` then `{ "done": true }`.
 
 Frames are key-discriminated (no `type` field), with exception only for the
-client `auth` and `hello` frames, which carry a `type` so the server can tell
-them apart from prompts. Chunks concatenate verbatim to the full response. The
-error messages thrown by `parseFrame`/`parseClientMessage`/`parseRequest` are
-user-facing on the CLI side, so their wording must not drift.
+client `auth`, `hello`, and `location` frames, which carry a `type` so the
+server can tell them apart from prompts. Chunks concatenate verbatim to the
+full response. The error messages thrown by
+`parseFrame`/`parseClientMessage`/`parseRequest` are user-facing on the CLI
+side, so their wording must not drift.
 
 A machine-readable mirror of these frames lives in
 `packages/contracts/spec/asyncapi.yaml` (AsyncAPI 3.1). **Keep this package and

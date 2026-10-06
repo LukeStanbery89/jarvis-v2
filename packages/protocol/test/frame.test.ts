@@ -4,6 +4,7 @@ import {
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
+    MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
     parseClientMessage,
@@ -12,6 +13,7 @@ import {
     serializeAuth,
     serializeFrame,
     serializeHello,
+    serializeLocation,
     serializeRequest,
 } from "../src/index";
 import type { ClientCapability, ServerFrame } from "../src/index";
@@ -491,5 +493,146 @@ describe("serializeAuth", () => {
             type: "auth",
             token: "secret-abc",
         });
+    });
+});
+
+describe("parseClientMessage: location frames (#31)", () => {
+    it("parses a location report without a label", () => {
+        expect(
+            parseClientMessage(
+                '{"type":"location","lat":45.5231,"lon":-122.6765}',
+            ),
+        ).toEqual({ type: "location", lat: 45.5231, lon: -122.6765 });
+    });
+
+    it("parses a location report with a label", () => {
+        expect(
+            parseClientMessage(
+                '{"type":"location","lat":45.5231,"lon":-122.6765,"label":"Portland, OR"}',
+            ),
+        ).toEqual({
+            type: "location",
+            lat: 45.5231,
+            lon: -122.6765,
+            label: "Portland, OR",
+        });
+    });
+
+    it("accepts the geographic range boundaries", () => {
+        expect(
+            parseClientMessage('{"type":"location","lat":90,"lon":180}'),
+        ).toEqual({ type: "location", lat: 90, lon: 180 });
+        expect(
+            parseClientMessage('{"type":"location","lat":-90,"lon":-180}'),
+        ).toEqual({ type: "location", lat: -90, lon: -180 });
+    });
+
+    it("rejects a missing latitude", () => {
+        expect(() => parseClientMessage('{"type":"location","lon":0}')).toThrow(
+            /lat/,
+        );
+    });
+
+    it("rejects a missing longitude", () => {
+        expect(() => parseClientMessage('{"type":"location","lat":0}')).toThrow(
+            /lon/,
+        );
+    });
+
+    it("rejects a non-number latitude", () => {
+        expect(() =>
+            parseClientMessage('{"type":"location","lat":"45","lon":0}'),
+        ).toThrow(/lat/);
+    });
+
+    it.each([
+        ["over the north pole", 90.0001],
+        ["under the south pole", -90.0001],
+    ])("rejects a latitude %s", (_name, lat) => {
+        expect(() =>
+            parseClientMessage(
+                JSON.stringify({ type: "location", lat, lon: 0 }),
+            ),
+        ).toThrow(/finite 'lat' between -90 and 90/);
+    });
+
+    it.each([
+        ["past the antimeridian east", 180.0001],
+        ["past the antimeridian west", -180.0001],
+    ])("rejects a longitude %s", (_name, lon) => {
+        expect(() =>
+            parseClientMessage(
+                JSON.stringify({ type: "location", lat: 0, lon }),
+            ),
+        ).toThrow(/finite 'lon' between -180 and 180/);
+    });
+
+    it("rejects a non-finite latitude (1e999 overflows to Infinity)", () => {
+        expect(() =>
+            parseClientMessage('{"type":"location","lat":1e999,"lon":0}'),
+        ).toThrow(/finite 'lat'/);
+    });
+
+    it("rejects a whitespace-only label", () => {
+        expect(() =>
+            parseClientMessage(
+                '{"type":"location","lat":0,"lon":0,"label":"   "}',
+            ),
+        ).toThrow(/non-empty string/);
+    });
+
+    it("rejects a non-string label", () => {
+        expect(() =>
+            parseClientMessage('{"type":"location","lat":0,"lon":0,"label":7}'),
+        ).toThrow(/non-empty string/);
+    });
+
+    it("rejects a label over MAX_LOCATION_LABEL_LENGTH", () => {
+        expect(() =>
+            parseClientMessage(
+                JSON.stringify({
+                    type: "location",
+                    lat: 0,
+                    lon: 0,
+                    label: "x".repeat(MAX_LOCATION_LABEL_LENGTH + 1),
+                }),
+            ),
+        ).toThrow(/at most 64 characters/);
+    });
+
+    it("accepts a label of exactly MAX_LOCATION_LABEL_LENGTH", () => {
+        const label = "x".repeat(MAX_LOCATION_LABEL_LENGTH);
+        expect(
+            parseClientMessage(
+                JSON.stringify({ type: "location", lat: 0, lon: 0, label }),
+            ),
+        ).toEqual({ type: "location", lat: 0, lon: 0, label });
+    });
+});
+
+describe("serializeLocation", () => {
+    it("round-trips without a label through parseClientMessage", () => {
+        expect(
+            parseClientMessage(serializeLocation(45.5231, -122.6765)),
+        ).toEqual({ type: "location", lat: 45.5231, lon: -122.6765 });
+    });
+
+    it("round-trips with a label through parseClientMessage", () => {
+        expect(
+            parseClientMessage(
+                serializeLocation(45.5231, -122.6765, "Portland"),
+            ),
+        ).toEqual({
+            type: "location",
+            lat: 45.5231,
+            lon: -122.6765,
+            label: "Portland",
+        });
+    });
+
+    it("omits an absent label from the wire shape", () => {
+        expect(serializeLocation(0, 0)).toBe(
+            '{"type":"location","lat":0,"lon":0}',
+        );
     });
 });

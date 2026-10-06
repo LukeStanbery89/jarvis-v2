@@ -101,6 +101,25 @@ backoff (1s → 10s) that re-runs the handshake, and permanent-rejection
 handling (`onAuthRejected`). The socket constructor is injectable, so the
 whole state machine is unit-tested in node (`src/ChatClient.test.ts`).
 
+## Location sharing (#31)
+
+Device-location sharing for the `getWeather` tool is **automatic by
+default**: on load a geolocation request runs once, and the browser's own
+permission prompt is the consent gate (the user answers explicitly; the
+browser remembers). The sidebar MapPin is the visible opt-out (persisted in
+localStorage — an explicit "0" suppresses sharing) and doubles as the
+status light. On success, coordinates are
+rounded to four decimals (~11 m), and the result ships as a `location`
+frame — sent immediately (the server accepts them at any point in the
+socket's lifetime) and re-announced after every reconnect, since the
+server's socket state is per-connection. Outcomes have UI states: locating /
+active / denied / failed / **unsupported** — `navigator.geolocation` exists
+only in secure contexts (HTTPS or localhost), so over plain HTTP the pin
+reports "unsupported" and the server-side tool falls back to asking for a
+city. All geolocation logic lives in `src/location.ts` (plain `.ts`, node-
+tested in `src/location.test.ts`) — the web package's node-env suite never
+runs `.tsx` files, so no behavior may live only inside a component.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -118,7 +137,8 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/api.ts` — typed REST client (login, session list/delete; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
-- `src/ChatClient.ts` — event-driven `/ws` wire client.
+- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31).
+- `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens.

@@ -40,9 +40,12 @@ export interface AuthResultFrame {
  *
  * Exactly one of these shapes arrives per message: the first-frame `auth`
  * handshake (to bind the socket to an account), the first-frame `hello`
- * announcement (to declare what the client can render), or a chat prompt.
+ * announcement (to declare what the client can render), a chat prompt, or a
+ * `location` report (to update the device's whereabouts for location-aware
+ * tools).
  */
-export type ClientFrame = AuthRequest | ClientHello | ChatPrompt;
+export type ClientFrame =
+    AuthRequest | ClientHello | ChatPrompt | ClientLocationFrame;
 
 /**
  * The auth handshake: the client's first frame, presenting a stored device
@@ -110,6 +113,42 @@ export interface ChatPrompt {
      */
     attachments?: string[];
 }
+
+/**
+ * The device-location report: a client telling the server where its user is,
+ * so location-aware tools (#31, `getWeather`) can answer locationless
+ * questions ("what's the weather?") without asking for a city first. Clients
+ * with no location source (the CLI) never send it; the web client sends it
+ * once its user opts in and the browser resolves a fix — which requires a
+ * secure context (HTTPS or localhost), so over plain HTTP the frame simply
+ * never arrives and the tool falls back to asking.
+ *
+ * Valid at any point in the socket's lifetime and refreshable: the latest
+ * frame wins for subsequent turns. The server keeps the report in memory for
+ * the socket's lifetime only — never persisted to the database, a transcript,
+ * or logs at coordinate precision.
+ */
+export interface ClientLocationFrame {
+    type: "location";
+    /** Latitude in decimal degrees; finite, within [-90, 90]. */
+    lat: number;
+    /** Longitude in decimal degrees; finite, within [-180, 180]. */
+    lon: number;
+    /**
+     * Optional human-readable place name ("Portland, OR") for clients that
+     * know one. Browser geolocation typically does not — the server then uses
+     * the location name the weather provider resolves from the coordinates.
+     */
+    label?: string;
+}
+
+/**
+ * Longest optional place-name `label` a `location` frame may carry.
+ *
+ * Generous for "Washington, District of Columbia, United States" while
+ * bounding a client bug from stuffing prose into a display field.
+ */
+export const MAX_LOCATION_LABEL_LENGTH = 64;
 
 /** Longest `sessionId` a client may send in a chat request. */
 export const MAX_SESSION_ID_LENGTH = 128;

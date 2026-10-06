@@ -24,6 +24,7 @@ import {
     parseFrame,
     serializeAuth,
     serializeHello,
+    serializeLocation,
     serializeRequest,
     type ChatMode,
     type ClientCapability,
@@ -91,6 +92,18 @@ export class ChatClient {
     private rejectPrompt: ((err: Error) => void) | null = null;
     /** Waiters parked until the socket becomes ready (or definitively fails). */
     private readyWaiters: Array<() => void> = [];
+    /**
+     * The device's latest reported location (#31), kept so each fresh
+     * handshake (initial connect and every reconnect — the server's socket
+     * state is per-connection) re-announces it for subsequent turns.
+     */
+    private location: { lat: number; lon: number } | null = null;
+    /**
+     * The socket the stored location was last announced on — the reconnect
+     * path re-sends only when it differs from the live socket, so a report
+     * that already rode along during the handshake is never duplicated.
+     */
+    private locationSentOn: WebSocket | null = null;
 
     constructor(
         private readonly url: string,
@@ -210,6 +223,19 @@ export class ChatClient {
     }
 
     /**
+     * Reports the device's location (#31): stores it and sends a `location`
+     * frame when the socket is ready — or silently defers to the next
+     * handshake otherwise (see {@link resendLocation}), so a report arriving
+     * mid-reconnect is never lost. The caller passes already-rounded
+     * coordinates (see `location.ts`); this method does no math and never
+     * logs them.
+     */
+    sendLocation(lat: number, lon: number): void {
+        this.location = { lat, lon };
+        this.sendLocationFrame(lat, lon);
+    }
+
+    /**
      * Closes the client for good: cancels reconnects, fails any in-flight
      * prompt, and closes the socket. Safe to call repeatedly.
      */
@@ -256,6 +282,7 @@ export class ChatClient {
                 this.phase = "ready";
                 this.attempt = 0;
                 this.emitStatus("connected");
+                this.resendLocation();
                 this.flushWaiters();
             } else if ("error" in frame) {
                 // A bad token answers `error` (plus a trailing `done` that
@@ -335,6 +362,27 @@ export class ChatClient {
             this.resolvePrompt = null;
             this.rejectPrompt = null;
             reject?.(err);
+        }
+    }
+
+    /** Sends a `location` frame on an open socket (no-op otherwise). */
+    private sendLocationFrame(lat: number, lon: number): void {
+        const socket = this.socket;
+        if (socket && socket.readyState === WS_OPEN) {
+            socket.send(serializeLocation(lat, lon));
+            this.locationSentOn = socket;
+        }
+    }
+
+    /** Re-announces the stored location after a fresh handshake (#31). */
+    private resendLocation(): void {
+        const socket = this.socket;
+        if (
+            this.location !== null &&
+            socket &&
+            this.locationSentOn !== socket
+        ) {
+            this.sendLocationFrame(this.location.lat, this.location.lon);
         }
     }
 

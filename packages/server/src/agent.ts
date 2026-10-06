@@ -56,6 +56,29 @@ export interface RunAgentOptions {
      * for them.
      */
     userId?: number;
+    /**
+     * The device's reported whereabouts (#31), from the socket's latest
+     * `location` frame. Exposed to tool runtime callbacks so location-aware
+     * tools (the `getWeather` tool) can answer locationless questions;
+     * omitted when the client has not reported a location. Kept in memory
+     * per turn only — never persisted.
+     */
+    location?: DeviceLocation;
+}
+
+/**
+ * A device's reported whereabouts (#31): decimal degrees with an optional
+ * human-readable place label. The server-side counterpart of the protocol's
+ * `location` frame payload (minus the wire `type`), carried through
+ * `configurable` to tool runtimes the same way `userId` is.
+ */
+export interface DeviceLocation {
+    /** Latitude in decimal degrees. */
+    lat: number;
+    /** Longitude in decimal degrees. */
+    lon: number;
+    /** Optional place name the client knew ("Portland, OR"). */
+    label?: string;
 }
 
 /**
@@ -213,9 +236,10 @@ function getAgentGraph(): AgentGraph {
  * {@link systemPromptForCapabilities}. When `options.attachmentIds` is
  * present, the ids are deduplicated and appended to the turn's
  * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
- * `analyzeImage` tool reads ids from), and `options.userId` is exposed to
+ * `analyzeImage` tool reads ids from), `options.userId` is exposed to
  * tool runtime callbacks so user-scoped tools can enforce ownership and
- * quotas.
+ * quotas, and `options.location` rides along (#31) for location-aware
+ * tools.
  */
 /**
  * Appends the attachment marker to a prompt (#10).
@@ -250,12 +274,25 @@ export async function* runAgent(
         JSON.stringify({ prompt: markedPrompt, sessionId }),
     );
     const { systemPrompt, agentMaxTurns } = getLlmConfig();
+    // Absent when neither seam is populated, so guest, location-less turns
+    // keep the pre-#31 wire shape (`configurable: undefined`).
+    const configurable =
+        options.userId !== undefined || options.location !== undefined
+            ? {
+                  ...(options.userId !== undefined
+                      ? { userId: options.userId }
+                      : {}),
+                  ...(options.location !== undefined
+                      ? { location: options.location }
+                      : {}),
+              }
+            : undefined;
     yield* streamAgentTurn(getAgentGraph(), markedPrompt, sessionId, {
         systemPrompt: systemPromptForCapabilities(
             systemPrompt,
             options.capabilities ?? [],
         ),
         recursionLimit: agentMaxTurns,
-        configurable: options.userId ? { userId: options.userId } : undefined,
+        configurable,
     });
 }
