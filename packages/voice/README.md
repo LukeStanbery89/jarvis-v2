@@ -1,6 +1,6 @@
 # @lukestanbery/jarvis-voice
 
-Shared voice-input abstractions for J.A.R.V.I.S. clients (issue #84). Two
+Shared voice-input abstractions for J.A.R.V.I.S. clients (issue #84). Three
 halves, deliberately independent:
 
 - **Provider seam** (`src/types.ts`) — `SttProvider` (what did they say),
@@ -11,10 +11,14 @@ halves, deliberately independent:
   (`reduceVoice`) that owns the whole interaction: press/wake through
   transcript submission through response playback, one explicit state at a
   time.
+- **Controller** (`src/controller.ts`) — the imperative orchestrator
+  (`VoiceController`) that drives engines through the state machine: mic
+  presses, endpointing, transcript submission, and response-frame
+  forwarding. React- and transport-free, so every voice client reuses it.
 
 Zero runtime dependencies, CommonJS, browser- and Node-safe. The Web Speech
-browser provider ships here (phase 2, consumed by `packages/web`); a local
-WASM model follows behind the same interface.
+STT provider and the energy VAD ship here (phases 2–3, consumed by
+`packages/web`); a local WASM STT model follows behind the same interfaces.
 
 ## Install
 
@@ -57,6 +61,37 @@ audio.
 The reducer is pure: hold the latest `VoiceSnapshot`, feed it `VoiceEvent`s,
 render from the result. There is no hidden state and no I/O — callsite logging
 (via `@lukestanbery/jarvis-logger`) is the caller's job.
+
+## Controller (endpointing)
+
+`VoiceController` is the imperative half of the interaction: it arms the
+engine and VAD, feeds their events into the reducer, accumulates the
+transcript, and submits the turn. Client UIs render from
+`controller.getSnapshot()` (an external store — `useSyncExternalStore` in
+React) and call `press()` / `noteResponseFrame()` / `noteAudioStarted()` /
+`dispose()`.
+
+Endpointing — who decides "the user stopped talking" — is phase 3's
+deterministic answer:
+
+- **With a `vad`** (`VadProvider`), the controller owns endpointing. The
+  engine is started `{ continuous: true }` so it never finalizes on its own
+  pause detection; final segments arrive while speech continues and are
+  accumulated. The VAD's `onSpeechEnd` arms an `END_OF_SPEECH_MS` (800 ms)
+  timer — expiry enters `transcribing`, flushes the engine (`stt.stop()`),
+  and submits the accumulated transcript. A manual press during the same
+  silence window routes through the identical pipeline. Speech resuming
+  inside the window cancels the timer (the user was not done talking).
+- **Silence is quiet.** A press with no detected speech ends after
+  `NO_SPEECH_MS` (4 s — deliberately under the browser engines' own ≈8 s
+  no-speech error) via `stt.cancel()` (no callbacks fire) and the reducer's
+  `noSpeech` event: back to `idle` with no error banner.
+- **Without a `vad`** (unsupported runtime), behavior is the engine's own:
+  it finalizes on its silence detection, a second press stops-and-flushes,
+  and no timer is ever armed — identical to phase 2.
+
+Timer seams (`schedule`/`unschedule` options) are injectable, so tests fire
+expiries by hand; the controller never reads a real clock.
 
 ### Design rules
 
@@ -128,13 +163,33 @@ Chrome's Web Speech recognition is cloud-backed (audio egress) — accepted
 for phase 2, documented in the web client's README; the local WASM provider
 that replaces it lands behind the same interface.
 
+## Browser provider (VAD, energy)
+
+`createBrowserVad()` returns a `BrowserVadProvider`, or `null` when the
+runtime lacks Web Audio + mic access (the same HTTPS-or-localhost rule the
+STT provider shares). It opens its own echo-cancelled `getUserMedia` track,
+feeds an `AnalyserNode`, and runs a two-edge energy state machine at a
+fixed cadence: loudness sustained past `onsetMs` (default 120) fires
+`onSpeechStart`; silence sustained past `releaseMs` (default 350) fires
+`onSpeechEnd`. `stop()` is idempotent and guarantees no callback fires
+after it resolves; `start()` rejects (rather than erroring the session)
+when the track or context cannot be established, so the controller degrades
+to engine-native endpointing instead of surfacing a failure.
+
+This is the energy-detector MVP (id `browser-energy`): robust for
+headset/quiet-room use, flaky in noisy rooms. A model-backed engine (e.g.
+Silero WASM) can replace it behind the identical `VadProvider` seam without
+touching any client.
+
 ## Traceability
 
 Phase 1 of the [voice-input issue](https://github.com/LukeStanbery89/jarvis-v2/issues/84):
 the provider interfaces and lifecycle this package ships are the units of
-work its P1 acceptance criteria name; the Web Speech provider is P2. Later
-phases land here too: local VAD timeouts and wake-word look-back buffering
-in the provider layer, plus the local WASM provider.
+work its P1 acceptance criteria name; the Web Speech provider is P2, and
+phase 3 lands here too — the energy VAD plus VAD-owned endpointing in the
+controller (the orchestrator itself moved from `packages/web` in P3 so any
+future client reuses it). Later phases: wake-word look-back buffering in
+the provider layer, and the local WASM STT provider.
 
 ## Notes for maintainers
 

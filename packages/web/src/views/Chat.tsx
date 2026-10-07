@@ -43,8 +43,10 @@ import { ToolCall } from "../components/ToolCall";
 import { MAX_ATTACHMENTS, type ChatMode } from "@lukestanbery/jarvis-protocol";
 import {
     createBrowserStt,
+    createBrowserVad,
     initialVoiceSnapshot,
     type SttProvider,
+    type VadProvider,
     type VoiceSnapshot,
 } from "@lukestanbery/jarvis-voice";
 import { VoiceController } from "../voice";
@@ -270,6 +272,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     }
     const stt = sttRef.current;
     /**
+     * The energy VAD (issue #84, phase 3): when present, the voice
+     * controller owns endpointing deterministically — "pause ⇒ send" and
+     * press-with-silence ⇒ idle. `null` (no Web Audio/mic, or a plain-HTTP
+     * origin) leaves the engine's own endpointing in charge.
+     */
+    const vadRef = useRef<VadProvider | null>(null);
+    if (vadRef.current === null) {
+        vadRef.current = createBrowserVad();
+    }
+    const vad = vadRef.current;
+    /**
      * Latest turn runner, read by the voice controller's submit seam at call
      * time so its closures never go stale (mirrors the threadsRef pattern).
      */
@@ -286,6 +299,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     if (voiceRef.current === null && stt !== null) {
         voiceRef.current = new VoiceController({
             stt,
+            vad,
             submit: (text) => {
                 const runTurn = runTurnRef.current;
                 if (runTurn === null) {
@@ -421,8 +435,9 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         getAudioSpeaking,
     );
 
-    // Tear the voice session down with the view: cancel any live recognition
-    // and drop listeners so a disposed controller cannot mutate after unmount.
+    // Tear the voice session down with the view: cancel any live recognition,
+    // stop the VAD, and drop listeners so a disposed controller cannot mutate
+    // after unmount.
     useEffect(() => {
         const instance = voice;
         return () => {

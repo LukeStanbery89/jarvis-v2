@@ -24,7 +24,13 @@
  *   anything else); the engine's own `aborted` code is ignored (it belongs
  *   to cancellation, which has its own path).
  */
-import type { SttCallbacks, SttProvider, SttState, VoiceError } from "../types";
+import type {
+    SttCallbacks,
+    SttProvider,
+    SttStartOptions,
+    SttState,
+    VoiceError,
+} from "../types";
 
 /** One recognized alternative (structural slice of the DOM type). */
 interface SpeechAlternativeLike {
@@ -139,10 +145,18 @@ export class WebSpeechSttProvider implements SttProvider {
      * Starts one recognition session.
      *
      * @param callbacks - Deliveries for this session only.
+     * @param options - Per-session capture options. `{ continuous: true }`
+     * keeps the engine capturing across pauses — final-segment results may
+     * arrive while recognition continues — and is how a VAD-owning caller
+     * (issue #84, phase 3) takes over endpointing from the engine's own
+     * silence detection.
      * @returns Resolves once the engine is capturing (it may already have
      * been told to start; results arrive via the callbacks).
      */
-    async start(callbacks: SttCallbacks): Promise<void> {
+    async start(
+        callbacks: SttCallbacks,
+        options?: SttStartOptions,
+    ): Promise<void> {
         if (this.engineState !== "idle") {
             throw this.voiceError("engine", "recognition is already active");
         }
@@ -160,7 +174,7 @@ export class WebSpeechSttProvider implements SttProvider {
         this.activeSession = session;
         this.usableFinal = false;
         this.errorDelivered = false;
-        recognition.continuous = false;
+        recognition.continuous = options?.continuous ?? false;
         recognition.interimResults = true;
         recognition.maxAlternatives = 1;
         recognition.lang =
