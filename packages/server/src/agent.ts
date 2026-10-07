@@ -193,7 +193,8 @@ const VOICE_FORMAT_RULE =
     "Use no parentheses or brackets — fold any aside into the sentence " +
     "itself. Spell out every abbreviation, unit, and symbol so the voice " +
     "reads it naturally (say 'degrees Fahrenheit', 'miles per hour', " +
-    "'percent'), and keep the wording flowing like human speech.";
+    "'percent'), and keep the wording flowing like human speech. Begin " +
+    "your response with a short sentence (under 10 words).";
 
 /**
  * Derives a system prompt that admits the formats a capable client renders.
