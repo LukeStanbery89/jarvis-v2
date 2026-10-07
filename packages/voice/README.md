@@ -19,9 +19,9 @@ halves, deliberately independent:
 Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
 Web Speech STT provider, the local WASM STT provider (Vosk), and the energy
 VAD ship here (phases 2–3, consumed by `packages/web`). The WASM engine's
-one dependency (`vosk-browser`) is declared as a **peer dependency** and
-loads lazily at first `start()` — the package never imports it at module
-scope, so node consumers and tests are unaffected.
+one dependency (`@lichess-org/vosk-browser`) is declared as a **peer
+dependency** and loads lazily at first `start()` — the package never
+imports it at module scope, so node consumers and tests are unaffected.
 
 ## Install
 
@@ -170,10 +170,14 @@ below is the private path.
 
 `createVoskStt()` returns a `VoskSttProvider` (id `vosk-wasm`), or `null`
 when the runtime lacks mic access, Web Audio, or WebAssembly. Recognition
-runs fully on-device: Kaldi compiled to WASM, driven through a Web Worker
-by `vosk-browser` — no audio egress, and it works where Web Speech does
-not (Firefox, any secure-context browser). The engine contract maps like
-this:
+runs fully on-device: Kaldi compiled to WASM, driven through a module Web
+Worker by `@lichess-org/vosk-browser` — the maintained fork of
+ccoreilly's vosk-browser, rebuilt **CSP-safe** (its Emscripten runtime
+defines classes without `new Function`, so it runs under a strict
+`script-src 'self'`; the worker script + WASM binary are served as
+same-origin SPA assets) — no audio egress, and it works where Web Speech
+does not (Firefox, any secure-context browser). The engine contract maps
+like this:
 
 - the model archive (~40 MB `tar.gz`) loads lazily at the first `start()`
   from a configurable URL (default: the J.A.R.V.I.S. server's
@@ -233,6 +237,7 @@ benchmarked behind the same seam before any default changes.
 
 - Zero mandatory runtime dependencies, so this package never needs a
   rebuild-then-check ordering like `@lukestanbery/jarvis-logger` consumers
-  do; `vosk-browser` is an optional peer the browser client provides.
+  do; `@lichess-org/vosk-browser` is an optional peer the browser client
+  provides.
 - The state machine readme diagram mirrors the module doc in
   `src/lifecycle.ts`; keep them in step.

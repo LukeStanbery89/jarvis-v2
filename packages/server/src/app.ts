@@ -148,16 +148,16 @@ export function createApp(
             `serving web chat client from ${appConfig.webDir} (index.html found)`,
         );
         // The web client renders remote (https) images from the model, dials
-        // the same-origin `/ws` socket, and spawns the local speech engine's
-        // WASM worker from an inlined blob URL (#84 P3b), so its CSP widens
-        // `img-src` beyond the portal's `'self' data:` posture, adds this
-        // request's ws/wss origin, and allows blob: workers.
+        // the same-origin `/ws` socket, and runs the local speech engine in a
+        // same-origin module worker (#84 P3b), so its CSP widens `img-src`
+        // beyond the portal's `'self' data:` posture, adds this request's
+        // ws/wss origin, and declares the worker source.
         app.use(
             "/web",
             spaSecurityHeaders({
                 remoteImages: true,
                 websocketOrigins: true,
-                workerBlob: true,
+                workerSrc: true,
             }),
         );
         // `index: "index.html"` makes `GET /web` itself serve the shell.
@@ -268,13 +268,13 @@ interface SpaSecurityHeaderOptions {
      */
     websocketOrigins?: boolean;
     /**
-     * Whether `worker-src 'self' blob:` is added. The chat client's local
-     * speech engine (#84 P3b) spawns its WASM worker from an inlined blob
-     * URL; with no explicit `worker-src`, `script-src 'self'` applies as the
-     * fallback and blocks the blob: spawn. The portal runs no workers and
-     * keeps the strict posture.
+     * Whether `worker-src 'self';` is added. The chat client's local speech
+     * engine (#84 P3b) runs in a module worker served from the same origin
+     * (`vosk.worker.js`, bundled with the SPA); the explicit directive
+     * documents that and decouples worker loading from `script-src`. The
+     * portal runs no workers and keeps the strict posture.
      */
-    workerBlob?: boolean;
+    workerSrc?: boolean;
 }
 
 /**
@@ -293,13 +293,13 @@ interface SpaSecurityHeaderOptions {
 function spaSecurityHeaders({
     remoteImages = false,
     websocketOrigins = false,
-    workerBlob = false,
+    workerSrc: withWorkerSrc = false,
 }: SpaSecurityHeaderOptions = {}) {
     return (req: Request, res: Response, next: NextFunction) => {
         const imgSrc = remoteImages
             ? "img-src 'self' data: https:"
             : "img-src 'self' data:";
-        const workerSrc = workerBlob ? "worker-src 'self' blob:; " : "";
+        const workerSrc = withWorkerSrc ? "worker-src 'self'; " : "";
         const host = req.headers.host;
         const socketOrigins =
             websocketOrigins &&

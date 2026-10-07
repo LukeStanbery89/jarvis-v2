@@ -268,11 +268,16 @@ interface Fakes {
     readonly getUserMedia: ReturnType<typeof vi.fn>;
     /** The fake vosk module handed to the provider's loader. */
     readonly module: {
-        createModel: Mock<
-            (modelUrl: string, logLevel?: number) => Promise<FakeModel>
+        createVoskClient: Mock<
+            (options: {
+                modelUrl: string;
+                workerUrl?: string;
+                wasmUrl?: string;
+                logLevel?: number;
+            }) => Promise<FakeModel>
         >;
     };
-    /** The fake model createModel resolves with. */
+    /** The fake model createVoskClient resolves with. */
     readonly model: FakeModel;
     /** The provider's (most recently created) recognizer. */
     readonly recognizer: FakeRecognizer;
@@ -280,7 +285,7 @@ interface Fakes {
     readonly context: FakeAudioContext;
     /** Makes the next `getUserMedia` reject with the given error. */
     failGetUserMedia(err: Error): void;
-    /** Makes `createModel` reject with the given error until cleared. */
+    /** Makes `createVoskClient` reject with the given error until cleared. */
     failModelLoad(err: Error | null): void;
     /** Fires the track's `onended` (mid-session death). */
     endTrack(): void;
@@ -288,7 +293,7 @@ interface Fakes {
 
 /**
  * Installs `navigator.mediaDevices.getUserMedia`, `AudioContext`, and a
- * fake `vosk-browser` module on `globalThis` for one test.
+ * fake engine module on `globalThis` for one test.
  *
  * @returns The handles the test drives.
  */
@@ -305,13 +310,13 @@ function installFakes(): Fakes {
         }
         return Promise.resolve(new FakeStream(track));
     });
-    const createModel = vi.fn(() => {
+    const createVoskClient = vi.fn(() => {
         if (state.modelError !== null) {
             return Promise.reject(state.modelError);
         }
         return Promise.resolve(model);
     });
-    const module = { createModel };
+    const module = { createVoskClient };
     vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
     vi.stubGlobal("AudioContext", FakeAudioContext);
     return {
@@ -390,8 +395,8 @@ describe("session lifecycle", () => {
         const provider = makeProvider(fakes);
         const recorder = makeRecorder();
         await provider.start(recorder.callbacks);
-        expect(fakes.module.createModel).toHaveBeenCalledTimes(1);
-        expect(fakes.module.createModel.mock.calls[0][0]).toBe(
+        expect(fakes.module.createVoskClient).toHaveBeenCalledTimes(1);
+        expect(fakes.module.createVoskClient.mock.calls[0][0].modelUrl).toBe(
             "/api/stt/model",
         );
         expect(fakes.getUserMedia).toHaveBeenCalledTimes(1);
@@ -440,7 +445,7 @@ describe("session lifecycle", () => {
         expect(first.removed).toBe(true);
         await provider.start(makeRecorder().callbacks);
         const second = fakes.recognizer;
-        expect(fakes.module.createModel).toHaveBeenCalledTimes(1);
+        expect(fakes.module.createVoskClient).toHaveBeenCalledTimes(1);
         expect(second).not.toBe(first);
         await provider.cancel();
     });
@@ -480,7 +485,7 @@ describe("session lifecycle", () => {
         expect(fakes.getUserMedia).not.toHaveBeenCalled();
         fakes.failModelLoad(null);
         await provider.start(makeRecorder().callbacks);
-        expect(fakes.module.createModel).toHaveBeenCalledTimes(2);
+        expect(fakes.module.createVoskClient).toHaveBeenCalledTimes(2);
         const stopped = provider.stop();
         vi.advanceTimersByTime(200);
         await stopped;
@@ -493,7 +498,7 @@ describe("session lifecycle", () => {
         const gated = new Promise<FakeModel>((resolve) => {
             release = resolve;
         });
-        fakes.module.createModel.mockImplementation(() => gated);
+        fakes.module.createVoskClient.mockImplementation(() => gated);
         const provider = makeProvider(fakes);
         const startPromise = provider.start(makeRecorder().callbacks);
         await provider.stop();
@@ -792,7 +797,7 @@ describe("dispose", () => {
         await provider.dispose();
         expect(fakes.model.terminated).toBe(true);
         await provider.start(makeRecorder().callbacks);
-        expect(fakes.module.createModel).toHaveBeenCalledTimes(2);
+        expect(fakes.module.createVoskClient).toHaveBeenCalledTimes(2);
         await provider.cancel();
     });
 

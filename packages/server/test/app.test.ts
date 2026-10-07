@@ -147,12 +147,12 @@ describe("web chat client serving", () => {
         expect(res.text).toContain("JARVIS Web");
     });
 
-    it("widens img-src, allows the same-origin ws socket, and permits blob: workers for the web chat client", async () => {
+    it("widens img-src, allows the same-origin ws socket, and declares the worker source for the web chat client", async () => {
         const web = await request(webApp).get("/web/");
         // supertest defaults Host to 127.0.0.1:<port>; the CSP derives the
         // socket origins from it.
         expect(web.headers["content-security-policy"]).toMatch(
-            /worker-src 'self' blob:; img-src 'self' data: https:; connect-src 'self' ws:\/\/127\.0\.0\.1:\d+ wss:\/\/127\.0\.0\.1:\d+$/,
+            /worker-src 'self'; img-src 'self' data: https:; connect-src 'self' ws:\/\/127\.0\.0\.1:\d+ wss:\/\/127\.0\.0\.1:\d+$/,
         );
     });
 
@@ -161,7 +161,7 @@ describe("web chat client serving", () => {
             .get("/web/")
             .set("Host", "evil.test; script-src *");
         expect(res.headers["content-security-policy"]).toBe(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; img-src 'self' data: https:; connect-src 'self'",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'; img-src 'self' data: https:; connect-src 'self'",
         );
     });
 

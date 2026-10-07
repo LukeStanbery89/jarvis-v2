@@ -1,7 +1,8 @@
 /**
  * Local WASM implementation of the {@link SttProvider} seam (issue #84,
- * phase 3b) — Vosk (Kaldi) compiled to WebAssembly, driven in a Web Worker
- * through `vosk-browser`.
+ * phase 3b) — Vosk (Kaldi) compiled to WebAssembly, driven in a module Web
+ * Worker through `@lichess-org/vosk-browser` (the maintained, CSP-safe
+ * fork of ccoreilly's vosk-browser).
  *
  * This is the privacy path the phase plan promised: recognition runs fully
  * on-device, so there is no audio egress (Web Speech in Chrome sends the
@@ -37,10 +38,9 @@
  *
  * Like every browser provider in this package, browser APIs are looked up
  * structurally from `globalThis` (no DOM lib; node tests install fakes) and
- * the `vosk-browser` module itself loads lazily through an injectable
- * loader, so a missing install or a non-browser runtime never breaks
- * importing this file — it surfaces as `null` from {@link createVoskStt} or
- * a rejected `start()`.
+ * the engine module loads lazily through an injectable loader, so a missing
+ * install or a non-browser runtime never breaks importing this file — it
+ * surfaces as `null` from {@link createVoskStt} or a rejected `start()`.
  */
 import type {
     SttCallbacks,
@@ -59,6 +59,19 @@ export interface VoskSttOptions {
      * resolve against the page inside the vosk worker.
      */
     readonly modelUrl?: string;
+    /**
+     * URL of the engine's worker script (`vosk.worker.js`), a module worker
+     * the browser client serves as a same-origin asset. Required in
+     * practice: the library's default resolves against the page's base
+     * URL, which a `/web`-mounted SPA cannot satisfy.
+     */
+    readonly workerUrl?: string;
+    /**
+     * URL of the engine's WASM binary (`vosk.wasm`), fetched by the worker.
+     * Required in practice — the worker hands it to the Emscripten loader
+     * verbatim; the browser client serves it as a same-origin asset.
+     */
+    readonly wasmUrl?: string;
     /** Vosk worker log level. Defaults to `-1` (warnings only). */
     readonly logLevel?: number;
     /**
@@ -170,9 +183,14 @@ interface ModelLike {
     terminate(): void;
 }
 
-/** The slice of the `vosk-browser` module the provider drives. */
+/** The slice of the engine module the provider drives. */
 interface VoskModuleLike {
-    createModel(modelUrl: string, logLevel?: number): Promise<ModelLike>;
+    createVoskClient(options: {
+        modelUrl: string;
+        workerUrl?: string;
+        wasmUrl?: string;
+        logLevel?: number;
+    }): Promise<ModelLike>;
 }
 
 /**
@@ -181,8 +199,15 @@ interface VoskModuleLike {
  */
 export type VoskModuleLoader = () => Promise<VoskModuleLike>;
 
-/** The real module loader: a lazy dynamic import of `vosk-browser`. */
-const defaultLoadModule: VoskModuleLoader = () => import("vosk-browser");
+/**
+ * The real module loader: a lazy dynamic import of the engine library
+ * (`@lichess-org/vosk-browser` — the maintained fork of ccoreilly's
+ * vosk-browser, rebuilt CSP-safe: its Emscripten runtime defines error
+ * classes without `new Function`, so the worker runs under a strict
+ * `script-src 'self'` policy).
+ */
+const defaultLoadModule: VoskModuleLoader = () =>
+    import("@lichess-org/vosk-browser");
 
 /** The default model URL: the J.A.R.V.I.S. server's model route. */
 export const DEFAULT_VOSK_MODEL_URL = "/api/stt/model";
@@ -244,6 +269,8 @@ export class VoskSttProvider implements SttProvider {
 
     private engineState: SttState = "idle";
     private readonly modelUrl: string;
+    private readonly workerUrl: string | undefined;
+    private readonly wasmUrl: string | undefined;
     private readonly logLevel: number;
     private readonly flushWaitMs: number;
     private readonly loadModule: VoskModuleLoader;
@@ -283,6 +310,8 @@ export class VoskSttProvider implements SttProvider {
      */
     constructor(options: VoskSttOptions = {}, loadModule?: VoskModuleLoader) {
         this.modelUrl = options.modelUrl ?? DEFAULT_VOSK_MODEL_URL;
+        this.workerUrl = options.workerUrl;
+        this.wasmUrl = options.wasmUrl;
         this.logLevel = options.logLevel ?? -1;
         this.flushWaitMs = options.flushWaitMs ?? DEFAULT_FLUSH_WAIT_MS;
         this.loadModule = loadModule ?? defaultLoadModule;
@@ -509,7 +538,14 @@ export class VoskSttProvider implements SttProvider {
         }
         if (this.modelPromise === null) {
             this.modelPromise = this.loadModule()
-                .then((vosk) => vosk.createModel(this.modelUrl, this.logLevel))
+                .then((vosk) =>
+                    vosk.createVoskClient({
+                        modelUrl: this.modelUrl,
+                        workerUrl: this.workerUrl,
+                        wasmUrl: this.wasmUrl,
+                        logLevel: this.logLevel,
+                    }),
+                )
                 .then((model) => {
                     model.on("error", (message) => {
                         if (message.event !== "error") {

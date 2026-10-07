@@ -30,6 +30,6 @@
         "vitest": "^5.0.1"
     },
     "peerDependencies": {
-        "vosk-browser": "^0.0.8"
+        "@lichess-org/vosk-browser": "^0.0.3"
     }
 }

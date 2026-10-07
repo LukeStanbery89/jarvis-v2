@@ -130,16 +130,19 @@ Sending… / Thinking…), and a failed session (denied microphone, rejected
 turn) stays on screen as an alert until the next press.
 
 **The engine is local first (phase 3b)**: `src/voice.ts` `createStt()`
-selects the WASM engine (Vosk) when the runtime offers mic access, Web
-Audio, and WebAssembly — recognition runs fully on-device (no audio
-egress) and Firefox gains a mic at all — and falls back to the Web Speech
-engine (cloud-backed in Chrome) when the WASM stack is unavailable. The
-model archive (~40 MB) downloads once from the server's
-`GET /api/stt/model` (configure the server with `JARVIS_STT_PROVIDER=vosk`;
-unconfigured → the engine errors at session start) and persists in the
-browser's IndexedDB after that. Selection is construction-time; a
-session-time failure surfaces through the engine's own error path rather
-than falling back mid-session.
+selects the WASM engine (Vosk, via `@lichess-org/vosk-browser`) when the
+runtime offers mic access, Web Audio, and WebAssembly — recognition runs
+fully on-device (no audio egress) and Firefox gains a mic at all — and
+falls back to the Web Speech engine (cloud-backed in Chrome) when the WASM
+stack is unavailable. The engine's worker script and WASM binary ship with
+the SPA bundle (Vite `?url` assets, served same-origin, so the `/web`
+CSP's `worker-src 'self'` covers them without `unsafe-eval`). The model
+archive (~40 MB) downloads once from the server's `GET /api/stt/model`
+(configure the server with `JARVIS_STT_PROVIDER=vosk`; unconfigured → the
+engine errors at session start) and persists in the browser's IndexedDB
+after that. Selection is construction-time; a session-time failure
+surfaces through the engine's own error path rather than falling back
+mid-session.
 
 Endpointing is VAD-owned when the runtime supports it (#84 P3): an energy
 VAD (`createBrowserVad()` — Web Audio on its own echo-cancelled track) and

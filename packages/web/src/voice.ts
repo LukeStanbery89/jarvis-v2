@@ -22,6 +22,17 @@ export interface SttEngineOptions {
      * provider's own same-origin default (the server's `GET /api/stt/model`).
      */
     readonly modelUrl?: string;
+    /**
+     * The engine's worker script URL. The chat view passes the
+     * Vite-bundled asset URL (imported with `?url`), since the library's
+     * default path cannot be resolved from a `/web`-mounted SPA.
+     */
+    readonly workerUrl?: string;
+    /**
+     * The engine's WASM binary URL, fetched by the worker. The chat view
+     * passes the Vite-bundled asset URL (imported with `?url`).
+     */
+    readonly wasmUrl?: string;
 }
 
 /**
@@ -36,11 +47,17 @@ export interface SttEngineOptions {
  * archive cannot be fetched) surfaces through the engine's own error path
  * rather than falling back mid-session — engine failover is a later phase.
  *
- * @param options - Optional WASM model URL override.
+ * @param options - Optional WASM engine asset URL overrides.
  * @returns The selected provider, or `null` when no engine is available.
  */
 export function createStt(options: SttEngineOptions = {}): SttProvider | null {
-    return createVoskStt({ modelUrl: options.modelUrl }) ?? createBrowserStt();
+    return (
+        createVoskStt({
+            modelUrl: options.modelUrl,
+            workerUrl: options.workerUrl,
+            wasmUrl: options.wasmUrl,
+        }) ?? createBrowserStt()
+    );
 }
 
 export {

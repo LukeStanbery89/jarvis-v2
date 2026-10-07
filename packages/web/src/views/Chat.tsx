@@ -49,6 +49,11 @@ import {
     type VoiceSnapshot,
 } from "@lukestanbery/jarvis-voice";
 import { VoiceController, createStt } from "../voice";
+// The local speech engine's worker + WASM binary are served as same-origin
+// assets via the Vite build (`?url` copies them into dist and yields their
+// URLs); the library's own default paths cannot resolve from a /web mount.
+import voskWorkerUrl from "@lichess-org/vosk-browser/dist/vosk.worker.js?url";
+import voskWasmUrl from "@lichess-org/vosk-browser/dist/vosk.wasm?url";
 import { AudioPlayer } from "../audio";
 import { prepareForUpload } from "../downscale/browser";
 import {
@@ -270,7 +275,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
      */
     const sttRef = useRef<SttProvider | null>(null);
     if (sttRef.current === null) {
-        sttRef.current = createStt();
+        sttRef.current = createStt({
+            workerUrl: voskWorkerUrl,
+            wasmUrl: voskWasmUrl,
+        });
     }
     const stt = sttRef.current;
     /**
