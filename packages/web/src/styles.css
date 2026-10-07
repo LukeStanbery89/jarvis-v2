@@ -452,6 +452,58 @@ textarea::placeholder {
     cursor: default;
 }
 
+/* The mic button sits in the composer row beside attach/send; active means
+   capture is live (filled treatment, pulsing glyph). */
+.composer button.mic {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.6rem;
+    padding: 0;
+    color: var(--primary);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+}
+
+.composer button.mic:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.composer button.mic.active {
+    color: #000;
+    background: var(--primary);
+    border-color: var(--primary);
+}
+
+/* While listening, the mic glyph breathes. */
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
+.pulse {
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* Voice-session status (#84): live partial transcript or stage; the error
+   variant stays on screen (role=alert) until the next press clears it. */
+.voice-status {
+    margin: 0 0 4px;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: var(--primary-dim);
+}
+
+.voice-status.error {
+    color: var(--error);
+}
+
 /* Send keeps its filled-active treatment; idle send is a quiet outline. */
 .composer button.send {
     display: inline-flex;

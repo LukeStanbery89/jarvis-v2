@@ -79,11 +79,11 @@ refused on guest sockets.
 
 On connect the client sends a first-frame `hello` announcement
 (`{ type: "hello", capabilities: [...] }`, see `src/views/Chat.tsx`)
-declaring what it can render: `markdown`, `image`, and `link`. Every prompt
-carries `mode: "text"` — text chats are answered with the declared
-capabilities (rich Markdown/tables/images). Voice chats (`mode: "voice"`)
-always yield plain conversational text server-side; a voice UI is future
-work. Raw `html` is deliberately _not_ claimed: model text is rendered as
+declaring what it can render: `markdown`, `image`, and `link`. Typed prompts
+carry `mode: "text"` — text chats are answered with the declared
+capabilities (rich Markdown/tables/images). Mic prompts carry
+`mode: "voice"` (see below) and always yield plain conversational text
+server-side. Raw `html` is deliberately _not_ claimed: model text is rendered as
 Markdown with raw HTML skipped by react-markdown's default transform.
 
 Links run through a protocol allowlist (`safeHref`: `http`/`https`/`mailto`
@@ -120,6 +120,33 @@ city. All geolocation logic lives in `src/location.ts` (plain `.ts`, node-
 tested in `src/location.test.ts`) — the web package's node-env suite never
 runs `.tsx` files, so no behavior may live only inside a component.
 
+## Voice input (#84)
+
+Click-to-talk via the Web Speech API: the composer's mic button starts
+capture (pulse animation + a live partial transcript in the status line),
+pressing again — or the engine's own final result — transcribes, and the
+final transcript submits as an ordinary `mode: "voice"` prompt that lands in
+history as text. A status line tracks the session stage (Listening… /
+Transcribing… / Sending… / Thinking…), and a failed session (no speech,
+denied microphone, rejected turn) stays on screen as an alert until the
+next press.
+
+The wiring splits cleanly: `packages/voice` owns the engine seam
+(`SttProvider`) and the pure lifecycle reducer; `src/voice.ts` binds them —
+a React-free `VoiceController` (an external store consumed via
+`useSyncExternalStore`) that arms the engine, tags every event with its
+session id, submits transcripts, and routes turn outcomes back through the
+reducer, so stale engine callbacks or old turn ends can never disturb a
+newer session. `src/views/Chat.tsx` renders the snapshot and forwards server
+frames (`noteResponseFrame`). No behavior lives only in the component.
+
+Two honest limits: Chrome's Web Speech recognition is cloud-backed (audio
+egress to the recognition service — the local WASM provider is planned
+behind the same interface), and `SpeechRecognition` exists only in secure
+contexts (HTTPS or localhost), so over plain HTTP — like geolocation — the
+mic reports unavailable (disabled button with an explanation) and typing
+keeps working exactly as before.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -139,6 +166,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
+- `src/voice.ts` — voice-input controller: engine seam → lifecycle → submit (#84).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens.

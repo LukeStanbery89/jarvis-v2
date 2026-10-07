@@ -12,9 +12,9 @@ halves, deliberately independent:
   transcript submission through response playback, one explicit state at a
   time.
 
-Zero runtime dependencies, CommonJS, browser- and Node-safe. Browser
-providers (Web Speech first, a local WASM model next) arrive in later #84
-phases and are consumed by `packages/web`.
+Zero runtime dependencies, CommonJS, browser- and Node-safe. The Web Speech
+browser provider ships here (phase 2, consumed by `packages/web`); a local
+WASM model follows behind the same interface.
 
 ## Install
 
@@ -107,13 +107,34 @@ sttProvider.start({
 Only `submitting`'s `transcript` may become a user message; `partial` text is
 for live UI display and nothing else.
 
+## Browser provider (Web Speech)
+
+`createBrowserStt()` returns a `WebSpeechSttProvider`, or `null` when the
+runtime has no recognition engine (Firefox; any non-secure context — the
+HTTPS-or-localhost rule the geolocation feature shares). The provider
+honors the full `SttProvider` contract:
+
+- partials and finals are trimmed; an empty final is _no transcript_, and a
+  session that ends without one reports `no-speech`;
+- `stop()` flushes (final delivery then settlement), `cancel()` aborts and
+  guarantees no callback fires after it resolves;
+- engine errors map to `no-speech` / `permission-denied` / `engine`;
+  the engine's own `aborted` code is ignored (cancellation has its own
+  path, and a cancelled session delivers nothing);
+- events from a previous session are dropped by id, so a late engine
+  callback after a re-start cannot leak.
+
+Chrome's Web Speech recognition is cloud-backed (audio egress) — accepted
+for phase 2, documented in the web client's README; the local WASM provider
+that replaces it lands behind the same interface.
+
 ## Traceability
 
 Phase 1 of the [voice-input issue](https://github.com/LukeStanbery89/jarvis-v2/issues/84):
 the provider interfaces and lifecycle this package ships are the units of
-work its P1 acceptance criteria name. Later phases land here too: local VAD
-timeouts and wake-word look-back buffering in the provider layer, plus the
-Web Speech/WASM browser providers consumed by `packages/web`.
+work its P1 acceptance criteria name; the Web Speech provider is P2. Later
+phases land here too: local VAD timeouts and wake-word look-back buffering
+in the provider layer, plus the local WASM provider.
 
 ## Notes for maintainers
 
