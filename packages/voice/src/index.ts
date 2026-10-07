@@ -29,3 +29,9 @@ export type {
 } from "./types";
 export type { VoiceEvent, VoiceSnapshot, VoiceState } from "./lifecycle";
 export { VOICE_STATES, initialVoiceSnapshot, reduceVoice } from "./lifecycle";
+export {
+    WebSpeechSttProvider,
+    createBrowserStt,
+    isWebSpeechSupported,
+} from "./providers/webSpeech";
+export type { WebSpeechSttOptions } from "./providers/webSpeech";

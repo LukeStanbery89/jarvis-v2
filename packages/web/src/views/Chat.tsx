@@ -21,6 +21,7 @@ import {
     useReducer,
     useRef,
     useState,
+    useSyncExternalStore,
 } from "react";
 import { api, ApiError, type SessionSummary } from "../api";
 import type { StoredCredential } from "../credentials";
@@ -39,7 +40,14 @@ import { ChatClient, type ChatStatus } from "../ChatClient";
 import { webSocketUrl } from "../wsUrl";
 import { Markdown } from "../Markdown";
 import { ToolCall } from "../components/ToolCall";
-import { MAX_ATTACHMENTS } from "@lukestanbery/jarvis-protocol";
+import { MAX_ATTACHMENTS, type ChatMode } from "@lukestanbery/jarvis-protocol";
+import {
+    createBrowserStt,
+    initialVoiceSnapshot,
+    type SttProvider,
+    type VoiceSnapshot,
+} from "@lukestanbery/jarvis-voice";
+import { VoiceController } from "../voice";
 import { prepareForUpload } from "../downscale/browser";
 import {
     describeLocationState,
@@ -54,6 +62,8 @@ import {
     LoaderCircle,
     LogOut,
     MapPin,
+    Mic,
+    MicOff,
     Paperclip,
     SendHorizontal,
     SquarePen,
@@ -165,6 +175,31 @@ interface SidebarRow {
     kind?: "text" | "voice";
 }
 
+/**
+ * Human text for the voice session's status line (#84 P2): the live partial
+ * transcript while listening, then the stage. Returns `null` once the
+ * response itself is visible (responding/speaking) or there is nothing to
+ * say (idle without an error) — the caller renders errors separately as an
+ * alert so a failed session stays on screen until the next press.
+ *
+ * @param snapshot - The current voice snapshot.
+ * @returns Status text, or `null` when the line should not render.
+ */
+function voiceStatusText(snapshot: VoiceSnapshot): string | null {
+    switch (snapshot.state) {
+        case "listening":
+            return snapshot.partial ?? "Listening…";
+        case "transcribing":
+            return "Transcribing…";
+        case "submitting":
+            return "Sending…";
+        case "waiting":
+            return "Thinking…";
+        default:
+            return null;
+    }
+}
+
 /** Props for {@link Chat}. */
 export interface ChatProps {
     /** The signed-in credential (token lives inside the chat client only). */
@@ -222,6 +257,45 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     /** The composer textarea (refocused after each turn so chat stays fluid). */
     const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
+    /**
+     * The browser STT engine (Web Speech, #84 P2), created once per mount.
+     * `null` when the runtime has none (Firefox, or a plain-HTTP origin —
+     * the same secure-context rule as geolocation); the mic button renders
+     * disabled with an explanation in that case.
+     */
+    const sttRef = useRef<SttProvider | null>(null);
+    if (sttRef.current === null) {
+        sttRef.current = createBrowserStt();
+    }
+    const stt = sttRef.current;
+    /**
+     * Latest turn runner, read by the voice controller's submit seam at call
+     * time so its closures never go stale (mirrors the threadsRef pattern).
+     */
+    const runTurnRef = useRef<
+        | ((
+              text: string,
+              mode: ChatMode,
+              attachmentIds: string[],
+          ) => Promise<void>)
+        | null
+    >(null);
+    /** The voice session controller; null only when this browser has no STT. */
+    const voiceRef = useRef<VoiceController | null>(null);
+    if (voiceRef.current === null && stt !== null) {
+        voiceRef.current = new VoiceController({
+            stt,
+            submit: (text) => {
+                const runTurn = runTurnRef.current;
+                if (runTurn === null) {
+                    return Promise.reject(new Error("chat is not ready"));
+                }
+                return runTurn(text, "voice", []);
+            },
+        });
+    }
+    const voice = voiceRef.current;
+
     /** One chat client for the component's lifetime. */
     const clientRef = useRef<ChatClient | null>(null);
     if (clientRef.current === null) {
@@ -231,6 +305,9 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             events: {
                 onStatus: (next) => setStatus(next),
                 onFrame: (frame) => {
+                    // Voice turns watch the first frame (waiting → responding);
+                    // frames of text-mode turns fall through the voice reducer.
+                    voiceRef.current?.noteResponseFrame();
                     const sessionId = activeIdRef.current;
                     if (sessionId === null) {
                         return;
@@ -288,6 +365,37 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             client.close();
         };
     }, [client, refreshSessions]);
+
+    // Voice session subscription (#84 P2): the controller is the external
+    // store; the view renders from the snapshot and never touches the engine.
+    const subscribeVoice = useCallback(
+        (onStoreChange: () => void) =>
+            voice?.subscribe(onStoreChange) ?? (() => undefined),
+        [voice],
+    );
+    const getVoiceSnapshot = useCallback(
+        () => voice?.getSnapshot() ?? initialVoiceSnapshot,
+        [voice],
+    );
+    const voiceSnapshot = useSyncExternalStore(
+        subscribeVoice,
+        getVoiceSnapshot,
+    );
+    /** The voice turn is mid-flight (the mic rests until it settles). */
+    const voiceTurnInFlight =
+        voiceSnapshot.state === "submitting" ||
+        voiceSnapshot.state === "waiting" ||
+        voiceSnapshot.state === "responding" ||
+        voiceSnapshot.state === "speaking";
+
+    // Tear the voice session down with the view: cancel any live recognition
+    // and drop listeners so a disposed controller cannot mutate after unmount.
+    useEffect(() => {
+        const instance = voice;
+        return () => {
+            void instance?.dispose();
+        };
+    }, [voice]);
 
     // Location sharing (#31): automatic by default — on mount (and on every
     // toggle-on) one geolocation request runs, and on success one `location`
@@ -398,6 +506,14 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             el.scrollTop = el.scrollHeight;
         }
     }, [transcriptMessages, activeId]);
+
+    /** Status-line text for the current voice session (null hides it). */
+    const voiceStatus = voiceStatusText(voiceSnapshot);
+    /** A voice session that ended in failure, kept on screen until the next press. */
+    const voiceErrorText =
+        voiceSnapshot.state === "idle"
+            ? (voiceSnapshot.error?.message ?? null)
+            : null;
 
     // Restore focus to the composer once a streaming turn ends, so the next
     // message can be typed without re-clicking the textarea.
@@ -563,10 +679,51 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         void refreshSessions();
     }
 
+    /**
+     * Runs one chat turn (typed or voice-origin): records the user message,
+     * sends the wire frame, and restores composer focus afterwards. Throws
+     * for the caller to surface (typed turns → assistant error bubble,
+     * voice turns → the voice session's `rejected` state).
+     *
+     * @param text - Prompt text (already trimmed by the caller).
+     * @param mode - `"text"` for typed prompts, `"voice"` for mic prompts.
+     * @param attachmentIds - Ready attachment ids (typed prompts only).
+     * @returns Resolves on the terminal `done` frame.
+     */
+    async function runTurn(
+        text: string,
+        mode: ChatMode,
+        attachmentIds: string[],
+    ): Promise<void> {
+        const sessionId = activeIdRef.current;
+        if (sessionId === null) {
+            throw new Error("no conversation is open");
+        }
+        if (client.isStreaming()) {
+            throw new Error("another prompt is already in progress");
+        }
+        dispatch({
+            type: "user",
+            sessionId,
+            text,
+            at: Date.now(),
+            ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+        });
+        setStreaming(true);
+        try {
+            await client.prompt(text, sessionId, attachmentIds, mode);
+        } finally {
+            setStreaming(false);
+            persist();
+            void refreshSessions();
+        }
+    }
+    // The voice controller reads this at submit time — see runTurnRef.
+    runTurnRef.current = runTurn;
+
     /** Sends the composer draft (plus any ready attachments) as one chat turn. */
     async function send(): Promise<void> {
         const text = draft.trim();
-        const sessionId = activeId;
         const readyIds = pending
             .filter((p) => p.state.kind === "ready")
             .map(
@@ -574,32 +731,20 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     (p.state as { kind: "ready"; attachmentId: string })
                         .attachmentId,
             );
-        if (text === "" || sessionId === null || streaming) {
+        if (text === "" || activeId === null || streaming) {
             return;
         }
         setDraft("");
-        dispatch({
-            type: "user",
-            sessionId,
-            text,
-            at: Date.now(),
-            attachmentIds: readyIds,
-        });
         setPending([]);
-        setStreaming(true);
         try {
-            await client.prompt(text, sessionId, readyIds);
+            await runTurn(text, "text", readyIds);
         } catch (err) {
             dispatch({
                 type: "assistantError",
-                sessionId,
+                sessionId: activeId,
                 text: err instanceof Error ? err.message : "the request failed",
                 at: Date.now(),
             });
-        } finally {
-            setStreaming(false);
-            persist();
-            void refreshSessions();
         }
     }
 
@@ -783,6 +928,16 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         );
                     })}
                 </div>
+                {voiceStatus !== null && (
+                    <p className="voice-status" role="status">
+                        {voiceStatus}
+                    </p>
+                )}
+                {voiceErrorText !== null && (
+                    <p className="voice-status error" role="alert">
+                        {voiceErrorText}
+                    </p>
+                )}
                 {activeId !== null && (
                     <div
                         className="composer"
@@ -838,6 +993,45 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                                 e.target.value = "";
                             }}
                         />
+                        <button
+                            type="button"
+                            className={
+                                voiceSnapshot.state === "listening"
+                                    ? "mic active"
+                                    : "mic"
+                            }
+                            aria-label={
+                                stt === null
+                                    ? "Voice input unavailable"
+                                    : voiceSnapshot.state === "listening"
+                                      ? "Stop and transcribe"
+                                      : "Start voice input"
+                            }
+                            title={
+                                stt === null
+                                    ? "Voice input unavailable — HTTPS or localhost required"
+                                    : voiceSnapshot.state === "listening"
+                                      ? "Stop and transcribe"
+                                      : "Talk to JARVIS"
+                            }
+                            disabled={
+                                streaming || stt === null || voiceTurnInFlight
+                            }
+                            onClick={() => voice?.press()}
+                        >
+                            {stt === null ? (
+                                <MicOff size={18} />
+                            ) : (
+                                <Mic
+                                    size={18}
+                                    className={
+                                        voiceSnapshot.state === "listening"
+                                            ? "pulse"
+                                            : undefined
+                                    }
+                                />
+                            )}
+                        </button>
                         <button
                             type="button"
                             className="attach"

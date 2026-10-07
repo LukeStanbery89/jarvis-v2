@@ -154,15 +154,18 @@ export class ChatClient {
      * server's message), a dropped connection, a malformed server frame, or
      * when another prompt is already streaming. When the socket is already
      * ready the turn starts synchronously, so frames the server sends
-     * immediately after the call are never missed. The mode is always
-     * `"text"` for this client. `attachments` carries attachment ids
-     * (#10) obtained from `api.uploadAttachment` — sent on the wire frame
-     * when non-empty, omitted entirely otherwise.
+     * immediately after the call are never missed. `mode` defaults to
+     * `"text"` for typed prompts; voice-origin prompts pass `"voice"`
+     * (#84) so the server answers in plain conversational text.
+     * `attachments` carries attachment ids (#10) obtained from
+     * `api.uploadAttachment` — sent on the wire frame when non-empty,
+     * omitted entirely otherwise.
      */
     async prompt(
         text: string,
         sessionId: string,
         attachments: string[] = [],
+        mode: ChatMode = "text",
     ): Promise<void> {
         if (this.closedByUser) {
             throw new Error("chat client is closed");
@@ -175,7 +178,7 @@ export class ChatClient {
         }
         const ready = this.socket;
         if (this.phase === "ready" && ready && ready.readyState === WS_OPEN) {
-            return this.startTurn(ready, text, sessionId, attachments);
+            return this.startTurn(ready, text, sessionId, attachments, mode);
         }
         // Not ready yet: park until the handshake settles, then re-check.
         await this.whenReady();
@@ -193,7 +196,7 @@ export class ChatClient {
         ) {
             throw new Error("chat client is not connected");
         }
-        return this.startTurn(socket, text, sessionId, attachments);
+        return this.startTurn(socket, text, sessionId, attachments, mode);
     }
 
     /**
@@ -205,8 +208,8 @@ export class ChatClient {
         text: string,
         sessionId: string,
         attachments: string[],
+        mode: ChatMode,
     ): Promise<void> {
-        const mode: ChatMode = "text";
         this.streaming = true;
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;

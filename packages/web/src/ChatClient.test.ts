@@ -221,6 +221,24 @@ describe("ChatClient prompts", () => {
         expect("attachments" in JSON.parse(socket.sent[2])).toBe(false);
     });
 
+    it("sends voice mode when the turn originates from the microphone", async () => {
+        const harness = makeClient();
+        const socket = connected(harness);
+        const pending = harness.client.prompt(
+            "what time is it",
+            "s1",
+            [],
+            "voice",
+        );
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+        expect(JSON.parse(socket.sent[2])).toEqual({
+            prompt: "what time is it",
+            sessionId: "s1",
+            mode: "voice",
+        });
+    });
+
     it("queues a prompt sent while the handshake is still in flight", async () => {
         const harness = makeClient();
         harness.client.connect();
