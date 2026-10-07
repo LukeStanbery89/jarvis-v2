@@ -106,9 +106,15 @@ The server also serves the built web chat SPA (`@lukestanbery/jarvis-web`) at `/
   images render), a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
   header so `/ws` can be reached over the socket, `worker-src 'self';` for the local speech engine's
   same-origin module worker (#84 P3b), and `script-src 'self' 'wasm-unsafe-eval'` — the narrow keyword that
-  admits Wasm compile/instantiate without letting JS `eval`/`new Function` through, which the engine's Kaldi
-  binary needs (workers inherit the page's `script-src`). The portal mount keeps `img-src 'self' data:` and a
-  static `connect-src 'self'`, and adds no `worker-src` or `'wasm-unsafe-eval'`.
+  admits Wasm compile/instantiate without letting JS `eval`/`new Function` through. The portal mount keeps
+  `img-src 'self' data:` and a static `connect-src 'self'`, and adds no `worker-src` or `'wasm-unsafe-eval'`.
+- The one file that _does_ evaluate strings is the engine's worker entry (`/web/assets/vosk.worker-<hash>.js`):
+  embind's runtime synthesizes per-method invokers with `new Function` on first call, a second eval site the
+  fork cannot remove. That **file** is served with its own
+  `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'` — for a
+  dedicated worker whose entry script declares a CSP, that policy governs the worker scope _instead of_ the
+  owner's, so eval is granted only inside that hashed, same-origin module (which itself still `connect-src`s
+  same-origin for the model archive). The page scope never allows eval.
 - Requests under `/web` are skipped by the portal SPA fallback (which is `/web`-boundary aware — `/webfoo` still gets the portal shell), so with the web client unbuilt or disabled `GET /web` is an honest 404, never the portal shell. `GET /web` itself 301s to `/web/` before serving `index.html` (standard `express.static` directory redirect); note that redirect response carries `serve-static`'s own strict `Content-Security-Policy: default-src 'none'` (browsers follow it and get the real headers on the target).
 
 ## Cross-origin and reverse proxy

@@ -163,6 +163,22 @@ export function createApp(
                 wasmUnsafeEval: true,
             }),
         );
+        // The speech engine's worker script carries its own CSP. embind's
+        // runtime additionally synthesizes a per-method invoker function
+        // with `new Function` on first call (`craftInvokerFunction` — a
+        // second eval site the fork cannot remove), and a dedicated worker
+        // whose entry script declares a Content-Security-Policy runs under
+        // that policy instead of the owner's, so granting `'unsafe-eval'`
+        // here scopes it to this hashed, same-origin module — the page
+        // itself never evaluates strings.
+        const workerScriptCsp =
+            "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'";
+        app.use("/web", (req, res, next) => {
+            if (/^\/assets\/vosk\.worker-[A-Za-z0-9_-]+\.js$/.test(req.path)) {
+                res.setHeader("Content-Security-Policy", workerScriptCsp);
+            }
+            next();
+        });
         // `index: "index.html"` makes `GET /web` itself serve the shell.
         app.use(
             "/web",

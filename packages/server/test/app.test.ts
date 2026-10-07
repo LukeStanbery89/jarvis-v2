@@ -165,6 +165,27 @@ describe("web chat client serving", () => {
         );
     });
 
+    it("serves the speech engine's worker script with its own eval-permitting CSP, overriding the page's strict policy", async () => {
+        // The worker entry script declares a CSP of its own; for a dedicated
+        // worker that policy governs the worker scope instead of the owner's,
+        // so embind's runtime invoker synthesis (`new Function`) is legal
+        // inside the hashed module while the page never allows eval.
+        const worker = await request(webApp).get(
+            "/web/assets/vosk.worker-AB12cd34.js",
+        );
+        expect(worker.headers["content-security-policy"]).toBe(
+            "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'",
+        );
+        // Any other asset under /web keeps the page's strict policy.
+        const page = await request(webApp).get("/web/assets/index-OTHER123.js");
+        expect(page.headers["content-security-policy"]).toMatch(
+            /script-src 'self' 'wasm-unsafe-eval';/,
+        );
+        expect(page.headers["content-security-policy"]).not.toContain(
+            "'unsafe-eval';",
+        );
+    });
+
     it("leaves /web a 404 when the web client is not built (never the portal shell)", async () => {
         // A webDir configured but missing index.html leaves /web unmounted;
         // the portal fallback must NOT swallow it (404, not the portal shell).
