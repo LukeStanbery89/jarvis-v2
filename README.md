@@ -11,6 +11,7 @@ AI-powered assistant monorepo.
 | [packages/server](./packages/server)       | Express backend server with WebSocket chat + REST admin API (`@lukestanbery/jarvis-server`)                          |
 | [packages/cli](./packages/cli)             | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                                                              |
 | [packages/logger](./packages/logger)       | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)                                                  |
+| [packages/voice](./packages/voice)         | Voice-input abstractions: STT/wake-word/VAD provider interfaces + session lifecycle (`@lukestanbery/jarvis-voice`)   |
 | [packages/portal](./packages/portal)       | React admin portal served by the server at `/` (`@lukestanbery/jarvis-portal`)                                       |
 | [packages/web](./packages/web)             | Browser chat client (markdown/image/link rendering) served at `/web` (`@lukestanbery/jarvis-web`)                    |
 | [packages/contracts](./packages/contracts) | Contract-first API specs: OpenAPI (REST) + AsyncAPI (WebSocket) + generated types (`@lukestanbery/jarvis-contracts`) |

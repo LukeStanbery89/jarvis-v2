@@ -43,6 +43,7 @@ COPY packages/logger/package.json ./packages/logger/
 COPY packages/portal/package.json ./packages/portal/
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/server/package.json ./packages/server/
+COPY packages/voice/package.json ./packages/voice/
 COPY packages/web/package.json ./packages/web/
 
 # `allowScripts` in the root package.json already approves better-sqlite3's
@@ -92,6 +93,7 @@ COPY packages/logger/package.json ./packages/logger/
 COPY packages/portal/package.json ./packages/portal/
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/server/package.json ./packages/server/
+COPY packages/voice/package.json ./packages/voice/
 COPY packages/web/package.json ./packages/web/
 
 # `--ignore-scripts` is required, not an optimization: the root `prepare` script
