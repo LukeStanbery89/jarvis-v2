@@ -124,21 +124,30 @@ runs `.tsx` files, so no behavior may live only inside a component.
 
 Click-to-talk via the Web Speech API: the composer's mic button starts
 capture (pulse animation + a live partial transcript in the status line),
-pressing again — or the engine's own final result — transcribes, and the
-final transcript submits as an ordinary `mode: "voice"` prompt that lands in
-history as text. A status line tracks the session stage (Listening… /
-Transcribing… / Sending… / Thinking…), and a failed session (no speech,
-denied microphone, rejected turn) stays on screen as an alert until the
-next press.
+and the transcript submits as an ordinary `mode: "voice"` prompt that lands
+in history as text. A status line tracks the session stage (Listening… /
+Transcribing… / Sending… / Thinking…), and a failed session (denied
+microphone, rejected turn) stays on screen as an alert until the next press.
+
+Endpointing is VAD-owned when the runtime supports it (#84 P3): an energy
+VAD (`createBrowserVad()` — Web Audio on its own echo-cancelled track) and
+the controller's timers decide "pause ⇒ send" (800 ms of silence after
+speech ends) and "press with silence ⇒ quiet idle" (4 s, `stt.cancel()`, no
+error banner). The engine runs continuously (`start(…, { continuous: true })`)
+and the controller accumulates its per-segment finals into one transcript.
+Without VAD support (e.g. Firefox) the engine's own endpointing and the
+second-press stop remain — identical to phase 2.
 
 The wiring splits cleanly: `packages/voice` owns the engine seam
-(`SttProvider`) and the pure lifecycle reducer; `src/voice.ts` binds them —
-a React-free `VoiceController` (an external store consumed via
-`useSyncExternalStore`) that arms the engine, tags every event with its
-session id, submits transcripts, and routes turn outcomes back through the
-reducer, so stale engine callbacks or old turn ends can never disturb a
-newer session. `src/views/Chat.tsx` renders the snapshot and forwards server
-frames (`noteResponseFrame`). No behavior lives only in the component.
+(`SttProvider`, `VadProvider`), the pure lifecycle reducer, and the
+`VoiceController` orchestrator itself (moved there in P3 so other clients
+reuse it — `src/voice.ts` is now a re-export shim). The controller arms the
+engines, tags every event with its session id, submits transcripts, and
+routes turn outcomes back through the reducer, so stale engine callbacks or
+old turn ends can never disturb a newer session. `src/views/Chat.tsx`
+renders the snapshot, forwards server frames (`noteResponseFrame`), and
+passes `createBrowserVad()` in at construction. No behavior lives only in
+the component.
 
 Two honest limits: Chrome's Web Speech recognition is cloud-backed (audio
 egress to the recognition service — the local WASM provider is planned
@@ -175,7 +184,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
-- `src/voice.ts` — voice-input controller: engine seam → lifecycle → submit (#84).
+- `src/voice.ts` — re-export shim for the voice controller (it lives in `packages/voice`, #84 P3).
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.

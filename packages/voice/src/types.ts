@@ -74,6 +74,24 @@ export interface SttCallbacks {
 }
 
 /**
+ * Per-start options a client may hand the engine alongside the callbacks.
+ *
+ * These exist so the *caller* decides capture behavior per session — most
+ * importantly endpointing: when the caller owns it (VAD-driven, issue #84
+ * phase 3), the engine must be told not to finalize on its own pause
+ * detection, or the two endpointing authorities race.
+ */
+export interface SttStartOptions {
+    /**
+     * Continuous capture: the engine must not finalize on its own silence
+     * detection — the caller owns endpointing and ends the session via
+     * `stop()` (flush) or `cancel()` (discard). Defaults to the engine's
+     * own behavior (finalizes on its pause detection) when omitted.
+     */
+    readonly continuous?: boolean;
+}
+
+/**
  * A speech-to-text engine.
  *
  * Contract:
@@ -83,6 +101,10 @@ export interface SttCallbacks {
  * - `cancel()` aborts and discards: it resolves when the engine has fully
  *   stopped, after which no callback for that session will fire.
  * - `state` reflects the current lifecycle for UI display.
+ * - With `start(callbacks, { continuous: true })` the engine must not
+ *   finalize on its own pause detection: final-segment results may still
+ *   arrive while capture continues, and only the caller's `stop()`/`cancel()`
+ *   ends the session.
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
@@ -96,9 +118,11 @@ export interface SttProvider {
      * Starts a recognition session.
      *
      * @param callbacks - Results for this session only.
+     * @param options - Per-session capture options (see
+     * {@link SttStartOptions}); engines ignore what they cannot honor.
      * @returns Resolves once the engine is capturing.
      */
-    start(callbacks: SttCallbacks): Promise<void>;
+    start(callbacks: SttCallbacks, options?: SttStartOptions): Promise<void>;
     /** Ends capture, delivering the final transcript through `onResult` if one exists. */
     stop(): Promise<void>;
     /** Aborts the session; no callback fires after the returned promise resolves. */
