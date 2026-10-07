@@ -16,9 +16,12 @@ halves, deliberately independent:
   presses, endpointing, transcript submission, and response-frame
   forwarding. React- and transport-free, so every voice client reuses it.
 
-Zero runtime dependencies, CommonJS, browser- and Node-safe. The Web Speech
-STT provider and the energy VAD ship here (phases 2–3, consumed by
-`packages/web`); a local WASM STT model follows behind the same interfaces.
+Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
+Web Speech STT provider, the local WASM STT provider (Vosk), and the energy
+VAD ship here (phases 2–3, consumed by `packages/web`). The WASM engine's
+one dependency (`vosk-browser`) is declared as a **peer dependency** and
+loads lazily at first `start()` — the package never imports it at module
+scope, so node consumers and tests are unaffected.
 
 ## Install
 
@@ -161,7 +164,40 @@ honors the full `SttProvider` contract:
 
 Chrome's Web Speech recognition is cloud-backed (audio egress) — accepted
 for phase 2, documented in the web client's README; the local WASM provider
-that replaces it lands behind the same interface.
+below is the private path.
+
+## Browser provider (Vosk WASM)
+
+`createVoskStt()` returns a `VoskSttProvider` (id `vosk-wasm`), or `null`
+when the runtime lacks mic access, Web Audio, or WebAssembly. Recognition
+runs fully on-device: Kaldi compiled to WASM, driven through a Web Worker
+by `vosk-browser` — no audio egress, and it works where Web Speech does
+not (Firefox, any secure-context browser). The engine contract maps like
+this:
+
+- the model archive (~40 MB `tar.gz`) loads lazily at the first `start()`
+  from a configurable URL (default: the J.A.R.V.I.S. server's
+  `GET /api/stt/model`), and the worker persists the extracted model in
+  IndexedDB, so the archive travels once per browser;
+- the mic runs through its own echo-cancelled track into an
+  `AudioContext` → `ScriptProcessorNode` chain (zero-gain hop keeps the
+  node pulled without echoing the mic to the speakers), feeding
+  `acceptWaveformFloat` at the context's sample rate — vosk resamples
+  internally;
+- `partialresult` → `onPartial` (trimmed, non-empty); per-utterance
+  `result` finals → `onResult`: in continuous capture every final is a
+  segment the controller accumulates, without it the first final is the
+  transcript and the session settles right after (mirroring Web Speech);
+- `stop()` flushes: capture stops feeding, `retrieveFinalResult()` forces
+  the engine to finalize its pending audio, the text lands on `onResult`,
+  and the session settles. A continuous session settles silently when the
+  flush produced nothing (the controller owns the quiet no-speech path);
+  an engine-native session reports `no-speech` instead;
+- `cancel()` discards (mic released, recognizer freed, no callbacks after
+  it resolves); stale worker messages are dropped by session id;
+- the model outlives sessions; the optional `dispose()` seam (phase 3b
+  added it to `SttProvider`) terminates the worker and drops the caches
+  when the client will never recognize again.
 
 ## Browser provider (VAD, energy)
 
@@ -188,12 +224,15 @@ the provider interfaces and lifecycle this package ships are the units of
 work its P1 acceptance criteria name; the Web Speech provider is P2, and
 phase 3 lands here too — the energy VAD plus VAD-owned endpointing in the
 controller (the orchestrator itself moved from `packages/web` in P3 so any
-future client reuses it). Later phases: wake-word look-back buffering in
-the provider layer, and the local WASM STT provider.
+future client reuses it) and the local WASM STT provider (P3b — Vosk,
+with the optional `dispose()` seam it added). Later phases: wake-word
+look-back buffering in the provider layer, and a Whisper-class engine
+benchmarked behind the same seam before any default changes.
 
 ## Notes for maintainers
 
-- No runtime dependencies, so this package never needs a rebuild-then-check
-  ordering like `@lukestanbery/jarvis-logger` consumers do.
+- Zero mandatory runtime dependencies, so this package never needs a
+  rebuild-then-check ordering like `@lukestanbery/jarvis-logger` consumers
+  do; `vosk-browser` is an optional peer the browser client provides.
 - The state machine readme diagram mirrors the module doc in
   `src/lifecycle.ts`; keep them in step.

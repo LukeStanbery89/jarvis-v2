@@ -208,14 +208,17 @@ export class VoiceController {
     }
 
     /**
-     * Tears down: cancels any live recognition, stops the VAD, drops any
-     * pending timers, and drops listeners.
+     * Tears down: cancels any live recognition, releases the engine's
+     * session-spanning resources (a WASM model worker, when the engine
+     * holds one), stops the VAD, drops any pending timers, and drops
+     * listeners.
      *
      * @returns Resolves when the engine and the detector have stopped.
      */
     async dispose(): Promise<void> {
         this.clearTimers();
         await this.stt.cancel();
+        await this.stt.dispose?.();
         await this.stopVad();
         this.listeners.clear();
     }

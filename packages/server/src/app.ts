@@ -19,6 +19,7 @@ import type { AttachmentStore } from "./attachments/store";
 import type { InFlightLimiter } from "./attachments/limiters";
 import { DEFAULT_ATTACHMENT_MAX_BYTES, type AppConfig } from "./config";
 import { logger } from "./logger";
+import { createSttModelHandler, SttModelCache } from "./stt/model";
 
 /** Returns `413` with the {@link AttachmentTooLarge} contract shape. */
 const attachmentBodyTooLarge = (_appConfig: AppConfig, maxBytes: number) => {
@@ -126,6 +127,17 @@ export function createApp(
     }
 
     app.use("/api", createAuthRouter(store, appConfig));
+
+    // The local STT model route (#84 P3b): the client-side WASM engine's
+    // archive, cached download-once under ~/.jarvis/stt when configured and
+    // a JSON 404 when not. Public by design (open-source weights, not user
+    // data; the recognition worker cannot attach auth headers).
+    app.get(
+        "/api/stt/model",
+        createSttModelHandler(
+            appConfig.stt ? new SttModelCache(appConfig.stt) : null,
+        ),
+    );
 
     const webIndex = appConfig.webDir
         ? path.join(appConfig.webDir, "index.html")

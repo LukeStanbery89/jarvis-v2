@@ -15,9 +15,10 @@
  *   (VAD-driven or engine-native), transcript accumulation, and turn
  *   submission. React- and transport-free, so any voice client reuses it.
  *
- * Zero runtime dependencies, CommonJS, browser- and Node-safe (no DOM or
- * `node:` APIs at module scope). Browser providers (Web Speech first, local
- * WASM next) arrive in later #84 phases and are consumed by `packages/web`.
+ * Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe (no
+ * DOM or `node:` APIs at module scope; the WASM STT engine is an optional
+ * peer the browser client provides). Browser providers (Web Speech, the
+ * local Vosk WASM engine) are consumed by `packages/web`.
  */
 export type {
     SttCallbacks,
@@ -42,6 +43,13 @@ export {
     isWebSpeechSupported,
 } from "./providers/webSpeech";
 export type { WebSpeechSttOptions } from "./providers/webSpeech";
+export {
+    VoskSttProvider,
+    createVoskStt,
+    isVoskSupported,
+    DEFAULT_VOSK_MODEL_URL,
+} from "./providers/vosk";
+export type { VoskModuleLoader, VoskSttOptions } from "./providers/vosk";
 export {
     BrowserVadProvider,
     createBrowserVad,

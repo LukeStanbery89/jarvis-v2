@@ -42,14 +42,13 @@ import { Markdown } from "../Markdown";
 import { ToolCall } from "../components/ToolCall";
 import { MAX_ATTACHMENTS, type ChatMode } from "@lukestanbery/jarvis-protocol";
 import {
-    createBrowserStt,
     createBrowserVad,
     initialVoiceSnapshot,
     type SttProvider,
     type VadProvider,
     type VoiceSnapshot,
 } from "@lukestanbery/jarvis-voice";
-import { VoiceController } from "../voice";
+import { VoiceController, createStt } from "../voice";
 import { AudioPlayer } from "../audio";
 import { prepareForUpload } from "../downscale/browser";
 import {
@@ -261,14 +260,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
     /**
-     * The browser STT engine (Web Speech, #84 P2), created once per mount.
-     * `null` when the runtime has none (Firefox, or a plain-HTTP origin —
-     * the same secure-context rule as geolocation); the mic button renders
-     * disabled with an explanation in that case.
+     * The browser STT engine (#84), created once per mount: the local WASM
+     * engine (Vosk, phase 3b — recognition stays on-device, works in
+     * Firefox) when the runtime offers mic + Web Audio + WebAssembly, the
+     * Web Speech engine otherwise, and `null` when neither is available
+     * (no mic / a plain-HTTP origin — the same secure-context rule as
+     * geolocation); the mic button renders disabled with an explanation in
+     * that case.
      */
     const sttRef = useRef<SttProvider | null>(null);
     if (sttRef.current === null) {
-        sttRef.current = createBrowserStt();
+        sttRef.current = createStt();
     }
     const stt = sttRef.current;
     /**

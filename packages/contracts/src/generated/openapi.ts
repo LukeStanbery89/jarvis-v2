@@ -336,6 +336,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/stt/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the local speech-recognition model archive
+         * @description Serves the client-side WASM speech engine's model archive (#84 phase 3b): the browser downloads this tar.gz once, extracts it into IndexedDB, and runs recognition fully on-device — no audio ever leaves the client. The server fetches the archive from its configured upstream (`JARVIS_STT_MODEL_URL`) on the first request, caches it privately under `~/.jarvis/stt`, and streams the cached file after that. Public by design: the archive is open-source model weights, never user data, and the recognition worker cannot attach auth headers to its fetch. Long-lived cache headers apply (the archive changes only with server configuration).
+         */
+        get: operations["sttModelGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1689,6 +1709,44 @@ export interface operations {
             };
             /** @description No such session, or it belongs to another user. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    sttModelGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The model archive (a gzipped tar of the model folder). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/gzip": string;
+                };
+            };
+            /** @description STT model serving is not configured (`JARVIS_STT_PROVIDER` unset). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The upstream download failed (transient — the next request retries; the body is the plain error envelope). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
