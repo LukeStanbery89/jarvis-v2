@@ -5,7 +5,7 @@
  * environment without a browser or network).
  */
 import { describe, expect, it, vi } from "vitest";
-import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
+import { pcmToS16le, type ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { ChatClient, type ChatClientEvents } from "./ChatClient";
 
 /** Minimal WebSocket double: records sends, dispatches driven events. */
@@ -237,6 +237,31 @@ describe("ChatClient prompts", () => {
             sessionId: "s1",
             mode: "voice",
         });
+    });
+
+    it("decodes binary messages into audio chunks without disturbing the turn (#83)", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => {
+                audioChunks.push(pcm);
+            },
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("hi", "s1");
+        // One binary audio chunk mid-turn: s16le samples for [0.5, -0.5].
+        const binary = pcmToS16le(new Float32Array([0.5, -0.5]));
+        socket.onmessage?.({
+            data: binary.buffer.slice(
+                binary.byteOffset,
+                binary.byteOffset + binary.byteLength,
+            ),
+        });
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+        expect(audioChunks).toHaveLength(1);
+        expect(audioChunks[0]![0]).toBeCloseTo(0.5, 3);
+        expect(audioChunks[0]![1]).toBeCloseTo(-0.5, 3);
+        expect(harness.frames).toEqual([]); // binary never parsed as a frame
     });
 
     it("queues a prompt sent while the handshake is still in flight", async () => {

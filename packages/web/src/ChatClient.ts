@@ -22,6 +22,7 @@
  */
 import {
     parseFrame,
+    s16leToPcm,
     serializeAuth,
     serializeHello,
     serializeLocation,
@@ -40,12 +41,25 @@ export interface ChatClientEvents {
     onStatus?(status: ChatStatus): void;
     /** One parsed server frame of an in-flight prompt turn. */
     onFrame?(frame: ServerFrame): void;
+    /**
+     * One binary audio chunk of the in-flight turn's spoken response (#83):
+     * little-endian s16le samples decoded to mono float PCM via the
+     * protocol's `s16leToPcm`. The chunk's sample rate arrived on the
+     * turn's `audioStart` frame (which flows through {@link onFrame}).
+     */
+    onAudio?(pcm: Float32Array): void;
     /** The credential is permanently unusable (invalid or revoked). */
     onAuthRejected?(): void;
 }
 
 /** Constructs the socket; injectable for node tests. */
 export type WebSocketFactory = (url: string) => WebSocket;
+
+/** The slice of a WebSocket message event that {@link ChatClient} consumes. */
+interface WebSocketMessageEvent {
+    /** Text for JSON frames; an ArrayBuffer for binary audio (#83). */
+    readonly data: unknown;
+}
 
 /** Exact server wording for a mid-life token revocation. */
 const REVOKED_MESSAGE = "device token revoked; reconnect to re-authenticate";
@@ -125,6 +139,10 @@ export class ChatClient {
         this.emitStatus(this.attempt === 0 ? "connecting" : "reconnecting");
         const factory = this.options.socketFactory ?? ((u) => new WebSocket(u));
         const socket = factory(this.url);
+        // Binary messages carry the turn's spoken audio (#83); the JSON
+        // frames stay text. Declaring arraybuffer makes every binary
+        // delivery an ArrayBuffer, which onMessage branches on.
+        socket.binaryType = "arraybuffer";
         this.socket = socket;
         this.phase = "handshake";
         socket.onopen = () => {
@@ -140,7 +158,7 @@ export class ChatClient {
                 socket.close();
             }, this.options.authTimeoutMs ?? 5_000);
         };
-        socket.onmessage = (event) => this.onMessage(String(event.data));
+        socket.onmessage = (event) => this.onMessage(event);
         socket.onclose = () => this.onClose();
         // onerror is always followed by onclose; nothing to do here.
         socket.onerror = () => {};
@@ -258,12 +276,21 @@ export class ChatClient {
     }
 
     /**
-     * Single message dispatcher. During the handshake only `authResult`
+     * Single message dispatcher. Binary messages are spoken-audio chunks
+     * (#83) — decoded and delivered via {@link ChatClientEvents.onAudio},
+     * never parsed as frames. During the handshake only `authResult`
      * (success), `error` (bad token → permanent rejection), and ignorable
      * trailing frames are expected. Once ready, prompt frames stream to
      * {@link ChatClientEvents.onFrame} until `done`/`error`.
      */
-    private onMessage(raw: string): void {
+    private onMessage(event: WebSocketMessageEvent): void {
+        if (event.data instanceof ArrayBuffer) {
+            this.options.events.onAudio?.(
+                s16leToPcm(new Uint8Array(event.data)),
+            );
+            return;
+        }
+        const raw = String(event.data);
         let frame: ServerFrame;
         try {
             frame = parseFrame(raw);

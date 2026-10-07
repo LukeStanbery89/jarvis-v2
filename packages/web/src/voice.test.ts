@@ -226,6 +226,23 @@ describe("turn outcomes", () => {
         expect(harness.controller.getSnapshot().state).toBe("idle");
     });
 
+    it("audioStart moves a voice turn to speaking (#83)", async () => {
+        const harness = makeHarness();
+        await armTurn(harness);
+        harness.controller.noteResponseFrame();
+        harness.controller.noteAudioStarted();
+        expect(harness.controller.getSnapshot().state).toBe("speaking");
+        harness.submitControl.resolve();
+        await Promise.resolve();
+        expect(harness.controller.getSnapshot().state).toBe("idle");
+    });
+
+    it("audioStart outside a voice turn is ignored", () => {
+        const { controller } = makeHarness();
+        controller.noteAudioStarted();
+        expect(controller.getSnapshot()).toBe(initialVoiceSnapshot);
+    });
+
     it("response frames outside a voice turn are ignored", () => {
         const { controller } = makeHarness();
         controller.noteResponseFrame();

@@ -780,11 +780,26 @@ What exists now:
   is what disqualified the MLX sketch). The engine loads through a lazy
   dynamic `import()` on first synthesis; a fake loader keeps the suite
   offline. Options: model id, dtype (`q8` default), voice (`am_michael`
-  default; the logical `voice: "jarvis"` indirection arrives with config
-  wiring), speed, and cache dir.
+  default), speed, and cache dir.
+- `src/tts/segmenter.ts` + `src/tts/orchestrator.ts` — the turn pipeline:
+  streamed tokens → sentence-boundary segments → one sequential synthesis
+  worker → ordered audio, with quiet failure (the text stream is never
+  disturbed) and abort on turn timeout / socket close.
 - `scripts/tts-harness.ts` (`npm run tts:harness`) — the manual acceptance
   tool: synthesize `JARVIS_TTS_TEXT` (or argv), write a WAV to temp, and
   play it via `afplay`/`aplay`. Prints init/generate timings.
+
+**Wired to `/ws`**: voice-mode prompts from a socket that declared the
+`audio` capability are spoken — an `audioStart` frame, binary
+little-endian s16le PCM messages (one per segment), and `audioEnd`, all
+inside the turn (before `done`), so the per-thread lock covers speaking.
+Enable it with:
+
+| Variable              | Default      | Description                             |
+| --------------------- | ------------ | --------------------------------------- |
+| `JARVIS_TTS_PROVIDER` | _(unset)_    | `kokoro` enables synthesis; unset = off |
+| `JARVIS_TTS_VOICE`    | `am_michael` | Kokoro voice id                         |
+| `JARVIS_TTS_SPEED`    | `1`          | Speaking speed multiplier               |
 
 Deployment posture (deliberate):
 

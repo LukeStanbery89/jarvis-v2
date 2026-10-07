@@ -65,19 +65,36 @@ attachChatServer(server, store);
 const timeoutServer = createApp(store, appConfig).listen(0);
 attachChatServer(timeoutServer, store, { turnTimeoutMs: 30 });
 
+// The TTS-enabled variant (#83): a fake engine that answers every
+// synthesis with two float samples, so the wire slice — segmenter, speaker,
+// frames, binary chunks — runs without any model.
+const fakeTts: import("../src/tts/types").TtsProvider = {
+    id: "fake",
+    synthesize: async () => ({
+        pcm: new Float32Array([0.25, -0.25]),
+        sampleRate: 24000,
+    }),
+};
+const ttsServer = createApp(store, appConfig).listen(0);
+attachChatServer(ttsServer, store, { turnTimeoutMs: 30_000, tts: fakeTts });
+
 let url: string;
 let timeoutUrl: string;
+let ttsUrl: string;
 
 beforeAll(() => {
     const address = server.address() as AddressInfo | null;
     url = `ws://localhost:${address?.port ?? 0}/ws`;
     const timeoutAddress = timeoutServer.address() as AddressInfo | null;
     timeoutUrl = `ws://localhost:${timeoutAddress?.port ?? 0}/ws`;
+    const ttsAddress = ttsServer.address() as AddressInfo | null;
+    ttsUrl = `ws://localhost:${ttsAddress?.port ?? 0}/ws`;
 });
 
 afterAll(async () => {
     server.close();
     timeoutServer.close();
+    ttsServer.close();
     // Let pending server-side socket-close handlers (guest-session cleanup)
     // flush before the store is shut down.
     await settle();
@@ -946,3 +963,94 @@ function twoPhase(
         ws.on("error", reject);
     });
 }
+
+/** Sent hello + prompt, collecting JSON frames and binary byte-counts. */
+function speakExchange(
+    hello: unknown,
+    prompt: unknown,
+): Promise<{
+    frames: Record<string, unknown>[];
+    binaries: number[];
+}> {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(ttsUrl);
+        const frames: Record<string, unknown>[] = [];
+        const binaries: number[] = [];
+        ws.on("open", () => {
+            ws.send(JSON.stringify(hello));
+            ws.send(JSON.stringify(prompt));
+        });
+        ws.on("message", (data, isBinary) => {
+            if (isBinary) {
+                binaries.push((data as Buffer).length);
+                return;
+            }
+            const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+            frames.push(msg);
+            if (msg.done === true) {
+                ws.close();
+                resolve({ frames, binaries });
+            }
+        });
+        ws.on("error", reject);
+    });
+}
+
+describe("voice audio frames (#83)", () => {
+    it("speaks a voice-mode turn for an audio-capable socket", async () => {
+        const { frames, binaries } = await speakExchange(
+            { type: "hello", capabilities: ["markdown", "audio"] },
+            { prompt: "hi", sessionId: SESSION_ID, mode: "voice" },
+        );
+        const kinds = frames.map((f) => Object.keys(f)[0]);
+        const startIndex = kinds.indexOf("audioStart");
+        const endIndex = kinds.indexOf("audioEnd");
+        const doneIndex = kinds.indexOf("done");
+        // Audio frames exist, in order: audioStart … audioEnd … done.
+        expect(startIndex).toBeGreaterThan(-1);
+        expect(endIndex).toBeGreaterThan(startIndex);
+        expect(doneIndex).toBeGreaterThan(endIndex);
+        // done is the last frame of the turn.
+        expect(doneIndex).toBe(kinds.length - 1);
+        const start = frames[startIndex]!.audioStart as Record<string, unknown>;
+        expect(start).toEqual({
+            generationId: 1,
+            format: "pcm_s16le",
+            sampleRate: 24000,
+            channels: 1,
+        });
+        expect(frames[endIndex]!.audioEnd as Record<string, unknown>).toEqual({
+            generationId: 1,
+        });
+        // One binary message per synthesized segment: 2 samples × 2 bytes.
+        expect(binaries).toEqual([4]);
+        // The text stream ran unchanged alongside the audio.
+        const chunks = frames.filter((f) => typeof f.chunk === "string");
+        expect(chunks.map((f) => f.chunk).join("")).toBe("Hello, World!");
+        // audioStart goes out no earlier than the last text chunk — audio
+        // trails text within the turn.
+        const lastChunkIndex = kinds.lastIndexOf("chunk");
+        expect(startIndex).toBeGreaterThan(lastChunkIndex);
+    });
+
+    it("sends no audio for a text-mode prompt", async () => {
+        const { frames, binaries } = await speakExchange(
+            { type: "hello", capabilities: ["markdown", "audio"] },
+            { prompt: "hi", sessionId: SESSION_ID },
+        );
+        expect(frames.some((f) => f.audioStart !== undefined)).toBe(false);
+        expect(frames.some((f) => f.audioEnd !== undefined)).toBe(false);
+        expect(binaries).toEqual([]);
+        expect(frames.some((f) => f.done === true)).toBe(true);
+    });
+
+    it("sends no audio to a socket that did not declare the audio capability", async () => {
+        const { frames, binaries } = await speakExchange(
+            { type: "hello", capabilities: ["markdown"] },
+            { prompt: "hi", sessionId: SESSION_ID, mode: "voice" },
+        );
+        expect(frames.some((f) => f.audioStart !== undefined)).toBe(false);
+        expect(binaries).toEqual([]);
+        expect(frames.some((f) => f.done === true)).toBe(true);
+    });
+});

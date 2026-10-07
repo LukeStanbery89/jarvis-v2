@@ -35,6 +35,7 @@ import type { Server } from "http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
     parseClientMessage,
+    pcmToS16le,
     serializeFrame,
     type ChatMode,
     type ClientCapability,
@@ -53,6 +54,8 @@ import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
+import { speakTurn } from "./tts/orchestrator";
+import type { TtsProvider } from "./tts/types";
 import type { AttachmentStore } from "./attachments/store";
 import { logger } from "./logger";
 
@@ -81,6 +84,8 @@ interface ConnectionState {
     tokenHash?: string;
     /** Guest sessions this socket claimed; deleted when the socket closes. */
     guestThreads: Set<string>;
+    /** Monotonic per-socket turn counter — the audio `generationId` (#83). */
+    turnCounter: number;
 }
 
 /** Options for {@link attachChatServer}. */
@@ -93,6 +98,14 @@ export interface AttachmentOptions {
      * is absent — a server without the surface has no ids to resolve.
      */
     attachments?: AttachmentStore;
+    /**
+     * The server-side TTS engine (#83), present when a provider is
+     * configured (`JARVIS_TTS_PROVIDER`). Voice-mode prompts from sockets
+     * that declared the `audio` capability are then also synthesized and
+     * delivered as an `audioStart` … binary PCM … `audioEnd` span inside the
+     * turn. Absent → the socket never sees audio frames.
+     */
+    tts?: TtsProvider;
 }
 
 /**
@@ -128,6 +141,7 @@ export function attachChatServer(
             capabilities: [],
             ctx: GUEST_CONTEXT,
             guestThreads: new Set(),
+            turnCounter: 0,
         };
 
         socket.on("message", (raw) => {
@@ -342,6 +356,8 @@ async function handlePrompt(
                 attachmentIds,
                 conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
                 conn.location,
+                options.tts,
+                ++conn.turnCounter,
             ),
     });
     respondToTurn(socket, turn, prompt.sessionId);
@@ -470,6 +486,15 @@ async function handleAuth(
  * the client would otherwise render a permanently blank bubble with no
  * explanation.
  *
+ * When a TTS engine is configured and the turn is eligible — a **voice-mode
+ * prompt from a socket that declared the `audio` capability** (#83) — the
+ * token stream also feeds the segmenter → synthesis pipeline: `audioStart`,
+ * binary PCM messages, and `audioEnd` go out as segments finish, all inside
+ * the turn (before `done`), so the per-thread lock covers speaking too. A
+ * synthesis failure aborts the turn's audio only — the text stream and the
+ * `done` are unaffected (audio is a presentation layer; the `audioError`
+ * frame is a later #83 phase).
+ *
  * The timeout error is emitted by the timer itself; the in-flight generator is
  * `return()`d shortly after, which drains when its current await settles.
  * Draining is **best-effort on a hung model**: `return()` cannot interrupt a
@@ -489,6 +514,8 @@ async function streamEventsToSocket(
     attachmentIds: string[],
     userId: number | undefined,
     location: DeviceLocation | undefined,
+    tts: TtsProvider | undefined,
+    generationId: number,
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -497,11 +524,45 @@ async function streamEventsToSocket(
     // lines) and so a turn that produced no prose at all is detectable.
     let responseText = "";
     let toolCallCount = 0;
+    // The turn's spoken-audio pipeline, created only when TTS is configured
+    // and the turn is eligible (voice mode + audio-capable socket, #83).
+    const speaking =
+        mode === "voice" && capabilities.includes("audio") && tts !== undefined
+            ? speakTurn(
+                  tts,
+                  {
+                      audioStart: (sampleRate) => {
+                          sendFrame(socket, {
+                              audioStart: {
+                                  generationId,
+                                  format: "pcm_s16le",
+                                  sampleRate,
+                                  channels: 1,
+                              },
+                          });
+                      },
+                      audio: (pcm) => {
+                          if (socket.readyState === WebSocket.OPEN) {
+                              socket.send(pcmToS16le(pcm), { binary: true });
+                          }
+                      },
+                      audioEnd: () => {
+                          sendFrame(socket, { audioEnd: { generationId } });
+                      },
+                  },
+                  (err) => {
+                      logger.error(
+                          `TTS failed (turn ${generationId}): ${err instanceof Error ? err.message : String(err)}`,
+                      );
+                  },
+              )
+            : null;
     const finishWithError = (message: string) => {
         if (finished) {
             return;
         }
         finished = true;
+        speaking?.abort();
         sendError(socket, message);
     };
     const timer = setTimeout(() => {
@@ -519,11 +580,13 @@ async function streamEventsToSocket(
         try {
             for await (const event of generator) {
                 if (finished || socket.readyState !== WebSocket.OPEN) {
+                    speaking?.abort();
                     return;
                 }
                 logAgentEvent(event);
                 if (event.type === "token") {
                     responseText += event.text;
+                    speaking?.push(event.text);
                 } else if (event.type === "tool") {
                     toolCallCount += 1;
                 }
@@ -553,6 +616,14 @@ async function streamEventsToSocket(
         }
         if (socket.readyState !== WebSocket.OPEN) {
             return;
+        }
+        // Speak everything the text stream left buffered before closing the
+        // turn: `audioEnd` then `done`, with the per-thread lock still held.
+        if (speaking !== null) {
+            await speaking.finish();
+            if (socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
         }
         finished = true;
         sendFrame(socket, { done: true });

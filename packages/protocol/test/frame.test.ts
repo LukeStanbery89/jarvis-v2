@@ -10,6 +10,8 @@ import {
     parseClientMessage,
     parseFrame,
     parseRequest,
+    pcmToS16le,
+    s16leToPcm,
     serializeAuth,
     serializeFrame,
     serializeHello,
@@ -84,12 +86,78 @@ describe("serializeFrame round-trips", () => {
         { done: true },
         { error: "boom" },
         { authResult: { user: "luke", device: "macbook" } },
+        {
+            audioStart: {
+                generationId: 7,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        },
+        { audioEnd: { generationId: 7 } },
     ];
     for (const frame of frames) {
         it(`round-trips ${Object.keys(frame)[0]} frames`, () => {
             expect(parseFrame(serializeFrame(frame))).toEqual(frame);
         });
     }
+});
+
+describe("parseFrame: audio frames (#83)", () => {
+    it("rejects an audioStart with a wrong format", () => {
+        expect(() =>
+            parseFrame(
+                '{"audioStart":{"generationId":1,"format":"mp3","sampleRate":24000,"channels":1}}',
+            ),
+        ).toThrow(/unrecognized/);
+    });
+
+    it("rejects an audioStart with a non-positive sample rate", () => {
+        expect(() =>
+            parseFrame(
+                '{"audioStart":{"generationId":1,"format":"pcm_s16le","sampleRate":0,"channels":1}}',
+            ),
+        ).toThrow(/unrecognized/);
+    });
+
+    it("rejects an audioStart with a non-mono channel count", () => {
+        expect(() =>
+            parseFrame(
+                '{"audioStart":{"generationId":1,"format":"pcm_s16le","sampleRate":24000,"channels":2}}',
+            ),
+        ).toThrow(/unrecognized/);
+    });
+
+    it("rejects an audioEnd without an integer generation id", () => {
+        expect(() =>
+            parseFrame('{"audioEnd":{"generationId":"five"}}'),
+        ).toThrow(/unrecognized/);
+    });
+});
+
+describe("pcm codecs (#83)", () => {
+    it("round-trips samples through s16le", () => {
+        const pcm = new Float32Array([0, 0.5, -0.5, 1, -1, 0.25, -0.25]);
+        const decoded = s16leToPcm(pcmToS16le(pcm));
+        expect(decoded.length).toBe(pcm.length);
+        for (let i = 0; i < pcm.length; i += 1) {
+            // 16-bit quantization: at most half a step of 1/32768.
+            expect(Math.abs(decoded[i]! - pcm[i]!)).toBeLessThanOrEqual(
+                1 / 32768,
+            );
+        }
+    });
+
+    it("clamps out-of-range samples", () => {
+        const decoded = s16leToPcm(pcmToS16le(new Float32Array([1.5, -1.5])));
+        expect(decoded[0]).toBeCloseTo(1, 4);
+        expect(decoded[1]).toBeCloseTo(-1, 4);
+    });
+
+    it("encodes an empty buffer and decodes odd-length bytes safely", () => {
+        expect(pcmToS16le(new Float32Array([])).length).toBe(0);
+        expect(s16leToPcm(new Uint8Array([0x00])).length).toBe(0);
+    });
 });
 
 describe("parseRequest", () => {
@@ -420,6 +488,14 @@ describe("parseClientMessage: hello capability frames", () => {
         expect(
             parseClientMessage('{"type":"hello","capabilities":[]}'),
         ).toEqual({ type: "hello", capabilities: [] });
+    });
+
+    it("parses the audio capability (#83)", () => {
+        expect(
+            parseClientMessage(
+                '{"type":"hello","capabilities":["markdown","audio"]}',
+            ),
+        ).toEqual({ type: "hello", capabilities: ["markdown", "audio"] });
     });
 
     it("rejects duplicate capability tokens", () => {

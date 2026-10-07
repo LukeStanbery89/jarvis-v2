@@ -79,9 +79,9 @@ refused on guest sockets.
 
 On connect the client sends a first-frame `hello` announcement
 (`{ type: "hello", capabilities: [...] }`, see `src/views/Chat.tsx`)
-declaring what it can render: `markdown`, `image`, and `link`. Typed prompts
-carry `mode: "text"` — text chats are answered with the declared
-capabilities (rich Markdown/tables/images). Mic prompts carry
+declaring what it can render: `markdown`, `image`, `link`, and `audio`.
+Typed prompts carry `mode: "text"` — text chats are answered with the
+declared capabilities (rich Markdown/tables/images). Mic prompts carry
 `mode: "voice"` (see below) and always yield plain conversational text
 server-side. Raw `html` is deliberately _not_ claimed: model text is rendered as
 Markdown with raw HTML skipped by react-markdown's default transform.
@@ -147,6 +147,15 @@ contexts (HTTPS or localhost), so over plain HTTP — like geolocation — the
 mic reports unavailable (disabled button with an explanation) and typing
 keeps working exactly as before.
 
+The client also declares the `audio` capability (#83): when the server has
+TTS configured, voice-mode turns come back spoken — an `audioStart` frame
+(sample rate), binary little-endian s16le PCM messages (decoded via the
+protocol's `s16leToPcm`), and `audioEnd`, all before the turn's `done`.
+`src/audio.ts` queues the chunks gap-free through a WebAudio context that
+the mic press unlocks (the user gesture), and the status line reads
+"Speaking…" while the turn's audio spans. A failed synthesis never
+disturbs the text stream — the answer simply is not spoken.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -164,9 +173,10 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/api.ts` — typed REST client (login, session list/delete; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
-- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31).
+- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/voice.ts` — voice-input controller: engine seam → lifecycle → submit (#84).
+- `src/audio.ts` — spoken-response playback queue (WebAudio, #83).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens.

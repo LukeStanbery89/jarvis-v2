@@ -48,6 +48,7 @@ import {
     type VoiceSnapshot,
 } from "@lukestanbery/jarvis-voice";
 import { VoiceController } from "../voice";
+import { AudioPlayer } from "../audio";
 import { prepareForUpload } from "../downscale/browser";
 import {
     describeLocationState,
@@ -296,18 +297,38 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     }
     const voice = voiceRef.current;
 
+    /**
+     * The spoken-response player (#83): created once per mount, unlocked
+     * (resumed) by the mic press gesture, fed by the socket's binary audio
+     * chunks, and torn down with the view.
+     */
+    const audioRef = useRef<AudioPlayer | null>(null);
+    if (audioRef.current === null) {
+        audioRef.current = new AudioPlayer();
+    }
+    /** The stable player instance (refs stay null-blind after init). */
+    const audio = audioRef.current;
+
     /** One chat client for the component's lifetime. */
     const clientRef = useRef<ChatClient | null>(null);
     if (clientRef.current === null) {
         clientRef.current = new ChatClient(webSocketUrl(), {
             token: credential.token,
-            capabilities: ["markdown", "image", "link"],
+            // `audio` (#83): voice turns from this client are also spoken
+            // server-side; the player above renders the binary chunks.
+            capabilities: ["markdown", "image", "link", "audio"],
             events: {
                 onStatus: (next) => setStatus(next),
+                onAudio: (pcm) => audio.play(pcm),
                 onFrame: (frame) => {
-                    // Voice turns watch the first frame (waiting → responding);
-                    // frames of text-mode turns fall through the voice reducer.
+                    // Voice turns watch the first frame (waiting → responding)
+                    // and the spoken-audio span (audioStart → speaking); frames
+                    // of text-mode turns fall through the voice reducer.
                     voiceRef.current?.noteResponseFrame();
+                    if ("audioStart" in frame) {
+                        audio.setFormat(frame.audioStart.sampleRate);
+                        voiceRef.current?.noteAudioStarted();
+                    }
                     const sessionId = activeIdRef.current;
                     if (sessionId === null) {
                         return;
@@ -387,6 +408,18 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         voiceSnapshot.state === "waiting" ||
         voiceSnapshot.state === "responding" ||
         voiceSnapshot.state === "speaking";
+    // Speaking indicator (#83): the lifecycle's `speaking` state (from the
+    // turn's `audioStart`) until `done` — the audio itself may trail `done`
+    // by a moment, which is honest enough for now.
+    const subscribeAudio = useCallback(
+        (onStoreChange: () => void) => audio.subscribe(onStoreChange),
+        [],
+    );
+    const getAudioSpeaking = useCallback(() => audio.getSnapshot(), []);
+    const audioSpeaking = useSyncExternalStore(
+        subscribeAudio,
+        getAudioSpeaking,
+    );
 
     // Tear the voice session down with the view: cancel any live recognition
     // and drop listeners so a disposed controller cannot mutate after unmount.
@@ -396,6 +429,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             void instance?.dispose();
         };
     }, [voice]);
+
+    // The audio player holds a hardware context — close it with the view.
+    useEffect(() => {
+        return () => {
+            audio.dispose();
+        };
+    }, []);
 
     // Location sharing (#31): automatic by default — on mount (and on every
     // toggle-on) one geolocation request runs, and on success one `location`
@@ -508,7 +548,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     }, [transcriptMessages, activeId]);
 
     /** Status-line text for the current voice session (null hides it). */
-    const voiceStatus = voiceStatusText(voiceSnapshot);
+    const voiceStatus =
+        voiceSnapshot.state === "speaking" || audioSpeaking
+            ? "Speaking…"
+            : voiceStatusText(voiceSnapshot);
     /** A voice session that ended in failure, kept on screen until the next press. */
     const voiceErrorText =
         voiceSnapshot.state === "idle"
@@ -1017,7 +1060,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                             disabled={
                                 streaming || stt === null || voiceTurnInFlight
                             }
-                            onClick={() => voice?.press()}
+                            onClick={() => {
+                                // The press is the user gesture: resume the
+                                // audio context so this session's spoken
+                                // response is audible (#83).
+                                audio.unlock();
+                                voice?.press();
+                            }}
                         >
                             {stt === null ? (
                                 <MicOff size={18} />

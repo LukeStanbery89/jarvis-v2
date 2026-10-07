@@ -111,6 +111,19 @@ export class VoiceController {
     }
 
     /**
+     * The chat view calls this on the turn's `audioStart` frame (#83):
+     * `waiting`/`responding` → `speaking`, which the status line renders as
+     * "Speaking…" until the turn's `done`. Calls for text-mode turns fall
+     * through the reducer's state guards.
+     */
+    noteAudioStarted(): void {
+        this.reduce({
+            type: "audioStarted",
+            sessionId: this.snapshot.sessionId,
+        });
+    }
+
+    /**
      * Tears down: cancels any live recognition and drops listeners.
      *
      * @returns Resolves when the engine has stopped.

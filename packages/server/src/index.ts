@@ -32,6 +32,7 @@ import {
 } from "./attachments/store";
 import { InFlightLimiter, VlCallLimiter } from "./attachments/limiters";
 import { FixedWindowQuota } from "./rate/fixedWindowQuota";
+import { KokoroTtsProvider } from "./tts/kokoro";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -127,6 +128,23 @@ logger.info(
         : "Home Assistant disabled (no HOME_ASSISTANT_URL or HOME_ASSISTANT_ACCESS_TOKEN configured)",
 );
 
+// Server-side TTS (#83): present only when a provider is configured — unset
+// JARVIS_TTS_PROVIDER means sockets never see audio frames. Constructing the
+// provider is always safe: the engine module loads lazily on first synthesis,
+// so a missing optional dependency fails (quietly, per turn) only when TTS is
+// both configured and used.
+const tts = appConfig.tts
+    ? new KokoroTtsProvider({
+          voice: appConfig.tts.voice,
+          speed: appConfig.tts.speed,
+      })
+    : undefined;
+logger.info(
+    tts
+        ? `TTS active: ${appConfig.tts?.provider} (voice: ${appConfig.tts?.voice})`
+        : "TTS disabled (JARVIS_TTS_PROVIDER unset)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
@@ -148,4 +166,5 @@ const { server } = createJarvisServer(webApp, {
 attachChatServer(server, store, {
     turnTimeoutMs: appConfig.turnTimeoutMs,
     attachments,
+    ...(tts ? { tts } : {}),
 });

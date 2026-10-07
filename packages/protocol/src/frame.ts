@@ -37,6 +37,7 @@ const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set<string>([
     "html",
     "image",
     "link",
+    "audio",
 ]);
 
 /** User-facing wording for a malformed JSON payload; must not drift. */
@@ -62,6 +63,13 @@ export function parseFrame(raw: string): ServerFrame {
         tool?: { name?: unknown; args?: unknown };
         toolResult?: { name?: unknown; output?: unknown };
         authResult?: { user?: unknown; device?: unknown };
+        audioStart?: {
+            generationId?: unknown;
+            format?: unknown;
+            sampleRate?: unknown;
+            channels?: unknown;
+        };
+        audioEnd?: { generationId?: unknown };
     };
     if (typeof frame.chunk === "string") {
         return { chunk: frame.chunk };
@@ -82,6 +90,32 @@ export function parseFrame(raw: string): ServerFrame {
     }
     if (typeof frame.error === "string") {
         return { error: frame.error };
+    }
+    if (
+        frame.audioStart &&
+        typeof frame.audioStart.generationId === "number" &&
+        Number.isInteger(frame.audioStart.generationId) &&
+        frame.audioStart.format === "pcm_s16le" &&
+        typeof frame.audioStart.sampleRate === "number" &&
+        Number.isFinite(frame.audioStart.sampleRate) &&
+        frame.audioStart.sampleRate > 0 &&
+        frame.audioStart.channels === 1
+    ) {
+        return {
+            audioStart: {
+                generationId: frame.audioStart.generationId,
+                format: "pcm_s16le",
+                sampleRate: frame.audioStart.sampleRate,
+                channels: 1,
+            },
+        };
+    }
+    if (
+        frame.audioEnd &&
+        typeof frame.audioEnd.generationId === "number" &&
+        Number.isInteger(frame.audioEnd.generationId)
+    ) {
+        return { audioEnd: { generationId: frame.audioEnd.generationId } };
     }
     if (
         frame.authResult &&
@@ -441,4 +475,38 @@ export function serializeLocation(
         lon,
         ...(label !== undefined ? { label } : {}),
     } satisfies ClientLocationFrame);
+}
+
+/**
+ * Encodes mono float PCM as little-endian signed 16-bit bytes — the wire
+ * format of the binary messages inside an `audioStart`…`audioEnd` span
+ * (#83). Samples are clamped to [-1, 1] (Kokoro output can overshoot a
+ * hair) and rounded toward nearest.
+ *
+ * @param pcm - Float32 samples in [-1, 1]-ish, mono.
+ * @returns The raw s16le bytes; one WebSocket binary message per call.
+ */
+export function pcmToS16le(pcm: Float32Array): Buffer {
+    const out = Buffer.alloc(pcm.length * 2);
+    for (let i = 0; i < pcm.length; i += 1) {
+        const clamped = Math.max(-1, Math.min(1, pcm[i] ?? 0));
+        out.writeInt16LE(Math.round(clamped * 32767), i * 2);
+    }
+    return out;
+}
+
+/**
+ * Decodes little-endian signed 16-bit PCM bytes back to mono float samples
+ * — the client-side half of {@link pcmToS16le} (#83).
+ *
+ * @param bytes - Raw s16le bytes (a binary WebSocket message).
+ * @returns Float32 samples in [-1, 1], ready for an AudioContext buffer.
+ */
+export function s16leToPcm(bytes: Uint8Array): Float32Array {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const out = new Float32Array(Math.floor(bytes.byteLength / 2));
+    for (let i = 0; i < out.length; i += 1) {
+        out[i] = view.getInt16(i * 2, true) / 32768;
+    }
+    return out;
 }
