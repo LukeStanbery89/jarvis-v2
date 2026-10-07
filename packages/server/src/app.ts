@@ -147,12 +147,18 @@ export function createApp(
         logger.info(
             `serving web chat client from ${appConfig.webDir} (index.html found)`,
         );
-        // The web client renders remote (https) images from the model and dials
-        // the same-origin `/ws` socket, so its CSP widens `img-src` beyond the
-        // portal's `'self' data:` posture and adds this request's ws/wss origin.
+        // The web client renders remote (https) images from the model, dials
+        // the same-origin `/ws` socket, and spawns the local speech engine's
+        // WASM worker from an inlined blob URL (#84 P3b), so its CSP widens
+        // `img-src` beyond the portal's `'self' data:` posture, adds this
+        // request's ws/wss origin, and allows blob: workers.
         app.use(
             "/web",
-            spaSecurityHeaders({ remoteImages: true, websocketOrigins: true }),
+            spaSecurityHeaders({
+                remoteImages: true,
+                websocketOrigins: true,
+                workerBlob: true,
+            }),
         );
         // `index: "index.html"` makes `GET /web` itself serve the shell.
         app.use(
@@ -261,6 +267,14 @@ interface SpaSecurityHeaderOptions {
      * loaded from; the admin portal keeps the static `'self'` posture.
      */
     websocketOrigins?: boolean;
+    /**
+     * Whether `worker-src 'self' blob:` is added. The chat client's local
+     * speech engine (#84 P3b) spawns its WASM worker from an inlined blob
+     * URL; with no explicit `worker-src`, `script-src 'self'` applies as the
+     * fallback and blocks the blob: spawn. The portal runs no workers and
+     * keeps the strict posture.
+     */
+    workerBlob?: boolean;
 }
 
 /**
@@ -279,11 +293,13 @@ interface SpaSecurityHeaderOptions {
 function spaSecurityHeaders({
     remoteImages = false,
     websocketOrigins = false,
+    workerBlob = false,
 }: SpaSecurityHeaderOptions = {}) {
     return (req: Request, res: Response, next: NextFunction) => {
         const imgSrc = remoteImages
             ? "img-src 'self' data: https:"
             : "img-src 'self' data:";
+        const workerSrc = workerBlob ? "worker-src 'self' blob:; " : "";
         const host = req.headers.host;
         const socketOrigins =
             websocketOrigins &&
@@ -293,7 +309,7 @@ function spaSecurityHeaders({
                 : "";
         res.setHeader(
             "Content-Security-Policy",
-            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; ${imgSrc}; connect-src 'self'${socketOrigins}`,
+            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; ${workerSrc}${imgSrc}; connect-src 'self'${socketOrigins}`,
         );
         res.setHeader("X-Content-Type-Options", "nosniff");
         next();

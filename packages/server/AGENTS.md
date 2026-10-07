@@ -103,9 +103,10 @@ The server also serves the built web chat SPA (`@lukestanbery/jarvis-web`) at `/
 - The base directory is `JARVIS_WEB_DIR`, defaulting to `packages/web/dist` (produced by `vite build`); an empty
   string disables it. `AppConfig.webDir` mirrors the env var in tests.
 - The mount widens the portal's strict CSP for the browser client only: `img-src 'self' data: https:` (remote
-  images render) and a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
-  header so `/ws` can be reached over the socket. The portal mount keeps `img-src 'self' data:` and a static
-  `connect-src 'self'`.
+  images render), a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
+  header so `/ws` can be reached over the socket, and `worker-src 'self' blob:` for the local speech engine's
+  inlined WASM worker (#84 P3b — blob: workers are blocked by the `script-src 'self'` fallback otherwise). The
+  portal mount keeps `img-src 'self' data:` and a static `connect-src 'self'` and adds no `worker-src`.
 - Requests under `/web` are skipped by the portal SPA fallback (which is `/web`-boundary aware — `/webfoo` still gets the portal shell), so with the web client unbuilt or disabled `GET /web` is an honest 404, never the portal shell. `GET /web` itself 301s to `/web/` before serving `index.html` (standard `express.static` directory redirect); note that redirect response carries `serve-static`'s own strict `Content-Security-Policy: default-src 'none'` (browsers follow it and get the real headers on the target).
 
 ## Cross-origin and reverse proxy
