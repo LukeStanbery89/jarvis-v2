@@ -26,10 +26,12 @@
  *   unpunctuated run cannot delay speech indefinitely.
  *
  * The input is the response's plain text. Voice-mode turns are answered in
- * plain conversational text server-side, so there is no markdown to
- * sanitize; incidental markup (a stray code fence) is inert text — it
- * splits on newlines and reads as written. Speakability filtering is the
- * orchestrator's concern (phase 3), not this class's.
+ * spoken-word prose by prompt conditioning (`VOICE_FORMAT_RULE` in
+ * `src/agent.ts`): the model writes for the mouth — no markdown, no
+ * parentheses, units spelled out. Speakability is deliberately prompt-side,
+ * not a filter here; incidental markup that slips through a small model's
+ * whim is inert text — it splits on newlines and reads as written.
+ * Time-to-first-audio tuning (finer segmentation) is issue #89.
  */
 /** Default force-flush size for a boundary-free run, in characters. */
 export const DEFAULT_MAX_SEGMENT_CHARS = 240;

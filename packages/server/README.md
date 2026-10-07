@@ -711,7 +711,11 @@ and exchange JSON text frames:
       conversation (bounded to 128 characters); each distinct id is isolated.
       The optional `mode` (default `"text"`) picks the chat style: text prompts
       are answered using the client's declared capabilities, while voice prompts
-      always yield plain conversational text. The mode is recorded as the
+      always yield plain conversational text plus the spoken-word directive —
+      the system prompt tells the model to write as it would speak (no
+      markdown, no parentheses, spelled-out units) because the reply will be
+      read aloud. Scoped to the turn: a later text prompt on the same thread
+      renders richly again. The mode is recorded as the
       session's `kind` when the thread is first claimed (write-once).
       A `hello` or `auth` frame arriving after this is rejected.
     - `{ "type": "location", "lat": <number>, "lon": <number>, "label"?: "<place>" }` (#31) —
@@ -793,7 +797,13 @@ What exists now:
 `audio` capability are spoken — an `audioStart` frame, binary
 little-endian s16le PCM messages (one per segment), and `audioEnd`, all
 inside the turn (before `done`), so the per-thread lock covers speaking.
-Enable it with:
+The model is asked to write speakably in the first place: voice turns
+carry a spoken-word system-prompt directive (no markdown, no parentheses,
+units spelled out — `src/agent.ts` `VOICE_FORMAT_RULE`), so the segmenter
+mostly sees clean prose. Incidental markup that slips through is inert
+text (it reads as written); a deterministic say-proofing pass is a
+deliberate non-goal for now — time-to-first-spoken-word tuning is tracked
+in issue #89. Enable it with:
 
 | Variable              | Default      | Description                             |
 | --------------------- | ------------ | --------------------------------------- |

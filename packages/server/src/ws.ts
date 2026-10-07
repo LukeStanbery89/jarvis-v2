@@ -8,8 +8,10 @@
  * frame; `hello` declares render capabilities for the socket's lifetime and
  * conditions the agent's system prompt. Prompts may declare a chat `mode`
  * ("text" | "voice", defaulting to "text"): the mode is recorded as the
- * session's `kind` at first claim, and voice prompts are answered in plain
- * conversational text regardless of the declared capabilities. Either
+ * session's `kind` at first claim, and voice prompts are answered in
+ * spoken-word prose — effective capabilities are empty (plain text) and the
+ * system prompt gains the spoken-word directive so the reply is shaped for
+ * text-to-speech (#83), regardless of the declared capabilities. Either
  * handshake comes first (both,
  * at most once each, before any prompt) or not at all — any other opening,
  * or no auth, runs the socket as a **guest** (ephemeral,
@@ -270,7 +272,8 @@ function handleLocation(
  * session's write-once `kind`), ownership guard, stream under `turnTimeoutMs`,
  * touch, release — which answers `busy`/`not-owned` where ws.ts only needs to
  * pick the error frame. Voice-mode prompts stream with empty effective
- * capabilities so the model answers in plain conversational text regardless
+ * capabilities plus the agent's spoken-word directive (#83), so the model
+ * answers in plain conversational text shaped for text-to-speech regardless
  * of the socket's `hello` declaration. Guest sockets track the sessions they
  * created so the socket-close handler can remove the ephemeral rows; owned
  * sessions persist.
@@ -469,9 +472,12 @@ async function handleAuth(
  * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`. The
  * socket's declared render capabilities (from a `hello` frame) are forwarded
  * to the agent so it can shape output for what this client can render —
- * except under `mode: "voice"`, where the effective capabilities are empty so
- * the model answers in plain conversational text (rich formatting is
- * text-mode-only). The device's latest reported location (#31) rides along
+ * except under `mode: "voice"`, where the effective capabilities are empty
+ * (plain text) and the system prompt gains the spoken-word directive (#83),
+ * so the model answers in conversational prose shaped for text-to-speech
+ * (rich formatting is text-mode-only). The prompt's chat `mode` rides along
+ * so the agent can apply that directive. The device's latest reported
+ * location (#31) rides along
  * for location-aware tools; a guest turn carries no `userId`, so metered
  * tools refuse guests regardless of any location.
  *
@@ -573,6 +579,7 @@ async function streamEventsToSocket(
     try {
         generator = runAgent(prompt, sessionId, {
             capabilities: mode === "voice" ? [] : capabilities,
+            mode,
             attachmentIds,
             userId,
             location,

@@ -267,6 +267,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-cap-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown", "image"],
+            mode: "text",
             attachmentIds: [],
         });
     });
@@ -286,6 +287,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "voice-thread");
         expect(call?.[2]).toEqual({
             capabilities: [],
+            mode: "voice",
             attachmentIds: [],
         });
         expect(store.getSessionByThread("voice-thread")?.kind).toBe("voice");
@@ -309,6 +311,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "text-explicit-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown", "image"],
+            mode: "text",
             attachmentIds: [],
         });
         expect(store.getSessionByThread("text-explicit-thread")?.kind).toBe(
@@ -387,6 +390,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-prompt-auth-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown"],
+            mode: "text",
             attachmentIds: [],
         });
     });
@@ -420,6 +424,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-badauth-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown", "image"],
+            mode: "text",
             attachmentIds: [],
         });
     });
@@ -438,6 +443,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-empty-thread");
         expect(call?.[2]).toEqual({
             capabilities: [],
+            mode: "text",
             attachmentIds: [],
         });
     });
@@ -487,6 +493,7 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "plain-guest-thread");
         expect(call?.[2]).toEqual({
             capabilities: [],
+            mode: "text",
             attachmentIds: [],
         });
     });

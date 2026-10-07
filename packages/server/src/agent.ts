@@ -23,7 +23,7 @@ import { createTools } from "./llm/tools";
 import type { ToolDeps } from "./llm/tools";
 import { getLlmConfig } from "./config";
 import { logger } from "./logger";
-import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
+import type { ChatMode, ClientCapability } from "@lukestanbery/jarvis-protocol";
 import {
     ensurePrivateFile,
     ensurePrivateStorage,
@@ -39,6 +39,15 @@ export interface RunAgentOptions {
      * (or pass `[]`) for a plain-text client.
      */
     capabilities?: ClientCapability[];
+    /**
+     * The prompt's chat mode (#83): under `"voice"` the system prompt gains
+     * the spoken-word formatting directive ({@link VOICE_FORMAT_RULE}) so
+     * the answer is shaped for text-to-speech — plain flowing prose, no
+     * markdown or parentheses, spelled-out units. Scoped to the turn: a
+     * text-mode prompt on the same thread keeps the client's declared
+     * rendering capabilities and rich formatting.
+     */
+    mode?: ChatMode;
     /**
      * Ids of uploaded images this prompt references (#10). Deduplicated and
      * appended to the turn's `HumanMessage` as an `[attachments: …]` marker
@@ -165,6 +174,28 @@ const HOME_CALL_RULE =
     "before acting.";
 
 /**
+ * Spoken-word formatting directive appended for voice-mode turns (#83).
+ *
+ * A voice prompt's effective capabilities are empty, which yields plain
+ * text — but "plain" does not stop a small local model from writing
+ * markdown emphasis, parenthetical asides, and abbreviated units that a
+ * TTS engine then reads literally ("degrees f", "open paren"). The prompt
+ * conditions the style instead: prose shaped for the mouth. Deliberately
+ * scoped to the current turn — a text-mode prompt on the same thread goes
+ * back to the client's declared rendering capabilities (tables, headings,
+ * bullets) with nothing remembered.
+ */
+const VOICE_FORMAT_RULE =
+    "The user is speaking with you by voice and your reply will be read " +
+    "aloud by a text-to-speech engine, so write exactly as you would " +
+    "speak: short, plain conversational sentences. Use no markdown, " +
+    "headings, lists, tables, bold or italic emphasis, or code formatting. " +
+    "Use no parentheses or brackets — fold any aside into the sentence " +
+    "itself. Spell out every abbreviation, unit, and symbol so the voice " +
+    "reads it naturally (say 'degrees Fahrenheit', 'miles per hour', " +
+    "'percent'), and keep the wording flowing like human speech.";
+
+/**
  * Derives a system prompt that admits the formats a capable client renders.
  *
  * Pure (and exported) so the conditioning rules are unit-testable without a
@@ -177,11 +208,14 @@ const HOME_CALL_RULE =
  * the tool is optional: a model that cannot see a tool is never misled by
  * instruction it cannot follow.) Capability
  * notes are appended as one paragraph only when the client actually declared
- * the token.
+ * the token. Under `mode: "voice"` (#83) the spoken-word directive
+ * ({@link VOICE_FORMAT_RULE}) is appended instead: the reply is shaped for
+ * text-to-speech rather than for a renderer.
  */
 export function systemPromptForCapabilities(
     systemPrompt: string,
     capabilities: ClientCapability[],
+    mode?: ChatMode,
 ): string {
     const notes: string[] = [];
     if (capabilities.includes("markdown")) {
@@ -208,7 +242,8 @@ export function systemPromptForCapabilities(
         notes.length === 0
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}${rendering}`;
+    const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;
@@ -266,7 +301,9 @@ function getAgentGraph(): AgentGraph {
  *
  * When `options.capabilities` lists render guarantees (from the socket's
  * `hello` frame), the system prompt is conditioned on them via
- * {@link systemPromptForCapabilities}. When `options.attachmentIds` is
+ * {@link systemPromptForCapabilities}; under `options.mode: "voice"` (#83)
+ * the spoken-word directive joins it so the reply is shaped for
+ * text-to-speech. When `options.attachmentIds` is
  * present, the ids are deduplicated and appended to the turn's
  * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
  * `analyzeImage` tool reads ids from), `options.userId` is exposed to
@@ -324,6 +361,7 @@ export async function* runAgent(
         systemPrompt: systemPromptForCapabilities(
             systemPrompt,
             options.capabilities ?? [],
+            options.mode,
         ),
         recursionLimit: agentMaxTurns,
         configurable,
