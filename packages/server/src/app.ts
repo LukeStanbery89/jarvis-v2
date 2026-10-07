@@ -151,13 +151,16 @@ export function createApp(
         // the same-origin `/ws` socket, and runs the local speech engine in a
         // same-origin module worker (#84 P3b), so its CSP widens `img-src`
         // beyond the portal's `'self' data:` posture, adds this request's
-        // ws/wss origin, and declares the worker source.
+        // ws/wss origin, declares the worker source, and allows Wasm
+        // compilation (`'wasm-unsafe-eval'` — JS eval stays blocked) for the
+        // engine's Kaldi binary.
         app.use(
             "/web",
             spaSecurityHeaders({
                 remoteImages: true,
                 websocketOrigins: true,
                 workerSrc: true,
+                wasmUnsafeEval: true,
             }),
         );
         // `index: "index.html"` makes `GET /web` itself serve the shell.
@@ -268,6 +271,16 @@ interface SpaSecurityHeaderOptions {
      */
     websocketOrigins?: boolean;
     /**
+     * Whether `script-src` additionally allows `'wasm-unsafe-eval'`. The
+     * chat client's local speech engine (#84 P3b) compiles its WASM binary
+     * inside a same-origin module worker; workers inherit the owner page's
+     * `script-src`, and WebAssembly compilation counts as "eval" to the CSP
+     * spec, so `script-src 'self'` blocks it. `'wasm-unsafe-eval'` grants
+     * Wasm compile/instantiate *only* — JS `eval`/`new Function` stay
+     * blocked. The portal runs no Wasm and keeps the strict posture.
+     */
+    wasmUnsafeEval?: boolean;
+    /**
      * Whether `worker-src 'self';` is added. The chat client's local speech
      * engine (#84 P3b) runs in a module worker served from the same origin
      * (`vosk.worker.js`, bundled with the SPA); the explicit directive
@@ -294,12 +307,16 @@ function spaSecurityHeaders({
     remoteImages = false,
     websocketOrigins = false,
     workerSrc: withWorkerSrc = false,
+    wasmUnsafeEval: withWasmUnsafeEval = false,
 }: SpaSecurityHeaderOptions = {}) {
     return (req: Request, res: Response, next: NextFunction) => {
         const imgSrc = remoteImages
             ? "img-src 'self' data: https:"
             : "img-src 'self' data:";
         const workerSrc = withWorkerSrc ? "worker-src 'self'; " : "";
+        const scriptSrc = withWasmUnsafeEval
+            ? "script-src 'self' 'wasm-unsafe-eval'; "
+            : "script-src 'self'; ";
         const host = req.headers.host;
         const socketOrigins =
             websocketOrigins &&
@@ -309,7 +326,7 @@ function spaSecurityHeaders({
                 : "";
         res.setHeader(
             "Content-Security-Policy",
-            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; ${workerSrc}${imgSrc}; connect-src 'self'${socketOrigins}`,
+            `default-src 'self'; ${scriptSrc}style-src 'self' 'unsafe-inline'; ${workerSrc}${imgSrc}; connect-src 'self'${socketOrigins}`,
         );
         res.setHeader("X-Content-Type-Options", "nosniff");
         next();
