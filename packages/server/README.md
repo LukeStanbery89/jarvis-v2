@@ -711,7 +711,11 @@ and exchange JSON text frames:
       conversation (bounded to 128 characters); each distinct id is isolated.
       The optional `mode` (default `"text"`) picks the chat style: text prompts
       are answered using the client's declared capabilities, while voice prompts
-      always yield plain conversational text. The mode is recorded as the
+      always yield plain conversational text plus the spoken-word directive —
+      the system prompt tells the model to write as it would speak (no
+      markdown, no parentheses, spelled-out units) because the reply will be
+      read aloud. Scoped to the turn: a later text prompt on the same thread
+      renders richly again. The mode is recorded as the
       session's `kind` when the thread is first claimed (write-once).
       A `hello` or `auth` frame arriving after this is rejected.
     - `{ "type": "location", "lat": <number>, "lon": <number>, "label"?: "<place>" }` (#31) —
@@ -780,11 +784,32 @@ What exists now:
   is what disqualified the MLX sketch). The engine loads through a lazy
   dynamic `import()` on first synthesis; a fake loader keeps the suite
   offline. Options: model id, dtype (`q8` default), voice (`am_michael`
-  default; the logical `voice: "jarvis"` indirection arrives with config
-  wiring), speed, and cache dir.
+  default), speed, and cache dir.
+- `src/tts/segmenter.ts` + `src/tts/orchestrator.ts` — the turn pipeline:
+  streamed tokens → sentence-boundary segments → one sequential synthesis
+  worker → ordered audio, with quiet failure (the text stream is never
+  disturbed) and abort on turn timeout / socket close.
 - `scripts/tts-harness.ts` (`npm run tts:harness`) — the manual acceptance
   tool: synthesize `JARVIS_TTS_TEXT` (or argv), write a WAV to temp, and
   play it via `afplay`/`aplay`. Prints init/generate timings.
+
+**Wired to `/ws`**: voice-mode prompts from a socket that declared the
+`audio` capability are spoken — an `audioStart` frame, binary
+little-endian s16le PCM messages (one per segment), and `audioEnd`, all
+inside the turn (before `done`), so the per-thread lock covers speaking.
+The model is asked to write speakably in the first place: voice turns
+carry a spoken-word system-prompt directive (no markdown, no parentheses,
+units spelled out — `src/agent.ts` `VOICE_FORMAT_RULE`), so the segmenter
+mostly sees clean prose. Incidental markup that slips through is inert
+text (it reads as written); a deterministic say-proofing pass is a
+deliberate non-goal for now — time-to-first-spoken-word tuning is tracked
+in issue #89. Enable it with:
+
+| Variable              | Default      | Description                             |
+| --------------------- | ------------ | --------------------------------------- |
+| `JARVIS_TTS_PROVIDER` | _(unset)_    | `kokoro` enables synthesis; unset = off |
+| `JARVIS_TTS_VOICE`    | `am_michael` | Kokoro voice id                         |
+| `JARVIS_TTS_SPEED`    | `1`          | Speaking speed multiplier               |
 
 Deployment posture (deliberate):
 

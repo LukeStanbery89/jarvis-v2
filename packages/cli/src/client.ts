@@ -123,6 +123,12 @@ export class ChatClient {
                     socket.onclose = null;
                 };
                 socket.onmessage = (event: MessageEvent): void => {
+                    // Spoken-audio chunks (#83) are binary PCM — not JSON,
+                    // and this client does not play audio; skip them (and
+                    // never parse them as frames).
+                    if (typeof event.data !== "string") {
+                        return;
+                    }
                     const frame = parseFrame(String(event.data));
                     if ("chunk" in frame) {
                         handlers.onChunk(frame.chunk);
@@ -254,6 +260,11 @@ export class ChatClient {
                 resolve("timeout");
             }, this.authTimeoutMs);
             socket.onmessage = (event: MessageEvent): void => {
+                // Binary messages (spoken audio, #83) cannot arrive during
+                // the handshake; skip them defensively.
+                if (typeof event.data !== "string") {
+                    return;
+                }
                 const frame = parseFrame(String(event.data));
                 if ("authResult" in frame) {
                     teardown();

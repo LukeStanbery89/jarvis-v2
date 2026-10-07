@@ -8,8 +8,10 @@
  * frame; `hello` declares render capabilities for the socket's lifetime and
  * conditions the agent's system prompt. Prompts may declare a chat `mode`
  * ("text" | "voice", defaulting to "text"): the mode is recorded as the
- * session's `kind` at first claim, and voice prompts are answered in plain
- * conversational text regardless of the declared capabilities. Either
+ * session's `kind` at first claim, and voice prompts are answered in
+ * spoken-word prose — effective capabilities are empty (plain text) and the
+ * system prompt gains the spoken-word directive so the reply is shaped for
+ * text-to-speech (#83), regardless of the declared capabilities. Either
  * handshake comes first (both,
  * at most once each, before any prompt) or not at all — any other opening,
  * or no auth, runs the socket as a **guest** (ephemeral,
@@ -35,6 +37,7 @@ import type { Server } from "http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
     parseClientMessage,
+    pcmToS16le,
     serializeFrame,
     type ChatMode,
     type ClientCapability,
@@ -53,6 +56,8 @@ import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
+import { speakTurn } from "./tts/orchestrator";
+import type { TtsProvider } from "./tts/types";
 import type { AttachmentStore } from "./attachments/store";
 import { logger } from "./logger";
 
@@ -81,6 +86,8 @@ interface ConnectionState {
     tokenHash?: string;
     /** Guest sessions this socket claimed; deleted when the socket closes. */
     guestThreads: Set<string>;
+    /** Monotonic per-socket turn counter — the audio `generationId` (#83). */
+    turnCounter: number;
 }
 
 /** Options for {@link attachChatServer}. */
@@ -93,6 +100,14 @@ export interface AttachmentOptions {
      * is absent — a server without the surface has no ids to resolve.
      */
     attachments?: AttachmentStore;
+    /**
+     * The server-side TTS engine (#83), present when a provider is
+     * configured (`JARVIS_TTS_PROVIDER`). Voice-mode prompts from sockets
+     * that declared the `audio` capability are then also synthesized and
+     * delivered as an `audioStart` … binary PCM … `audioEnd` span inside the
+     * turn. Absent → the socket never sees audio frames.
+     */
+    tts?: TtsProvider;
 }
 
 /**
@@ -128,6 +143,7 @@ export function attachChatServer(
             capabilities: [],
             ctx: GUEST_CONTEXT,
             guestThreads: new Set(),
+            turnCounter: 0,
         };
 
         socket.on("message", (raw) => {
@@ -256,7 +272,8 @@ function handleLocation(
  * session's write-once `kind`), ownership guard, stream under `turnTimeoutMs`,
  * touch, release — which answers `busy`/`not-owned` where ws.ts only needs to
  * pick the error frame. Voice-mode prompts stream with empty effective
- * capabilities so the model answers in plain conversational text regardless
+ * capabilities plus the agent's spoken-word directive (#83), so the model
+ * answers in plain conversational text shaped for text-to-speech regardless
  * of the socket's `hello` declaration. Guest sockets track the sessions they
  * created so the socket-close handler can remove the ephemeral rows; owned
  * sessions persist.
@@ -342,6 +359,8 @@ async function handlePrompt(
                 attachmentIds,
                 conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
                 conn.location,
+                options.tts,
+                ++conn.turnCounter,
             ),
     });
     respondToTurn(socket, turn, prompt.sessionId);
@@ -453,9 +472,12 @@ async function handleAuth(
  * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`. The
  * socket's declared render capabilities (from a `hello` frame) are forwarded
  * to the agent so it can shape output for what this client can render —
- * except under `mode: "voice"`, where the effective capabilities are empty so
- * the model answers in plain conversational text (rich formatting is
- * text-mode-only). The device's latest reported location (#31) rides along
+ * except under `mode: "voice"`, where the effective capabilities are empty
+ * (plain text) and the system prompt gains the spoken-word directive (#83),
+ * so the model answers in conversational prose shaped for text-to-speech
+ * (rich formatting is text-mode-only). The prompt's chat `mode` rides along
+ * so the agent can apply that directive. The device's latest reported
+ * location (#31) rides along
  * for location-aware tools; a guest turn carries no `userId`, so metered
  * tools refuse guests regardless of any location.
  *
@@ -469,6 +491,15 @@ async function handleAuth(
  * with empty `content`, which the tracker correctly turns into zero tokens, and
  * the client would otherwise render a permanently blank bubble with no
  * explanation.
+ *
+ * When a TTS engine is configured and the turn is eligible — a **voice-mode
+ * prompt from a socket that declared the `audio` capability** (#83) — the
+ * token stream also feeds the segmenter → synthesis pipeline: `audioStart`,
+ * binary PCM messages, and `audioEnd` go out as segments finish, all inside
+ * the turn (before `done`), so the per-thread lock covers speaking too. A
+ * synthesis failure aborts the turn's audio only — the text stream and the
+ * `done` are unaffected (audio is a presentation layer; the `audioError`
+ * frame is a later #83 phase).
  *
  * The timeout error is emitted by the timer itself; the in-flight generator is
  * `return()`d shortly after, which drains when its current await settles.
@@ -489,6 +520,8 @@ async function streamEventsToSocket(
     attachmentIds: string[],
     userId: number | undefined,
     location: DeviceLocation | undefined,
+    tts: TtsProvider | undefined,
+    generationId: number,
 ): Promise<void> {
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -497,11 +530,45 @@ async function streamEventsToSocket(
     // lines) and so a turn that produced no prose at all is detectable.
     let responseText = "";
     let toolCallCount = 0;
+    // The turn's spoken-audio pipeline, created only when TTS is configured
+    // and the turn is eligible (voice mode + audio-capable socket, #83).
+    const speaking =
+        mode === "voice" && capabilities.includes("audio") && tts !== undefined
+            ? speakTurn(
+                  tts,
+                  {
+                      audioStart: (sampleRate) => {
+                          sendFrame(socket, {
+                              audioStart: {
+                                  generationId,
+                                  format: "pcm_s16le",
+                                  sampleRate,
+                                  channels: 1,
+                              },
+                          });
+                      },
+                      audio: (pcm) => {
+                          if (socket.readyState === WebSocket.OPEN) {
+                              socket.send(pcmToS16le(pcm), { binary: true });
+                          }
+                      },
+                      audioEnd: () => {
+                          sendFrame(socket, { audioEnd: { generationId } });
+                      },
+                  },
+                  (err) => {
+                      logger.error(
+                          `TTS failed (turn ${generationId}): ${err instanceof Error ? err.message : String(err)}`,
+                      );
+                  },
+              )
+            : null;
     const finishWithError = (message: string) => {
         if (finished) {
             return;
         }
         finished = true;
+        speaking?.abort();
         sendError(socket, message);
     };
     const timer = setTimeout(() => {
@@ -512,6 +579,7 @@ async function streamEventsToSocket(
     try {
         generator = runAgent(prompt, sessionId, {
             capabilities: mode === "voice" ? [] : capabilities,
+            mode,
             attachmentIds,
             userId,
             location,
@@ -519,11 +587,13 @@ async function streamEventsToSocket(
         try {
             for await (const event of generator) {
                 if (finished || socket.readyState !== WebSocket.OPEN) {
+                    speaking?.abort();
                     return;
                 }
                 logAgentEvent(event);
                 if (event.type === "token") {
                     responseText += event.text;
+                    speaking?.push(event.text);
                 } else if (event.type === "tool") {
                     toolCallCount += 1;
                 }
@@ -553,6 +623,14 @@ async function streamEventsToSocket(
         }
         if (socket.readyState !== WebSocket.OPEN) {
             return;
+        }
+        // Speak everything the text stream left buffered before closing the
+        // turn: `audioEnd` then `done`, with the per-thread lock still held.
+        if (speaking !== null) {
+            await speaking.finish();
+            if (socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
         }
         finished = true;
         sendFrame(socket, { done: true });

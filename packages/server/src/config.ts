@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { DEFAULT_SESSION_TTL_MS } from "@lukestanbery/jarvis-auth";
+import { DEFAULT_KOKORO_VOICE } from "./tts/kokoro";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
@@ -230,6 +231,24 @@ export interface HomeAssistantConfig {
      * fail-closed posture as an empty `JARVIS_HA_READ_DOMAINS`.
      */
     readonly lightTokens: readonly string[];
+}
+
+/**
+ * Server-side TTS settings (#83).
+ *
+ * Today only `"kokoro"` exists; the engine itself lives in `src/tts/` and is
+ * an optional dependency, so enabling TTS here requires the package to be
+ * installed (the prod Docker image installs `--omit=optional` and never
+ * carries it). Model weights are downloaded on first synthesis into
+ * `~/.jarvis/tts` (or `JARVIS_TTS_CACHE_DIR`) — never baked into an image.
+ */
+export interface TtsConfig {
+    /** The synthesis engine (`JARVIS_TTS_PROVIDER`); `"kokoro"` today. */
+    readonly provider: "kokoro";
+    /** Kokoro voice id (`JARVIS_TTS_VOICE`), e.g. `am_michael`. */
+    readonly voice: string;
+    /** Speaking speed multiplier (`JARVIS_TTS_SPEED`), default `1`. */
+    readonly speed: number;
 }
 
 /**
@@ -475,6 +494,13 @@ export interface AppConfig {
      * tool. Optional so hand-built configs (tests) can omit it.
      */
     readonly homeAssistant?: HomeAssistantConfig;
+    /**
+     * Server-side TTS settings (#83), present only when a provider is
+     * configured (`JARVIS_TTS_PROVIDER`) — unset means no synthesis at all:
+     * sockets never see audio frames and the optional engine packages are
+     * never imported. Optional so hand-built configs (tests) can omit it.
+     */
+    readonly tts?: TtsConfig;
     /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
@@ -736,6 +762,15 @@ export function getAppConfig(): AppConfig {
                               (token) => token.toLowerCase(),
                           ) ?? DEFAULT_HA_LIGHT_TOKENS,
                   },
+        tts:
+            process.env.JARVIS_TTS_PROVIDER === "kokoro"
+                ? {
+                      provider: "kokoro",
+                      voice:
+                          process.env.JARVIS_TTS_VOICE || DEFAULT_KOKORO_VOICE,
+                      speed: numberOr(process.env.JARVIS_TTS_SPEED, 1),
+                  }
+                : undefined,
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(
             (cidr) => cidr.toLowerCase(),

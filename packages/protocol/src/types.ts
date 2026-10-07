@@ -12,7 +12,10 @@
  * A frame the server sends to chat clients over `/ws`.
  *
  * Frames are JSON object frames, key-discriminated: exactly one of
- * `chunk` / `tool` / `toolResult` / `done` / `error` / `authResult` is present.
+ * `chunk` / `tool` / `toolResult` / `done` / `error` / `authResult` /
+ * `audioStart` / `audioEnd` is present. Binary WebSocket messages (raw
+ * little-endian s16le PCM chunks, #83) are not JSON and never pass through
+ * frame parsing — clients branch on the message type before parsing.
  */
 export type ServerFrame =
     | { chunk: string }
@@ -20,7 +23,9 @@ export type ServerFrame =
     | { toolResult: { name: string; output?: unknown } }
     | { done: true }
     | { error: string }
-    | AuthResultFrame;
+    | AuthResultFrame
+    | AudioStartFrame
+    | AudioEndFrame;
 
 /** Payload of an `authResult` frame: the account a socket is now bound to. */
 export interface AuthResult {
@@ -33,6 +38,46 @@ export interface AuthResult {
 /** Server acknowledgment of a successful auth handshake (`{ "authResult": … }`). */
 export interface AuthResultFrame {
     authResult: AuthResult;
+}
+
+/**
+ * The wire format of the binary PCM chunks an `audioStart`…`audioEnd` span
+ * carries (#83). Little-endian signed 16-bit — universally decodable, four
+ * bytes smaller per frame than float32, and the format Kokoro's output
+ * converts to losslessly.
+ */
+export type AudioFormat = "pcm_s16le";
+
+/**
+ * Opens one turn's spoken-audio span (`{ "audioStart": … }`, #83): the
+ * binary PCM messages that follow, until the matching `audioEnd`, are mono
+ * samples in the declared format/rate. Text frames (`chunk`/`tool`/
+ * `toolResult`) interleave freely — audio is a presentation layer.
+ */
+export interface AudioStartFrame {
+    audioStart: {
+        /**
+         * The turn generation this audio belongs to — the server's
+         * per-socket turn counter. Clients that cancel/replace turns use it
+         * to discard stale audio (barge-in, #83 P6); for now it is echoed
+         * information.
+         */
+        generationId: number;
+        /** The PCM format of the binary messages that follow. */
+        format: AudioFormat;
+        /** Sample rate of the PCM, in Hz (Kokoro: 24000). */
+        sampleRate: number;
+        /** Channel count — always mono today. */
+        channels: 1;
+    };
+}
+
+/** Closes the turn's spoken-audio span (`{ "audioEnd": … }`, #83). */
+export interface AudioEndFrame {
+    audioEnd: {
+        /** The turn generation this audio belongs to (matches `audioStart`). */
+        generationId: number;
+    };
 }
 
 /**
@@ -63,8 +108,14 @@ export interface AuthRequest {
  * server conditions its output (and eventually its content frames) on the
  * capabilities an announcing client declared. Unknown tokens are rejected at
  * parse time so the shared contract stays tight.
+ *
+ * `audio` (#83) declares the client can play the turn's spoken response:
+ * voice-mode prompts from such a socket are also synthesized server-side
+ * and delivered as an `audioStart` … binary PCM … `audioEnd` span. Text
+ * rendering is unaffected — a client may hold `audio` and any other tokens
+ * at once.
  */
-export type ClientCapability = "markdown" | "html" | "image" | "link";
+export type ClientCapability = "markdown" | "html" | "image" | "link" | "audio";
 
 /**
  * The capability announcement: a client's optional first frame declaring, in

@@ -406,3 +406,30 @@ describe("sessions", () => {
         expect(second).toBe(first);
     });
 });
+
+describe("ChatClient binary frames (#83)", () => {
+    it("skips binary audio chunks and keeps the turn alive", async () => {
+        const { url, close } = await withSocketServer((raw, socket) => {
+            // The client opens with hello/auth; speak only once the actual
+            // prompt frame arrives.
+            const msg = JSON.parse(String(raw)) as { prompt?: unknown };
+            if (typeof msg.prompt !== "string") {
+                return;
+            }
+            socket.send(Buffer.from([0x00, 0x40, 0x00, 0xc0]));
+            socket.send(JSON.stringify({ chunk: "Hello!" }));
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url);
+            const chunks: string[] = [];
+            await client.prompt("hi", "abc-123", {
+                onChunk: (chunk) => chunks.push(chunk),
+            });
+            expect(chunks).toEqual(["Hello!"]);
+            client.close();
+        } finally {
+            close();
+        }
+    });
+});
