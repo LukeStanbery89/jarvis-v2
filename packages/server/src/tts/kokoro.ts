@@ -15,7 +15,7 @@
  * into the Docker image) and every call after that reuses it. The loader
  * is injectable so tests drive a fake module and never touch the network.
  *
- * Voice selection takes the Kokoro voice id directly (`am_michael` by
+ * Voice selection takes the Kokoro voice id directly (`bm_lewis` by
  * default); the logical `voice: "jarvis"` config indirection lands with the
  * orchestrator phase (#83 P3/P4).
  */
@@ -46,7 +46,7 @@ export interface KokoroTtsOptions {
     readonly modelId?: string;
     /** ONNX dtype. Default `"q8"` (small + fast; `"fp32"` for max quality). */
     readonly dtype?: "fp32" | "fp16" | "q8" | "q4" | "q4f16";
-    /** Kokoro voice id (see `kokoro-js`'s `VOICES`). Default: `am_michael`. */
+    /** Kokoro voice id (see `kokoro-js`'s `VOICES`). Default: `bm_lewis`. */
     readonly voice?: string;
     /** Speaking speed multiplier. Default `1`. */
     readonly speed?: number;
@@ -60,8 +60,8 @@ export interface KokoroTtsOptions {
 /** The quantized Kokoro-82M checkpoint kokoro-js documents. */
 export const DEFAULT_KOKORO_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
-/** The default J.A.R.V.I.S. voice: an American male stock voice. */
-export const DEFAULT_KOKORO_VOICE = "am_michael";
+/** The default J.A.R.V.I.S. voice: Lewis, a British male stock voice. */
+export const DEFAULT_KOKORO_VOICE = "bm_lewis";
 
 /** Model weights cache root, under the `~/.jarvis` data tree. */
 export const DEFAULT_KOKORO_CACHE_DIR = `${homedir()}/.jarvis/tts`;

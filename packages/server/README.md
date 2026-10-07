@@ -783,7 +783,7 @@ What exists now:
   (ONNX, pure local inference — no Python, no Apple-Silicon lock-in; that
   is what disqualified the MLX sketch). The engine loads through a lazy
   dynamic `import()` on first synthesis; a fake loader keeps the suite
-  offline. Options: model id, dtype (`q8` default), voice (`am_michael`
+  offline. Options: model id, dtype (`q8` default), voice (`bm_lewis`
   default), speed, and cache dir.
 - `src/tts/segmenter.ts` + `src/tts/orchestrator.ts` — the turn pipeline:
   streamed tokens → sentence-boundary segments → one sequential synthesis
@@ -805,11 +805,11 @@ text (it reads as written); a deterministic say-proofing pass is a
 deliberate non-goal for now — time-to-first-spoken-word tuning is tracked
 in issue #89. Enable it with:
 
-| Variable              | Default      | Description                             |
-| --------------------- | ------------ | --------------------------------------- |
-| `JARVIS_TTS_PROVIDER` | _(unset)_    | `kokoro` enables synthesis; unset = off |
-| `JARVIS_TTS_VOICE`    | `am_michael` | Kokoro voice id                         |
-| `JARVIS_TTS_SPEED`    | `1`          | Speaking speed multiplier               |
+| Variable              | Default    | Description                             |
+| --------------------- | ---------- | --------------------------------------- |
+| `JARVIS_TTS_PROVIDER` | _(unset)_  | `kokoro` enables synthesis; unset = off |
+| `JARVIS_TTS_VOICE`    | `bm_lewis` | Kokoro voice id                         |
+| `JARVIS_TTS_SPEED`    | `1`        | Speaking speed multiplier               |
 
 Deployment posture (deliberate):
 

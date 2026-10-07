@@ -245,7 +245,7 @@ export interface HomeAssistantConfig {
 export interface TtsConfig {
     /** The synthesis engine (`JARVIS_TTS_PROVIDER`); `"kokoro"` today. */
     readonly provider: "kokoro";
-    /** Kokoro voice id (`JARVIS_TTS_VOICE`), e.g. `am_michael`. */
+    /** Kokoro voice id (`JARVIS_TTS_VOICE`), e.g. `bm_lewis`. */
     readonly voice: string;
     /** Speaking speed multiplier (`JARVIS_TTS_SPEED`), default `1`. */
     readonly speed: number;
