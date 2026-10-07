@@ -16,7 +16,8 @@
         "dev": "JARVIS_API_CONTRACT=verify NODE_ENV=development tsx watch src/index.ts",
         "start": "node dist/index.js",
         "test": "vitest run",
-        "prepublishOnly": "npm run build"
+        "prepublishOnly": "npm run build",
+        "tts:harness": "tsx scripts/tts-harness.ts"
     },
     "repository": {
         "type": "git",
@@ -30,14 +31,14 @@
     "license": "MIT",
     "type": "commonjs",
     "dependencies": {
-        "@lukestanbery/jarvis-auth": "^0.1.0",
-        "@lukestanbery/jarvis-contracts": "^0.1.0",
-        "@lukestanbery/jarvis-logger": "^0.1.0",
-        "@lukestanbery/jarvis-protocol": "^0.1.0",
         "@langchain/core": "^1.2.12",
         "@langchain/langgraph": "^1.4.16",
         "@langchain/langgraph-checkpoint-sqlite": "^1.0.4",
         "@langchain/openai": "^1.5.13",
+        "@lukestanbery/jarvis-auth": "^0.1.0",
+        "@lukestanbery/jarvis-contracts": "^0.1.0",
+        "@lukestanbery/jarvis-logger": "^0.1.0",
+        "@lukestanbery/jarvis-protocol": "^0.1.0",
         "better-sqlite3": "^12.11.1",
         "dotenv": "^18.0.3",
         "express": "^5.2.1",
@@ -56,5 +57,9 @@
         "tsx": "^4.23.15",
         "typescript": "^7.0.2",
         "vitest": "^5.0.1"
+    },
+    "optionalDependencies": {
+        "kokoro-js": "^1.2.1",
+        "@huggingface/transformers": "^3.5.1"
     }
 }

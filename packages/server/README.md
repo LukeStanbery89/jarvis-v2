@@ -18,13 +18,14 @@ npm install @lukestanbery/jarvis-server
 
 ## Scripts
 
-| Script              | Description                        |
-| ------------------- | ---------------------------------- |
-| `npm run build`     | Compile TypeScript to `dist/`      |
-| `npm run typecheck` | Type-check src and tests (no emit) |
-| `npm run dev`       | Run the server with watch mode     |
-| `npm start`         | Run the compiled server            |
-| `npm test`          | Run the test suite (Vitest)        |
+| Script                | Description                                                |
+| --------------------- | ---------------------------------------------------------- |
+| `npm run build`       | Compile TypeScript to `dist/`                              |
+| `npm run typecheck`   | Type-check src and tests (no emit)                         |
+| `npm run dev`         | Run the server with watch mode                             |
+| `npm start`           | Run the compiled server                                    |
+| `npm test`            | Run the test suite (Vitest)                                |
+| `npm run tts:harness` | Local TTS harness: synthesize text and play it aloud (#83) |
 
 ## Usage
 
@@ -756,3 +757,42 @@ conversations. That checkpoint file is a separate database from the auth app
 database (`JARVIS_DB_PATH`); the server depends on `better-sqlite3` directly to
 open it, while account state is reached only through `@lukestanbery/jarvis-auth`.
 Try it with the `@lukestanbery/jarvis-cli` REPL.
+
+## Server-side TTS (#83)
+
+J.A.R.V.I.S. will speak its responses: text-to-speech is **server-side** (one
+consistent voice for every client; clients only play audio — the mirror of
+client-side STT in `packages/voice`). Phase 1 ships the engine seam and the
+first engine; the response segmenter, audio orchestrator, and wire frames
+(`audioStart`/binary PCM/`audioEnd`/`audioError` behind a new `audio`
+capability) land in later phases — see the
+[tracking issue](https://github.com/LukeStanbery89/jarvis-v2/issues/83) for
+the full strategy and its race-test matrix.
+
+What exists now:
+
+- `src/tts/types.ts` — the `TtsProvider` seam: text → mono float PCM +
+  sample rate, with a cooperative `AbortSignal` (checked before init,
+  before generate, and after; in-flight engine work cannot be interrupted,
+  so the orchestrator drops aborted results by generation id instead).
+- `src/tts/kokoro.ts` — `KokoroTtsProvider`, Kokoro-82M via `kokoro-js`
+  (ONNX, pure local inference — no Python, no Apple-Silicon lock-in; that
+  is what disqualified the MLX sketch). The engine loads through a lazy
+  dynamic `import()` on first synthesis; a fake loader keeps the suite
+  offline. Options: model id, dtype (`q8` default), voice (`am_michael`
+  default; the logical `voice: "jarvis"` indirection arrives with config
+  wiring), speed, and cache dir.
+- `scripts/tts-harness.ts` (`npm run tts:harness`) — the manual acceptance
+  tool: synthesize `JARVIS_TTS_TEXT` (or argv), write a WAV to temp, and
+  play it via `afplay`/`aplay`. Prints init/generate timings.
+
+Deployment posture (deliberate):
+
+- `kokoro-js` and `@huggingface/transformers` are **optionalDependencies** —
+  TTS is config-gated like the optional tools, and a missing install makes
+  the provider report itself unavailable; it is never a boot failure.
+- Model weights are **never baked into the image**: first synthesis
+  downloads the checkpoint into `~/.jarvis/tts` (created `0700` via the
+  auth package's private-fs helpers; `JARVIS_TTS_CACHE_DIR` overrides).
+- The Docker prod stage installs with `--omit=optional`, so the runtime
+  image neither carries the ONNX stack nor changes behavior.
