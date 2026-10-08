@@ -23,7 +23,18 @@
  *   single capital initial ("Q.") is not a boundary — latency bias noted:
  *   a sentence that genuinely ends on one of these merges into the next;
  * - the buffer force-flushes at {@link DEFAULT_MAX_SEGMENT_CHARS} so an
- *   unpunctuated run cannot delay speech indefinitely.
+ *   unpunctuated run cannot buffer forever.
+ *
+ * **Clause granularity** (`granularity: "clause"`, #89): additionally
+ * treats `,` / `;` (when whitespace follows) as boundaries, so the first
+ * PCM lands at the first comma instead of the first period. Two guards
+ * keep the win real: a terminator directly followed by a digit is part of
+ * the number ("1,000"), and a clause shorter than
+ * {@link ResponseSegmenterOptions.minClauseChars} keeps buffering — it
+ * merges into the next clause — because a two-word fragment's synthesis
+ * call would cost more latency than it saves. The tradeoff is prosody:
+ * clauses synthesized independently lose co-articulation across the
+ * split, which is why sentence-level remains the default.
  *
  * The input is the response's plain text. Voice-mode turns are answered in
  * spoken-word prose by prompt conditioning (`VOICE_FORMAT_RULE` in
@@ -31,15 +42,30 @@
  * parentheses, units spelled out. Speakability is deliberately prompt-side,
  * not a filter here; incidental markup that slips through a small model's
  * whim is inert text — it splits on newlines and reads as written.
- * Time-to-first-audio tuning (finer segmentation) is issue #89.
  */
 /** Default force-flush size for a boundary-free run, in characters. */
 export const DEFAULT_MAX_SEGMENT_CHARS = 240;
+
+/** Default minimum text a clause boundary must cover before it emits. */
+export const DEFAULT_MIN_CLAUSE_CHARS = 40;
+
+/** How finely one turn's text is split into speakable segments. */
+export type SegmentGranularity = "sentence" | "clause";
 
 /** Options for {@link ResponseSegmenter}. */
 export interface ResponseSegmenterOptions {
     /** Force-flush size; default {@link DEFAULT_MAX_SEGMENT_CHARS}. */
     readonly maxChars?: number;
+    /**
+     * Split granularity; default `"sentence"` (#89). `"clause"` adds
+     * comma/semicolon boundaries under {@link DEFAULT_MIN_CLAUSE_CHARS}.
+     */
+    readonly granularity?: SegmentGranularity;
+    /**
+     * Minimum text a clause boundary must cover before it emits (sentence
+     * boundaries ignore it); default {@link DEFAULT_MIN_CLAUSE_CHARS}.
+     */
+    readonly minClauseChars?: number;
 }
 
 /** Sentence-terminal characters (run through closing marks to a boundary). */
@@ -95,12 +121,17 @@ const ABBREVIATIONS = new Set([
 export class ResponseSegmenter {
     private buffer = "";
     private readonly maxChars: number;
+    private readonly granularity: SegmentGranularity;
+    private readonly minClauseChars: number;
 
     /**
-     * @param options - Tuning; only `maxChars` exists today.
+     * @param options - Tuning; `maxChars`, `granularity`, `minClauseChars`.
      */
     constructor(options: ResponseSegmenterOptions = {}) {
         this.maxChars = options.maxChars ?? DEFAULT_MAX_SEGMENT_CHARS;
+        this.granularity = options.granularity ?? "sentence";
+        this.minClauseChars =
+            options.minClauseChars ?? DEFAULT_MIN_CLAUSE_CHARS;
     }
 
     /**
@@ -146,6 +177,49 @@ export class ResponseSegmenter {
                 continue;
             }
             if (!TERMINATORS.has(ch)) {
+                if (
+                    this.granularity === "clause" &&
+                    (ch === "," || ch === ";")
+                ) {
+                    // Clause boundary candidate (#89): emits the pending
+                    // run at a comma/semicolon once it covers enough text
+                    // to synthesize on its own; a shorter run keeps
+                    // buffering (merging into the next clause) so a
+                    // fragment's per-call synthesis overhead cannot
+                    // dominate the latency win. A terminator directly
+                    // followed by a digit is part of the number ("1,000").
+                    let j = i + 1;
+                    if (j >= this.buffer.length) {
+                        // Pending: the decision needs the next token (or
+                        // the final flush) — same rule as sentences.
+                        if (final) {
+                            this.emit(out, this.buffer.slice(start, j));
+                            start = j;
+                            i = j;
+                            continue;
+                        }
+                        break scan;
+                    }
+                    if (
+                        WHITESPACE.has(this.buffer[j]) &&
+                        i - start >= this.minClauseChars
+                    ) {
+                        this.emit(out, this.buffer.slice(start, j));
+                        start = j;
+                        // Consume the whitespace run; it belongs to the
+                        // boundary, not to the next segment.
+                        while (
+                            j < this.buffer.length &&
+                            WHITESPACE.has(this.buffer[j])
+                        ) {
+                            j += 1;
+                        }
+                        i = j;
+                        continue;
+                    }
+                    i += 1;
+                    continue;
+                }
                 i += 1;
                 continue;
             }

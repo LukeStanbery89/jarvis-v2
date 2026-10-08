@@ -108,6 +108,11 @@ export interface AttachmentOptions {
      * turn. Absent → the socket never sees audio frames.
      */
     tts?: TtsProvider;
+    /**
+     * Segmenter granularity for spoken turns (#89, `JARVIS_TTS_SEGMENT`):
+     * `"sentence"` (default) or `"clause"`. Meaningful only with `tts`.
+     */
+    ttsSegment?: "sentence" | "clause";
 }
 
 /**
@@ -360,6 +365,7 @@ async function handlePrompt(
                 conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
                 conn.location,
                 options.tts,
+                options.ttsSegment,
                 ++conn.turnCounter,
             ),
     });
@@ -521,8 +527,10 @@ async function streamEventsToSocket(
     userId: number | undefined,
     location: DeviceLocation | undefined,
     tts: TtsProvider | undefined,
+    ttsSegment: "sentence" | "clause" | undefined,
     generationId: number,
 ): Promise<void> {
+    const turnStartedAt = Date.now();
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
     // The turn's assembled answer and tool-call count, kept so the response
@@ -530,6 +538,12 @@ async function streamEventsToSocket(
     // lines) and so a turn that produced no prose at all is detectable.
     let responseText = "";
     let toolCallCount = 0;
+    // Time-to-first-audio decomposition (#83 phase 6, #89): first LLM
+    // token, first queued segment, first PCM delivered — deltas against
+    // the turn's start, logged once when the stream completes.
+    let firstTokenAt: number | null = null;
+    let firstSegmentAt: number | null = null;
+    let firstAudioSentAt: number | null = null;
     // The turn's spoken-audio pipeline, created only when TTS is configured
     // and the turn is eligible (voice mode + audio-capable socket, #83).
     const speaking =
@@ -548,6 +562,7 @@ async function streamEventsToSocket(
                           });
                       },
                       audio: (pcm) => {
+                          firstAudioSentAt ??= Date.now();
                           if (socket.readyState === WebSocket.OPEN) {
                               socket.send(pcmToS16le(pcm), { binary: true });
                           }
@@ -560,6 +575,12 @@ async function streamEventsToSocket(
                       logger.error(
                           `TTS failed (turn ${generationId}): ${err instanceof Error ? err.message : String(err)}`,
                       );
+                  },
+                  {
+                      granularity: ttsSegment ?? "sentence",
+                      onFirstSegment: () => {
+                          firstSegmentAt = Date.now();
+                      },
                   },
               )
             : null;
@@ -592,6 +613,7 @@ async function streamEventsToSocket(
                 }
                 logAgentEvent(event);
                 if (event.type === "token") {
+                    firstTokenAt ??= Date.now();
                     responseText += event.text;
                     speaking?.push(event.text);
                 } else if (event.type === "tool") {
@@ -610,6 +632,16 @@ async function streamEventsToSocket(
             return;
         }
         logger.debug("Agent stream complete");
+        if (speaking !== null) {
+            // TTFA decomposition (#83 phase 6): the headline number the
+            // client measures is "user stops speaking → first audible
+            // JARVIS"; these are the server-side components of it.
+            const elapsed = (at: number | null) =>
+                at === null ? "—" : `+${at - turnStartedAt}ms`;
+            logger.debug(
+                `voice turn ${generationId} TTFA: first token ${elapsed(firstTokenAt)}, first segment ${elapsed(firstSegmentAt)}, first audio sent ${elapsed(firstAudioSentAt)}`,
+            );
+        }
         logger.sensitive("Agent response", {
             text: responseText,
             toolCalls: toolCallCount,

@@ -176,3 +176,87 @@ describe("interruption", () => {
         void segmenter;
     });
 });
+
+describe("clause granularity (#89)", () => {
+    /** Clause-mode helper with an adjustable minimum. */
+    function clause(text: string, minClauseChars?: number): string[] {
+        const segmenter = new ResponseSegmenter({
+            granularity: "clause",
+            ...(minClauseChars === undefined ? {} : { minClauseChars }),
+        });
+        return [...segmenter.push(text), ...segmenter.flush()];
+    }
+
+    it("sentence default ignores commas", () => {
+        expect(segmentWhole("Hello there, how are you. Fine.")).toEqual([
+            "Hello there, how are you.",
+            "Fine.",
+        ]);
+    });
+
+    it("splits at a comma once the pending text is long enough", () => {
+        expect(
+            clause("Good morning, and welcome back to the show.", 10),
+        ).toEqual(["Good morning,", "and welcome back to the show."]);
+    });
+
+    it("accumulates short clauses until the minimum is covered", () => {
+        expect(clause("Hi, how are you doing today, my friend?", 10)).toEqual([
+            "Hi, how are you doing today,",
+            "my friend?",
+        ]);
+    });
+
+    it("a lone short clause never splits (sentence end wins)", () => {
+        expect(clause("Hi, fine.", 10)).toEqual(["Hi, fine."]);
+    });
+
+    it("keeps a number's comma (1,000) and splits at the next real one", () => {
+        expect(
+            clause("The trip cost 1,000 dollars, and it was worth it.", 5),
+        ).toEqual(["The trip cost 1,000 dollars,", "and it was worth it."]);
+    });
+
+    it("splits at a semicolon", () => {
+        expect(clause("Bring the map; the trail forks ahead.", 5)).toEqual([
+            "Bring the map;",
+            "the trail forks ahead.",
+        ]);
+    });
+
+    it("resolves a comma pending at a token boundary", () => {
+        const segmenter = new ResponseSegmenter({
+            granularity: "clause",
+            minClauseChars: 5,
+        });
+        // The comma is the last buffered character: the decision needs the
+        // next token, exactly like a sentence terminator.
+        expect(segmenter.push("A very long first clause,")).toEqual([]);
+        expect(segmenter.push(" then the rest.")).toEqual([
+            "A very long first clause,",
+        ]);
+        expect(segmenter.flush()).toEqual(["then the rest."]);
+    });
+
+    it("emits a trailing comma at the final flush", () => {
+        expect(clause("Please hold on, ", 5)).toEqual(["Please hold on,"]);
+    });
+
+    it("works across jagged token boundaries (default minimum)", () => {
+        const segmenter = new ResponseSegmenter({ granularity: "clause" });
+        const text =
+            "The quick brown fox jumps over the lazy dog, and then it runs off into the woods, tail wagging behind.";
+        const out: string[] = [];
+        for (let i = 0; i < text.length; i += 3) {
+            out.push(...segmenter.push(text.slice(i, i + 3)));
+        }
+        out.push(...segmenter.flush());
+        // First comma: the pending run is 43 chars (>= 40) — split.
+        // Second comma: the pending run is 35 chars (< 40) — merged into
+        // the sentence-flushed tail.
+        expect(out).toEqual([
+            "The quick brown fox jumps over the lazy dog,",
+            "and then it runs off into the woods, tail wagging behind.",
+        ]);
+    });
+});

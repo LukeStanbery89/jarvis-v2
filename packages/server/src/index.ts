@@ -186,5 +186,5 @@ const { server } = createJarvisServer(webApp, {
 attachChatServer(server, store, {
     turnTimeoutMs: appConfig.turnTimeoutMs,
     attachments,
-    ...(tts ? { tts } : {}),
+    ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
 });
