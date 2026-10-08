@@ -38,6 +38,52 @@ describe("app", () => {
     });
 });
 
+describe("wake model route (#84 P4)", () => {
+    it("answers a JSON 404 when wake model serving is unconfigured", async () => {
+        const app = createApp(store, {
+            appDbPath: ":memory:",
+            turnTimeoutMs: 30_000,
+            bootstrapToken: undefined,
+        });
+        const res = await request(app).get(
+            "/api/wake/model/melspectrogram.onnx",
+        );
+        expect(res.status).toBe(404);
+        expect(res.headers["content-type"]).toMatch(/application\/json/);
+        expect(res.body).toMatchObject({
+            error: expect.stringContaining("JARVIS_WAKE_PROVIDER"),
+        });
+    });
+
+    it("serves the configured route past the contract validator (HEAD, no download)", async () => {
+        const modelDir = mkdtempSync(path.join(tmpdir(), "jarvis-wake-app-"));
+        try {
+            const app = createApp(store, {
+                appDbPath: ":memory:",
+                turnTimeoutMs: 30_000,
+                bootstrapToken: undefined,
+                wake: { baseUrl: "https://example.invalid/wake", modelDir },
+            });
+            // HEAD answers from configuration alone — proof the route is
+            // mounted and declared in the OpenAPI spec (an undeclared path
+            // would be rejected by the contract validator first).
+            const probe = await request(app).head(
+                "/api/wake/model/hey_jarvis_v0.1.onnx",
+            );
+            expect(probe.status).toBe(200);
+            // The allowlist is enforced inside the route, not by the shape
+            // layer, so an unknown file is the route's own JSON 404.
+            const unknown = await request(app).get("/api/wake/model/evil.onnx");
+            expect(unknown.status).toBe(404);
+            expect(unknown.body).toEqual({
+                error: "unknown wake model file",
+            });
+        } finally {
+            rmSync(modelDir, { recursive: true, force: true });
+        }
+    });
+});
+
 describe("web portal serving", () => {
     let portalDir: string;
     let portalApp: ReturnType<typeof createApp>;

@@ -75,8 +75,8 @@ export type VoiceState = (typeof VOICE_STATES)[number];
  * Everything that can happen to a voice session.
  *
  * Session-scoped events carry the `sessionId` they belong to; events tagged
- * with a stale id are ignored. `activate`, `userSpeech`, and `cancel` are
- * session-agnostic triggers and carry no id.
+ * with a stale id are ignored. `activate`, `userSpeech`, `cancel`, and the
+ * wake-detector events are session-agnostic and carry no id.
  */
 export type VoiceEvent =
     /** Open a session: the wake phrase matched or the user pressed the mic button. */
@@ -85,6 +85,12 @@ export type VoiceEvent =
     | { type: "userSpeech" }
     /** The user aborted (stop button, teardown); any session returns to `idle`. */
     | { type: "cancel" }
+    /** The wake-word detector armed, or re-armed after a session (phase 4). */
+    | { type: "wakeArmed" }
+    /** The wake-word detector disarmed (user toggle, or after a wake opened a session). */
+    | { type: "wakeDisarmed" }
+    /** The wake-word detector died; it is disarmed with {@link VoiceError} recorded. */
+    | { type: "wakeFailed"; error: VoiceError }
     /** Interim recognition text — display locally, never submit. */
     | { type: "partial"; sessionId: number; text: string }
     /** The user stopped talking (VAD end-of-speech) — move to decoding. */
@@ -121,6 +127,12 @@ export interface VoiceSnapshot {
     readonly partial: string | null;
     /** Failure that ended the current session, cleared on the next activation. */
     readonly error: VoiceError | null;
+    /**
+     * Whether the wake-word detector is currently armed (listening for the
+     * wake phrase), independent of any session. Starts false; the controller
+     * drives it via the `wakeArmed`/`wakeDisarmed`/`wakeFailed` events.
+     */
+    readonly wakeArmed: boolean;
 }
 
 /** The snapshot every session starts from: `idle`, session 0, nothing recorded. */
@@ -130,6 +142,7 @@ export const initialVoiceSnapshot: VoiceSnapshot = {
     transcript: null,
     partial: null,
     error: null,
+    wakeArmed: false,
 };
 
 /**
@@ -145,6 +158,7 @@ function beginListening(snapshot: VoiceSnapshot): VoiceSnapshot {
         transcript: null,
         partial: null,
         error: null,
+        wakeArmed: snapshot.wakeArmed,
     };
 }
 
@@ -169,6 +183,7 @@ function transition(
         transcript: patch.transcript ?? snapshot.transcript,
         partial: null,
         error: patch.error ?? snapshot.error,
+        wakeArmed: snapshot.wakeArmed,
     };
 }
 
@@ -192,11 +207,20 @@ export function reduceVoice(
         event.type !== "activate" &&
         event.type !== "userSpeech" &&
         event.type !== "cancel" &&
+        event.type !== "wakeArmed" &&
+        event.type !== "wakeDisarmed" &&
+        event.type !== "wakeFailed" &&
         event.sessionId !== snapshot.sessionId
     ) {
         return snapshot;
     }
     switch (event.type) {
+        case "wakeArmed":
+            return { ...snapshot, wakeArmed: true, error: null };
+        case "wakeDisarmed":
+            return { ...snapshot, wakeArmed: false };
+        case "wakeFailed":
+            return { ...snapshot, wakeArmed: false, error: event.error };
         case "activate":
             // Re-arming is only safe when nothing is mid-flight: from an
             // active response it is a wake-word barge-in (the caller must

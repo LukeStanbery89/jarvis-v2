@@ -273,6 +273,29 @@ export interface SttModelConfig {
     readonly modelDir: string;
 }
 
+/** The upstream release hosting the openWakeWord ONNX models (v0.5.1). */
+export const DEFAULT_WAKE_MODEL_URL =
+    "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1";
+
+/** Default cache location of the wake-word models (private, `0700`). */
+export const DEFAULT_WAKE_MODEL_DIR = `${homedir()}/.jarvis/wake`;
+
+/**
+ * Local wake-word model serving (#84 P4). The server fetches the
+ * openWakeWord ONNX files (`melspectrogram.onnx`, `embedding_model.onnx`,
+ * `hey_jarvis_v0.1.onnx`) from `baseUrl` on first request, caches them
+ * privately under `modelDir`, and serves them at
+ * `GET /api/wake/model/<file>` — so browser clients run wake-word detection
+ * on-device without any external egress (the weights are open-source, never
+ * user data) and without tripping over the upstream's missing CORS headers.
+ */
+export interface WakeModelConfig {
+    /** Upstream base URL the files are fetched from (`JARVIS_WAKE_MODEL_URL`). */
+    readonly baseUrl: string;
+    /** Where the files cache (`JARVIS_WAKE_MODEL_DIR`). */
+    readonly modelDir: string;
+}
+
 /**
  * Default location of the LangGraph checkpoint database.
  *
@@ -532,6 +555,16 @@ export interface AppConfig {
      * hand-built configs (tests) can omit it.
      */
     readonly stt?: SttModelConfig;
+    /**
+     * Local wake-word model serving (#84 P4), present only when configured
+     * (`JARVIS_WAKE_PROVIDER=openwakeword`) — the client-side detector
+     * downloads its three ONNX files from the server so deployments need no
+     * external egress (and skirt the upstream's missing CORS headers).
+     * Unset means `GET /api/wake/model/:file` answers 404 and the wake
+     * toggle is unavailable. Optional so hand-built configs (tests) can
+     * omit it.
+     */
+    readonly wake?: WakeModelConfig;
     /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
@@ -811,6 +844,17 @@ export function getAppConfig(): AppConfig {
                       modelDir:
                           process.env.JARVIS_STT_MODEL_DIR ||
                           DEFAULT_STT_MODEL_DIR,
+                  }
+                : undefined,
+        wake:
+            process.env.JARVIS_WAKE_PROVIDER === "openwakeword"
+                ? {
+                      baseUrl:
+                          process.env.JARVIS_WAKE_MODEL_URL ||
+                          DEFAULT_WAKE_MODEL_URL,
+                      modelDir:
+                          process.env.JARVIS_WAKE_MODEL_DIR ||
+                          DEFAULT_WAKE_MODEL_DIR,
                   }
                 : undefined,
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),

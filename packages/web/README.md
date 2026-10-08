@@ -187,6 +187,34 @@ the mic press unlocks (the user gesture), and the status line reads
 "Speaking…" while the turn's audio spans. A failed synthesis never
 disturbs the text stream — the answer simply is not spoken.
 
+### Wake word (#84 P4)
+
+An optional "Hey JARVIS" wake word lives beside the click-to-talk mic: a
+sidebar toggle (waveform icon, next to the location pin) arms an
+on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
+openwakeword-web running under the WASM STT engine's runtime). While armed,
+the detector holds a second 16 kHz mic open continuously; a match plays a
+short blip (`AudioPlayer.blip()`, the cue the toggle's user gesture
+unlocked), opens a wake session through the same `VoiceController`, replays
+the phrase's look-back audio into `wakeStt` (a second, always-local Vosk
+instance — never Web Speech, so wake-eavesdropped audio never leaves the
+device), strips "Hey JARVIS" from the transcript, and submits it as an
+ordinary voice turn. The toggle is **off by default** (a persistent extra
+mic), persisted in localStorage, rendered only when the runtime supports
+wake (secure context + audio worklet), a local STT engine exists, and the
+server answers the `HEAD /api/wake/model/melspectrogram.onnx` probe
+(configured with `JARVIS_WAKE_PROVIDER=openwakeword`). The waveform icon
+lights while `wakeArmed`; a failed arm surfaces through the normal voice
+error path.
+
+The ORT runtime and mic worklet ship with the SPA build:
+`scripts/copy-voice-assets.mjs` stages `openwakeword-web`'s worklet and
+`onnxruntime-web`'s wasm pair into `public/ort/` (copied to `/web/ort/`,
+gitignored, staged by a Vite `buildStart` plugin). Vite resolves the
+ESM-only `openwakeword-web` and `onnxruntime-web`'s "extern wasm" entry
+through config aliases/conditions, so no 28 MB wasm is duplicated into the
+bundle — it is fetched only at arm time from the staged directory.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -206,11 +234,12 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
-- `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b; the controller itself lives in `packages/voice`).
-- `src/audio.ts` — spoken-response playback queue (WebAudio, #83).
+- `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b) and the wake-word helpers (`createWakeWord`, `createWakeStt`, `probeWakeSupport`, wake pref — #84 P4); the controller lives in `packages/voice`.
+- `src/audio.ts` — spoken-response playback queue (WebAudio, #83) + wake cue (`blip`, #84 P4).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
-- `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens.
+- `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens (Chat owns the wake toggle + arming effect).
 - `src/components/ToolCall.tsx` — collapsible tool/toolResult notices.
 - `src/wsUrl.ts` — derives the page-origin `ws(s)://…/ws` URL.
 - `src/styles.css` — shell styling.
+- `scripts/copy-voice-assets.mjs` — stages the ORT/openWakeWord runtime assets into `public/ort/` (#84 P4).

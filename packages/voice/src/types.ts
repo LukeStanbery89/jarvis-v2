@@ -109,6 +109,18 @@ export interface SttStartOptions {
  *   weights) may implement the optional `dispose()`: called once by a client
  *   when the engine will never be used again, it releases everything. The
  *   Web Speech engine has nothing beyond a session, so it omits it.
+ * - An optional `prepare()` pre-loads the engine-wide resources (model
+ *   weights, worker) ahead of the next `start()`, so the first session after
+ *   a wake word opens without the download/load stall. It never rejects the
+ *   caller — a failure surfaces at the next `start()` instead.
+ * - An optional `feed(pcm, sampleRate)` hands the engine raw mono PCM audio
+ *   *without* opening the microphone (wake-word providers do exactly that).
+ *   Implementations that capture from their own held mic reject or ignore
+ *   it; those that take caller-supplied audio (the WASM engine backing wake
+ *   sessions) accept it while `running`. It is the seam that replays the
+ *   look-back buffer captured by a wake-word detector ("Hey JARVIS, turn on
+ *   the lights") into a session that opened without hearing the phrase
+ *   itself (issue #84, phase 4).
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
@@ -139,17 +151,50 @@ export interface SttProvider {
      * which.
      */
     dispose?(): Promise<void>;
+    /**
+     * Pre-loads engine-wide resources (model weights, worker) so the next
+     * `start()` opens without a load stall — the controller calls this right
+     * after a wake word arms, so the first wake-session is instant. Optional:
+     * engines with nothing to pre-load, or whose load is cheap (Web Speech),
+     * omit it.
+     *
+     * @returns Resolves when the engine is warmed. Implementations must not
+     * reject the caller on failure — a failed warm-up surfaces as a regular
+     * `start()` rejection instead.
+     */
+    prepare?(): Promise<void>;
+    /**
+     * Feeds caller-supplied mono PCM audio into an active session, instead of
+     * opening the microphone. Optional, and only meaningful while `running`:
+     * the WASM engine backing wake-word sessions implements it so a wake
+     * session can begin by replaying the detector's look-back buffer (the
+     * command spoken in the same breath as the wake phrase), then continue
+     * on live mic frames. Engines that owe their own mic (Web Speech) omit it.
+     *
+     * @param pcm - Interleaved mono PCM samples, normalized to `[-1, 1]`.
+     * @param sampleRate - The sample rate the PCM was captured at.
+     * Implementations resample internally if needed (vosk does).
+     */
+    feed?(pcm: Float32Array, sampleRate: number): void;
 }
 
 /**
  * What a wake-word detector saw. The look-back buffer that retains audio
  * spoken in the same breath as the wake phrase ("Hey JARVIS, turn on the
- * lights") is plumbed through here once wake-word support lands (issue #84,
- * phase 4); engines that cannot retain audio simply omit it.
+ * lights") is carried here so a wake session can replay it into the STT
+ * engine via {@link SttProvider.feed}; a detector that cannot retain audio
+ * simply omits it. When present it is mono PCM at 16 kHz normalized to
+ * `[-1, 1]` (the openWakeWord mic's framing convention, issue #84, phase 4).
  */
 export interface WakeDetection {
     /** Engine-reported match strength, when the engine provides one. */
     readonly confidence?: number;
+    /**
+     * The 16 kHz mono audio that preceded the wake phrase, for replay into
+     * the STT engine that opens the session. Optional; engines that cannot
+     * retain it omit it, and the session simply starts at the wake phrase.
+     */
+    readonly lookback?: Float32Array;
 }
 
 /** Per-listener callbacks handed to {@link WakeWordProvider.start}. */

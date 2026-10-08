@@ -135,6 +135,29 @@ export class AudioPlayer {
         this.setSpeaking(false);
     }
 
+    /**
+     * Plays the wake-word cue (#84 P4): a short two-tone blip on the shared
+     * context, so the armed detector's match is noticed even with the mic
+     * muted. Kept off the `speaking` signal — it is a cue, not a response.
+     */
+    blip(): void {
+        const ctx = this.ensureContext();
+        if (ctx === null || ctx.state === "suspended") {
+            return;
+        }
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(660, ctx.currentTime);
+        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.07);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.18);
+    }
+
     /** Stops playback and closes the context (view unmount). */
     dispose(): void {
         this.stop();

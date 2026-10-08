@@ -153,6 +153,42 @@ describe("AudioPlayer", () => {
         expect(player.getSnapshot()).toBe(false);
     });
 
+    it("blip() plays a cue without touching the speaking signal", () => {
+        const fake = makeFakeContext();
+        const oscillators: { stopped: boolean }[] = [];
+        const fakeCtx = {
+            ...fake.ctx,
+            createOscillator: () => {
+                const osc = {
+                    type: "",
+                    stopped: false,
+                    frequency: { setValueAtTime: () => {} },
+                    connect: () => {
+                        oscillators.push(osc);
+                    },
+                    start: () => {},
+                    stop: () => {
+                        osc.stopped = true;
+                    },
+                };
+                return osc;
+            },
+            createGain: () => ({
+                gain: {
+                    setValueAtTime: () => {},
+                    exponentialRampToValueAtTime: () => {},
+                },
+                connect: () => {},
+            }),
+        };
+        const player = new AudioPlayer({
+            createContext: () => fakeCtx as unknown as AudioContext,
+        });
+        player.blip();
+        expect(oscillators.length).toBe(1);
+        expect(player.getSnapshot()).toBe(false);
+    });
+
     it("dispose() closes the context", () => {
         const fake = makeFakeContext();
         const player = new AudioPlayer({ createContext: () => fake.ctx });

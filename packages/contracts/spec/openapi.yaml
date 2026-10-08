@@ -63,6 +63,10 @@ tags:
           (`GET /api/stt/model`, issue #84 phase 3b).
     - name: Users
       description: Account management (owner-only read/write).
+    - name: Wake
+      description: >-
+          The local wake-word model files served to browser clients
+          (`GET /api/wake/model/{file}`, issue #84 phase 4).
 paths:
     /health:
         get:
@@ -1071,6 +1075,82 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/Error"
+    /api/wake/model/{file}:
+        get:
+            operationId: wakeModelGet
+            summary: Download a local wake-word model file
+            description: >-
+                Serves one ONNX file for the client-side openWakeWord
+                detector (#84 phase 4): the browser loads the two feature
+                models (`melspectrogram.onnx`, `embedding_model.onnx`) plus
+                the `hey_jarvis` classifier (`hey_jarvis_v0.1.onnx`) and
+                runs wake-word detection fully on-device. The server fetches
+                each file from its configured upstream
+                (`JARVIS_WAKE_MODEL_URL`) on the first request, caches it
+                privately under `~/.jarvis/wake`, and streams the cached
+                file after that. Same-origin serving is required: the
+                upstream release assets send no CORS headers, so a browser
+                fetch from the page would be blocked. Public by design: the
+                weights are open-source model files, never user data, and
+                the detector's worker cannot attach auth headers to its
+                fetch. Long-lived cache headers apply (the files change only
+                with server configuration). Only the three known files are
+                served — anything else answers 404.
+            tags: [Wake]
+            security: []
+            parameters:
+                - $ref: "#/components/parameters/PathWakeFile"
+            responses:
+                "200":
+                    description: The ONNX model file.
+                    content:
+                        application/octet-stream:
+                            schema:
+                                type: string
+                                format: binary
+                "404":
+                    description: >-
+                        Unknown file, or wake model serving is not configured
+                        (`JARVIS_WAKE_PROVIDER` unset).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: >-
+                        The upstream download failed (transient — the next
+                        request retries; the body is the plain error
+                        envelope).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        head:
+            operationId: wakeModelHead
+            summary: Probe wake-word model serving availability
+            description: >-
+                The web client's wake-toggle capability probe (#84 phase 4):
+                answers 200 from configuration alone when wake model serving
+                is configured, without triggering a multi-megabyte download
+                just to decide whether to show the switch. An unknown file
+                or an unconfigured server answers 404.
+            tags: [Wake]
+            security: []
+            parameters:
+                - $ref: "#/components/parameters/PathWakeFile"
+            responses:
+                "200":
+                    description: >-
+                        Wake model serving is configured for this file (no
+                        body is sent).
+                "404":
+                    description: >-
+                        Unknown file, or wake model serving is not configured
+                        (`JARVIS_WAKE_PROVIDER` unset).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
 components:
     securitySchemes:
         bearerToken:
@@ -1115,6 +1195,22 @@ components:
                 type: string
                 minLength: 1
                 maxLength: 128
+        PathWakeFile:
+            name: file
+            in: path
+            required: true
+            description: >-
+                The wake-model file to serve. Only three files exist —
+                `melspectrogram.onnx`, `embedding_model.onnx`, and
+                `hey_jarvis_v0.1.onnx` — and anything outside that allowlist
+                answers 404 (the server, not the shape layer, owns that
+                decision, so an unknown name stays a 404 rather than a 400).
+                The schema forbids path separators so the parameter can never
+                leave the cache directory.
+            schema:
+                type: string
+                minLength: 1
+                pattern: '^[^/\s]+$'
         XBootstrapToken:
             name: x-bootstrap-token
             in: header
