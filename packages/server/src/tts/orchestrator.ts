@@ -2,7 +2,8 @@
  * The audio orchestrator (issue #83, phase 3, milestone slice): streams one
  * turn's answer through the {@link ResponseSegmenter} and speaks it through
  * a {@link TtsProvider} — one sequential worker, segments in order, first
- * audio as soon as the first sentence is ready.
+ * audio as soon as the first segment is ready (sentence boundaries by
+ * default; clause boundaries under #89's granularity option).
  *
  * Deliberately wire-agnostic: the caller (ws.ts) supplies the sink that
  * turns callbacks into frames/messages, so this module stays testable
@@ -21,6 +22,7 @@
  *   so the caller discards its result via the sink never being called.
  */
 import { ResponseSegmenter } from "./segmenter";
+import type { SegmentGranularity } from "./segmenter";
 import type { TtsProvider } from "./types";
 
 /**
@@ -66,21 +68,41 @@ export interface AudioTurn {
     abort(): void;
 }
 
+/** Tuning for {@link speakTurn}. */
+export interface SpeakTurnOptions {
+    /**
+     * Segmenter granularity (#89); default `"sentence"`. `"clause"` adds
+     * comma/semicolon boundaries so the first PCM lands earlier.
+     */
+    readonly granularity?: SegmentGranularity;
+    /**
+     * Called once, when the turn's first segment is queued — the moment
+     * the text was complete enough to start synthesis. Callers (#83 phase
+     * 6) timestamp it against the turn's first token for the TTFA line.
+     */
+    readonly onFirstSegment?: () => void;
+}
+
 /**
  * Streams one turn's answer into speech.
  *
  * @param provider - The TTS engine.
  * @param sink - Where the ordered audio goes.
  * @param onError - Called once when synthesis fails; the turn's audio ends
- * without `audioEnd` (the text stream is never disturbed).
+ *   without `audioEnd` (the text stream is never disturbed).
+ * @param options - Granularity + first-segment callback (see
+ *   {@link SpeakTurnOptions}).
  * @returns The turn handle to feed.
  */
 export function speakTurn(
     provider: TtsProvider,
     sink: AudioTurnSink,
     onError?: (err: unknown) => void,
+    options: SpeakTurnOptions = {},
 ): AudioTurn {
-    const segmenter = new ResponseSegmenter();
+    const segmenter = new ResponseSegmenter({
+        granularity: options.granularity,
+    });
     /** Segments waiting for the (single) synthesis worker. */
     const queue: string[] = [];
     let finished = false;
@@ -90,6 +112,23 @@ export function speakTurn(
     let pumping = false;
     let started = false;
     let inFlight: Promise<void> = Promise.resolve();
+    let firstSegmentSeen = false;
+
+    /**
+     * Queues completed segments; fires {@link SpeakTurnOptions.onFirstSegment}
+     * exactly once, when the first one lands.
+     *
+     * @param segments - Newly completed segments from the segmenter.
+     */
+    function enqueue(segments: string[]): void {
+        for (const segment of segments) {
+            queue.push(segment);
+            if (!firstSegmentSeen) {
+                firstSegmentSeen = true;
+                options.onFirstSegment?.();
+            }
+        }
+    }
 
     /** Drains the queue sequentially; safe to call repeatedly. */
     function pump(): Promise<void> {
@@ -132,18 +171,14 @@ export function speakTurn(
             if (finished || failed || ended) {
                 return;
             }
-            for (const segment of segmenter.push(token)) {
-                queue.push(segment);
-            }
+            enqueue(segmenter.push(token));
             void pump();
         },
         finish(): Promise<void> {
             if (failed) {
                 return Promise.resolve();
             }
-            for (const segment of segmenter.flush()) {
-                queue.push(segment);
-            }
+            enqueue(segmenter.flush());
             finished = true;
             return pump();
         },

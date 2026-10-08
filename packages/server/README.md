@@ -802,14 +802,26 @@ carry a spoken-word system-prompt directive (no markdown, no parentheses,
 units spelled out — `src/agent.ts` `VOICE_FORMAT_RULE`), so the segmenter
 mostly sees clean prose. Incidental markup that slips through is inert
 text (it reads as written); a deterministic say-proofing pass is a
-deliberate non-goal for now — time-to-first-spoken-word tuning is tracked
-in issue #89. Enable it with:
+deliberate non-goal for now.
 
-| Variable              | Default    | Description                             |
-| --------------------- | ---------- | --------------------------------------- |
-| `JARVIS_TTS_PROVIDER` | _(unset)_  | `kokoro` enables synthesis; unset = off |
-| `JARVIS_TTS_VOICE`    | `bm_lewis` | Kokoro voice id                         |
-| `JARVIS_TTS_SPEED`    | `1`        | Speaking speed multiplier               |
+Time-to-first-audio (#89): spoken turns log a TTFA decomposition at debug
+(`voice turn N TTFA: first token +Xms, first segment +Yms, first audio
+sent +Zms` — deltas against the turn's start), and the web client mirrors
+it in devtools (`[voice] first audio +Xms since submit, +Yms since
+audioStart`). The first-audio lever is the segmenter: `JARVIS_TTS_SEGMENT`
+(default `sentence`) selects clause granularity, which additionally splits
+at commas/semicolons when the pending text covers at least 40 chars — the
+first PCM lands at the first comma instead of the first period, at the
+cost of prosody across the split (clauses are synthesized independently).
+Numbers ("1,000") never split; short clauses merge into the next one so
+fragment overhead cannot dominate the win. Enable it with:
+
+| Variable              | Default    | Description                                    |
+| --------------------- | ---------- | ---------------------------------------------- |
+| `JARVIS_TTS_PROVIDER` | _(unset)_  | `kokoro` enables synthesis; unset = off        |
+| `JARVIS_TTS_VOICE`    | `bm_lewis` | Kokoro voice id                                |
+| `JARVIS_TTS_SPEED`    | `1`        | Speaking speed multiplier                      |
+| `JARVIS_TTS_SEGMENT`  | `sentence` | `clause` splits at commas/semicolons too (#89) |
 
 Deployment posture (deliberate):
 

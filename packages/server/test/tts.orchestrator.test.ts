@@ -154,3 +154,81 @@ describe("speakTurn", () => {
         expect(events).toEqual([]);
     });
 });
+
+describe("granularity and onFirstSegment (#89)", () => {
+    it("passes clause granularity through to the segmenter", async () => {
+        const provider = new ScriptedProvider();
+        const { events, sink } = makeSink();
+        const turn = speakTurn(provider, sink, undefined, {
+            granularity: "clause",
+        });
+
+        turn.push(
+            "The weather in Paris right now is quite pleasant, with sunshine and a gentle breeze through the afternoon.",
+        );
+        const finished = turn.finish();
+
+        provider.settle(48);
+        await pumpTicks();
+        provider.settle(56);
+        await finished;
+
+        expect(provider.calls).toEqual([
+            "The weather in Paris right now is quite pleasant,",
+            "with sunshine and a gentle breeze through the afternoon.",
+        ]);
+        expect(events[0]).toBe("start:24000");
+        expect(events[events.length - 1]).toBe("end");
+    });
+
+    it("sentence granularity stays the default (commas do not split)", async () => {
+        const provider = new ScriptedProvider();
+        const { sink } = makeSink();
+        const turn = speakTurn(provider, sink);
+        turn.push(
+            "The weather in Paris right now is quite pleasant, with sunshine and a gentle breeze through the afternoon.",
+        );
+        const finished = turn.finish();
+        provider.settle(104);
+        await pumpTicks();
+        await finished;
+        expect(provider.calls).toEqual([
+            "The weather in Paris right now is quite pleasant, with sunshine and a gentle breeze through the afternoon.",
+        ]);
+    });
+
+    it("fires onFirstSegment exactly once, when the first segment is queued", async () => {
+        const provider = new ScriptedProvider();
+        const { sink } = makeSink();
+        const seen: number[] = [];
+        const turn = speakTurn(provider, sink, undefined, {
+            onFirstSegment: () => seen.push(1),
+        });
+
+        turn.push("First sentence. ");
+        turn.push("Second sentence. ");
+        turn.push("Third sentence.");
+        const finished = turn.finish();
+        provider.settle();
+        await pumpTicks();
+        provider.settle();
+        await pumpTicks();
+        provider.settle();
+        await pumpTicks();
+        await finished;
+
+        expect(seen).toEqual([1]);
+    });
+
+    it("never fires onFirstSegment for a turn with no speakable text", async () => {
+        const provider = new ScriptedProvider();
+        const { sink } = makeSink();
+        const seen: number[] = [];
+        const turn = speakTurn(provider, sink, undefined, {
+            onFirstSegment: () => seen.push(1),
+        });
+        turn.push("   ");
+        await turn.finish();
+        expect(seen).toEqual([]);
+    });
+});

@@ -98,6 +98,16 @@ export class ChatClient {
     private rejected = false;
     /** Whether a prompt turn is currently consuming frames. */
     private streaming = false;
+    /**
+     * Client-side TTFA measurement (#83 phase 6): when the turn was
+     * submitted, when its `audioStart` arrived, and whether the first
+     * binary chunk is still pending — so the first chunk logs "first
+     * audible" deltas to the console. The web package has no logger;
+     * `console.debug` keeps this invisible unless devtools are open.
+     */
+    private turnStartedAt: number | null = null;
+    private audioSpanStartedAt: number | null = null;
+    private awaitingFirstAudioChunk = false;
     /** Reconnect attempt counter (drives backoff; reset on connect). */
     private attempt = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -229,6 +239,9 @@ export class ChatClient {
         mode: ChatMode,
     ): Promise<void> {
         this.streaming = true;
+        this.turnStartedAt = performance.now();
+        this.audioSpanStartedAt = null;
+        this.awaitingFirstAudioChunk = false;
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;
             this.rejectPrompt = reject;
@@ -285,6 +298,25 @@ export class ChatClient {
      */
     private onMessage(event: WebSocketMessageEvent): void {
         if (event.data instanceof ArrayBuffer) {
+            if (this.awaitingFirstAudioChunk) {
+                this.awaitingFirstAudioChunk = false;
+                // First chunk of the span = first audible audio (#83 phase
+                // 6). The headline "user stops speaking → first audible
+                // JARVIS" reads here, measured from prompt submit and from
+                // the `audioStart` frame.
+                const now = performance.now();
+                const sinceSubmit =
+                    this.turnStartedAt === null
+                        ? null
+                        : Math.round(now - this.turnStartedAt);
+                const sinceSpanStart =
+                    this.audioSpanStartedAt === null
+                        ? null
+                        : Math.round(now - this.audioSpanStartedAt);
+                console.debug(
+                    `[voice] first audio ${sinceSubmit === null ? "?" : `+${sinceSubmit}ms`} since submit, ${sinceSpanStart === null ? "?" : `+${sinceSpanStart}ms`} since audioStart`,
+                );
+            }
             this.options.events.onAudio?.(
                 s16leToPcm(new Uint8Array(event.data)),
             );
@@ -343,6 +375,10 @@ export class ChatClient {
             return;
         }
         if (this.streaming) {
+            if ("audioStart" in frame) {
+                this.audioSpanStartedAt = performance.now();
+                this.awaitingFirstAudioChunk = true;
+            }
             this.options.events.onFrame?.(frame);
         }
     }

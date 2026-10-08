@@ -249,6 +249,13 @@ export interface TtsConfig {
     readonly voice: string;
     /** Speaking speed multiplier (`JARVIS_TTS_SPEED`), default `1`. */
     readonly speed: number;
+    /**
+     * Segmenter granularity (#89, `JARVIS_TTS_SEGMENT`): `"sentence"` (the
+     * default) splits at sentence boundaries; `"clause"` additionally
+     * splits at commas/semicolons so the first spoken audio lands earlier,
+     * at the cost of prosody across the split.
+     */
+    readonly segment: "sentence" | "clause";
 }
 
 /** The upstream model archive the server fetches on first request. */
@@ -833,6 +840,10 @@ export function getAppConfig(): AppConfig {
                       voice:
                           process.env.JARVIS_TTS_VOICE || DEFAULT_KOKORO_VOICE,
                       speed: numberOr(process.env.JARVIS_TTS_SPEED, 1),
+                      segment:
+                          process.env.JARVIS_TTS_SEGMENT === "clause"
+                              ? "clause"
+                              : "sentence",
                   }
                 : undefined,
         stt:
