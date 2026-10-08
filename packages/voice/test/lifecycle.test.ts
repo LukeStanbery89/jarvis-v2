@@ -62,6 +62,7 @@ describe("initial snapshot", () => {
             transcript: null,
             partial: null,
             error: null,
+            wakeArmed: false,
         });
     });
 

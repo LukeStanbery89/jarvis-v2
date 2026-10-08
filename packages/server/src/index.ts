@@ -155,6 +155,16 @@ logger.info(
         : "STT model serving disabled (JARVIS_STT_PROVIDER unset)",
 );
 
+// Local wake-word model serving (#84 P4): present only when configured —
+// unset JARVIS_WAKE_PROVIDER means GET /api/wake/model/:file answers 404
+// and the client's wake toggle stays off. The three ONNX files download
+// lazily on the first client request, never at boot.
+logger.info(
+    appConfig.wake
+        ? `Wake model serving active: ${appConfig.wake.baseUrl} → ${appConfig.wake.modelDir}`
+        : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),

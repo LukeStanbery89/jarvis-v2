@@ -845,3 +845,27 @@ archive never lands in the Docker image and is never downloaded at boot.
 | `JARVIS_STT_PROVIDER`  | _(unset)_                            | `vosk` enables model serving; unset = 404     |
 | `JARVIS_STT_MODEL_URL` | the vosk-browser small-en-us tarball | Upstream archive fetched on first request     |
 | `JARVIS_STT_MODEL_DIR` | `~/.jarvis/stt`                      | Private cache directory (`0700`, file `0600`) |
+
+## Wake-word model serving (#84 P4)
+
+The web chat client's "Hey JARVIS" wake detector (openWakeWord) also runs
+**on-device**. It needs three small ONNX models (`melspectrogram.onnx`,
+`embedding_model.onnx`, `hey_jarvis_v0.1.onnx` — ~3 MB total); the server
+fetches them from the openWakeWord release host on first request and serves
+them same-origin from `/api/wake/model/:file`, because the upstream commits
+no CORS headers and a `/web`-mounted SPA must load them without them. The
+route is an exact per-file allowlist — an unknown name 404s before any
+fetch; `HEAD` answers 200 without downloading.
+
+- `src/wake/model.ts` — the per-file download-once cache (`WakeModelCache`:
+  lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the
+  next request) plus `createWakeModelHandler` for `GET|HEAD
+/api/wake/model/:file` (200 `application/octet-stream` + `Cache-Control
+public, max-age=86400`; JSON 404 unconfigured/unknown; JSON 503 while an
+  upstream fetch fails).
+
+| Variable                | Default                                   | Description                                       |
+| ----------------------- | ----------------------------------------- | ------------------------------------------------- |
+| `JARVIS_WAKE_PROVIDER`  | _(unset)_                                 | `openwakeword` enables model serving; unset = 404 |
+| `JARVIS_WAKE_MODEL_URL` | `…/openWakeWord/releases/download/v0.5.1` | Upstream directory each model is fetched from     |
+| `JARVIS_WAKE_MODEL_DIR` | `~/.jarvis/wake`                          | Private cache directory (`0700`, file `0600`)     |

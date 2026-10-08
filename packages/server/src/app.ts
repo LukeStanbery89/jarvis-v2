@@ -20,6 +20,7 @@ import type { InFlightLimiter } from "./attachments/limiters";
 import { DEFAULT_ATTACHMENT_MAX_BYTES, type AppConfig } from "./config";
 import { logger } from "./logger";
 import { createSttModelHandler, SttModelCache } from "./stt/model";
+import { createWakeModelHandler, WakeModelCache } from "./wake/model";
 
 /** Returns `413` with the {@link AttachmentTooLarge} contract shape. */
 const attachmentBodyTooLarge = (_appConfig: AppConfig, maxBytes: number) => {
@@ -136,6 +137,20 @@ export function createApp(
         "/api/stt/model",
         createSttModelHandler(
             appConfig.stt ? new SttModelCache(appConfig.stt) : null,
+        ),
+    );
+
+    // The local wake-word model route (#84 P4): the client-side
+    // openWakeWord detector's three ONNX files, each cached download-once
+    // under ~/.jarvis/wake when configured and a JSON 404 when not (or for
+    // a file outside the allowlist). `HEAD` answers a bare 200 from
+    // configuration alone — the web client's capability probe, which must
+    // not trigger a download. Public by design (open-source weights, not
+    // user data; the detector's worker cannot attach auth headers).
+    app.get(
+        "/api/wake/model/:file",
+        createWakeModelHandler(
+            appConfig.wake ? new WakeModelCache(appConfig.wake) : null,
         ),
     );
 

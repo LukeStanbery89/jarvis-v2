@@ -356,6 +356,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wake/model/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a local wake-word model file
+         * @description Serves one ONNX file for the client-side openWakeWord detector (#84 phase 4): the browser loads the two feature models (`melspectrogram.onnx`, `embedding_model.onnx`) plus the `hey_jarvis` classifier (`hey_jarvis_v0.1.onnx`) and runs wake-word detection fully on-device. The server fetches each file from its configured upstream (`JARVIS_WAKE_MODEL_URL`) on the first request, caches it privately under `~/.jarvis/wake`, and streams the cached file after that. Same-origin serving is required: the upstream release assets send no CORS headers, so a browser fetch from the page would be blocked. Public by design: the weights are open-source model files, never user data, and the detector's worker cannot attach auth headers to its fetch. Long-lived cache headers apply (the files change only with server configuration). Only the three known files are served — anything else answers 404.
+         */
+        get: operations["wakeModelGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /**
+         * Probe wake-word model serving availability
+         * @description The web client's wake-toggle capability probe (#84 phase 4): answers 200 from configuration alone when wake model serving is configured, without triggering a multi-megabyte download just to decide whether to show the switch. An unknown file or an unconfigured server answers 404.
+         */
+        head: operations["wakeModelHead"];
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -518,6 +542,8 @@ export interface components {
         PathDeviceId: number;
         /** @description The chat-thread session id (at most 128 characters). */
         PathThreadId: string;
+        /** @description The wake-model file to serve. Only three files exist — `melspectrogram.onnx`, `embedding_model.onnx`, and `hey_jarvis_v0.1.onnx` — and anything outside that allowlist answers 404 (the server, not the shape layer, owns that decision, so an unknown name stays a 404 rather than a 400). The schema forbids path separators so the parameter can never leave the cache directory. */
+        PathWakeFile: string;
         /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. Optional at the shape layer on purpose: a missing or mismatched secret is an authorization outcome (403, or 409 when setup is disabled), decided by the server — not a request-shape violation. */
         XBootstrapToken: string;
         /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
@@ -1747,6 +1773,77 @@ export interface operations {
             };
             /** @description The upstream download failed (transient — the next request retries; the body is the plain error envelope). */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    wakeModelGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The wake-model file to serve. Only three files exist — `melspectrogram.onnx`, `embedding_model.onnx`, and `hey_jarvis_v0.1.onnx` — and anything outside that allowlist answers 404 (the server, not the shape layer, owns that decision, so an unknown name stays a 404 rather than a 400). The schema forbids path separators so the parameter can never leave the cache directory. */
+                file: components["parameters"]["PathWakeFile"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ONNX model file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Unknown file, or wake model serving is not configured (`JARVIS_WAKE_PROVIDER` unset). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The upstream download failed (transient — the next request retries; the body is the plain error envelope). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    wakeModelHead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The wake-model file to serve. Only three files exist — `melspectrogram.onnx`, `embedding_model.onnx`, and `hey_jarvis_v0.1.onnx` — and anything outside that allowlist answers 404 (the server, not the shape layer, owns that decision, so an unknown name stays a 404 rather than a 400). The schema forbids path separators so the parameter can never leave the cache directory. */
+                file: components["parameters"]["PathWakeFile"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wake model serving is configured for this file (no body is sent). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown file, or wake model serving is not configured (`JARVIS_WAKE_PROVIDER` unset). */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

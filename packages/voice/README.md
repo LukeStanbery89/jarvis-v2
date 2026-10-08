@@ -17,11 +17,14 @@ halves, deliberately independent:
   forwarding. React- and transport-free, so every voice client reuses it.
 
 Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
-Web Speech STT provider, the local WASM STT provider (Vosk), and the energy
-VAD ship here (phases 2–3, consumed by `packages/web`). The WASM engine's
-one dependency (`@lichess-org/vosk-browser`) is declared as a **peer
-dependency** and loads lazily at first `start()` — the package never
-imports it at module scope, so node consumers and tests are unaffected.
+Web Speech STT provider, the local WASM STT provider (Vosk), the energy VAD,
+and the openWakeWord wake-word provider ship here (phases 2–4, consumed by
+`packages/web`). The WASM engine's one dependency
+(`@lichess-org/vosk-browser`) is an **optional peer dependency** that loads
+lazily at first `start()` — and the wake detector's
+(`openwakeword-web`, which pulls in `onnxruntime-web`) likewise — the
+package never imports them at module scope, so node consumers and tests are
+unaffected.
 
 ## Install
 
@@ -234,17 +237,74 @@ headset/quiet-room use, flaky in noisy rooms. A model-backed engine (e.g.
 Silero WASM) can replace it behind the identical `VadProvider` seam without
 touching any client.
 
+## Browser provider (wake word, openWakeWord)
+
+`createOpenWakeWord()` returns an `OpenWakeWordWakeProvider` (id
+`openwakeword`), or `null` when the runtime lacks a secure context, Web
+Audio, or an audio worklet. It is a client-side port of openWakeWord: at
+`start()` it lazy-imports `openwakeword-web` (an optional peer), downloads
+the ONNX models it is registered for from `baseUrl` (default
+`/api/wake/model/` — see the server's wake-model route), and opens a
+16 kHz worklet microphone whose frames run through the continuously-running
+feature pipeline. A phrase label passing threshold fires `onDetection`
+(`{ pause: true }` keeps the one-shot).
+
+Two things make this provider slot into the controller's wake flow (#84 P4):
+
+- **Look-back ring** — the provider retains up to `lookbackMs` (default 2000) of the last 16 kHz float PCM (`PcmRingBuffer`, whole 1280-sample
+  frames). A match reports a `lookback` slice the controller replays into
+  the STT engine, so "Hey JARVIS, turn on the lights" is transcribed whole
+  — the command was spoken in the same breath as the phrase.
+- **Quiet disarm** — `stop()` is idempotent and resolves, then ALWAYS
+  leaves the gun un-armed regardless of how it ran: `onDetection` with
+  `{ armed: false }` only when the phrase fired within the same armed
+  span (so newly-mined spoken words are read back on the next match),
+  otherwise `armed: true` because the detector re-arms on subsequent
+  `start()` calls. The armed flag is what the `VoiceController` reads to
+  decide whether to tread lightly.
+
+`stripWakePhrase()` (in `src/wakeText.ts`) removes a leading wake phrase
+from a wake-session transcript ("Hey JARVIS" by default, ragged whitespace
+and case tolerated) before display or submission.
+
+### Wiring a wake detector (consuming package)
+
+The controller arms/disarms the detector across sessions, so a client hands
+it a **constructed** (cheap — nothing loads until `start()`) provider plus
+a dedicated `wakeStt` engine:
+
+```ts
+new VoiceController({
+    stt, // primary dictation engine
+    wake, // WakeWordProvider (constructed, not running)
+    wakeStt, // STT for wake sessions (the local one — look-back
+    // replay must never leave the device)
+    submit: (text) => submitTurn(text),
+    onWakeCue: () => blip(), // optional sound when the phrase matches
+});
+// later: await controller.enableWake();  → detector arms, mic opens
+//        await controller.disableWake(); → detector disarms, mic closes
+```
+
+`enableWake()` no-ops silently unless both a `wake` provider and a `wakeStt`
+engine were supplied at construction. The snapshot's `wakeArmed` flag drives
+the client's armed indicator; a `wakeFailed` lifecycle event surfaces as the
+session error.
+
 ## Traceability
 
 Phase 1 of the [voice-input issue](https://github.com/LukeStanbery89/jarvis-v2/issues/84):
 the provider interfaces and lifecycle this package ships are the units of
-work its P1 acceptance criteria name; the Web Speech provider is P2, and
-phase 3 lands here too — the energy VAD plus VAD-owned endpointing in the
-controller (the orchestrator itself moved from `packages/web` in P3 so any
-future client reuses it) and the local WASM STT provider (P3b — Vosk,
-with the optional `dispose()` seam it added). Later phases: wake-word
-look-back buffering in the provider layer, and a Whisper-class engine
-benchmarked behind the same seam before any default changes.
+work its P1 acceptance criteria name; the Web Speech provider is P2; phase 3
+lands here too — the energy VAD plus VAD-owned endpointing in the controller
+(the orchestrator itself moved from `packages/web` in P3 so any future
+client reuses it) and the local WASM STT provider (P3b — Vosk, with the
+optional `dispose()` seam it added). Phase 4 (P4) is the wake-word
+detector (openWakeWord), its look-back ring and `feed()` replay through the
+`SttProvider` seam, phrase stripping, and controller arming — the P4 branch
+`feat/issue-84-p4-wake-word` delivers it. Later phases: barge-in handling
+(wake during a live session) and a Whisper-class engine benchmarked behind
+the same STT seam before any default changes.
 
 ## Notes for maintainers
 

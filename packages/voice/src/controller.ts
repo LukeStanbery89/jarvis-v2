@@ -1,14 +1,15 @@
 /**
- * Voice-session controller (issue #84, phases 2–3).
+ * Voice-session controller (issue #84, phases 2–4).
  *
  * Binds the pure session lifecycle (`./lifecycle`) to a real STT engine, an
- * optional VAD, and turn submission, so a client UI renders from a
- * `VoiceSnapshot` and never touches microphone semantics directly. The
- * controller is deliberately React-free and engine-free (injected
- * {@link SttProvider}, {@link VadProvider}, submit function, timer seams) so
- * the whole flow is unit-testable in the node environment with fakes. Any
- * J.A.R.V.I.S. voice client consumes it; the chat view only supplies the
- * web-specific seams (a submit that runs a turn, response-frame forwarding).
+ * optional VAD, an optional wake-word detector, and turn submission, so a
+ * client UI renders from a `VoiceSnapshot` and never touches microphone
+ * semantics directly. The controller is deliberately React-free and
+ * engine-free (injected {@link SttProvider}, {@link VadProvider},
+ * {@link WakeWordProvider}, submit function, timer seams) so the whole flow
+ * is unit-testable in the node environment with fakes. Any J.A.R.V.I.S.
+ * voice client consumes it; the chat view only supplies the web-specific
+ * seams (a submit that runs a turn, response-frame forwarding).
  *
  * Endpointing — who decides "the user stopped talking":
  *
@@ -27,6 +28,25 @@
  * Silence handling is quiet: a press that never hears speech ends with
  * `stt.cancel()` (no callbacks fire) and the reducer's `noSpeech` event, so
  * the UI returns to `idle` without an error banner.
+ *
+ * Wake word (phase 4) — `enableWake()` arms the detector; a phrase match
+ * with the session idle opens a wake session:
+ *
+ * ```text
+ * enableWake ─ armed (snapshot.wakeArmed); wake engine's model pre-warmed
+ *   "Hey JARVIS, …" ──► handleWake ──► begin({fromWake:true, lookback})
+ *       onWakeCue ─► (beep)          ─► wakeStt.start({continuous})
+ *                                     ─► wakeStt.feed(lookback)  (phrase→command replay)
+ *                                     ─► normal VAD session; transcripts stripped
+ *   session lands idle ──► maybeReArm ──► detector re-armed, stays ready
+ * ```
+ *
+ * The detector is disarmed for every session (it would otherwise keep a
+ * second microphone live and could fire on the phrase mid-turn) and re-armed
+ * when the session lands `idle`. Wake sessions transcribe through the
+ * separate `wakeStt` engine — the local one, since it receives the entire
+ * wake-during context — and their transcripts have the wake phrase stripped
+ * (`stripWakePhrase`) before display or submission.
  *
  * Flow of one press-to-talk turn:
  *
@@ -51,11 +71,14 @@
  */
 import { initialVoiceSnapshot, reduceVoice } from "./lifecycle";
 import type { VoiceSnapshot } from "./lifecycle";
+import { stripWakePhrase } from "./wakeText";
 import type {
     SttProvider,
     VadCallbacks,
     VadProvider,
     VoiceError,
+    WakeDetection,
+    WakeWordProvider,
 } from "./types";
 
 /** Submits a final transcript as a chat turn (resolves when the turn settles). */
@@ -75,10 +98,35 @@ export interface VoiceControllerOptions {
      */
     readonly vad?: VadProvider | null;
     /**
-     * Schedules a callback after `ms` milliseconds and returns an opaque
-     * handle for {@link VoiceControllerOptions.unschedule}. Defaults to
-     * `setTimeout`; injectable so tests drive timer expiry deterministically.
+     * The wake-word detector (issue #84, phase 4). When present (and
+     * `wakeStt` is given), `enableWake()` arms it; a match opens a wake
+     * session and the detector re-arms when that turn settles. `null`/
+     * omitted disables wake-word support entirely.
      */
+    readonly wake?: WakeWordProvider | null;
+    /**
+     * The STT engine used for wake-word sessions. Should accept
+     * caller-supplied audio (`feed()`) so the context spoken around the wake
+     * phrase ("Hey JARVIS, turn on the lights") is transcribed — a
+     * wake-word detector opens a session with its look-back buffer, not a
+     * fresh page — and should be the private/local engine (a remote service
+     * would send every wake-eavesdropped second to the cloud). `null`/
+     * omitted makes wake sessions reuse the primary `stt`.
+     */
+    readonly wakeStt?: SttProvider | null;
+    /**
+     * The phrase removed from wake-session transcripts — `stripWakePhrase`
+     * turns "Hey JARVIS, turn on the lights" into "turn on the lights".
+     * Defaults to `"Hey JARVIS"`; it must match what the wake detector
+     * listens for. Pass `""` to leave transcripts untouched.
+     */
+    readonly wakePhrase?: string;
+    /**
+     * A cue to play when the wake phrase matches (a blip or chime the user
+     * can hear while the listening session opens). Runs before the turn
+     * begins; a thrown/rejected cue does not stop the session from opening.
+     */
+    readonly onWakeCue?: () => void | Promise<void>;
     readonly schedule?: (callback: () => void, ms: number) => unknown;
     /**
      * Cancels a pending callback scheduled by
@@ -101,6 +149,9 @@ export const END_OF_SPEECH_MS = 800;
  */
 export const NO_SPEECH_MS = 4000;
 
+/** The default wake phrase (must match the detector's trained phrase). */
+export const DEFAULT_WAKE_PHRASE = "Hey JARVIS";
+
 /**
  * Owns one user's voice session: mic presses, engine and VAD wiring,
  * transcript submission, and the observable {@link VoiceSnapshot} the UI
@@ -112,8 +163,32 @@ export class VoiceController {
     private readonly stt: SttProvider;
     private readonly submit: VoiceSubmit;
     private readonly vad: VadProvider | null;
+    private readonly wake: WakeWordProvider | null;
+    private readonly wakeStt: SttProvider | null;
+    private readonly wakePhrase: string;
+    private readonly onWakeCue: (() => void | Promise<void>) | undefined;
     private readonly schedule: (callback: () => void, ms: number) => unknown;
     private readonly unschedule: (handle: unknown) => void;
+    /**
+     * The engine driving the active session: the primary `stt` for press
+     * turns, the wake engine (`wakeStt`) for wake-word turns. `null` while
+     * idle; only consulted from session-live paths.
+     */
+    private sessionStt: SttProvider | null = null;
+    /** Whether the active session was opened by the wake word. */
+    private sessionFromWake = false;
+    /** Whether the user wants wake detection on (persisted by the client). */
+    private wakeEnabled = false;
+    /**
+     * Set when the detector was disarmed for a session (or a wake just
+     * opened one) and a successful return to `idle` should re-arm it. The
+     * only trigger for {@link maybeReArm}; cleared by toggling.
+     */
+    private pendingReArm = false;
+    /** Serializes the occasional re-arm so two races don't double-stop the detector. */
+    private wakeBusy = false;
+    /** Set by `dispose()`; makes every wake/no-op path return immediately. */
+    private disposed = false;
     /**
      * Pending silence guard: armed at press (no speech ⇒ quiet idle) and
      * re-armed after end-of-speech (flush deadline). `null` when not pending.
@@ -139,6 +214,10 @@ export class VoiceController {
         this.stt = options.stt;
         this.submit = options.submit;
         this.vad = options.vad ?? null;
+        this.wake = options.wake ?? null;
+        this.wakeStt = options.wakeStt ?? null;
+        this.wakePhrase = options.wakePhrase ?? DEFAULT_WAKE_PHRASE;
+        this.onWakeCue = options.onWakeCue;
         this.schedule =
             options.schedule ?? ((callback, ms) => setTimeout(callback, ms));
         this.unschedule =
@@ -208,18 +287,60 @@ export class VoiceController {
     }
 
     /**
-     * Tears down: cancels any live recognition, releases the engine's
-     * session-spanning resources (a WASM model worker, when the engine
-     * holds one), stops the VAD, drops any pending timers, and drops
-     * listeners.
+     * Arms the wake-word detector: the controller starts listening for the
+     * wake phrase and will open sessions on matches. The detector (and the
+     * wake engine's model warm-up) stays armed across sessions — it is only
+     * disarmed while a session owns the mic, then re-armed.
      *
-     * @returns Resolves when the engine and the detector have stopped.
+     * Safe to call when already armed (no-op). Requires both a `wake`
+     * provider and a `wakeStt` engine from construction; otherwise this is
+     * a silent no-op and the snapshot never reports `wakeArmed`.
+     *
+     * @returns Resolves once the detector is armed (or is already so, or
+     * wake support is unavailable).
+     */
+    async enableWake(): Promise<void> {
+        this.wakeEnabled = true;
+        this.pendingReArm = false;
+        await this.armWake();
+    }
+
+    /**
+     * Disarms the wake-word detector and leaves it off until
+     * {@link enableWake} is called again. Safe when already disarmed;
+     * cancels a wake-session engine if one is mid-session (the primary
+     * engine's session is left alone).
+     *
+     * @returns Resolves once the detector is disarmed.
+     */
+    async disableWake(): Promise<void> {
+        this.wakeEnabled = false;
+        this.pendingReArm = false;
+        await this.disarmWake();
+    }
+
+    /**
+     * Tears down: cancels any live recognition, releases both engines'
+     * session-spanning resources (a WASM model worker, when an engine holds
+     * one), stops the VAD and the wake detector, drops any pending timers,
+     * and drops listeners.
+     *
+     * @returns Resolves when the engines and detectors have stopped.
      */
     async dispose(): Promise<void> {
+        this.disposed = true;
+        this.wakeEnabled = false;
+        this.pendingReArm = false;
         this.clearTimers();
         await this.stt.cancel();
         await this.stt.dispose?.();
+        const wakeStt = this.wakeStt;
+        if (wakeStt !== null && wakeStt !== this.stt) {
+            await wakeStt.cancel();
+            await wakeStt.dispose?.();
+        }
         await this.stopVad();
+        await this.disarmWake();
         this.listeners.clear();
     }
 
@@ -228,12 +349,30 @@ export class VoiceController {
      * decides whether this session runs continuous capture under the
      * controller's endpointing), then arms the engine with callbacks tagged
      * to the (captured) session id, so late deliveries after a
-     * re-activation are stale by construction.
+     * re-activation are stale by construction. An armed wake detector is
+     * disarmed first, so the session owns the microphone and the wake phrase
+     * can't fire mid-listen.
+     *
+     * @param options - Open a session populated by the wake word: `fromWake`
+     * selects the wake engine, and `lookback` (16 kHz mono PCM captured by
+     * the detector) is replayed into it the moment capture is live, so the
+     * command spoken in the same breath as the wake phrase is transcribed.
      */
-    private async begin(): Promise<void> {
+    private async begin({
+        fromWake,
+        lookback,
+    }: {
+        fromWake?: boolean;
+        lookback?: Float32Array;
+    } = {}): Promise<void> {
         this.reduce({ type: "activate" });
         const sessionId = this.snapshot.sessionId;
         this.finals = [];
+        this.sessionFromWake = fromWake === true;
+        this.sessionStt = this.sessionFromWake
+            ? (this.wakeStt ?? this.stt)
+            : this.stt;
+        this.disarmDetectorForSession();
         let vadArmed = false;
         if (this.vad !== null) {
             try {
@@ -248,8 +387,9 @@ export class VoiceController {
         if (vadArmed) {
             this.armNoSpeechTimer(sessionId);
         }
+        const stt = this.sessionStt;
         try {
-            await this.stt.start(
+            await stt.start(
                 {
                     onPartial: (text) => this.onPartial(sessionId, text),
                     onResult: (text) => this.onTranscript(sessionId, text),
@@ -257,6 +397,13 @@ export class VoiceController {
                 },
                 vadArmed ? { continuous: true } : undefined,
             );
+            // Capture is live: replay the wake context before any future mic
+            // frame, so "Hey JARVIS, turn on the lights" decodes as a whole.
+            // Engines that cannot take caller audio (no `feed`) simply start
+            // at the wake phrase instead.
+            if (this.sessionFromWake && lookback !== undefined) {
+                stt.feed?.(lookback, 16000);
+            }
         } catch (err) {
             this.clearTimers();
             void this.stopVad();
@@ -282,10 +429,155 @@ export class VoiceController {
         this.clearTimers();
         void this.stopVad();
         try {
-            await this.stt.stop();
+            await this.activeStt().stop();
         } catch {
             // Engine failures surface through onError; nothing to do here.
         }
+    }
+
+    /**
+     * The engine driving the active session: `wakeStt` for wake-word turns,
+     * the primary `stt` for presses. Only meaningful while a session is
+     * live (idle paths never consult it — `dispose` stops both engines
+     * explicitly).
+     *
+     * @returns The active session's engine.
+     */
+    private activeStt(): SttProvider {
+        return this.sessionStt ?? this.stt;
+    }
+
+    /**
+     * A wake-phrase match: opens a wake session that reuses the detector's
+     * look-back buffer. Ignored unless idle — a wake that lands mid-turn
+     * (barge-in, phase 6) is dropped; the detector stays armed until the
+     * turn settles, then re-arms.
+     *
+     * @param detection - The detector's match, carrying the phrase's
+     * confidence and the look-back audio to replay into the wake engine.
+     */
+    private async handleWake(detection: WakeDetection): Promise<void> {
+        if (this.wake === null || this.wakeStt === null || this.disposed) {
+            return;
+        }
+        if (this.snapshot.state !== "idle") {
+            return;
+        }
+        try {
+            await this.onWakeCue?.();
+        } catch {
+            // A cue that will not play must not stop the session from
+            // opening; the blip is cosmetic.
+        }
+        await this.begin({ fromWake: true, lookback: detection.lookback });
+        if (this.snapshot.state === "idle") {
+            // The session failed to open (its reducer said no); re-arm the
+            // pair so the wake word works again without a manual toggle.
+            this.pendingReArm = true;
+            this.maybeReArm();
+        }
+    }
+
+    /**
+     * The detector died mid-run (engine failure, mic track ended): record
+     * the failure in the snapshot (`wakeArmed` drops to false, the error
+     * banner shows at `idle`) and stay disarmed — no auto-retry spiral. The
+     * user toggles the wake switch to re-arm.
+     *
+     * @param error - The detector's mapped failure.
+     */
+    private onWakeError(error: VoiceError): void {
+        this.reduce({ type: "wakeFailed", error });
+    }
+
+    /**
+     * Arms the detector (and, alongside it, pre-warms the wake engine's
+     * model so the first wake session has nothing to stall on). No-ops while
+     * armed, while arming, or when wake support is unavailable.
+     */
+    private async armWake(): Promise<void> {
+        if (
+            this.wake === null ||
+            this.wakeStt === null ||
+            this.disposed ||
+            this.snapshot.wakeArmed ||
+            this.wakeBusy
+        ) {
+            return;
+        }
+        this.wakeBusy = true;
+        try {
+            await this.wake.start({
+                onWake: (detection) => void this.handleWake(detection),
+                onError: (error) => this.onWakeError(error),
+            });
+            void this.wakeStt.prepare?.().catch(() => {
+                // The first wake session's own start() owns any failure.
+            });
+            this.reduce({ type: "wakeArmed" });
+        } catch (err) {
+            this.reduce({ type: "wakeFailed", error: toVoiceError(err) });
+        } finally {
+            this.wakeBusy = false;
+        }
+    }
+
+    /**
+     * Disarms the detector, dropping any in-flight callbacks, and marks the
+     * snapshot accordingly (safe when already disarmed).
+     */
+    private async disarmWake(): Promise<void> {
+        if (this.wake === null) {
+            return;
+        }
+        try {
+            await this.wake.stop();
+        } catch {
+            // A detector that failed to stop is already dead.
+        }
+        if (this.snapshot.wakeArmed) {
+            this.reduce({ type: "wakeDisarmed" });
+        }
+    }
+
+    /**
+     * Disarms an armed detector because a session is about to own the mic.
+     * Runs from `begin()` for every session (wake or press), and re-arms
+     * when that turn lands `idle` — so wake detection pauses while the
+     * microphone is live and resumes automatically once it is free.
+     */
+    private disarmDetectorForSession(): void {
+        if (this.wake === null || !this.snapshot.wakeArmed) {
+            return;
+        }
+        this.pendingReArm = this.wakeEnabled;
+        void this.wake.stop().catch(() => {
+            // A detector that failed to stop is already dead.
+        });
+        this.reduce({ type: "wakeDisarmed" });
+    }
+
+    /**
+     * Re-arms the detector after a session that interrupted it, when the
+     * user still wants wake detection. Fired from {@link reduce} whenever a
+     * session lands `idle`; the `pendingReArm` flag (set by
+     * {@link disarmDetectorForSession} or a failed wake open) makes it
+     * idempotent and stops it racing a manual toggle.
+     */
+    private maybeReArm(): void {
+        if (
+            !this.wakeEnabled ||
+            !this.pendingReArm ||
+            this.disposed ||
+            this.wake === null ||
+            this.wakeStt === null
+        ) {
+            return;
+        }
+        if (this.snapshot.wakeArmed || this.snapshot.state !== "idle") {
+            return;
+        }
+        void this.armWake();
     }
 
     /**
@@ -354,7 +646,7 @@ export class VoiceController {
             return;
         }
         this.clearTimers();
-        void this.stt.cancel();
+        void this.activeStt().cancel();
         this.reduce({ type: "transcriptFailed", sessionId, error });
     }
 
@@ -375,9 +667,11 @@ export class VoiceController {
         }
         this.reduce({ type: "endOfSpeech", sessionId });
         void this.stopVad();
-        void this.stt.stop().catch(() => {
-            // Engine failures surface through onError; nothing to do here.
-        });
+        void this.activeStt()
+            .stop()
+            .catch(() => {
+                // Engine failures surface through onError; nothing to do here.
+            });
         // Flush deadline: the transcript must land within NO_SPEECH_MS or
         // the session gives up (submitting what it has, or going quiet).
         this.armNoSpeechTimer(sessionId);
@@ -408,7 +702,10 @@ export class VoiceController {
      */
     private onPartial(sessionId: number, text: string): void {
         this.cancelNoSpeechTimer();
-        const display = [this.displayText(), text].filter(Boolean).join(" ");
+        const cleaned = this.sessionFromWake
+            ? stripWakePhrase(text, this.wakePhrase)
+            : text;
+        const display = [this.displayText(), cleaned].filter(Boolean).join(" ");
         this.reduce({ type: "partial", sessionId, text: display });
     }
 
@@ -444,7 +741,13 @@ export class VoiceController {
             }
             return;
         }
-        this.reduce({ type: "transcript", sessionId, text });
+        // Engine-native sessions: the final is the whole transcript. In a
+        // wake session it includes the wake phrase, which must be stripped
+        // before it reaches display or submission.
+        const cleaned = this.sessionFromWake
+            ? stripWakePhrase(text, this.wakePhrase)
+            : text;
+        this.reduce({ type: "transcript", sessionId, text: cleaned });
         if (
             this.snapshot.state === "submitting" &&
             this.snapshot.transcript !== null
@@ -476,17 +779,22 @@ export class VoiceController {
             this.dispatchTurn(sessionId, this.snapshot.transcript);
             return;
         }
-        void this.stt.cancel();
+        void this.activeStt().cancel();
         this.reduce({ type: "noSpeech", sessionId });
     }
 
     /**
-     * The accumulated final segments as one transcript text.
+     * The accumulated final segments as one transcript text. In a wake
+     * session the segments begin with the wake phrase and are stripped for
+     * display and submission alike.
      *
      * @returns The joined text, trimmed; empty when nothing was recognized.
      */
     private displayText(): string {
-        return this.finals.join(" ").trim();
+        const text = this.finals.join(" ").trim();
+        return this.sessionFromWake
+            ? stripWakePhrase(text, this.wakePhrase)
+            : text;
     }
 
     /**
@@ -541,7 +849,7 @@ export class VoiceController {
             this.submitAccumulated(sessionId);
             return;
         }
-        void this.stt.cancel();
+        void this.activeStt().cancel();
         void this.stopVad();
         this.reduce({ type: "noSpeech", sessionId });
     }
@@ -611,6 +919,9 @@ export class VoiceController {
             for (const listener of this.listeners) {
                 listener();
             }
+            // A session landing on `idle` (after a turn, a quiet no-op, a
+            // failure) is a moment to bring wake detection back online.
+            this.maybeReArm();
         }
     }
 }

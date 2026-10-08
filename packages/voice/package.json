@@ -31,5 +31,9 @@
     },
     "peerDependencies": {
         "@lichess-org/vosk-browser": "^0.0.3"
+    },
+    "optionalDependencies": {
+        "onnxruntime-web": "^1.30.0",
+        "openwakeword-web": "^0.1.0"
     }
 }

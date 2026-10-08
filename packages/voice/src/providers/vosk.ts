@@ -520,6 +520,50 @@ export class VoskSttProvider implements SttProvider {
     }
 
     /**
+     * Pre-loads the shared model so the first session opens without the
+     * model-download/load stall — the controller calls this when a wake word
+     * arms, so the first wake-session is instant. Never rejects the caller:
+     * a failed warm-up surfaces as a rejection from the next `start()`
+     * instead.
+     *
+     * @returns Resolves when the model is loaded (or already loaded).
+     */
+    async prepare(): Promise<void> {
+        if (this.model === null) {
+            await this.loadModel().catch(() => {
+                // The next start() owns the failure.
+            });
+        }
+    }
+
+    /**
+     * Feeds caller-supplied mono PCM into the active recognizer, reopening
+     * the session's audio source — the seam a wake session uses to replay
+     * the detector's look-back buffer (16 kHz float PCM, "Hey JARVIS, turn
+     * on the lights") before live mic frames continue. Vosk resamples
+     * internally, so the look-back's 16 kHz is accepted as-is.
+     *
+     * Silently ignored while no session is running; the session's own
+     * live audio keeps flowing regardless.
+     *
+     * @param pcm - Mono PCM samples normalized to `[-1, 1]`.
+     * @param sampleRate - The sample rate the PCM was captured at.
+     */
+    feed(pcm: Float32Array, sampleRate: number): void {
+        const recognizer = this.recognizer;
+        if (recognizer === null || this.engineState !== "running") {
+            return;
+        }
+        try {
+            recognizer.acceptWaveformFloat(pcm, sampleRate);
+        } catch {
+            this.fail(
+                this.voiceError("engine", "the recognizer rejected audio"),
+            );
+        }
+    }
+
+    /**
      * Releases the engine-wide resources: the active session (if any) is
      * cancelled first, then the model's worker and memory are freed and the
      * cached load promises are dropped, so a later session reloads from the

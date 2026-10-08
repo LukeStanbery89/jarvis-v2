@@ -47,8 +47,17 @@ import {
     type SttProvider,
     type VadProvider,
     type VoiceSnapshot,
+    type WakeWordProvider,
 } from "@lukestanbery/jarvis-voice";
-import { VoiceController, createStt } from "../voice";
+import {
+    createStt,
+    createWakeStt,
+    createWakeWord,
+    probeWakeSupport,
+    readWakePref,
+    VoiceController,
+    writeWakePref,
+} from "../voice";
 // The local speech engine's worker + WASM binary are served as same-origin
 // assets via the Vite build (`?url` copies them into dist and yields their
 // URLs); the library's own default paths cannot resolve from a /web mount.
@@ -65,6 +74,7 @@ import {
     type LocationUiState,
 } from "../location";
 import {
+    AudioLines,
     Image as ImageIcon,
     LoaderCircle,
     LogOut,
@@ -248,6 +258,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     );
     /** Why the pin looks the way it does (tooltip text lives in location.ts). */
     const [locationState, setLocationState] = useState<LocationUiState>("off");
+    /**
+     * The wake-word preference (#84 P4), persisted across sessions. OFF by
+     * default: armed detection holds a second 16 kHz mic open.
+     */
+    const [wakeOn, setWakeOn] = useState(() => readWakePref(localStorage));
+    /**
+     * Whether the server answers the wake-model probe. Combined with local
+     * engine presence (`wake !== null && wakeStt !== null`) into
+     * `wakeAvailable`, which gates the sidebar toggle.
+     */
+    const [wakeServerReady, setWakeServerReady] = useState(false);
 
     /** Latest thread map for the throttled persister. */
     const threadsRef = useRef(threads);
@@ -292,6 +313,30 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     }
     const vad = vadRef.current;
     /**
+     * The wake-word STT engine (#84 P4): a second, on-device Vosk instance
+     * wake-opened sessions transcribe through. Same worker/wasm URLs as the
+     * primary engine; see {@link createWakeStt} for why it is never the
+     * cloud-backed engine.
+     */
+    const wakeSttRef = useRef<SttProvider | null>(null);
+    if (wakeSttRef.current === null) {
+        wakeSttRef.current = createWakeStt({
+            workerUrl: voskWorkerUrl,
+            wasmUrl: voskWasmUrl,
+        });
+    }
+    const wakeStt = wakeSttRef.current;
+    /**
+     * The on-device wake detector (#84 P4): construction is cheap (model
+     * download + the 16 kHz mic open only when armed), so it is built once
+     * per mount and handed to the controller.
+     */
+    const wakeRef = useRef<WakeWordProvider | null>(null);
+    if (wakeRef.current === null) {
+        wakeRef.current = createWakeWord();
+    }
+    const wake = wakeRef.current;
+    /**
      * Latest turn runner, read by the voice controller's submit seam at call
      * time so its closures never go stale (mirrors the threadsRef pattern).
      */
@@ -309,6 +354,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         voiceRef.current = new VoiceController({
             stt,
             vad,
+            wake,
+            wakeStt,
             submit: (text) => {
                 const runTurn = runTurnRef.current;
                 if (runTurn === null) {
@@ -316,9 +363,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 }
                 return runTurn(text, "voice", []);
             },
+            onWakeCue: () => audioRef.current?.blip(),
         });
     }
     const voice = voiceRef.current;
+
+    /** Wake is usable here: local engines exist and the server serves them. */
+    const wakeAvailable = wake !== null && wakeStt !== null && wakeServerReady;
 
     /**
      * The spoken-response player (#83): created once per mount, unlocked
@@ -460,6 +511,35 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             audio.dispose();
         };
     }, []);
+
+    // Wake-word support probe (#84 P4): one HEAD to the wake model route.
+    // A configured server answers 200; an unconfigured one 404s without
+    // downloading anything (HEAD). Failure just keeps the toggle hidden.
+    useEffect(() => {
+        let cancelled = false;
+        void probeWakeSupport().then((ok) => {
+            if (!cancelled) {
+                setWakeServerReady(ok);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    // Arm/disarm the detector with the sidebar toggle. `enableWake` is a
+    // silent no-op when the engines are missing, so the guard is a nicety.
+    useEffect(() => {
+        const controller = voice;
+        if (controller === null) {
+            return;
+        }
+        if (wakeAvailable && wakeOn) {
+            void controller.enableWake();
+        } else {
+            void controller.disableWake();
+        }
+    }, [voice, wakeAvailable, wakeOn]);
 
     // Location sharing (#31): automatic by default — on mount (and on every
     // toggle-on) one geolocation request runs, and on success one `location`
@@ -836,6 +916,29 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         writeLocationPref(localStorage, next);
     }
 
+    /**
+     * Flips the wake-word toggle and persists it (#84 P4). The gesture also
+     * unlocks the audio context so the match cue is audible.
+     */
+    function toggleWake(): void {
+        const next = !wakeOn;
+        setWakeOn(next);
+        writeWakePref(localStorage, next);
+        if (next) {
+            audio.unlock();
+        }
+    }
+
+    /** Tooltip/a11y text for the wake toggle state (#84 P4). */
+    function describeWakeState(): string {
+        if (!wakeAvailable) {
+            return "Wake word unavailable";
+        }
+        return voiceSnapshot.wakeArmed
+            ? "Listening for “Hey JARVIS”"
+            : "Wake word off";
+    }
+
     return (
         <main className="chat">
             <aside className="sidebar">
@@ -856,6 +959,22 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         >
                             <MapPin size={16} />
                         </button>
+                        {wakeAvailable && (
+                            <button
+                                type="button"
+                                className={
+                                    voiceSnapshot.wakeArmed
+                                        ? "icon-btn location active"
+                                        : "icon-btn location"
+                                }
+                                aria-pressed={wakeOn}
+                                aria-label={describeWakeState()}
+                                title={describeWakeState()}
+                                onClick={toggleWake}
+                            >
+                                <AudioLines size={16} />
+                            </button>
+                        )}
                         <button
                             type="button"
                             className="icon-btn"
