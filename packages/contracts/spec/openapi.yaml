@@ -57,6 +57,10 @@ tags:
       description: Free-form per-user integration prefs.
     - name: Session
       description: The cookie login session lifecycle (`GET`/`DELETE /api/session`).
+    - name: Stt
+      description: >-
+          The local speech-recognition model archive served to browser clients
+          (`GET /api/stt/model`, issue #84 phase 3b).
     - name: Users
       description: Account management (owner-only read/write).
 paths:
@@ -1019,6 +1023,50 @@ paths:
                                 $ref: "#/components/schemas/Error"
                 "404":
                     description: No such session, or it belongs to another user.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/stt/model:
+        get:
+            operationId: sttModelGet
+            summary: Download the local speech-recognition model archive
+            description: >-
+                Serves the client-side WASM speech engine's model archive
+                (#84 phase 3b): the browser downloads this tar.gz once,
+                extracts it into IndexedDB, and runs recognition fully
+                on-device — no audio ever leaves the client. The server
+                fetches the archive from its configured upstream
+                (`JARVIS_STT_MODEL_URL`) on the first request, caches it
+                privately under `~/.jarvis/stt`, and streams the cached file
+                after that. Public by design: the archive is open-source
+                model weights, never user data, and the recognition worker
+                cannot attach auth headers to its fetch. Long-lived cache
+                headers apply (the archive changes only with server
+                configuration).
+            tags: [Stt]
+            security: []
+            responses:
+                "200":
+                    description: The model archive (a gzipped tar of the model folder).
+                    content:
+                        application/gzip:
+                            schema:
+                                type: string
+                                format: binary
+                "404":
+                    description: >-
+                        STT model serving is not configured
+                        (`JARVIS_STT_PROVIDER` unset).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: >-
+                        The upstream download failed (transient — the next
+                        request retries; the body is the plain error
+                        envelope).
                     content:
                         application/json:
                             schema:

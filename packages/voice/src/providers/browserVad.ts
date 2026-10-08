@@ -78,6 +78,11 @@ type AudioContextCtor = new () => AudioContextLike;
 /**
  * Finds `getUserMedia`, standard or vendor-prefixed paths.
  *
+ * The function is returned **bound to its `MediaDevices` receiver**: the
+ * browser requires it to be invoked with the `mediaDevices` object as
+ * `this` (Chrome throws `Illegal invocation` otherwise), and the caller
+ * here holds it detached from its own object.
+ *
  * @returns The function, or `null` outside a browser that offers one
  * (node, plain-HTTP non-localhost origins, permission-less contexts).
  */
@@ -85,7 +90,11 @@ function findUserMedia(): MediaDevicesLike["getUserMedia"] | null {
     const globals = globalThis as {
         navigator?: { mediaDevices?: MediaDevicesLike };
     };
-    return globals.navigator?.mediaDevices?.getUserMedia ?? null;
+    const devices = globals.navigator?.mediaDevices;
+    if (devices?.getUserMedia === undefined) {
+        return null;
+    }
+    return devices.getUserMedia.bind(devices);
 }
 
 /**

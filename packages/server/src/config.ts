@@ -251,6 +251,28 @@ export interface TtsConfig {
     readonly speed: number;
 }
 
+/** The upstream model archive the server fetches on first request. */
+export const DEFAULT_STT_MODEL_URL =
+    "https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz";
+
+/** Default cache location of the STT model archive (private, `0700`). */
+export const DEFAULT_STT_MODEL_DIR = `${homedir()}/.jarvis/stt`;
+
+/**
+ * Local STT model serving (#84 P3b). The server fetches the WASM speech
+ * engine's model archive from `modelUrl` on first request, caches it
+ * privately under `modelDir`, and serves the cached file at
+ * `GET /api/stt/model` — so browser clients run recognition on-device
+ * without any external egress (the archive is open-source model weights,
+ * never user data).
+ */
+export interface SttModelConfig {
+    /** Where the archive is fetched from (`JARVIS_STT_MODEL_URL`). */
+    readonly modelUrl: string;
+    /** Where the archive caches (`JARVIS_STT_MODEL_DIR`). */
+    readonly modelDir: string;
+}
+
 /**
  * Default location of the LangGraph checkpoint database.
  *
@@ -501,6 +523,15 @@ export interface AppConfig {
      * never imported. Optional so hand-built configs (tests) can omit it.
      */
     readonly tts?: TtsConfig;
+    /**
+     * Local STT model serving (#84 P3b), present only when configured
+     * (`JARVIS_STT_PROVIDER=vosk`) — the client-side speech-recognition
+     * engine downloads its model archive from the server so deployments
+     * need no external egress for it. Unset means `GET /api/stt/model`
+     * answers 404 and clients fall back to their other engines. Optional so
+     * hand-built configs (tests) can omit it.
+     */
+    readonly stt?: SttModelConfig;
     /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
@@ -769,6 +800,17 @@ export function getAppConfig(): AppConfig {
                       voice:
                           process.env.JARVIS_TTS_VOICE || DEFAULT_KOKORO_VOICE,
                       speed: numberOr(process.env.JARVIS_TTS_SPEED, 1),
+                  }
+                : undefined,
+        stt:
+            process.env.JARVIS_STT_PROVIDER === "vosk"
+                ? {
+                      modelUrl:
+                          process.env.JARVIS_STT_MODEL_URL ||
+                          DEFAULT_STT_MODEL_URL,
+                      modelDir:
+                          process.env.JARVIS_STT_MODEL_DIR ||
+                          DEFAULT_STT_MODEL_DIR,
                   }
                 : undefined,
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),

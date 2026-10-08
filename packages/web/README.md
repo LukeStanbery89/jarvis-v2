@@ -122,12 +122,33 @@ runs `.tsx` files, so no behavior may live only inside a component.
 
 ## Voice input (#84)
 
-Click-to-talk via the Web Speech API: the composer's mic button starts
-capture (pulse animation + a live partial transcript in the status line),
-and the transcript submits as an ordinary `mode: "voice"` prompt that lands
-in history as text. A status line tracks the session stage (Listening… /
-Transcribing… / Sending… / Thinking…), and a failed session (denied
-microphone, rejected turn) stays on screen as an alert until the next press.
+Click-to-talk: the composer's mic button starts capture (pulse animation +
+a live partial transcript in the status line), and the transcript submits
+as an ordinary `mode: "voice"` prompt that lands in history as text. A
+status line tracks the session stage (Listening… / Transcribing… /
+Sending… / Thinking…), and a failed session (denied microphone, rejected
+turn) stays on screen as an alert until the next press.
+
+**The engine is Web Speech first**: `src/voice.ts` `createStt()` selects the
+Web Speech engine (cloud-backed in Chrome) when the runtime offers it — the
+fastest, most accurate dictation — and falls back to the local WASM engine
+(Vosk, via `@lichess-org/vosk-browser`) when `SpeechRecognition` is absent
+(e.g. Firefox) or the team wants on-device privacy by opting in, running
+fully on-device (no audio egress). The engine's worker script and WASM
+binary ship with the SPA bundle (Vite `?url` assets, served same-origin);
+the `/web` CSP covers them with `worker-src 'self'` and `script-src 'self'
+'wasm-unsafe-eval'` for the page, while the worker entry script itself is
+served with a worker-scoped `script-src 'self' 'unsafe-eval'` CSP —
+embind's runtime synthesizes method invokers with `new Function`, and a
+worker whose entry declares its own CSP runs under that policy instead of
+the owner's, so eval is confined to the hashed engine module and never
+appears on the page. The model
+archive (~40 MB) downloads once from the server's `GET /api/stt/model`
+(configure the server with `JARVIS_STT_PROVIDER=vosk`; unconfigured → the
+Vosk engine errors at session start) and persists in the browser's IndexedDB
+after that. Selection is construction-time; a session-time failure
+surfaces through the engine's own error path rather than falling back
+mid-session.
 
 Endpointing is VAD-owned when the runtime supports it (#84 P3): an energy
 VAD (`createBrowserVad()` — Web Audio on its own echo-cancelled track) and
@@ -135,26 +156,27 @@ the controller's timers decide "pause ⇒ send" (800 ms of silence after
 speech ends) and "press with silence ⇒ quiet idle" (4 s, `stt.cancel()`, no
 error banner). The engine runs continuously (`start(…, { continuous: true })`)
 and the controller accumulates its per-segment finals into one transcript.
-Without VAD support (e.g. Firefox) the engine's own endpointing and the
-second-press stop remain — identical to phase 2.
+Without VAD support the engine's own endpointing and the second-press stop
+remain — identical to phase 2.
 
 The wiring splits cleanly: `packages/voice` owns the engine seam
 (`SttProvider`, `VadProvider`), the pure lifecycle reducer, and the
 `VoiceController` orchestrator itself (moved there in P3 so other clients
-reuse it — `src/voice.ts` is now a re-export shim). The controller arms the
-engines, tags every event with its session id, submits transcripts, and
-routes turn outcomes back through the reducer, so stale engine callbacks or
-old turn ends can never disturb a newer session. `src/views/Chat.tsx`
-renders the snapshot, forwards server frames (`noteResponseFrame`), and
-passes `createBrowserVad()` in at construction. No behavior lives only in
-the component.
+reuse it). The controller arms the engines, tags every event with its
+session id, submits transcripts, and routes turn outcomes back through the
+reducer, so stale engine callbacks or old turn ends can never disturb a
+newer session. `src/views/Chat.tsx` renders the snapshot, forwards server
+frames (`noteResponseFrame`), and passes `createBrowserVad()` in at
+construction; unmount disposes the controller (cancelling any live session
+and releasing the WASM model worker). No behavior lives only in the
+component.
 
-Two honest limits: Chrome's Web Speech recognition is cloud-backed (audio
-egress to the recognition service — the local WASM provider is planned
-behind the same interface), and `SpeechRecognition` exists only in secure
-contexts (HTTPS or localhost), so over plain HTTP — like geolocation — the
-mic reports unavailable (disabled button with an explanation) and typing
-keeps working exactly as before.
+Two honest limits: the WASM engine's model archive must be fetchable from
+the server (a 404 from `GET /api/stt/model` — `JARVIS_STT_PROVIDER` unset —
+surfaces as a session error), and every engine here needs a secure context
+(HTTPS or localhost), so over plain HTTP — like geolocation — the mic
+reports unavailable (disabled button with an explanation) and typing keeps
+working exactly as before.
 
 The client also declares the `audio` capability (#83): when the server has
 TTS configured, voice-mode turns come back spoken — an `audioStart` frame
@@ -184,7 +206,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
-- `src/voice.ts` — re-export shim for the voice controller (it lives in `packages/voice`, #84 P3).
+- `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b; the controller itself lives in `packages/voice`).
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.

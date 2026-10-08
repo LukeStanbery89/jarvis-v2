@@ -19,6 +19,7 @@ import type { AttachmentStore } from "./attachments/store";
 import type { InFlightLimiter } from "./attachments/limiters";
 import { DEFAULT_ATTACHMENT_MAX_BYTES, type AppConfig } from "./config";
 import { logger } from "./logger";
+import { createSttModelHandler, SttModelCache } from "./stt/model";
 
 /** Returns `413` with the {@link AttachmentTooLarge} contract shape. */
 const attachmentBodyTooLarge = (_appConfig: AppConfig, maxBytes: number) => {
@@ -127,6 +128,17 @@ export function createApp(
 
     app.use("/api", createAuthRouter(store, appConfig));
 
+    // The local STT model route (#84 P3b): the client-side WASM engine's
+    // archive, cached download-once under ~/.jarvis/stt when configured and
+    // a JSON 404 when not. Public by design (open-source weights, not user
+    // data; the recognition worker cannot attach auth headers).
+    app.get(
+        "/api/stt/model",
+        createSttModelHandler(
+            appConfig.stt ? new SttModelCache(appConfig.stt) : null,
+        ),
+    );
+
     const webIndex = appConfig.webDir
         ? path.join(appConfig.webDir, "index.html")
         : null;
@@ -135,13 +147,38 @@ export function createApp(
         logger.info(
             `serving web chat client from ${appConfig.webDir} (index.html found)`,
         );
-        // The web client renders remote (https) images from the model and dials
-        // the same-origin `/ws` socket, so its CSP widens `img-src` beyond the
-        // portal's `'self' data:` posture and adds this request's ws/wss origin.
+        // The web client renders remote (https) images from the model, dials
+        // the same-origin `/ws` socket, and runs the local speech engine in a
+        // same-origin module worker (#84 P3b), so its CSP widens `img-src`
+        // beyond the portal's `'self' data:` posture, adds this request's
+        // ws/wss origin, declares the worker source, and allows Wasm
+        // compilation (`'wasm-unsafe-eval'` — JS eval stays blocked) for the
+        // engine's Kaldi binary.
         app.use(
             "/web",
-            spaSecurityHeaders({ remoteImages: true, websocketOrigins: true }),
+            spaSecurityHeaders({
+                remoteImages: true,
+                websocketOrigins: true,
+                workerSrc: true,
+                wasmUnsafeEval: true,
+            }),
         );
+        // The speech engine's worker script carries its own CSP. embind's
+        // runtime additionally synthesizes a per-method invoker function
+        // with `new Function` on first call (`craftInvokerFunction` — a
+        // second eval site the fork cannot remove), and a dedicated worker
+        // whose entry script declares a Content-Security-Policy runs under
+        // that policy instead of the owner's, so granting `'unsafe-eval'`
+        // here scopes it to this hashed, same-origin module — the page
+        // itself never evaluates strings.
+        const workerScriptCsp =
+            "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'";
+        app.use("/web", (req, res, next) => {
+            if (/^\/assets\/vosk\.worker-[A-Za-z0-9_-]+\.js$/.test(req.path)) {
+                res.setHeader("Content-Security-Policy", workerScriptCsp);
+            }
+            next();
+        });
         // `index: "index.html"` makes `GET /web` itself serve the shell.
         app.use(
             "/web",
@@ -249,6 +286,24 @@ interface SpaSecurityHeaderOptions {
      * loaded from; the admin portal keeps the static `'self'` posture.
      */
     websocketOrigins?: boolean;
+    /**
+     * Whether `script-src` additionally allows `'wasm-unsafe-eval'`. The
+     * chat client's local speech engine (#84 P3b) compiles its WASM binary
+     * inside a same-origin module worker; workers inherit the owner page's
+     * `script-src`, and WebAssembly compilation counts as "eval" to the CSP
+     * spec, so `script-src 'self'` blocks it. `'wasm-unsafe-eval'` grants
+     * Wasm compile/instantiate *only* — JS `eval`/`new Function` stay
+     * blocked. The portal runs no Wasm and keeps the strict posture.
+     */
+    wasmUnsafeEval?: boolean;
+    /**
+     * Whether `worker-src 'self';` is added. The chat client's local speech
+     * engine (#84 P3b) runs in a module worker served from the same origin
+     * (`vosk.worker.js`, bundled with the SPA); the explicit directive
+     * documents that and decouples worker loading from `script-src`. The
+     * portal runs no workers and keeps the strict posture.
+     */
+    workerSrc?: boolean;
 }
 
 /**
@@ -267,11 +322,17 @@ interface SpaSecurityHeaderOptions {
 function spaSecurityHeaders({
     remoteImages = false,
     websocketOrigins = false,
+    workerSrc: withWorkerSrc = false,
+    wasmUnsafeEval: withWasmUnsafeEval = false,
 }: SpaSecurityHeaderOptions = {}) {
     return (req: Request, res: Response, next: NextFunction) => {
         const imgSrc = remoteImages
             ? "img-src 'self' data: https:"
             : "img-src 'self' data:";
+        const workerSrc = withWorkerSrc ? "worker-src 'self'; " : "";
+        const scriptSrc = withWasmUnsafeEval
+            ? "script-src 'self' 'wasm-unsafe-eval'; "
+            : "script-src 'self'; ";
         const host = req.headers.host;
         const socketOrigins =
             websocketOrigins &&
@@ -281,7 +342,7 @@ function spaSecurityHeaders({
                 : "";
         res.setHeader(
             "Content-Security-Policy",
-            `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; ${imgSrc}; connect-src 'self'${socketOrigins}`,
+            `default-src 'self'; ${scriptSrc}style-src 'self' 'unsafe-inline'; ${workerSrc}${imgSrc}; connect-src 'self'${socketOrigins}`,
         );
         res.setHeader("X-Content-Type-Options", "nosniff");
         next();

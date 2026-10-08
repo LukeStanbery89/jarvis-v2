@@ -145,6 +145,16 @@ logger.info(
         : "TTS disabled (JARVIS_TTS_PROVIDER unset)",
 );
 
+// Local STT model serving (#84 P3b): present only when configured — unset
+// JARVIS_STT_PROVIDER means GET /api/stt/model answers 404 and clients fall
+// back to their other engines. The archive downloads lazily on the first
+// client request, never at boot.
+logger.info(
+    appConfig.stt
+        ? `STT model serving active: ${appConfig.stt.modelUrl} → ${appConfig.stt.modelDir}`
+        : "STT model serving disabled (JARVIS_STT_PROVIDER unset)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),

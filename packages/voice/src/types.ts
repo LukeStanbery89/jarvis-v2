@@ -105,12 +105,16 @@ export interface SttStartOptions {
  *   finalize on its own pause detection: final-segment results may still
  *   arrive while capture continues, and only the caller's `stop()`/`cancel()`
  *   ends the session.
+ * - Engines holding resources beyond a session (a WASM model worker, cached
+ *   weights) may implement the optional `dispose()`: called once by a client
+ *   when the engine will never be used again, it releases everything. The
+ *   Web Speech engine has nothing beyond a session, so it omits it.
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
  */
 export interface SttProvider {
-    /** Stable engine identifier, e.g. `"web-speech"` or `"whisper-wasm"`. */
+    /** Stable engine identifier, e.g. `"web-speech"`, `"vosk-wasm"`. */
     readonly id: string;
     /** Current provider lifecycle. */
     readonly state: SttState;
@@ -127,6 +131,14 @@ export interface SttProvider {
     stop(): Promise<void>;
     /** Aborts the session; no callback fires after the returned promise resolves. */
     cancel(): Promise<void>;
+    /**
+     * Releases engine-wide resources (a loaded WASM model, its worker), not
+     * just the active session. Optional: engines that hold nothing beyond a
+     * session omit it. After `dispose()` the provider accepts new sessions
+     * (reloading what it needs) or may reject — implementations document
+     * which.
+     */
+    dispose?(): Promise<void>;
 }
 
 /**

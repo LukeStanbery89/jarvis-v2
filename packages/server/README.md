@@ -821,3 +821,27 @@ Deployment posture (deliberate):
   auth package's private-fs helpers; `JARVIS_TTS_CACHE_DIR` overrides).
 - The Docker prod stage installs with `--omit=optional`, so the runtime
   image neither carries the ONNX stack nor changes behavior.
+
+## Local STT model serving (#84 P3b)
+
+The web chat client's speech recognition runs **on-device** (issue #84):
+a WASM engine (Vosk) in the browser transcribes the microphone locally, so
+no audio ever leaves the client. The engine needs ~40 MB of model weights;
+the server fetches the archive from its configured upstream on the **first
+client request**, caches it privately, and streams it to browsers from its
+own origin — `GET /api/stt/model` (public by design: the archive is
+open-source model weights, never user data, and the recognition worker
+cannot attach auth headers; browsers cache it via long-lived headers). The
+archive never lands in the Docker image and is never downloaded at boot.
+
+- `src/stt/model.ts` — the download-once cache (`SttModelCache`: lazy first
+  fetch, in-flight collapse, temp-file-then-rename so a partial download
+  never masquerades as a model, retry on the next request after a failure)
+  plus the route handler (`createSttModelHandler`: 200 `application/gzip`,
+  JSON 404 unconfigured, JSON 503 while an upstream fetch fails).
+
+| Variable               | Default                              | Description                                   |
+| ---------------------- | ------------------------------------ | --------------------------------------------- |
+| `JARVIS_STT_PROVIDER`  | _(unset)_                            | `vosk` enables model serving; unset = 404     |
+| `JARVIS_STT_MODEL_URL` | the vosk-browser small-en-us tarball | Upstream archive fetched on first request     |
+| `JARVIS_STT_MODEL_DIR` | `~/.jarvis/stt`                      | Private cache directory (`0700`, file `0600`) |
