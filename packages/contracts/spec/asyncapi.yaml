@@ -60,6 +60,8 @@ channels:
                 $ref: "#/components/messages/chatPrompt"
             locationFrame:
                 $ref: "#/components/messages/locationFrame"
+            cancelFrame:
+                $ref: "#/components/messages/cancelFrame"
             authResult:
                 $ref: "#/components/messages/authResult"
             chunk:
@@ -84,7 +86,7 @@ operations:
         channel:
             $ref: "#/channels/ws"
         title: Send a client frame
-        summary: Auth handshake, capability announcement, location report, or chat prompt
+        summary: Auth handshake, capability announcement, location report, chat prompt, or turn cancellation
         description: >-
             The client's first frame may be the `auth` handshake, the `hello`
             capability announcement, or a prompt. `hello` must open the socket
@@ -97,12 +99,17 @@ operations:
             (#31) so location-aware tools can answer locationless questions.
             One turn at a time: a prompt while a previous turn is streaming —
             on this socket or any other sharing the thread — is answered with
-            an `error` frame.
+            an `error` frame. A `cancel` frame (#84 P6) — valid any time,
+            ignored when no turn is in flight — drops this socket's in-flight
+            turn: the model stream and spoken audio abort, the thread lock
+            releases, and the turn ends with a terminal `done` (text already
+            streamed stays in history; no error frame is sent).
         messages:
             - $ref: "#/channels/ws/messages/clientHello"
             - $ref: "#/channels/ws/messages/authHandshake"
             - $ref: "#/channels/ws/messages/chatPrompt"
             - $ref: "#/channels/ws/messages/locationFrame"
+            - $ref: "#/channels/ws/messages/cancelFrame"
     receiveServerFrame:
         action: receive
         channel:
@@ -330,6 +337,31 @@ components:
                       lat: 45.5231
                       lon: -122.6765
                       label: Portland, OR
+        cancelFrame:
+            title: Turn cancellation
+            summary: Drop the socket's in-flight turn (#84 P6)
+            description: >-
+                Asking the server to stop the in-flight turn — the user
+                talked over J.A.R.V.I.S. (barge-in) or pressed stop. Valid
+                at any point in the socket's lifetime and idempotent: with
+                no in-flight turn it is ignored (no reply). Otherwise the
+                model stream and the turn's spoken-audio synthesis abort,
+                the thread lock releases, and the turn closes with a
+                terminal `done` — the text already streamed stays in the
+                conversation history, and no `error` frame is sent. Audio
+                from a cancelled turn (the `generationId` from its
+                `audioStart` frame) must be discarded by clients.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - type
+                properties:
+                    type:
+                        const: cancel
+            examples:
+                - payload:
+                      type: cancel
         chunk:
             title: Response chunk
             summary: One streamed token of the assistant's reply
@@ -479,8 +511,8 @@ components:
                 matching `audioEnd` carries mono samples in the declared
                 format and rate; text frames may still interleave. The
                 `generationId` is the server's per-socket turn counter —
-                clients use it to discard stale audio once interruption
-                exists (a turn with no speakable text never sends any audio
+                clients discard stale audio by it once they cancel a turn
+                (#84 P6) (a turn with no speakable text never sends any audio
                 frames at all). Synthesis failures end the turn's audio
                 without `audioEnd`; the text stream and the terminal `done`
                 are unaffected.
@@ -525,7 +557,8 @@ components:
                 Sent at most once per turn, after the last binary PCM chunk
                 and before the terminal `done` — the turn lock covers
                 speaking, so a prompt sent while J.A.R.V.I.S. is still
-                speaking is rejected as busy until barge-in exists.
+                speaking is rejected as busy unless the client cancelled the
+                turn first (`cancel`, #84 P6).
             payload:
                 type: object
                 additionalProperties: false

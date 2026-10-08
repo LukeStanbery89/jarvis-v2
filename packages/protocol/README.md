@@ -22,32 +22,34 @@ npm install @lukestanbery/jarvis-protocol
 
 ## API
 
-| Export                              | Description                                                                                                      |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `type ServerFrame`                  | Union of every frame the server sends to a chat client                                                           |
-| `type ClientFrame`                  | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame`      |
-| `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares                               |
-| `type ChatMode`                     | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`)                                      |
-| `interface AuthRequest`             | The `auth` handshake: `{ type: "auth", token }`                                                                  |
-| `interface ClientHello`             | The capability announcement: `{ type: "hello", capabilities }`                                                   |
-| `interface AuthResult`              | The `authResult` payload: `{ user, device }`                                                                     |
-| `interface ChatPrompt`              | A client request: `{ prompt, sessionId, mode?, attachments? }`                                                   |
-| `interface ClientLocationFrame`     | The device-location report (#31): `{ type: "location", lat, lon, label? }`                                       |
-| `MAX_SESSION_ID_LENGTH`             | `128` — longest allowed `sessionId`                                                                              |
-| `MAX_TOKEN_LENGTH`                  | `128` — longest allowed device `token`                                                                           |
-| `MAX_CAPABILITIES`                  | `16` — longest allowed `capabilities` list in a `hello` frame                                                    |
-| `MAX_CAPABILITY_LENGTH`             | `16` — longest allowed single capability token                                                                   |
-| `MAX_ATTACHMENTS`                   | `4` — longest allowed `attachments` list in a prompt                                                             |
-| `MAX_ATTACHMENT_ID_LENGTH`          | `32` — longest allowed single attachment id                                                                      |
-| `MAX_LOCATION_LABEL_LENGTH`         | `64` — longest allowed optional place-name `label` in a `location` frame                                         |
-| `parseFrame(raw)`                   | Parses a server frame; throws on malformed/unrecognized payload                                                  |
-| `parseClientMessage(raw)`           | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, or `ChatPrompt` |
-| `parseRequest(raw)`                 | Parses + validates a client request (non-empty strings, ≤128 id)                                                 |
-| `serializeFrame(frame)`             | Serializes a `ServerFrame` to wire JSON                                                                          |
-| `serializeRequest(p,sid,opts?)`     | Serializes a client request to wire JSON; `opts` is `{ mode?, attachments? }`                                    |
-| `serializeAuth(token)`              | Serializes an `auth` handshake to wire JSON                                                                      |
-| `serializeHello(caps[])`            | Serializes a `hello` capability announcement to wire JSON                                                        |
-| `serializeLocation(lat,lon,label?)` | Serializes a `location` device report to wire JSON (#31)                                                         |
+| Export                              | Description                                                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `type ServerFrame`                  | Union of every frame the server sends to a chat client                                                                                |
+| `type ClientFrame`                  | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame \| ClientCancelFrame`      |
+| `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares                                                    |
+| `type ChatMode`                     | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`)                                                           |
+| `interface AuthRequest`             | The `auth` handshake: `{ type: "auth", token }`                                                                                       |
+| `interface ClientHello`             | The capability announcement: `{ type: "hello", capabilities }`                                                                        |
+| `interface AuthResult`              | The `authResult` payload: `{ user, device }`                                                                                          |
+| `interface ChatPrompt`              | A client request: `{ prompt, sessionId, mode?, attachments? }`                                                                        |
+| `interface ClientLocationFrame`     | The device-location report (#31): `{ type: "location", lat, lon, label? }`                                                            |
+| `interface ClientCancelFrame`       | The turn cancellation (#84 P6): `{ type: "cancel" }`                                                                                  |
+| `MAX_SESSION_ID_LENGTH`             | `128` — longest allowed `sessionId`                                                                                                   |
+| `MAX_TOKEN_LENGTH`                  | `128` — longest allowed device `token`                                                                                                |
+| `MAX_CAPABILITIES`                  | `16` — longest allowed `capabilities` list in a `hello` frame                                                                         |
+| `MAX_CAPABILITY_LENGTH`             | `16` — longest allowed single capability token                                                                                        |
+| `MAX_ATTACHMENTS`                   | `4` — longest allowed `attachments` list in a prompt                                                                                  |
+| `MAX_ATTACHMENT_ID_LENGTH`          | `32` — longest allowed single attachment id                                                                                           |
+| `MAX_LOCATION_LABEL_LENGTH`         | `64` — longest allowed optional place-name `label` in a `location` frame                                                              |
+| `parseFrame(raw)`                   | Parses a server frame; throws on malformed/unrecognized payload                                                                       |
+| `parseClientMessage(raw)`           | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, `ClientCancelFrame`, or `ChatPrompt` |
+| `parseRequest(raw)`                 | Parses + validates a client request (non-empty strings, ≤128 id)                                                                      |
+| `serializeFrame(frame)`             | Serializes a `ServerFrame` to wire JSON                                                                                               |
+| `serializeRequest(p,sid,opts?)`     | Serializes a client request to wire JSON; `opts` is `{ mode?, attachments? }`                                                         |
+| `serializeAuth(token)`              | Serializes an `auth` handshake to wire JSON                                                                                           |
+| `serializeHello(caps[])`            | Serializes a `hello` capability announcement to wire JSON                                                                             |
+| `serializeCancel()`                 | Serializes a `cancel` turn cancellation to wire JSON (#84 P6)                                                                         |
+| `serializeLocation(lat,lon,label?)` | Serializes a `location` device report to wire JSON (#31)                                                                              |
 
 ## Chat protocol
 
@@ -81,6 +83,12 @@ JSON text frames over `/ws`:
       for a city. The latest frame wins for subsequent turns; the server
       keeps it for the socket's lifetime only and never persists it. Clients
       without a location source simply never send it.
+    - Any time, idempotent (#84 P6): `{ "type": "cancel" }` — drop the
+      socket's in-flight turn (barge-in or the stop button). The server
+      aborts the model stream and the turn's spoken audio, releases the
+      thread lock, and ends the turn with a terminal `done` — text already
+      streamed stays in history, and no error frame is sent. With no turn
+      in flight it is ignored (no reply).
 - Server → Client:
     - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output" } }`
       frames while the agent calls tools,

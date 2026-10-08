@@ -13,6 +13,7 @@ import {
     pcmToS16le,
     s16leToPcm,
     serializeAuth,
+    serializeCancel,
     serializeFrame,
     serializeHello,
     serializeLocation,
@@ -710,5 +711,23 @@ describe("serializeLocation", () => {
         expect(serializeLocation(0, 0)).toBe(
             '{"type":"location","lat":0,"lon":0}',
         );
+    });
+});
+
+describe("cancel frames (#84 P6)", () => {
+    it("parses the bare cancel marker", () => {
+        expect(parseClientMessage('{"type":"cancel"}')).toEqual({
+            type: "cancel",
+        });
+    });
+
+    it("round-trips through serializeCancel", () => {
+        expect(parseClientMessage(serializeCancel())).toEqual({
+            type: "cancel",
+        });
+    });
+
+    it("serializes to the exact wire shape", () => {
+        expect(serializeCancel()).toBe('{"type":"cancel"}');
     });
 });

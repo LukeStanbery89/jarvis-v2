@@ -73,6 +73,14 @@ export interface RunAgentOptions {
      * per turn only — never persisted.
      */
     location?: DeviceLocation;
+    /**
+     * Cooperative cancellation (#84 P6): aborting it stops the turn — the
+     * model's in-flight calls reject, the stream ends, and the generator
+     * finishes early. Threaded into the graph's runnable config so a stalled
+     * model read aborts for real instead of waiting for the next token (the
+     * caller still drains best-effort via `return()` on top of this).
+     */
+    signal?: AbortSignal;
 }
 
 /**
@@ -366,5 +374,6 @@ export async function* runAgent(
         ),
         recursionLimit: agentMaxTurns,
         configurable,
+        signal: options.signal,
     });
 }

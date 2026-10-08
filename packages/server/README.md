@@ -723,6 +723,14 @@ and exchange JSON text frames:
       for subsequent turns). Feeds the `getWeather` tool so a locationless
       "what's the weather?" works without asking for a city. Kept in memory
       for the socket's lifetime only; never persisted. See [Weather](#weather).
+    - `{ "type": "cancel" }` (#84 P6) — drop the socket's in-flight turn
+      (barge-in or the stop button). Valid any time and idempotent: with no
+      turn in flight it is ignored (no reply). The server aborts the model
+      stream for real (`AbortSignal` threaded into the graph, so even a
+      stalled model read rejects), drops the turn's spoken audio, releases
+      the thread lock, and ends the turn with a terminal `{ "done": true }`
+      — the text already streamed stays in history, and no error frame is
+      sent.
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).
@@ -740,7 +748,8 @@ and exchange JSON text frames:
 - Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS` (default `120000`): a turn
   that exceeds it is aborted and the client receives a `turn timed out` error
   frame. Draining is **best-effort on a hung model** — the per-thread lock
-  releases once the in-flight model call settles.
+  releases once the in-flight model call settles; a client `cancel` aborts
+  the same signal, so signal-honoring models stop immediately.
 
 Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
 `~/.jarvis/jarvis.sqlite`): `sessionId` is claimed atomically as a

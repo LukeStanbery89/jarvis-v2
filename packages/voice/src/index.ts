@@ -1,21 +1,24 @@
 /**
  * `@lukestanbery/jarvis-voice` — shared voice-input abstractions for
- * J.A.R.V.I.S. clients (issue #84, phases 1–4).
+ * J.A.R.V.I.S. clients (issue #84, phases 1–6).
  *
- * Four halves, deliberately independent:
+ * Five halves, deliberately independent:
  *
  * - `./types` — the engine seam: {@link SttProvider},
  *   {@link WakeWordProvider}, and {@link VadProvider} keep speech engines
  *   out of client protocol code. The STT seam also carries the `feed()`
- *   back-door that replays a wake detector's look-back audio into a session.
+ *   back-door that replays pre-session audio (a wake detector's look-back,
+ *   a barge-in watch's ring) into a session. The VAD seam carries an
+ *   optional raw-audio tap for the same purpose.
  * - `./lifecycle` — the pure session state machine ({@link reduceVoice})
  *   that turns provider results, submissions, and response events into one
  *   explicit {@link VoiceState} at a time (plus detector-armed state).
  * - `./controller` — the imperative orchestrator ({@link VoiceController})
  *   that drives engines through the state machine: mic presses, wake-word
  *   matches, endpointing (VAD-driven or engine-native), transcript
- *   accumulation, and turn submission. React- and transport-free, so any
- *   voice client reuses it.
+ *   accumulation, turn submission, and the barge-in watch (#84 P6) that
+ *   interrupts a playing response on sustained speech. React- and
+ *   transport-free, so any voice client reuses it.
  * - `./wakeText` — transcript hygiene for wake sessions ({@link stripWakePhrase}).
  *
  * Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe (no
@@ -40,12 +43,18 @@ export type {
 export type { VoiceEvent, VoiceSnapshot, VoiceState } from "./lifecycle";
 export { VOICE_STATES, initialVoiceSnapshot, reduceVoice } from "./lifecycle";
 export {
+    BARGE_IN_LOOKBACK_MS,
+    BARGE_IN_SPEECH_MS,
     DEFAULT_WAKE_PHRASE,
     END_OF_SPEECH_MS,
     NO_SPEECH_MS,
     VoiceController,
 } from "./controller";
-export type { VoiceControllerOptions, VoiceSubmit } from "./controller";
+export type {
+    BargeInDetection,
+    VoiceControllerOptions,
+    VoiceSubmit,
+} from "./controller";
 export {
     WebSpeechSttProvider,
     createBrowserStt,

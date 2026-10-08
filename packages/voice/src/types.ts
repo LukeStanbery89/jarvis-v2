@@ -233,6 +233,15 @@ export interface VadCallbacks {
     readonly onSpeechStart: () => void;
     /** Speech ended — the basis for "pause ⇒ prompt complete" timeouts. */
     readonly onSpeechEnd: () => void;
+    /**
+     * The raw mic frames the detector just analyzed (optional tap). Engines
+     * that only answer the yes/no question omit it. Each delivery is the
+     * detector's analysis buffer (a private copy) in mono float samples at
+     * the given rate — the seam a barge-in watch taps into a look-back ring
+     * so the interrupted utterance's opening words survive the handoff to a
+     * recognition session (#84 P6).
+     */
+    readonly onAudio?: (pcm: Float32Array, sampleRate: number) => void;
     /** The detector failed (e.g. no microphone track available). */
     readonly onError?: (error: VoiceError) => void;
 }

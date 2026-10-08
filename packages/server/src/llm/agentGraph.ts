@@ -117,6 +117,13 @@ export interface TurnOptions {
      * rather than module-level state; values live for this invocation only.
      */
     configurable?: Record<string, unknown>;
+    /**
+     * Cooperative cancellation (#84 P6): rides the runnable config into the
+     * graph, so a mid-turn abort reaches the model calls themselves — an
+     * in-flight (or TCP-stalled) fetch rejects instead of waiting for the
+     * next token. Optional: the turn timeout drains best-effort without it.
+     */
+    signal?: AbortSignal;
 }
 
 /**
@@ -141,7 +148,7 @@ export async function* streamAgentTurn(
     sessionId: string,
     options: TurnOptions,
 ): AsyncGenerator<AgentEvent> {
-    const { systemPrompt, recursionLimit, configurable } = options;
+    const { systemPrompt, recursionLimit, configurable, signal } = options;
     const prior = await graph.getState({
         configurable: { thread_id: sessionId },
     });
@@ -162,6 +169,7 @@ export async function* streamAgentTurn(
             ...configurable,
         },
         recursionLimit,
+        ...(signal !== undefined ? { signal } : {}),
     };
 
     const tracked = new ToolCallTracker();

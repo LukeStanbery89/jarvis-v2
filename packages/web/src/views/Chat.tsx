@@ -76,13 +76,13 @@ import {
 import {
     AudioLines,
     Image as ImageIcon,
-    LoaderCircle,
     LogOut,
     MapPin,
     Mic,
     MicOff,
     Paperclip,
     SendHorizontal,
+    Square,
     SquarePen,
     Trash2,
     X,
@@ -364,6 +364,15 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 return runTurn(text, "voice", []);
             },
             onWakeCue: () => audioRef.current?.blip(),
+            // Barge-in (#84 P6): the controller's watch hears the user talk
+            // over a playing reply; the view's half of the trigger is to
+            // stop local playback immediately (before any server round
+            // trip) and cancel the turn — the controller then opens the
+            // seeded listening session.
+            onBargeIn: () => {
+                audioRef.current?.stop();
+                clientRef.current?.cancelTurn();
+            },
         });
     }
     const voice = voiceRef.current;
@@ -540,6 +549,23 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             void controller.disableWake();
         }
     }, [voice, wakeAvailable, wakeOn]);
+
+    // Barge-in watch (#84 P6): while J.A.R.V.I.S. is speaking, a VAD-only
+    // mic session listens for the user talking over the reply — sustained
+    // speech stops local playback, cancels the in-flight turn, and opens a
+    // listening session seeded with the interrupted opening. The watch
+    // lives exactly as long as playback (it holds the VAD, so a session
+    // cannot start under it); arming failures are silent by design.
+    useEffect(() => {
+        const controller = voice;
+        if (controller === null || voiceSnapshot.state !== "speaking") {
+            return;
+        }
+        void controller.startBargeWatch();
+        return () => {
+            void controller.stopBargeWatch();
+        };
+    }, [voice, voiceSnapshot.state]);
 
     // Location sharing (#31): automatic by default — on mount (and on every
     // toggle-on) one geolocation request runs, and on success one `location`
@@ -903,6 +929,18 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         }
     }
 
+    /**
+     * Cancels the in-flight turn (#84 P6): local playback stops
+     * immediately, the wire `cancel` goes out, and the server ends the
+     * turn with `done` — the text already streamed stays in the
+     * conversation. The same path the barge-in watch drives, wired to the
+     * composer's stop button.
+     */
+    function stopTurn(): void {
+        audio.stop();
+        client.cancelTurn();
+    }
+
     /** Signs out: tear down the socket, clear the credential. */
     function signOut(): void {
         client.close();
@@ -1256,13 +1294,29 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         <button
                             type="button"
                             className={
-                                draft.trim() !== "" ? "send active" : "send"
+                                streaming
+                                    ? "send stop"
+                                    : draft.trim() !== ""
+                                      ? "send active"
+                                      : "send"
                             }
-                            disabled={streaming || draft.trim() === ""}
-                            onClick={() => void send()}
+                            aria-label={
+                                streaming ? "stop generating" : "send message"
+                            }
+                            title={
+                                streaming ? "Stop generating" : "Send message"
+                            }
+                            disabled={!streaming && draft.trim() === ""}
+                            onClick={() => {
+                                if (streaming) {
+                                    stopTurn();
+                                } else {
+                                    void send();
+                                }
+                            }}
                         >
                             {streaming ? (
-                                <LoaderCircle size={18} className="spin" />
+                                <Square size={18} />
                             ) : (
                                 <SendHorizontal size={18} />
                             )}

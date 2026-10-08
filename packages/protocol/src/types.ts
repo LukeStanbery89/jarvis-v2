@@ -85,12 +85,16 @@ export interface AudioEndFrame {
  *
  * Exactly one of these shapes arrives per message: the first-frame `auth`
  * handshake (to bind the socket to an account), the first-frame `hello`
- * announcement (to declare what the client can render), a chat prompt, or a
+ * announcement (to declare what the client can render), a chat prompt, a
  * `location` report (to update the device's whereabouts for location-aware
- * tools).
+ * tools), or a `cancel` (#84 P6) dropping the socket's in-flight turn.
  */
 export type ClientFrame =
-    AuthRequest | ClientHello | ChatPrompt | ClientLocationFrame;
+    | AuthRequest
+    | ClientHello
+    | ChatPrompt
+    | ClientLocationFrame
+    | ClientCancelFrame;
 
 /**
  * The auth handshake: the client's first frame, presenting a stored device
@@ -191,6 +195,18 @@ export interface ClientLocationFrame {
      * the location name the weather provider resolves from the coordinates.
      */
     label?: string;
+}
+
+/**
+ * The turn cancellation (#84 P6): a client dropping the socket's in-flight
+ * turn — JARVIS is mid-answer and the user talked over it (barge-in), or
+ * pressed stop. The server aborts the model stream and the turn's spoken
+ * audio, releases the thread lock, and closes the turn with `done` (the
+ * text already streamed stays in history; no error frame is sent). Valid at
+ * any time; a `cancel` with no in-flight turn is ignored.
+ */
+export interface ClientCancelFrame {
+    type: "cancel";
 }
 
 /**
