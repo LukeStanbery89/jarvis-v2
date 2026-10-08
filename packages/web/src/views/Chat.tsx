@@ -265,13 +265,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
     /**
-     * The browser STT engine (#84), created once per mount: the local WASM
+     * The browser STT engine (#84), created once per mount: Web Speech
+     * (cloud-backed in Chrome) when the runtime offers it, the local WASM
      * engine (Vosk, phase 3b — recognition stays on-device, works in
-     * Firefox) when the runtime offers mic + Web Audio + WebAssembly, the
-     * Web Speech engine otherwise, and `null` when neither is available
-     * (no mic / a plain-HTTP origin — the same secure-context rule as
-     * geolocation); the mic button renders disabled with an explanation in
-     * that case.
+     * Firefox) otherwise, and `null` when neither is available (no mic /
+     * a plain-HTTP origin — the same secure-context rule as geolocation);
+     * the mic button renders disabled with an explanation in that case.
      */
     const sttRef = useRef<SttProvider | null>(null);
     if (sttRef.current === null) {

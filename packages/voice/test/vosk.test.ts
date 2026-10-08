@@ -90,7 +90,10 @@ class FakeAudioBuffer {
 /** A graph node double. */
 class FakeNode {
     disconnected = false;
-    connect(_destination: unknown): void {}
+    readonly connections: unknown[] = [];
+    connect(destination: unknown): void {
+        this.connections.push(destination);
+    }
     disconnect(): void {
         this.disconnected = true;
     }
@@ -121,6 +124,7 @@ class FakeAudioContext {
     readonly source = new FakeNode();
     readonly processor = new FakeProcessor();
     readonly gain = new FakeGain();
+    readonly destination = new FakeNode();
 
     constructor() {
         FakeAudioContext.instances.push(this);
@@ -405,6 +409,19 @@ describe("session lifecycle", () => {
         });
         expect(fakes.context.resumed).toBe(true);
         expect(fakes.context.source.disconnected).toBe(false);
+        // The chain is source -> processor -> zero-gain hop -> destination;
+        // the hop must target the context's destination, never the context
+        // itself (the real DOM rejects connect(context) with an overload
+        // error).
+        expect(fakes.context.source.connections).toEqual([
+            fakes.context.processor,
+        ]);
+        expect(fakes.context.processor.connections).toEqual([
+            fakes.context.gain,
+        ]);
+        expect(fakes.context.gain.connections).toEqual([
+            fakes.context.destination,
+        ]);
         expect(provider.state).toBe("running");
         const stopped = provider.stop();
         vi.advanceTimersByTime(200);

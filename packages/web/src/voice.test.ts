@@ -1,55 +1,76 @@
 /**
- * STT engine selection tests (issue #84, phase 3b).
+ * Engine-selection ordering for the chat client's mic (`createStt`).
  *
- * `createStt` is the web client's one engine-local decision: the local WASM
- * engine (Vosk) first, Web Speech as the fallback, `null` when neither is
- * available. The probes read `globalThis`, so node tests stub the pieces
- * (`navigator.mediaDevices`, `AudioContext`, `SpeechRecognition`) to walk
- * the chain deterministically; node itself already carries `WebAssembly`.
+ * The selector must prefer Web Speech — it is the fast, cloud-backed path
+ * in Chrome and the UX users expect — and only fall back to the local WASM
+ * engine (Vosk, #84 P3b) when no `SpeechRecognition` exists. These tests
+ * pin that order, not either engine's internals.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-    VoskSttProvider,
-    WebSpeechSttProvider,
-} from "@lukestanbery/jarvis-voice";
 import { createStt } from "./voice";
+
+/** A constructor double sufficient for the Web Speech availability gate. */
+class FakeRecognition {}
+
+/** A constructor double sufficient for the WASM engine's AudioContext gate. */
+class FakeAudioContext {}
 
 afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** Raw Node is a support vacuum: gate both engines off. */
+function stripAll(): void {
+    vi.stubGlobal("SpeechRecognition", undefined);
+    vi.stubGlobal("webkitSpeechRecognition", undefined);
+    vi.stubGlobal("AudioContext", undefined);
+    vi.stubGlobal("webkitAudioContext", undefined);
+    vi.stubGlobal(
+        "navigator",
+        // A bare object without `mediaDevices` satisfies the vulnerability
+        // surface Node leaves here.
+        {},
+    );
+}
+
+/** Grant Web Speech only. */
+function grantWebSpeech(): void {
+    vi.stubGlobal("SpeechRecognition", FakeRecognition);
+}
+
+/** Grant the Vosk engine only (media devices + Web Audio; Node has Wasm). */
+function grantVosk(): void {
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("navigator", {
+        mediaDevices: {
+            // Not called by the selector — presence is the gate.
+            getUserMedia: () => Promise.reject(new Error("unused")),
+        },
+    });
+}
+
 describe("createStt engine selection", () => {
-    it("returns null when no engine is available (bare node)", () => {
+    it("returns null when no engine is available", () => {
+        stripAll();
         expect(createStt()).toBeNull();
     });
 
-    it("selects the local WASM engine when mic + Web Audio exist", () => {
-        vi.stubGlobal("navigator", {
-            mediaDevices: { getUserMedia: () => Promise.resolve({}) },
-        });
-        vi.stubGlobal("AudioContext", class FakeAudioContext {});
-        expect(createStt()).toBeInstanceOf(VoskSttProvider);
+    it("prefers Web Speech when both engines are available", () => {
+        stripAll();
+        grantWebSpeech();
+        grantVosk();
+        expect(createStt()?.id).toBe("web-speech");
     });
 
-    it("falls back to Web Speech when the WASM stack is unavailable", () => {
-        vi.stubGlobal("navigator", {});
-        vi.stubGlobal("AudioContext", undefined);
-        vi.stubGlobal("SpeechRecognition", class FakeRecognition {});
-        expect(createStt()).toBeInstanceOf(WebSpeechSttProvider);
+    it("uses Web Speech alone when it is the only engine", () => {
+        stripAll();
+        grantWebSpeech();
+        expect(createStt()?.id).toBe("web-speech");
     });
 
-    it("returns null when neither engine is available", () => {
-        vi.stubGlobal("navigator", {});
-        vi.stubGlobal("AudioContext", undefined);
-        expect(createStt()).toBeNull();
-    });
-
-    it("passes the model URL override to the WASM engine", () => {
-        vi.stubGlobal("navigator", {
-            mediaDevices: { getUserMedia: () => Promise.resolve({}) },
-        });
-        vi.stubGlobal("AudioContext", class FakeAudioContext {});
-        const provider = createStt({ modelUrl: "/models/stt/model.tar.gz" });
-        expect(provider).toBeInstanceOf(VoskSttProvider);
+    it("falls back to the local WASM engine when Web Speech is absent", () => {
+        stripAll();
+        grantVosk();
+        expect(createStt()?.id).toBe("vosk-wasm");
     });
 });

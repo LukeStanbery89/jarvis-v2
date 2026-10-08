@@ -129,17 +129,23 @@ status line tracks the session stage (Listening… / Transcribing… /
 Sending… / Thinking…), and a failed session (denied microphone, rejected
 turn) stays on screen as an alert until the next press.
 
-**The engine is local first (phase 3b)**: `src/voice.ts` `createStt()`
-selects the WASM engine (Vosk, via `@lichess-org/vosk-browser`) when the
-runtime offers mic access, Web Audio, and WebAssembly — recognition runs
-fully on-device (no audio egress) and Firefox gains a mic at all — and
-falls back to the Web Speech engine (cloud-backed in Chrome) when the WASM
-stack is unavailable. The engine's worker script and WASM binary ship with
-the SPA bundle (Vite `?url` assets, served same-origin, so the `/web`
-CSP's `worker-src 'self'` covers them without `unsafe-eval`). The model
+**The engine is Web Speech first**: `src/voice.ts` `createStt()` selects the
+Web Speech engine (cloud-backed in Chrome) when the runtime offers it — the
+fastest, most accurate dictation — and falls back to the local WASM engine
+(Vosk, via `@lichess-org/vosk-browser`) when `SpeechRecognition` is absent
+(e.g. Firefox) or the team wants on-device privacy by opting in, running
+fully on-device (no audio egress). The engine's worker script and WASM
+binary ship with the SPA bundle (Vite `?url` assets, served same-origin);
+the `/web` CSP covers them with `worker-src 'self'` and `script-src 'self'
+'wasm-unsafe-eval'` for the page, while the worker entry script itself is
+served with a worker-scoped `script-src 'self' 'unsafe-eval'` CSP —
+embind's runtime synthesizes method invokers with `new Function`, and a
+worker whose entry declares its own CSP runs under that policy instead of
+the owner's, so eval is confined to the hashed engine module and never
+appears on the page. The model
 archive (~40 MB) downloads once from the server's `GET /api/stt/model`
 (configure the server with `JARVIS_STT_PROVIDER=vosk`; unconfigured → the
-engine errors at session start) and persists in the browser's IndexedDB
+Vosk engine errors at session start) and persists in the browser's IndexedDB
 after that. Selection is construction-time; a session-time failure
 surfaces through the engine's own error path rather than falling back
 mid-session.
@@ -200,7 +206,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
-- `src/voice.ts` — voice-controller wiring + STT engine selection (Vosk WASM first, Web Speech fallback — #84 P3b; the controller itself lives in `packages/voice`).
+- `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b; the controller itself lives in `packages/voice`).
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.

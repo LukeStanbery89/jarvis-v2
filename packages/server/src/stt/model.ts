@@ -154,7 +154,15 @@ export function createSttModelHandler(
                 // does; letting browsers cache it keeps repeat visits cheap
                 // even when the vosk worker re-fetches the URL.
                 res.setHeader("Cache-Control", "public, max-age=86400");
-                res.sendFile(modelPath);
+                // `res.sendFile` uses `send`, whose default `dotfiles:
+                // "ignore"` shield hides any path segment beginning with a
+                // dot — our private cache lives under `~/.jarvis/stt`, so
+                // the `.jarvis` segment would 404. The path is composed of
+                // the configured model dir plus a sanitized URL basename
+                // (`[\w.-]`, no slashes), so it cannot escape that dir;
+                // allowing dotfiles just un-hides the intentionally private
+                // location.
+                res.sendFile(modelPath, { dotfiles: "allow" });
             })
             .catch((err: unknown) => {
                 res.status(503).json({

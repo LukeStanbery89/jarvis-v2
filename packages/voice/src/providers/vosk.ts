@@ -131,6 +131,12 @@ interface GainNodeLike extends AudioNodeLike {
 /** The slice of `AudioContext` the provider needs. */
 interface AudioContextLike extends AudioNodeLike {
     readonly sampleRate: number;
+    /**
+     * The graph sink the zero-gain hop reaches. `AudioNode.connect` accepts
+     * only modes, not the context itself — the real DOM throws `Overload
+     * resolution failed` on `gain.connect(context)`.
+     */
+    readonly destination: AudioNodeLike;
     createMediaStreamSource(stream: MediaStreamLike): AudioNodeLike;
     createScriptProcessor(
         bufferSize: number,
@@ -219,13 +225,22 @@ const DEFAULT_FLUSH_WAIT_MS = 300;
  * Finds `getUserMedia`, standard path (the vendor-prefixed era is over for
  * every engine this provider targets — they all ship WASM).
  *
+ * The function is returned **bound to its `MediaDevices` receiver**: the
+ * browser requires `getUserMedia` to be invoked with the `mediaDevices`
+ * object as `this` (otherwise Chrome throws `Illegal invocation`), and
+ * every call site here holds the function detached from its object.
+ *
  * @returns The function, or `null` outside a browser that offers one.
  */
 function findUserMedia(): MediaDevicesLike["getUserMedia"] | null {
     const globals = globalThis as {
         navigator?: { mediaDevices?: MediaDevicesLike };
     };
-    return globals.navigator?.mediaDevices?.getUserMedia ?? null;
+    const devices = globals.navigator?.mediaDevices;
+    if (devices?.getUserMedia === undefined) {
+        return null;
+    }
+    return devices.getUserMedia.bind(devices);
 }
 
 /**
@@ -395,7 +410,7 @@ export class VoskSttProvider implements SttProvider {
             gain.gain.value = 0;
             source.connect(processor);
             processor.connect(gain);
-            gain.connect(context);
+            gain.connect(context.destination);
             processor.onaudioprocess = (event) => {
                 this.onAudio(session, event.inputBuffer);
             };
@@ -847,8 +862,8 @@ export class VoskSttProvider implements SttProvider {
  * @param options - Provider options (model URL, log level, flush tuning).
  * @param loadModule - Module loader override for tests.
  * @returns A `VoskSttProvider`, or `null` when the runtime lacks mic
- * access, Web Audio, or WebAssembly — callers fall back to the next engine
- * in their chain (the Web Speech provider in the chat client).
+ * access, Web Audio, or WebAssembly — the chat client uses this as its
+ * offline/private fallback behind Web Speech.
  */
 export function createVoskStt(
     options?: VoskSttOptions,

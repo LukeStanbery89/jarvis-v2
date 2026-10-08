@@ -172,12 +172,25 @@ below is the private path.
 when the runtime lacks mic access, Web Audio, or WebAssembly. Recognition
 runs fully on-device: Kaldi compiled to WASM, driven through a module Web
 Worker by `@lichess-org/vosk-browser` — the maintained fork of
-ccoreilly's vosk-browser, rebuilt **CSP-safe** (its Emscripten runtime
-defines classes without `new Function`, so it runs under a strict
-`script-src 'self'`; the worker script + WASM binary are served as
-same-origin SPA assets) — no audio egress, and it works where Web Speech
-does not (Firefox, any secure-context browser). The engine contract maps
-like this:
+ccoreilly's vosk-browser rebuilt **CSP-friendly**: its Emscripten runtime
+defines error classes without `new Function`, and the worker script + WASM
+binary are served as same-origin SPA assets. Two CSP considerations remain
+for the serving page:
+
+- Wasm _compilation_ counts as eval to the CSP spec, so `script-src` needs
+  the narrow `'wasm-unsafe-eval'` keyword (allows compile/instantiate,
+  keeps JS `eval` banned);
+- embind additionally _synthesizes per-method invoker functions_ with
+  `new Function` on first call (`craftInvokerFunction`) — a second eval
+  site the fork cannot remove. Approach: the worker entry script is served
+  with **its own `Content-Security-Policy`** (`script-src 'self'
+'unsafe-eval'`); for a dedicated worker whose entry script declares a
+  CSP, that policy governs the worker scope instead of the owner's, so
+  eval is scoped to the hashed, same-origin engine module and never
+  reaches the page.
+
+No audio egress, and it works where Web Speech does not (Firefox, any
+secure-context browser). The engine contract maps like this:
 
 - the model archive (~40 MB `tar.gz`) loads lazily at the first `start()`
   from a configurable URL (default: the J.A.R.V.I.S. server's
