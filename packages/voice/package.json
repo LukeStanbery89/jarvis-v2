@@ -1,0 +1,39 @@
+{
+    "name": "@lukestanbery/jarvis-voice",
+    "version": "0.1.0",
+    "description": "Shared voice-input abstractions for J.A.R.V.I.S. clients: STT/wake-word/VAD provider interfaces and the session lifecycle state machine",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit -p tsconfig.test.json",
+        "test": "vitest run",
+        "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/LukeStanbery89/jarvis-v2.git",
+        "directory": "packages/voice"
+    },
+    "bugs": {
+        "url": "https://github.com/LukeStanbery89/jarvis-v2/issues"
+    },
+    "homepage": "https://github.com/LukeStanbery89/jarvis-v2/tree/main/packages/voice#readme",
+    "license": "MIT",
+    "type": "commonjs",
+    "devDependencies": {
+        "@types/node": "^26.6.2",
+        "typescript": "^7.0.2",
+        "vitest": "^5.0.1"
+    },
+    "peerDependencies": {
+        "@lichess-org/vosk-browser": "^0.0.3"
+    },
+    "optionalDependencies": {
+        "onnxruntime-web": "^1.30.0",
+        "openwakeword-web": "^0.1.0"
+    }
+}

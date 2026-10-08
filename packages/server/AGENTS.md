@@ -29,13 +29,14 @@ portal SPA at `/` when it has been built (see "Web portal" below) plus the web c
 
 Run from `packages/server`:
 
-| Command             | Description                    |
-| ------------------- | ------------------------------ |
-| `npm run build`     | Compile TypeScript to `dist/`  |
-| `npm run typecheck` | Type-check src and tests       |
-| `npm run dev`       | Run the server with watch mode |
-| `npm start`         | Run the compiled server        |
-| `npm test`          | Run the test suite             |
+| Command               | Description                                        |
+| --------------------- | -------------------------------------------------- |
+| `npm run build`       | Compile TypeScript to `dist/`                      |
+| `npm run typecheck`   | Type-check src and tests                           |
+| `npm run dev`         | Run the server with watch mode                     |
+| `npm start`           | Run the compiled server                            |
+| `npm test`            | Run the test suite                                 |
+| `npm run tts:harness` | Local TTS harness: text → PCM → played aloud (#83) |
 
 ## Endpoints
 
@@ -102,9 +103,18 @@ The server also serves the built web chat SPA (`@lukestanbery/jarvis-web`) at `/
 - The base directory is `JARVIS_WEB_DIR`, defaulting to `packages/web/dist` (produced by `vite build`); an empty
   string disables it. `AppConfig.webDir` mirrors the env var in tests.
 - The mount widens the portal's strict CSP for the browser client only: `img-src 'self' data: https:` (remote
-  images render) and a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
-  header so `/ws` can be reached over the socket. The portal mount keeps `img-src 'self' data:` and a static
-  `connect-src 'self'`.
+  images render), a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
+  header so `/ws` can be reached over the socket, `worker-src 'self';` for the local speech engine's
+  same-origin module worker (#84 P3b), and `script-src 'self' 'wasm-unsafe-eval'` — the narrow keyword that
+  admits Wasm compile/instantiate without letting JS `eval`/`new Function` through. The portal mount keeps
+  `img-src 'self' data:` and a static `connect-src 'self'`, and adds no `worker-src` or `'wasm-unsafe-eval'`.
+- The one file that _does_ evaluate strings is the engine's worker entry (`/web/assets/vosk.worker-<hash>.js`):
+  embind's runtime synthesizes per-method invokers with `new Function` on first call, a second eval site the
+  fork cannot remove. That **file** is served with its own
+  `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'` — for a
+  dedicated worker whose entry script declares a CSP, that policy governs the worker scope _instead of_ the
+  owner's, so eval is granted only inside that hashed, same-origin module (which itself still `connect-src`s
+  same-origin for the model archive). The page scope never allows eval.
 - Requests under `/web` are skipped by the portal SPA fallback (which is `/web`-boundary aware — `/webfoo` still gets the portal shell), so with the web client unbuilt or disabled `GET /web` is an honest 404, never the portal shell. `GET /web` itself 301s to `/web/` before serving `index.html` (standard `express.static` directory redirect); note that redirect response carries `serve-static`'s own strict `Content-Security-Policy: default-src 'none'` (browsers follow it and get the real headers on the target).
 
 ## Cross-origin and reverse proxy
@@ -195,11 +205,11 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
   interfaces — `UserLedger`/`DeviceLedger`/`SessionLedger`; `crypto.ts` (the primitives), `credential.ts` (the
   `CredentialVerifier` seam the REST layer codes against), `ownership.ts` (`ownsRow`/`canManage` — the one
   shared row-ownership policy), `errors.ts`, `types.ts`, `fs.ts`.
-- `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + `location` device reports (#31) + prompt framing. The session lifecycle (claim, ownership
-  guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`. Prompts referencing attachments (#10) require an authenticated socket and pre-turn id validation against the attachment store.
+- `src/ws.ts` — the `/ws` endpoint: `hello` capability handshake + auth handshake + `location` device reports (#31) + prompt framing + the `cancel` frame (#84 P6). The session lifecycle (claim, ownership
+  guard, per-thread lock, touch, guest cleanup) lives in `src/sessionManager.ts`. Prompts referencing attachments (#10) require an authenticated socket and pre-turn id validation against the attachment store. A `cancel` never joins the frame tail (it would queue behind the turn it cancels): the message handler intercepts it and aborts the connection's `AbortController` — the signal rides into `runAgent` → `graph.stream`, so signal-honoring model calls reject for real; the cancelled turn ends with a bare `done` (text streamed so far stays in history, never an error frame), the TTS queue drops, and the lock releases when the stream resolves. A cancel arriving while the prompt is still queued aborts at stream start (`cancelPending`); with no turn it is ignored.
 - `src/attachments/store.ts` — the transient attachment store (#10): ids, TTL, ownership, magic bytes; factory-created, injected (never built inside the agent graph).
 - `src/attachments/limiters.ts` — attachment quotas (VL calls/min, held bytes, upload semaphore); NOT `RateLimiter` reuse.
-- `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer; `systemPromptForCapabilities` conditions the system prompt on the client's declared rendering capabilities and always appends four fixed hygiene paragraphs (one well-formed tool call at a time; exactly one `getCurrentTime` call per time/date/weekday ask with the question passed verbatim so it returns the requested facet; attachment-lookups pass the exact id through to `analyzeImage`; and discovery-first, re-search-before-claiming-absence, one-exact-id, never-guess discipline for `homeAssistant`) so emulated tool calling doesn't fragment calls, reuse stale time answers, or invent a device.
+- `src/agent.ts` — `runAgent` seam owning the LangGraph graph + checkpointer; `systemPromptForCapabilities` conditions the system prompt on the client's declared rendering capabilities (and, under `mode: "voice"` (#83), appends `VOICE_FORMAT_RULE` so the reply is spoken-word prose — no markdown, no parentheses, units spelled out; scoped per-turn, so text prompts on the same thread render richly again) and always appends four fixed hygiene paragraphs (one well-formed tool call at a time; exactly one `getCurrentTime` call per time/date/weekday ask with the question passed verbatim so it returns the requested facet; attachment-lookups pass the exact id through to `analyzeImage`; and discovery-first, re-search-before-claiming-absence, one-exact-id, never-guess discipline for `homeAssistant`) so emulated tool calling doesn't fragment calls, reuse stale time answers, or invent a device. `RunAgentOptions.signal` (#84 P6) threads the caller's `AbortSignal` into the graph's runnable config, so a cancelled turn rejects the model's in-flight calls instead of draining best-effort.
 - `src/transport.ts` — `AgentEvent → ServerFrame` mapping.
 - `src/llm/agentGraph.ts` — model node + tools loop (streamed in `messages` mode, flattened to `AgentEvent`s).
 - `src/llm/chatModel.ts` — the chat model: one of the two modules that know `@langchain/openai` (the other is `visionModel.ts`).
@@ -211,6 +221,9 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/llm/tools/homeAssistant/` — the Home Assistant REST client (#15): `GET /api/states` filtered to `JARVIS_HA_READ_DOMAINS` and cached for `JARVIS_HA_CACHE_TTL_MS` (in-flight requests collapse; failures are never cached), `POST /api/services/<domain>/<service>` for writes, which **discards the response body** (its states are dispatch-time, never the outcome) and drops the snapshot — a 2xx alone is the acceptance signal, so `ignoreBody` keeps a proxy-rewritten body from turning a successful write into a failure. `types.ts` is the tool↔client seam; the token is a `Bearer` header only — never in a URL, a log, or error text.
 - `src/llm/tools/homeAssistant.ts` — the `homeAssistant` tool: one tool, `{ action, entity_id?, query?, value? }` over `list`/`lights`/`switches`/`get`/`turn_on`/`turn_off`/`toggle`/`set_brightness`/`set_temperature`. The two discovery actions carry the category REST does not — `lights` is the `light`/`switch` domains plus a `JARVIS_HA_LIGHT_TOKENS` fragment in the id or name (a light is a `switch.*` on many instances), `switches` is the `switch` domain minus `_led` shadow children — and every read states how many of the readable entities it matched. Per-user quota checked before any fetch; every write resolves `entity_id` against the live snapshot and is checked against `JARVIS_HA_CONTROL_DOMAINS` (a strict subset of the read domains — locks/covers stay read-only), the action's required domain, and the entity's own state (`unavailable`/`unknown` refuses) before any HTTP. Writes report the **accepted action**, never a state — the model is told to call `get` for current state. Registered only when `HOME_ASSISTANT_URL` and `HOME_ASSISTANT_ACCESS_TOKEN` are both configured.
 - `src/rate/fixedWindowQuota.ts` — the generic per-user fixed-window quota (VL calls, search calls, weather calls, Home Assistant calls); `VlCallLimiter` is its domain-named alias.
+- `src/tts/` — server-side TTS (#83): `types.ts` is the `TtsProvider` seam (text → mono float PCM + rate, cooperative `AbortSignal`), `kokoro.ts` is the engine (kokoro-js, lazy dynamic import — the optional deps are `kokoro-js` + `@huggingface/transformers`, ambient-typed in `kokoro-modules.d.ts` because node10 resolution can't see their `exports` types), `segmenter.ts` + `orchestrator.ts` are the turn pipeline (tokens → segments → one sequential synthesis worker → ordered audio). Segmenter granularity (#89, `JARVIS_TTS_SEGMENT=sentence|clause`, default `sentence`): clause mode additionally splits at commas/semicolons (≥ `minClauseChars`, digit-guarded) so the first PCM lands earlier, trading prosody for latency. `speakTurn` takes optional `{ granularity, onFirstSegment }` — `ws.ts` uses the callback plus its own timestamps to log the per-turn TTFA decomposition at debug (`first token / first segment / first audio sent`). Wired into `/ws` for voice-mode turns from `audio`-capable sockets: `audioStart` → binary s16le PCM → `audioEnd`, all before `done`, gated by `JARVIS_TTS_PROVIDER`; speakability is prompt-side (`agent.ts` `VOICE_FORMAT_RULE` — the model writes spoken-word prose for voice turns; incidental markup reads as written, no deterministic say-proofing pass). Synthesis failure never disturbs the text stream (no `audioError` frame yet). Weights cache privately under `~/.jarvis/tts`; missing optional install = unavailable TTS, never a boot failure. `scripts/tts-harness.ts` (`npm run tts:harness`) is the manual text → WAV → playback tool.
+- `src/stt/` — local STT model serving (#84 P3b): `model.ts` is the download-once cache (`SttModelCache` — lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the next request) plus `createSttModelHandler` for `GET /api/stt/model` (200 `application/gzip`; JSON 404 unconfigured; JSON 503 while an upstream fetch fails). Gated by `JARVIS_STT_PROVIDER=vosk`; the archive caches privately under `~/.jarvis/stt` (`JARVIS_STT_MODEL_DIR`) fetched from `JARVIS_STT_MODEL_URL`. The route is public by design (open-source weights, not user data; the recognition worker cannot attach auth headers) and mounts after the contract validator so it stays contract-checked (`sttModelGet` in the OpenAPI spec).
+- `src/wake/` — wake-word model serving (#84 P4): `model.ts` is a per-file download-once cache (`WakeModelCache` — three-file allowlist, lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the next request) plus `createWakeModelHandler` for `GET|HEAD /api/wake/model/:file` (200 `application/octet-stream` + `Cache-Control: public, max-age=86400`; JSON 404 unconfigured/unknown; JSON 503 while an upstream fetch fails). Gated by `JARVIS_WAKE_PROVIDER=openwakeword`; models cache privately under `~/.jarvis/wake` (`JARVIS_WAKE_MODEL_DIR`) fetched from the openWakeWord release host (`JARVIS_WAKE_MODEL_URL`). Public by design (open-source weights, no auth headers on the browser side) and mounts after the contract validator (`wakeModelGet`/`wakeModelHead` in the OpenAPI spec).
 - `src/llm/tools/` — the tool implementations; `analyzeImage.ts` resolves attachment ids and enforces ownership via `ToolRuntime.configurable`. Optional tools (`webSearch`, `getWeather`, `homeAssistant`) register only when their credentials are configured, and each gates on the verified `ToolRuntime.configurable.userId`.
 - `test/` — Vitest suites: `app.test.ts` (health + portal/web serving), `ws.test.ts` (frames + handshakes), `agent.test.ts` (capability prompt conditioning), `http.test.ts`, `sessionManager.test.ts`, `contract.test.ts`, `homeAssistant.client.test.ts`, `homeAssistant.tool.test.ts`.
 

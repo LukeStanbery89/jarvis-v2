@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { DEFAULT_SESSION_TTL_MS } from "@lukestanbery/jarvis-auth";
+import { DEFAULT_KOKORO_VOICE } from "./tts/kokoro";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
@@ -230,6 +231,76 @@ export interface HomeAssistantConfig {
      * fail-closed posture as an empty `JARVIS_HA_READ_DOMAINS`.
      */
     readonly lightTokens: readonly string[];
+}
+
+/**
+ * Server-side TTS settings (#83).
+ *
+ * Today only `"kokoro"` exists; the engine itself lives in `src/tts/` and is
+ * an optional dependency, so enabling TTS here requires the package to be
+ * installed (the prod Docker image installs `--omit=optional` and never
+ * carries it). Model weights are downloaded on first synthesis into
+ * `~/.jarvis/tts` (or `JARVIS_TTS_CACHE_DIR`) — never baked into an image.
+ */
+export interface TtsConfig {
+    /** The synthesis engine (`JARVIS_TTS_PROVIDER`); `"kokoro"` today. */
+    readonly provider: "kokoro";
+    /** Kokoro voice id (`JARVIS_TTS_VOICE`), e.g. `bm_lewis`. */
+    readonly voice: string;
+    /** Speaking speed multiplier (`JARVIS_TTS_SPEED`), default `1`. */
+    readonly speed: number;
+    /**
+     * Segmenter granularity (#89, `JARVIS_TTS_SEGMENT`): `"sentence"` (the
+     * default) splits at sentence boundaries; `"clause"` additionally
+     * splits at commas/semicolons so the first spoken audio lands earlier,
+     * at the cost of prosody across the split.
+     */
+    readonly segment: "sentence" | "clause";
+}
+
+/** The upstream model archive the server fetches on first request. */
+export const DEFAULT_STT_MODEL_URL =
+    "https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz";
+
+/** Default cache location of the STT model archive (private, `0700`). */
+export const DEFAULT_STT_MODEL_DIR = `${homedir()}/.jarvis/stt`;
+
+/**
+ * Local STT model serving (#84 P3b). The server fetches the WASM speech
+ * engine's model archive from `modelUrl` on first request, caches it
+ * privately under `modelDir`, and serves the cached file at
+ * `GET /api/stt/model` — so browser clients run recognition on-device
+ * without any external egress (the archive is open-source model weights,
+ * never user data).
+ */
+export interface SttModelConfig {
+    /** Where the archive is fetched from (`JARVIS_STT_MODEL_URL`). */
+    readonly modelUrl: string;
+    /** Where the archive caches (`JARVIS_STT_MODEL_DIR`). */
+    readonly modelDir: string;
+}
+
+/** The upstream release hosting the openWakeWord ONNX models (v0.5.1). */
+export const DEFAULT_WAKE_MODEL_URL =
+    "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1";
+
+/** Default cache location of the wake-word models (private, `0700`). */
+export const DEFAULT_WAKE_MODEL_DIR = `${homedir()}/.jarvis/wake`;
+
+/**
+ * Local wake-word model serving (#84 P4). The server fetches the
+ * openWakeWord ONNX files (`melspectrogram.onnx`, `embedding_model.onnx`,
+ * `hey_jarvis_v0.1.onnx`) from `baseUrl` on first request, caches them
+ * privately under `modelDir`, and serves them at
+ * `GET /api/wake/model/<file>` — so browser clients run wake-word detection
+ * on-device without any external egress (the weights are open-source, never
+ * user data) and without tripping over the upstream's missing CORS headers.
+ */
+export interface WakeModelConfig {
+    /** Upstream base URL the files are fetched from (`JARVIS_WAKE_MODEL_URL`). */
+    readonly baseUrl: string;
+    /** Where the files cache (`JARVIS_WAKE_MODEL_DIR`). */
+    readonly modelDir: string;
 }
 
 /**
@@ -475,6 +546,32 @@ export interface AppConfig {
      * tool. Optional so hand-built configs (tests) can omit it.
      */
     readonly homeAssistant?: HomeAssistantConfig;
+    /**
+     * Server-side TTS settings (#83), present only when a provider is
+     * configured (`JARVIS_TTS_PROVIDER`) — unset means no synthesis at all:
+     * sockets never see audio frames and the optional engine packages are
+     * never imported. Optional so hand-built configs (tests) can omit it.
+     */
+    readonly tts?: TtsConfig;
+    /**
+     * Local STT model serving (#84 P3b), present only when configured
+     * (`JARVIS_STT_PROVIDER=vosk`) — the client-side speech-recognition
+     * engine downloads its model archive from the server so deployments
+     * need no external egress for it. Unset means `GET /api/stt/model`
+     * answers 404 and clients fall back to their other engines. Optional so
+     * hand-built configs (tests) can omit it.
+     */
+    readonly stt?: SttModelConfig;
+    /**
+     * Local wake-word model serving (#84 P4), present only when configured
+     * (`JARVIS_WAKE_PROVIDER=openwakeword`) — the client-side detector
+     * downloads its three ONNX files from the server so deployments need no
+     * external egress (and skirt the upstream's missing CORS headers).
+     * Unset means `GET /api/wake/model/:file` answers 404 and the wake
+     * toggle is unavailable. Optional so hand-built configs (tests) can
+     * omit it.
+     */
+    readonly wake?: WakeModelConfig;
     /**
      * IPs and subnets whose `X-Forwarded-For` header is believed when
      * deriving `req.ip` (`JARVIS_TRUST_PROXY_CIDRS`), comma-separated.
@@ -736,6 +833,41 @@ export function getAppConfig(): AppConfig {
                               (token) => token.toLowerCase(),
                           ) ?? DEFAULT_HA_LIGHT_TOKENS,
                   },
+        tts:
+            process.env.JARVIS_TTS_PROVIDER === "kokoro"
+                ? {
+                      provider: "kokoro",
+                      voice:
+                          process.env.JARVIS_TTS_VOICE || DEFAULT_KOKORO_VOICE,
+                      speed: numberOr(process.env.JARVIS_TTS_SPEED, 1),
+                      segment:
+                          process.env.JARVIS_TTS_SEGMENT === "clause"
+                              ? "clause"
+                              : "sentence",
+                  }
+                : undefined,
+        stt:
+            process.env.JARVIS_STT_PROVIDER === "vosk"
+                ? {
+                      modelUrl:
+                          process.env.JARVIS_STT_MODEL_URL ||
+                          DEFAULT_STT_MODEL_URL,
+                      modelDir:
+                          process.env.JARVIS_STT_MODEL_DIR ||
+                          DEFAULT_STT_MODEL_DIR,
+                  }
+                : undefined,
+        wake:
+            process.env.JARVIS_WAKE_PROVIDER === "openwakeword"
+                ? {
+                      baseUrl:
+                          process.env.JARVIS_WAKE_MODEL_URL ||
+                          DEFAULT_WAKE_MODEL_URL,
+                      modelDir:
+                          process.env.JARVIS_WAKE_MODEL_DIR ||
+                          DEFAULT_WAKE_MODEL_DIR,
+                  }
+                : undefined,
         corsOrigins: csv(process.env.JARVIS_CORS_ORIGINS)?.map(normalizeOrigin),
         trustProxyCidrs: csv(process.env.JARVIS_TRUST_PROXY_CIDRS)?.map(
             (cidr) => cidr.toLowerCase(),

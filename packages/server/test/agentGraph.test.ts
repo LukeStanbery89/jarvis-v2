@@ -587,3 +587,97 @@ describe("prunedClockHistory", () => {
         expect(prunedClockHistory(history)).toEqual(history);
     });
 });
+
+/** The record of what `graph.stream` was handed, captured by the spy. */
+interface SeenStreamConfig {
+    configurable?: Record<string, unknown>;
+    signal?: AbortSignal;
+}
+
+/**
+ * Wraps a compiled graph in a Proxy that records the config every
+ * `stream` call receives, without disturbing the call itself (property
+ * access stays on the target, so `this` binding is preserved).
+ */
+function spyStream(graph: AgentGraph): {
+    graph: AgentGraph;
+    seen: SeenStreamConfig[];
+} {
+    const seen: SeenStreamConfig[] = [];
+    const proxy = new Proxy(graph, {
+        get(target, prop, receiver) {
+            if (prop === "stream") {
+                return (input: unknown, config: unknown) => {
+                    seen.push(config as SeenStreamConfig);
+                    return (
+                        target.stream as (
+                            i: unknown,
+                            c: unknown,
+                        ) => Promise<unknown>
+                    )(input, config);
+                };
+            }
+            return Reflect.get(target, prop, receiver);
+        },
+    });
+    return { graph: proxy as AgentGraph, seen };
+}
+
+describe("turn cancellation (#84 P6)", () => {
+    it("threads the caller's AbortSignal into the graph stream config", async () => {
+        const controller = new AbortController();
+        const model = new ScriptedChatModel([
+            new AIMessage({ content: "answer" }),
+        ]);
+        const { graph, seen } = spyStream(buildGraph(model));
+        const events = await collect(
+            streamAgentTurn(graph, "hi", "t-cancel", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+                signal: controller.signal,
+            }),
+        );
+        // The turn itself completes (the signal was never aborted).
+        expect(events.length).toBeGreaterThan(0);
+        // The signal rode the config into `graph.stream` — the cancellation
+        // reach a real model call needs.
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.signal).toBe(controller.signal);
+    });
+
+    it("sends no signal key when none was provided", async () => {
+        const model = new ScriptedChatModel([
+            new AIMessage({ content: "answer" }),
+        ]);
+        const { graph, seen } = spyStream(buildGraph(model));
+        await collect(
+            streamAgentTurn(graph, "hi", "t-nosignal", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+        expect(seen[0]!.signal).toBeUndefined();
+    });
+
+    it("fails the turn when the signal aborts mid-stream", async () => {
+        const controller = new AbortController();
+        const model = new ScriptedChatModel([
+            new AIMessage({ content: "answer" }),
+        ]);
+        const { graph } = spyStream(buildGraph(model));
+        const started = collect(
+            streamAgentTurn(graph, "hi", "t-abort", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+                signal: controller.signal,
+            }),
+        );
+        controller.abort();
+        // The signal rides into `graph.stream`, and the graph's model call
+        // rejects on it — the turn ends instead of running to completion
+        // (a hung model that ignores the signal still drains via the
+        // caller's `return()`, best-effort; this is the signal-honoring
+        // path).
+        await expect(started).rejects.toThrow();
+    });
+});

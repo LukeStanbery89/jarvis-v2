@@ -39,6 +39,7 @@ import {
     parseClientMessage,
     parseFrame,
     serializeAuth,
+    serializeCancel,
     serializeFrame,
     serializeHello,
     serializeLocation,
@@ -60,7 +61,7 @@ type PayloadSchema = Record<string, unknown>;
  */
 type FrameKeys<T> = T extends unknown ? keyof T : never;
 
-/** The 6 server-frame discriminator keys, checked against `ServerFrame`. */
+/** The 8 server-frame discriminator keys, checked against `ServerFrame`. */
 const SERVER_FRAME_KEYS = [
     "chunk",
     "tool",
@@ -68,14 +69,17 @@ const SERVER_FRAME_KEYS = [
     "done",
     "error",
     "authResult",
+    "audioStart",
+    "audioEnd",
 ] as const satisfies readonly FrameKeys<ServerFrame>[];
 
-/** Client message names (not `ClientFrame` keys — it is a union of four shapes). */
+/** Client message names (not `ClientFrame` keys — it is a union of five shapes). */
 const CLIENT_MESSAGE_NAMES = [
     "authHandshake",
     "chatPrompt",
     "clientHello",
     "locationFrame",
+    "cancelFrame",
 ] as const;
 
 /**
@@ -90,12 +94,23 @@ const MESSAGE_FOR_KEY: Record<string, string> = {
     done: "done",
     error: "error",
     authResult: "authResult",
+    audioStart: "audioStart",
+    audioEnd: "audioEnd",
 };
+
+/**
+ * The spec declares one message beyond the JSON frames: `pcmChunk`, the
+ * #83 BINARY audio message (raw s16le samples — never parsed as a frame,
+ * so it has no protocol key and no conformance round-trip; its presence in
+ * the spec is still pinned).
+ */
+const BINARY_MESSAGE_NAMES = ["pcmChunk"] as const;
 
 /** The exact message set the spec must declare (spec-side names). */
 const MESSAGE_NAMES = [
     ...CLIENT_MESSAGE_NAMES,
     ...Object.values(MESSAGE_FOR_KEY),
+    ...BINARY_MESSAGE_NAMES,
 ] as const;
 
 /** Message names on the client side of `/ws` map 1:1. */
@@ -104,6 +119,7 @@ const MESSAGE_FOR_CLIENT: Record<string, string> = {
     chatPrompt: "chatPrompt",
     clientHello: "clientHello",
     locationFrame: "locationFrame",
+    cancelFrame: "cancelFrame",
 };
 
 // ---------------------------------------------------------------------------
@@ -293,6 +309,13 @@ describe("AsyncAPI conformance: protocol frames", () => {
             );
         });
 
+        it("validates a hello with the audio capability (#83)", () => {
+            expectWireConformant(
+                () => serializeHello(["markdown", "image", "link", "audio"]),
+                MESSAGE_FOR_CLIENT.clientHello,
+            );
+        });
+
         it("validates a hello with an empty capabilities list (plain text)", () => {
             expectWireConformant(
                 () => serializeHello([]),
@@ -322,6 +345,13 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeLocation(45.5231, -122.6765, "Portland, OR"),
                 MESSAGE_FOR_CLIENT.locationFrame,
+            );
+        });
+
+        it("validates a turn cancellation through the serializer (#84 P6)", () => {
+            expectWireConformant(
+                () => serializeCancel(),
+                MESSAGE_FOR_CLIENT.cancelFrame,
             );
         });
 
@@ -422,6 +452,29 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeFrame(frame),
                 MESSAGE_FOR_KEY.authResult,
+            );
+        });
+
+        it("validates an audioStart frame (#83 Kokoro turn)", () => {
+            const frame: ServerFrame = {
+                audioStart: {
+                    generationId: 7,
+                    format: "pcm_s16le",
+                    sampleRate: 24000,
+                    channels: 1,
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.audioStart,
+            );
+        });
+
+        it("validates an audioEnd frame (#83)", () => {
+            const frame: ServerFrame = { audioEnd: { generationId: 7 } };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.audioEnd,
             );
         });
     });

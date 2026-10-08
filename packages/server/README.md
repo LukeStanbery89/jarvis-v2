@@ -18,13 +18,14 @@ npm install @lukestanbery/jarvis-server
 
 ## Scripts
 
-| Script              | Description                        |
-| ------------------- | ---------------------------------- |
-| `npm run build`     | Compile TypeScript to `dist/`      |
-| `npm run typecheck` | Type-check src and tests (no emit) |
-| `npm run dev`       | Run the server with watch mode     |
-| `npm start`         | Run the compiled server            |
-| `npm test`          | Run the test suite (Vitest)        |
+| Script                | Description                                                |
+| --------------------- | ---------------------------------------------------------- |
+| `npm run build`       | Compile TypeScript to `dist/`                              |
+| `npm run typecheck`   | Type-check src and tests (no emit)                         |
+| `npm run dev`         | Run the server with watch mode                             |
+| `npm start`           | Run the compiled server                                    |
+| `npm test`            | Run the test suite (Vitest)                                |
+| `npm run tts:harness` | Local TTS harness: synthesize text and play it aloud (#83) |
 
 ## Usage
 
@@ -710,7 +711,11 @@ and exchange JSON text frames:
       conversation (bounded to 128 characters); each distinct id is isolated.
       The optional `mode` (default `"text"`) picks the chat style: text prompts
       are answered using the client's declared capabilities, while voice prompts
-      always yield plain conversational text. The mode is recorded as the
+      always yield plain conversational text plus the spoken-word directive —
+      the system prompt tells the model to write as it would speak (no
+      markdown, no parentheses, spelled-out units) because the reply will be
+      read aloud. Scoped to the turn: a later text prompt on the same thread
+      renders richly again. The mode is recorded as the
       session's `kind` when the thread is first claimed (write-once).
       A `hello` or `auth` frame arriving after this is rejected.
     - `{ "type": "location", "lat": <number>, "lon": <number>, "label"?: "<place>" }` (#31) —
@@ -718,6 +723,14 @@ and exchange JSON text frames:
       for subsequent turns). Feeds the `getWeather` tool so a locationless
       "what's the weather?" works without asking for a city. Kept in memory
       for the socket's lifetime only; never persisted. See [Weather](#weather).
+    - `{ "type": "cancel" }` (#84 P6) — drop the socket's in-flight turn
+      (barge-in or the stop button). Valid any time and idempotent: with no
+      turn in flight it is ignored (no reply). The server aborts the model
+      stream for real (`AbortSignal` threaded into the graph, so even a
+      stalled model read rejects), drops the turn's spoken audio, releases
+      the thread lock, and ends the turn with a terminal `{ "done": true }`
+      — the text already streamed stays in history, and no error frame is
+      sent.
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).
@@ -735,7 +748,8 @@ and exchange JSON text frames:
 - Turns are hard-capped by `JARVIS_TURN_TIMEOUT_MS` (default `120000`): a turn
   that exceeds it is aborted and the client receives a `turn timed out` error
   frame. Draining is **best-effort on a hung model** — the per-thread lock
-  releases once the in-flight model call settles.
+  releases once the in-flight model call settles; a client `cancel` aborts
+  the same signal, so signal-honoring models stop immediately.
 
 Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
 `~/.jarvis/jarvis.sqlite`): `sessionId` is claimed atomically as a
@@ -756,3 +770,123 @@ conversations. That checkpoint file is a separate database from the auth app
 database (`JARVIS_DB_PATH`); the server depends on `better-sqlite3` directly to
 open it, while account state is reached only through `@lukestanbery/jarvis-auth`.
 Try it with the `@lukestanbery/jarvis-cli` REPL.
+
+## Server-side TTS (#83)
+
+J.A.R.V.I.S. will speak its responses: text-to-speech is **server-side** (one
+consistent voice for every client; clients only play audio — the mirror of
+client-side STT in `packages/voice`). Phase 1 ships the engine seam and the
+first engine; the response segmenter, audio orchestrator, and wire frames
+(`audioStart`/binary PCM/`audioEnd`/`audioError` behind a new `audio`
+capability) land in later phases — see the
+[tracking issue](https://github.com/LukeStanbery89/jarvis-v2/issues/83) for
+the full strategy and its race-test matrix.
+
+What exists now:
+
+- `src/tts/types.ts` — the `TtsProvider` seam: text → mono float PCM +
+  sample rate, with a cooperative `AbortSignal` (checked before init,
+  before generate, and after; in-flight engine work cannot be interrupted,
+  so the orchestrator drops aborted results by generation id instead).
+- `src/tts/kokoro.ts` — `KokoroTtsProvider`, Kokoro-82M via `kokoro-js`
+  (ONNX, pure local inference — no Python, no Apple-Silicon lock-in; that
+  is what disqualified the MLX sketch). The engine loads through a lazy
+  dynamic `import()` on first synthesis; a fake loader keeps the suite
+  offline. Options: model id, dtype (`q8` default), voice (`bm_lewis`
+  default), speed, and cache dir.
+- `src/tts/segmenter.ts` + `src/tts/orchestrator.ts` — the turn pipeline:
+  streamed tokens → sentence-boundary segments → one sequential synthesis
+  worker → ordered audio, with quiet failure (the text stream is never
+  disturbed) and abort on turn timeout / socket close.
+- `scripts/tts-harness.ts` (`npm run tts:harness`) — the manual acceptance
+  tool: synthesize `JARVIS_TTS_TEXT` (or argv), write a WAV to temp, and
+  play it via `afplay`/`aplay`. Prints init/generate timings.
+
+**Wired to `/ws`**: voice-mode prompts from a socket that declared the
+`audio` capability are spoken — an `audioStart` frame, binary
+little-endian s16le PCM messages (one per segment), and `audioEnd`, all
+inside the turn (before `done`), so the per-thread lock covers speaking.
+The model is asked to write speakably in the first place: voice turns
+carry a spoken-word system-prompt directive (no markdown, no parentheses,
+units spelled out — `src/agent.ts` `VOICE_FORMAT_RULE`), so the segmenter
+mostly sees clean prose. Incidental markup that slips through is inert
+text (it reads as written); a deterministic say-proofing pass is a
+deliberate non-goal for now.
+
+Time-to-first-audio (#89): spoken turns log a TTFA decomposition at debug
+(`voice turn N TTFA: first token +Xms, first segment +Yms, first audio
+sent +Zms` — deltas against the turn's start), and the web client mirrors
+it in devtools (`[voice] first audio +Xms since submit, +Yms since
+audioStart`). The first-audio lever is the segmenter: `JARVIS_TTS_SEGMENT`
+(default `sentence`) selects clause granularity, which additionally splits
+at commas/semicolons when the pending text covers at least 40 chars — the
+first PCM lands at the first comma instead of the first period, at the
+cost of prosody across the split (clauses are synthesized independently).
+Numbers ("1,000") never split; short clauses merge into the next one so
+fragment overhead cannot dominate the win. Enable it with:
+
+| Variable              | Default    | Description                                    |
+| --------------------- | ---------- | ---------------------------------------------- |
+| `JARVIS_TTS_PROVIDER` | _(unset)_  | `kokoro` enables synthesis; unset = off        |
+| `JARVIS_TTS_VOICE`    | `bm_lewis` | Kokoro voice id                                |
+| `JARVIS_TTS_SPEED`    | `1`        | Speaking speed multiplier                      |
+| `JARVIS_TTS_SEGMENT`  | `sentence` | `clause` splits at commas/semicolons too (#89) |
+
+Deployment posture (deliberate):
+
+- `kokoro-js` and `@huggingface/transformers` are **optionalDependencies** —
+  TTS is config-gated like the optional tools, and a missing install makes
+  the provider report itself unavailable; it is never a boot failure.
+- Model weights are **never baked into the image**: first synthesis
+  downloads the checkpoint into `~/.jarvis/tts` (created `0700` via the
+  auth package's private-fs helpers; `JARVIS_TTS_CACHE_DIR` overrides).
+- The Docker prod stage installs with `--omit=optional`, so the runtime
+  image neither carries the ONNX stack nor changes behavior.
+
+## Local STT model serving (#84 P3b)
+
+The web chat client's speech recognition runs **on-device** (issue #84):
+a WASM engine (Vosk) in the browser transcribes the microphone locally, so
+no audio ever leaves the client. The engine needs ~40 MB of model weights;
+the server fetches the archive from its configured upstream on the **first
+client request**, caches it privately, and streams it to browsers from its
+own origin — `GET /api/stt/model` (public by design: the archive is
+open-source model weights, never user data, and the recognition worker
+cannot attach auth headers; browsers cache it via long-lived headers). The
+archive never lands in the Docker image and is never downloaded at boot.
+
+- `src/stt/model.ts` — the download-once cache (`SttModelCache`: lazy first
+  fetch, in-flight collapse, temp-file-then-rename so a partial download
+  never masquerades as a model, retry on the next request after a failure)
+  plus the route handler (`createSttModelHandler`: 200 `application/gzip`,
+  JSON 404 unconfigured, JSON 503 while an upstream fetch fails).
+
+| Variable               | Default                              | Description                                   |
+| ---------------------- | ------------------------------------ | --------------------------------------------- |
+| `JARVIS_STT_PROVIDER`  | _(unset)_                            | `vosk` enables model serving; unset = 404     |
+| `JARVIS_STT_MODEL_URL` | the vosk-browser small-en-us tarball | Upstream archive fetched on first request     |
+| `JARVIS_STT_MODEL_DIR` | `~/.jarvis/stt`                      | Private cache directory (`0700`, file `0600`) |
+
+## Wake-word model serving (#84 P4)
+
+The web chat client's "Hey JARVIS" wake detector (openWakeWord) also runs
+**on-device**. It needs three small ONNX models (`melspectrogram.onnx`,
+`embedding_model.onnx`, `hey_jarvis_v0.1.onnx` — ~3 MB total); the server
+fetches them from the openWakeWord release host on first request and serves
+them same-origin from `/api/wake/model/:file`, because the upstream commits
+no CORS headers and a `/web`-mounted SPA must load them without them. The
+route is an exact per-file allowlist — an unknown name 404s before any
+fetch; `HEAD` answers 200 without downloading.
+
+- `src/wake/model.ts` — the per-file download-once cache (`WakeModelCache`:
+  lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the
+  next request) plus `createWakeModelHandler` for `GET|HEAD
+/api/wake/model/:file` (200 `application/octet-stream` + `Cache-Control
+public, max-age=86400`; JSON 404 unconfigured/unknown; JSON 503 while an
+  upstream fetch fails).
+
+| Variable                | Default                                   | Description                                       |
+| ----------------------- | ----------------------------------------- | ------------------------------------------------- |
+| `JARVIS_WAKE_PROVIDER`  | _(unset)_                                 | `openwakeword` enables model serving; unset = 404 |
+| `JARVIS_WAKE_MODEL_URL` | `…/openWakeWord/releases/download/v0.5.1` | Upstream directory each model is fetched from     |
+| `JARVIS_WAKE_MODEL_DIR` | `~/.jarvis/wake`                          | Private cache directory (`0700`, file `0600`)     |

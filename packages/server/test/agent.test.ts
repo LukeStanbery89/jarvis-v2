@@ -75,4 +75,34 @@ describe("systemPromptForCapabilities", () => {
             "The conversation client renders the following",
         );
     });
+
+    it("appends the spoken-word directive for voice-mode turns (#83)", () => {
+        const prompt = systemPromptForCapabilities(
+            DEFAULT_SYSTEM_PROMPT,
+            [],
+            "voice",
+        );
+        expect(prompt).toContain(DEFAULT_SYSTEM_PROMPT);
+        expect(prompt).toMatch(/read aloud by a text-to-speech engine/);
+        expect(prompt).toMatch(/Use no parentheses or brackets/);
+        expect(prompt).toMatch(/Spell out every abbreviation/);
+        // The fixed hygiene rules still apply to voice turns.
+        expect(prompt).toMatch(/exactly one tool call at a time/);
+    });
+
+    it("keeps text-mode prompts free of the spoken-word directive", () => {
+        const text = systemPromptForCapabilities(
+            DEFAULT_SYSTEM_PROMPT,
+            ["markdown"],
+            "text",
+        );
+        const plain = systemPromptForCapabilities(DEFAULT_SYSTEM_PROMPT, []);
+        for (const prompt of [text, plain]) {
+            expect(prompt).not.toMatch(/text-to-speech engine/);
+            expect(prompt).not.toMatch(/Use no parentheses or brackets/);
+        }
+        // Voice scoping is per-turn: a text-mode turn on a voice thread
+        // renders richly again.
+        expect(text).toMatch(/Markdown is rendered/);
+    });
 });

@@ -22,7 +22,9 @@
  */
 import {
     parseFrame,
+    s16leToPcm,
     serializeAuth,
+    serializeCancel,
     serializeHello,
     serializeLocation,
     serializeRequest,
@@ -40,12 +42,25 @@ export interface ChatClientEvents {
     onStatus?(status: ChatStatus): void;
     /** One parsed server frame of an in-flight prompt turn. */
     onFrame?(frame: ServerFrame): void;
+    /**
+     * One binary audio chunk of the in-flight turn's spoken response (#83):
+     * little-endian s16le samples decoded to mono float PCM via the
+     * protocol's `s16leToPcm`. The chunk's sample rate arrived on the
+     * turn's `audioStart` frame (which flows through {@link onFrame}).
+     */
+    onAudio?(pcm: Float32Array): void;
     /** The credential is permanently unusable (invalid or revoked). */
     onAuthRejected?(): void;
 }
 
 /** Constructs the socket; injectable for node tests. */
 export type WebSocketFactory = (url: string) => WebSocket;
+
+/** The slice of a WebSocket message event that {@link ChatClient} consumes. */
+interface WebSocketMessageEvent {
+    /** Text for JSON frames; an ArrayBuffer for binary audio (#83). */
+    readonly data: unknown;
+}
 
 /** Exact server wording for a mid-life token revocation. */
 const REVOKED_MESSAGE = "device token revoked; reconnect to re-authenticate";
@@ -84,6 +99,24 @@ export class ChatClient {
     private rejected = false;
     /** Whether a prompt turn is currently consuming frames. */
     private streaming = false;
+    /**
+     * Client-side TTFA measurement (#83 phase 6): when the turn was
+     * submitted, when its `audioStart` arrived, and whether the first
+     * binary chunk is still pending — so the first chunk logs "first
+     * audible" deltas to the console. The web package has no logger;
+     * `console.debug` keeps this invisible unless devtools are open.
+     */
+    private turnStartedAt: number | null = null;
+    private audioSpanStartedAt: number | null = null;
+    private awaitingFirstAudioChunk = false;
+    /**
+     * The in-flight turn's spoken-audio `generationId` (#84 P6), from its
+     * `audioStart` frame — the id a `cancelTurn` records so late binary
+     * chunks of the cancelled span are dropped instead of played.
+     */
+    private audioGenerationId: number | null = null;
+    /** Generations cancelled by this client; their audio is never played. */
+    private droppedGenerations = new Set<number>();
     /** Reconnect attempt counter (drives backoff; reset on connect). */
     private attempt = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -125,6 +158,10 @@ export class ChatClient {
         this.emitStatus(this.attempt === 0 ? "connecting" : "reconnecting");
         const factory = this.options.socketFactory ?? ((u) => new WebSocket(u));
         const socket = factory(this.url);
+        // Binary messages carry the turn's spoken audio (#83); the JSON
+        // frames stay text. Declaring arraybuffer makes every binary
+        // delivery an ArrayBuffer, which onMessage branches on.
+        socket.binaryType = "arraybuffer";
         this.socket = socket;
         this.phase = "handshake";
         socket.onopen = () => {
@@ -140,7 +177,7 @@ export class ChatClient {
                 socket.close();
             }, this.options.authTimeoutMs ?? 5_000);
         };
-        socket.onmessage = (event) => this.onMessage(String(event.data));
+        socket.onmessage = (event) => this.onMessage(event);
         socket.onclose = () => this.onClose();
         // onerror is always followed by onclose; nothing to do here.
         socket.onerror = () => {};
@@ -154,15 +191,18 @@ export class ChatClient {
      * server's message), a dropped connection, a malformed server frame, or
      * when another prompt is already streaming. When the socket is already
      * ready the turn starts synchronously, so frames the server sends
-     * immediately after the call are never missed. The mode is always
-     * `"text"` for this client. `attachments` carries attachment ids
-     * (#10) obtained from `api.uploadAttachment` — sent on the wire frame
-     * when non-empty, omitted entirely otherwise.
+     * immediately after the call are never missed. `mode` defaults to
+     * `"text"` for typed prompts; voice-origin prompts pass `"voice"`
+     * (#84) so the server answers in plain conversational text.
+     * `attachments` carries attachment ids (#10) obtained from
+     * `api.uploadAttachment` — sent on the wire frame when non-empty,
+     * omitted entirely otherwise.
      */
     async prompt(
         text: string,
         sessionId: string,
         attachments: string[] = [],
+        mode: ChatMode = "text",
     ): Promise<void> {
         if (this.closedByUser) {
             throw new Error("chat client is closed");
@@ -175,7 +215,7 @@ export class ChatClient {
         }
         const ready = this.socket;
         if (this.phase === "ready" && ready && ready.readyState === WS_OPEN) {
-            return this.startTurn(ready, text, sessionId, attachments);
+            return this.startTurn(ready, text, sessionId, attachments, mode);
         }
         // Not ready yet: park until the handshake settles, then re-check.
         await this.whenReady();
@@ -193,7 +233,7 @@ export class ChatClient {
         ) {
             throw new Error("chat client is not connected");
         }
-        return this.startTurn(socket, text, sessionId, attachments);
+        return this.startTurn(socket, text, sessionId, attachments, mode);
     }
 
     /**
@@ -205,9 +245,15 @@ export class ChatClient {
         text: string,
         sessionId: string,
         attachments: string[],
+        mode: ChatMode,
     ): Promise<void> {
-        const mode: ChatMode = "text";
         this.streaming = true;
+        this.turnStartedAt = performance.now();
+        this.audioSpanStartedAt = null;
+        this.awaitingFirstAudioChunk = false;
+        // A new turn is a new generation; drops only ever matter within a
+        // cancelled turn's span.
+        this.droppedGenerations.clear();
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;
             this.rejectPrompt = reject;
@@ -220,6 +266,30 @@ export class ChatClient {
     /** Whether a prompt turn is currently streaming. */
     isStreaming(): boolean {
         return this.streaming;
+    }
+
+    /**
+     * Cancels the in-flight turn (#84 P6): barge-in or the stop button.
+     * Sends the `cancel` frame when the socket is live (the server aborts
+     * the model stream and the spoken audio, and ends the turn with
+     * `done` — the text already streamed stays in history), and marks the
+     * turn's audio generation dropped so chunks still in flight are never
+     * played. Idempotent and safe with no turn in flight.
+     */
+    cancelTurn(): void {
+        if (!this.streaming) {
+            return;
+        }
+        if (this.audioGenerationId !== null) {
+            this.droppedGenerations.add(this.audioGenerationId);
+        }
+        if (
+            this.socket !== null &&
+            this.phase === "ready" &&
+            this.socket.readyState === WS_OPEN
+        ) {
+            this.socket.send(serializeCancel());
+        }
     }
 
     /**
@@ -255,12 +325,49 @@ export class ChatClient {
     }
 
     /**
-     * Single message dispatcher. During the handshake only `authResult`
+     * Single message dispatcher. Binary messages are spoken-audio chunks
+     * (#83) — decoded and delivered via {@link ChatClientEvents.onAudio},
+     * never parsed as frames. During the handshake only `authResult`
      * (success), `error` (bad token → permanent rejection), and ignorable
      * trailing frames are expected. Once ready, prompt frames stream to
      * {@link ChatClientEvents.onFrame} until `done`/`error`.
      */
-    private onMessage(raw: string): void {
+    private onMessage(event: WebSocketMessageEvent): void {
+        if (event.data instanceof ArrayBuffer) {
+            // Audio of a cancelled generation is dead on arrival (#84 P6):
+            // the span was stopped server-side, but chunks already in
+            // flight must never reach the player.
+            if (
+                this.audioGenerationId !== null &&
+                this.droppedGenerations.has(this.audioGenerationId)
+            ) {
+                return;
+            }
+            if (this.awaitingFirstAudioChunk) {
+                this.awaitingFirstAudioChunk = false;
+                // First chunk of the span = first audible audio (#83 phase
+                // 6). The headline "user stops speaking → first audible
+                // JARVIS" reads here, measured from prompt submit and from
+                // the `audioStart` frame.
+                const now = performance.now();
+                const sinceSubmit =
+                    this.turnStartedAt === null
+                        ? null
+                        : Math.round(now - this.turnStartedAt);
+                const sinceSpanStart =
+                    this.audioSpanStartedAt === null
+                        ? null
+                        : Math.round(now - this.audioSpanStartedAt);
+                console.debug(
+                    `[voice] first audio ${sinceSubmit === null ? "?" : `+${sinceSubmit}ms`} since submit, ${sinceSpanStart === null ? "?" : `+${sinceSpanStart}ms`} since audioStart`,
+                );
+            }
+            this.options.events.onAudio?.(
+                s16leToPcm(new Uint8Array(event.data)),
+            );
+            return;
+        }
+        const raw = String(event.data);
         let frame: ServerFrame;
         try {
             frame = parseFrame(raw);
@@ -313,6 +420,11 @@ export class ChatClient {
             return;
         }
         if (this.streaming) {
+            if ("audioStart" in frame) {
+                this.audioSpanStartedAt = performance.now();
+                this.awaitingFirstAudioChunk = true;
+                this.audioGenerationId = frame.audioStart.generationId;
+            }
             this.options.events.onFrame?.(frame);
         }
     }

@@ -12,9 +12,30 @@ vi.mock("../src/agent", () => ({
     runAgent: vi.fn(async function* (
         prompt: string,
         _sessionId: string,
+        options?: { signal?: AbortSignal },
     ): AsyncGenerator<AgentEvent> {
         if (prompt === "boom") {
             throw new Error("model exploded");
+        }
+        // A slow, cancellable stream (#84 P6): one punctuated token every
+        // 40 ms, checking the signal between awaits the way a real model
+        // rejects its in-flight fetch on abort.
+        if (prompt === "stall") {
+            for (const word of [
+                "one. ",
+                "two. ",
+                "three. ",
+                "four. ",
+                "five. ",
+                "six. ",
+            ]) {
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                if (options?.signal?.aborted) {
+                    throw new Error("aborted");
+                }
+                yield { type: "token", text: word };
+            }
+            return;
         }
         if (prompt === "tools") {
             yield { type: "tool", name: "getCurrentTime", args: {} };
@@ -65,19 +86,36 @@ attachChatServer(server, store);
 const timeoutServer = createApp(store, appConfig).listen(0);
 attachChatServer(timeoutServer, store, { turnTimeoutMs: 30 });
 
+// The TTS-enabled variant (#83): a fake engine that answers every
+// synthesis with two float samples, so the wire slice — segmenter, speaker,
+// frames, binary chunks — runs without any model.
+const fakeTts: import("../src/tts/types").TtsProvider = {
+    id: "fake",
+    synthesize: async () => ({
+        pcm: new Float32Array([0.25, -0.25]),
+        sampleRate: 24000,
+    }),
+};
+const ttsServer = createApp(store, appConfig).listen(0);
+attachChatServer(ttsServer, store, { turnTimeoutMs: 30_000, tts: fakeTts });
+
 let url: string;
 let timeoutUrl: string;
+let ttsUrl: string;
 
 beforeAll(() => {
     const address = server.address() as AddressInfo | null;
     url = `ws://localhost:${address?.port ?? 0}/ws`;
     const timeoutAddress = timeoutServer.address() as AddressInfo | null;
     timeoutUrl = `ws://localhost:${timeoutAddress?.port ?? 0}/ws`;
+    const ttsAddress = ttsServer.address() as AddressInfo | null;
+    ttsUrl = `ws://localhost:${ttsAddress?.port ?? 0}/ws`;
 });
 
 afterAll(async () => {
     server.close();
     timeoutServer.close();
+    ttsServer.close();
     // Let pending server-side socket-close handlers (guest-session cleanup)
     // flush before the store is shut down.
     await settle();
@@ -250,7 +288,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-cap-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown", "image"],
+            mode: "text",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
     });
 
@@ -269,7 +309,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "voice-thread");
         expect(call?.[2]).toEqual({
             capabilities: [],
+            mode: "voice",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
         expect(store.getSessionByThread("voice-thread")?.kind).toBe("voice");
     });
@@ -292,7 +334,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "text-explicit-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown", "image"],
+            mode: "text",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
         expect(store.getSessionByThread("text-explicit-thread")?.kind).toBe(
             "text",
@@ -370,7 +414,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-prompt-auth-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown"],
+            mode: "text",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
     });
 
@@ -403,7 +449,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-badauth-thread");
         expect(call?.[2]).toEqual({
             capabilities: ["markdown", "image"],
+            mode: "text",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
     });
 
@@ -421,7 +469,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "hello-empty-thread");
         expect(call?.[2]).toEqual({
             capabilities: [],
+            mode: "text",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
     });
 
@@ -470,7 +520,9 @@ describe("hello capability handshake", () => {
             .mock.calls.find((c) => c[1] === "plain-guest-thread");
         expect(call?.[2]).toEqual({
             capabilities: [],
+            mode: "text",
             attachmentIds: [],
+            signal: expect.any(AbortSignal),
         });
     });
 });
@@ -946,3 +998,355 @@ function twoPhase(
         ws.on("error", reject);
     });
 }
+
+/** Sent hello + prompt, collecting JSON frames and binary byte-counts. */
+function speakExchange(
+    hello: unknown,
+    prompt: unknown,
+): Promise<{
+    frames: Record<string, unknown>[];
+    binaries: number[];
+}> {
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(ttsUrl);
+        const frames: Record<string, unknown>[] = [];
+        const binaries: number[] = [];
+        ws.on("open", () => {
+            ws.send(JSON.stringify(hello));
+            ws.send(JSON.stringify(prompt));
+        });
+        ws.on("message", (data, isBinary) => {
+            if (isBinary) {
+                binaries.push((data as Buffer).length);
+                return;
+            }
+            const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+            frames.push(msg);
+            if (msg.done === true) {
+                ws.close();
+                resolve({ frames, binaries });
+            }
+        });
+        ws.on("error", reject);
+    });
+}
+
+describe("voice audio frames (#83)", () => {
+    it("speaks a voice-mode turn for an audio-capable socket", async () => {
+        const { frames, binaries } = await speakExchange(
+            { type: "hello", capabilities: ["markdown", "audio"] },
+            { prompt: "hi", sessionId: SESSION_ID, mode: "voice" },
+        );
+        const kinds = frames.map((f) => Object.keys(f)[0]);
+        const startIndex = kinds.indexOf("audioStart");
+        const endIndex = kinds.indexOf("audioEnd");
+        const doneIndex = kinds.indexOf("done");
+        // Audio frames exist, in order: audioStart … audioEnd … done.
+        expect(startIndex).toBeGreaterThan(-1);
+        expect(endIndex).toBeGreaterThan(startIndex);
+        expect(doneIndex).toBeGreaterThan(endIndex);
+        // done is the last frame of the turn.
+        expect(doneIndex).toBe(kinds.length - 1);
+        const start = frames[startIndex]!.audioStart as Record<string, unknown>;
+        expect(start).toEqual({
+            generationId: 1,
+            format: "pcm_s16le",
+            sampleRate: 24000,
+            channels: 1,
+        });
+        expect(frames[endIndex]!.audioEnd as Record<string, unknown>).toEqual({
+            generationId: 1,
+        });
+        // One binary message per synthesized segment: 2 samples × 2 bytes.
+        expect(binaries).toEqual([4]);
+        // The text stream ran unchanged alongside the audio.
+        const chunks = frames.filter((f) => typeof f.chunk === "string");
+        expect(chunks.map((f) => f.chunk).join("")).toBe("Hello, World!");
+        // audioStart goes out no earlier than the last text chunk — audio
+        // trails text within the turn.
+        const lastChunkIndex = kinds.lastIndexOf("chunk");
+        expect(startIndex).toBeGreaterThan(lastChunkIndex);
+    });
+
+    it("sends no audio for a text-mode prompt", async () => {
+        const { frames, binaries } = await speakExchange(
+            { type: "hello", capabilities: ["markdown", "audio"] },
+            { prompt: "hi", sessionId: SESSION_ID },
+        );
+        expect(frames.some((f) => f.audioStart !== undefined)).toBe(false);
+        expect(frames.some((f) => f.audioEnd !== undefined)).toBe(false);
+        expect(binaries).toEqual([]);
+        expect(frames.some((f) => f.done === true)).toBe(true);
+    });
+
+    it("sends no audio to a socket that did not declare the audio capability", async () => {
+        const { frames, binaries } = await speakExchange(
+            { type: "hello", capabilities: ["markdown"] },
+            { prompt: "hi", sessionId: SESSION_ID, mode: "voice" },
+        );
+        expect(frames.some((f) => f.audioStart !== undefined)).toBe(false);
+        expect(binaries).toEqual([]);
+        expect(frames.some((f) => f.done === true)).toBe(true);
+    });
+});
+
+/** One collected socket message: a JSON frame or a binary byte count. */
+type CancelItem =
+    | { kind: "frame"; frame: Record<string, unknown> }
+    | { kind: "binary"; bytes: number };
+
+/**
+ * Opens a socket on `target` and returns a manual driver: frames and binary
+ * messages arrive in order and are consumed one at a time via {@link next},
+ * so tests can act mid-stream (send a `cancel` on the first chunk, race a
+ * quiet window, and so on) — shapes `exchange`'s resolve-on-done helper
+ * cannot express.
+ */
+function connect(target: string): Promise<{
+    send: (payload: unknown) => void;
+    next: () => Promise<CancelItem>;
+    close: () => void;
+}> {
+    const ws = new WebSocket(target);
+    const buffered: CancelItem[] = [];
+    const waiting: ((item: CancelItem) => void)[] = [];
+    const opened = new Promise<void>((resolve) => ws.once("open", resolve));
+    ws.on("message", (data, isBinary) => {
+        const item: CancelItem = isBinary
+            ? { kind: "binary", bytes: (data as Buffer).length }
+            : {
+                  kind: "frame",
+                  frame: JSON.parse((data as Buffer).toString()) as Record<
+                      string,
+                      unknown
+                  >,
+              };
+        const waiter = waiting.shift();
+        if (waiter) {
+            waiter(item);
+        } else {
+            buffered.push(item);
+        }
+    });
+    return opened.then(() => ({
+        send: (payload: unknown) => ws.send(JSON.stringify(payload)),
+        next: () => {
+            const item = buffered.shift();
+            if (item !== undefined) {
+                return Promise.resolve(item);
+            }
+            return new Promise((resolve) => waiting.push(resolve));
+        },
+        close: () => ws.close(),
+    }));
+}
+
+describe("turn cancellation (#84 P6)", () => {
+    it("aborts a streaming text turn: partial text, done without error, lock released", async () => {
+        const c = await connect(url);
+        c.send({ prompt: "stall", sessionId: SESSION_ID });
+        // Cancel the moment the first chunk lands — mid-stream.
+        let chunks = "";
+        for (;;) {
+            const item = await c.next();
+            if (item.kind === "frame" && typeof item.frame.chunk === "string") {
+                chunks += item.frame.chunk;
+                c.send({ type: "cancel" });
+                break;
+            }
+        }
+        let done = false;
+        let error: string | null = null;
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                chunks += item.frame.chunk;
+            }
+            if (typeof item.frame.error === "string") {
+                error = item.frame.error;
+            }
+            if (item.frame.done === true) {
+                done = true;
+                break;
+            }
+        }
+        // Text already streamed stands in history; the turn ends with `done`
+        // and never an error frame.
+        expect(done).toBe(true);
+        expect(error).toBeNull();
+        expect(chunks).toBe("one. ");
+        // The thread lock released: the follow-up turn on the same thread
+        // runs to completion instead of being answered `busy`.
+        c.send({ prompt: "hi", sessionId: SESSION_ID });
+        let followUp = "";
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                followUp += item.frame.chunk;
+            }
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        expect(followUp).toBe("Hello, World!");
+        c.close();
+    });
+
+    it("honors a cancel queued before the stream starts", async () => {
+        const c = await connect(url);
+        // Pipelined: the prompt joins the tail, the cancel bypasses it and
+        // marks the turn for abort-at-start.
+        c.send({ prompt: "stall", sessionId: `${SESSION_ID}-queued` });
+        c.send({ type: "cancel" });
+        let chunks = "";
+        let error: string | null = null;
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                chunks += item.frame.chunk;
+            }
+            if (typeof item.frame.error === "string") {
+                error = item.frame.error;
+            }
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        expect(chunks).toBe("");
+        expect(error).toBeNull();
+        c.close();
+    });
+
+    it("ignores a cancel with no turn in flight", async () => {
+        const c = await connect(url);
+        c.send({ type: "cancel" });
+        // A stray cancel must be silent. Assert it by what follows: the
+        // next turn's response arrives byte-perfect — a spurious `done`
+        // would truncate it to "" and a spurious `error` would surface
+        // below (a dangling quiet-window race would also strand the
+        // driver's waiter, so the absence is checked through the payload).
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        c.send({ prompt: "hi", sessionId: `${SESSION_ID}-idle-cancel` });
+        let chunks = "";
+        let error: string | null = null;
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                chunks += item.frame.chunk;
+            }
+            if (typeof item.frame.error === "string") {
+                error = item.frame.error;
+            }
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        expect(chunks).toBe("Hello, World!");
+        expect(error).toBeNull();
+        c.close();
+    });
+
+    it("drops spoken audio mid-turn: no audioEnd after cancel, done terminal", async () => {
+        const c = await connect(ttsUrl);
+        c.send({ type: "hello", capabilities: ["markdown", "audio"] });
+        c.send({ prompt: "stall", sessionId: SESSION_ID, mode: "voice" });
+        const frames: Record<string, unknown>[] = [];
+        const binaries: number[] = [];
+        // Collect up to the first binary chunk — audioStart + one PCM
+        // segment are on the wire by then — then cancel between chunks.
+        for (;;) {
+            const item = await c.next();
+            if (item.kind === "binary") {
+                binaries.push(item.bytes);
+                break;
+            }
+            frames.push(item.frame);
+        }
+        c.send({ type: "cancel" });
+        for (;;) {
+            const item = await c.next();
+            if (item.kind === "binary") {
+                binaries.push(item.bytes);
+                continue;
+            }
+            if (typeof item.frame.error === "string") {
+                // An error frame on a deliberate cancel is the bug.
+                throw new Error(`unexpected error frame: ${item.frame.error}`);
+            }
+            frames.push(item.frame);
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        // At least the triggering segment got through.
+        expect(binaries.length).toBeGreaterThanOrEqual(1);
+        // The audio span never closed: `finish()` never ran after the abort.
+        expect(frames.some((f) => f.audioStart !== undefined)).toBe(true);
+        expect(frames.some((f) => f.audioEnd !== undefined)).toBe(false);
+        // done is terminal — the last frame of the turn.
+        expect(frames[frames.length - 1]!.done).toBe(true);
+        c.close();
+    });
+
+    it("runs A→B→C rapid cancels: cancelled turns end, the last turn completes", async () => {
+        const c = await connect(url);
+        const partials: string[] = [];
+        for (const suffix of ["-a", "-b"]) {
+            c.send({ prompt: "stall", sessionId: `${SESSION_ID}${suffix}` });
+            // First chunk lands → cancel; the turn then ends with `done`.
+            let chunks = "";
+            for (;;) {
+                const item = await c.next();
+                if (
+                    item.kind === "frame" &&
+                    typeof item.frame.chunk === "string"
+                ) {
+                    chunks += item.frame.chunk;
+                    c.send({ type: "cancel" });
+                    break;
+                }
+            }
+            partials.push(chunks);
+            for (;;) {
+                const item = await c.next();
+                if (item.kind !== "frame") {
+                    continue;
+                }
+                if (item.frame.done === true) {
+                    break;
+                }
+            }
+        }
+        // A and B each kept their first sentence, then ended.
+        expect(partials).toEqual(["one. ", "one. "]);
+        // C — sent without a cancel — runs to completion.
+        c.send({ prompt: "hi", sessionId: `${SESSION_ID}-c` });
+        let finalChunks = "";
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                finalChunks += item.frame.chunk;
+            }
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        expect(finalChunks).toBe("Hello, World!");
+        c.close();
+    });
+});

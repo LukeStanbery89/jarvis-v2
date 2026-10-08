@@ -8,8 +8,10 @@
  * frame; `hello` declares render capabilities for the socket's lifetime and
  * conditions the agent's system prompt. Prompts may declare a chat `mode`
  * ("text" | "voice", defaulting to "text"): the mode is recorded as the
- * session's `kind` at first claim, and voice prompts are answered in plain
- * conversational text regardless of the declared capabilities. Either
+ * session's `kind` at first claim, and voice prompts are answered in
+ * spoken-word prose — effective capabilities are empty (plain text) and the
+ * system prompt gains the spoken-word directive so the reply is shaped for
+ * text-to-speech (#83), regardless of the declared capabilities. Either
  * handshake comes first (both,
  * at most once each, before any prompt) or not at all — any other opening,
  * or no auth, runs the socket as a **guest** (ephemeral,
@@ -35,6 +37,7 @@ import type { Server } from "http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
     parseClientMessage,
+    pcmToS16le,
     serializeFrame,
     type ChatMode,
     type ClientCapability,
@@ -53,6 +56,8 @@ import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
+import { speakTurn } from "./tts/orchestrator";
+import type { TtsProvider } from "./tts/types";
 import type { AttachmentStore } from "./attachments/store";
 import { logger } from "./logger";
 
@@ -81,6 +86,22 @@ interface ConnectionState {
     tokenHash?: string;
     /** Guest sessions this socket claimed; deleted when the socket closes. */
     guestThreads: Set<string>;
+    /** Monotonic per-socket turn counter — the audio `generationId` (#83). */
+    turnCounter: number;
+    /**
+     * The in-flight turn's cancellation source (#84 P6): created when the
+     * stream starts, aborted by a `cancel` frame, cleared when it settles.
+     * `null` between turns.
+     */
+    active: AbortController | null;
+    /**
+     * Set by a `cancel` that arrived while the prompt was still queued on
+     * the tail (not yet streaming); the stream consumes and honors it at
+     * start. Never left set across turns — the stream clears it when it
+     * runs, and socket events are macrotasks so a stale one cannot survive
+     * a settled turn's cleanup.
+     */
+    cancelPending: boolean;
 }
 
 /** Options for {@link attachChatServer}. */
@@ -93,6 +114,19 @@ export interface AttachmentOptions {
      * is absent — a server without the surface has no ids to resolve.
      */
     attachments?: AttachmentStore;
+    /**
+     * The server-side TTS engine (#83), present when a provider is
+     * configured (`JARVIS_TTS_PROVIDER`). Voice-mode prompts from sockets
+     * that declared the `audio` capability are then also synthesized and
+     * delivered as an `audioStart` … binary PCM … `audioEnd` span inside the
+     * turn. Absent → the socket never sees audio frames.
+     */
+    tts?: TtsProvider;
+    /**
+     * Segmenter granularity for spoken turns (#89, `JARVIS_TTS_SEGMENT`):
+     * `"sentence"` (default) or `"clause"`. Meaningful only with `tts`.
+     */
+    ttsSegment?: "sentence" | "clause";
 }
 
 /**
@@ -128,6 +162,9 @@ export function attachChatServer(
             capabilities: [],
             ctx: GUEST_CONTEXT,
             guestThreads: new Set(),
+            turnCounter: 0,
+            active: null,
+            cancelPending: false,
         };
 
         socket.on("message", (raw) => {
@@ -141,6 +178,25 @@ export function attachChatServer(
                     err instanceof Error ? err.message : "unknown error";
                 logger.error(`Failed to parse WebSocket message: ${detail}`);
                 sendError(socket, detail);
+                return;
+            }
+            // A `cancel` (#84 P6) must never queue behind the turn it is
+            // cancelling — the tail chains on every step's completion, so a
+            // cancel that joined it would only run after the turn was over.
+            // It aborts the in-flight turn synchronously instead: the
+            // stream's loop checks the signal, the model calls reject
+            // (AbortSignal threaded to `graph.stream`), and the turn ends
+            // with `done`. With no turn running but one still queued on the
+            // tail, a pending flag makes the stream abort at start; with
+            // neither, the cancel is ignored (idempotent).
+            if ("type" in frame && frame.type === "cancel") {
+                if (conn.active !== null) {
+                    logger.info("Cancelling in-flight turn");
+                    conn.active.abort();
+                } else if (activePrompt !== null) {
+                    logger.info("Cancel queued: turn not started yet");
+                    conn.cancelPending = true;
+                }
                 return;
             }
             const isHandshake = "type" in frame;
@@ -201,6 +257,10 @@ export function attachChatServer(
  * and a prompt claims its session and streams the agent's events over the
  * socket. Returns a promise that settles when the response is fully streamed
  * (or the frame was rejected).
+ *
+ * A `cancel` frame (#84 P6) never reaches here — the connection's message
+ * handler intercepts it before the tail so it aborts synchronously; this
+ * branch only keeps the dispatcher total.
  */
 async function handleFrame(
     socket: WebSocket,
@@ -215,6 +275,10 @@ async function handleFrame(
             await handleHello(socket, conn, frame);
         } else if (frame.type === "location") {
             handleLocation(conn, frame);
+        } else if (frame.type === "cancel") {
+            // Unreachable via the message handler (intercepted before the
+            // tail); a no-op keeps the dispatch total.
+            logger.warn("Cancel frame reached the tail (ignored)");
         } else {
             await handleAuth(socket, conn, store, frame.token);
         }
@@ -256,7 +320,8 @@ function handleLocation(
  * session's write-once `kind`), ownership guard, stream under `turnTimeoutMs`,
  * touch, release — which answers `busy`/`not-owned` where ws.ts only needs to
  * pick the error frame. Voice-mode prompts stream with empty effective
- * capabilities so the model answers in plain conversational text regardless
+ * capabilities plus the agent's spoken-word directive (#83), so the model
+ * answers in plain conversational text shaped for text-to-speech regardless
  * of the socket's `hello` declaration. Guest sockets track the sessions they
  * created so the socket-close handler can remove the ephemeral rows; owned
  * sessions persist.
@@ -331,18 +396,41 @@ async function handlePrompt(
         actor: conn.ctx,
         guestThreads: conn.guestThreads,
         mode,
-        stream: async (sessionId) =>
-            streamEventsToSocket(
-                socket,
-                prompt.prompt,
-                sessionId,
-                options.turnTimeoutMs,
-                conn.capabilities,
-                mode,
-                attachmentIds,
-                conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
-                conn.location,
-            ),
+        stream: async (sessionId) => {
+            // The turn's cancellation source (#84 P6): a `cancel` frame
+            // aborts it while streaming; a `cancel` that arrived while this
+            // prompt was queued aborts it at start (and is consumed — the
+            // flag must never leak into the next turn). Cleared in the
+            // finally so the connection is registry-clean when the
+            // per-thread lock releases.
+            const controller = new AbortController();
+            conn.active = controller;
+            try {
+                if (conn.cancelPending) {
+                    conn.cancelPending = false;
+                    controller.abort();
+                }
+                await streamEventsToSocket(
+                    socket,
+                    prompt.prompt,
+                    sessionId,
+                    options.turnTimeoutMs,
+                    conn.capabilities,
+                    mode,
+                    attachmentIds,
+                    conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
+                    conn.location,
+                    options.tts,
+                    options.ttsSegment,
+                    controller.signal,
+                    ++conn.turnCounter,
+                );
+            } finally {
+                if (conn.active === controller) {
+                    conn.active = null;
+                }
+            }
+        },
     });
     respondToTurn(socket, turn, prompt.sessionId);
 }
@@ -453,9 +541,12 @@ async function handleAuth(
  * the socket closes mid-stream, or the turn exceeds `turnTimeoutMs`. The
  * socket's declared render capabilities (from a `hello` frame) are forwarded
  * to the agent so it can shape output for what this client can render —
- * except under `mode: "voice"`, where the effective capabilities are empty so
- * the model answers in plain conversational text (rich formatting is
- * text-mode-only). The device's latest reported location (#31) rides along
+ * except under `mode: "voice"`, where the effective capabilities are empty
+ * (plain text) and the system prompt gains the spoken-word directive (#83),
+ * so the model answers in conversational prose shaped for text-to-speech
+ * (rich formatting is text-mode-only). The prompt's chat `mode` rides along
+ * so the agent can apply that directive. The device's latest reported
+ * location (#31) rides along
  * for location-aware tools; a guest turn carries no `userId`, so metered
  * tools refuse guests regardless of any location.
  *
@@ -470,14 +561,26 @@ async function handleAuth(
  * the client would otherwise render a permanently blank bubble with no
  * explanation.
  *
+ * When a TTS engine is configured and the turn is eligible — a **voice-mode
+ * prompt from a socket that declared the `audio` capability** (#83) — the
+ * token stream also feeds the segmenter → synthesis pipeline: `audioStart`,
+ * binary PCM messages, and `audioEnd` go out as segments finish, all inside
+ * the turn (before `done`), so the per-thread lock covers speaking too. A
+ * synthesis failure aborts the turn's audio only — the text stream and the
+ * `done` are unaffected (audio is a presentation layer; the `audioError`
+ * frame is a later #83 phase).
+ *
  * The timeout error is emitted by the timer itself; the in-flight generator is
- * `return()`d shortly after, which drains when its current await settles.
- * Draining is **best-effort on a hung model**: `return()` cannot interrupt a
- * TCP-stalled model read, so while that read is stuck the generator never
- * settles, `runAgent` never returns, and the per-thread lock stays held. Real
- * cancellation (an AbortController threaded down to the model call) is a
- * follow-up; for every settling model the lock drains as soon as the read
- * resolves.
+ * also `return()`d, which drains when its current await settles. A `cancel`
+ * frame (#84 P6) aborts the turn's {@link AbortSignal} instead: the signal
+ * rides into `graph.stream`, so the model's in-flight (even TCP-stalled)
+ * calls reject for real, the stream loop notices, the spoken audio is
+ * dropped, and the turn ends with a bare `done` — text already streamed
+ * stays in history, and no error frame is sent. Draining remains
+ * **best-effort on a hung model** that ignores the signal: `return()` cannot
+ * interrupt a TCP-stalled read that never resolves, so while that read is
+ * stuck the generator never settles and the per-thread lock stays held; for
+ * every signal-honoring model the lock drains the moment the abort lands.
  */
 async function streamEventsToSocket(
     socket: WebSocket,
@@ -489,7 +592,12 @@ async function streamEventsToSocket(
     attachmentIds: string[],
     userId: number | undefined,
     location: DeviceLocation | undefined,
+    tts: TtsProvider | undefined,
+    ttsSegment: "sentence" | "clause" | undefined,
+    signal: AbortSignal,
+    generationId: number,
 ): Promise<void> {
+    const turnStartedAt = Date.now();
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
     // The turn's assembled answer and tool-call count, kept so the response
@@ -497,12 +605,72 @@ async function streamEventsToSocket(
     // lines) and so a turn that produced no prose at all is detectable.
     let responseText = "";
     let toolCallCount = 0;
+    // Time-to-first-audio decomposition (#83 phase 6, #89): first LLM
+    // token, first queued segment, first PCM delivered — deltas against
+    // the turn's start, logged once when the stream completes.
+    let firstTokenAt: number | null = null;
+    let firstSegmentAt: number | null = null;
+    let firstAudioSentAt: number | null = null;
+    // The turn's spoken-audio pipeline, created only when TTS is configured
+    // and the turn is eligible (voice mode + audio-capable socket, #83).
+    const speaking =
+        mode === "voice" && capabilities.includes("audio") && tts !== undefined
+            ? speakTurn(
+                  tts,
+                  {
+                      audioStart: (sampleRate) => {
+                          sendFrame(socket, {
+                              audioStart: {
+                                  generationId,
+                                  format: "pcm_s16le",
+                                  sampleRate,
+                                  channels: 1,
+                              },
+                          });
+                      },
+                      audio: (pcm) => {
+                          firstAudioSentAt ??= Date.now();
+                          if (socket.readyState === WebSocket.OPEN) {
+                              socket.send(pcmToS16le(pcm), { binary: true });
+                          }
+                      },
+                      audioEnd: () => {
+                          sendFrame(socket, { audioEnd: { generationId } });
+                      },
+                  },
+                  (err) => {
+                      logger.error(
+                          `TTS failed (turn ${generationId}): ${err instanceof Error ? err.message : String(err)}`,
+                      );
+                  },
+                  {
+                      granularity: ttsSegment ?? "sentence",
+                      onFirstSegment: () => {
+                          firstSegmentAt = Date.now();
+                      },
+                  },
+              )
+            : null;
     const finishWithError = (message: string) => {
         if (finished) {
             return;
         }
         finished = true;
+        speaking?.abort();
         sendError(socket, message);
+    };
+    // The `cancel` (#84 P6) epilogue: unlike a failure this is not an error
+    // — the text streamed so far stands (history keeps it), the audio drops
+    // (a presentation layer), and a bare terminal `done` closes the turn so
+    // the client's await settles and the thread lock releases.
+    const finishCancelled = () => {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        speaking?.abort();
+        logger.info(`Turn ${generationId} cancelled by client`);
+        sendFrame(socket, { done: true });
     };
     const timer = setTimeout(() => {
         logger.warn(`Turn exceeded ${turnTimeoutMs}ms; aborting`);
@@ -512,24 +680,40 @@ async function streamEventsToSocket(
     try {
         generator = runAgent(prompt, sessionId, {
             capabilities: mode === "voice" ? [] : capabilities,
+            mode,
             attachmentIds,
             userId,
             location,
+            signal,
         });
         try {
             for await (const event of generator) {
+                if (signal.aborted) {
+                    finishCancelled();
+                    return;
+                }
                 if (finished || socket.readyState !== WebSocket.OPEN) {
+                    speaking?.abort();
                     return;
                 }
                 logAgentEvent(event);
                 if (event.type === "token") {
+                    firstTokenAt ??= Date.now();
                     responseText += event.text;
+                    speaking?.push(event.text);
                 } else if (event.type === "tool") {
                     toolCallCount += 1;
                 }
                 sendFrame(socket, toServerFrame(event));
             }
         } catch (err) {
+            if (signal.aborted) {
+                // The model rejected the abort mid-read — the cancellation
+                // path, not a failure (the error frame must never fire for
+                // a deliberate cancel).
+                finishCancelled();
+                return;
+            }
             logger.error(
                 `LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
             );
@@ -539,7 +723,21 @@ async function streamEventsToSocket(
         if (finished) {
             return;
         }
+        if (signal.aborted) {
+            finishCancelled();
+            return;
+        }
         logger.debug("Agent stream complete");
+        if (speaking !== null) {
+            // TTFA decomposition (#83 phase 6): the headline number the
+            // client measures is "user stops speaking → first audible
+            // JARVIS"; these are the server-side components of it.
+            const elapsed = (at: number | null) =>
+                at === null ? "—" : `+${at - turnStartedAt}ms`;
+            logger.debug(
+                `voice turn ${generationId} TTFA: first token ${elapsed(firstTokenAt)}, first segment ${elapsed(firstSegmentAt)}, first audio sent ${elapsed(firstAudioSentAt)}`,
+            );
+        }
         logger.sensitive("Agent response", {
             text: responseText,
             toolCalls: toolCallCount,
@@ -552,6 +750,20 @@ async function streamEventsToSocket(
             return;
         }
         if (socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        // Speak everything the text stream left buffered before closing the
+        // turn: `audioEnd` then `done`, with the per-thread lock still held.
+        if (speaking !== null) {
+            await speaking.finish();
+            if (socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+        }
+        if (signal.aborted) {
+            // A cancel that arrived during the audio drain: one `done` from
+            // the cancelled path, never a second terminal frame.
+            finishCancelled();
             return;
         }
         finished = true;

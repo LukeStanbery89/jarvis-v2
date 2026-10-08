@@ -32,6 +32,7 @@ import {
 } from "./attachments/store";
 import { InFlightLimiter, VlCallLimiter } from "./attachments/limiters";
 import { FixedWindowQuota } from "./rate/fixedWindowQuota";
+import { KokoroTtsProvider } from "./tts/kokoro";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -127,6 +128,43 @@ logger.info(
         : "Home Assistant disabled (no HOME_ASSISTANT_URL or HOME_ASSISTANT_ACCESS_TOKEN configured)",
 );
 
+// Server-side TTS (#83): present only when a provider is configured — unset
+// JARVIS_TTS_PROVIDER means sockets never see audio frames. Constructing the
+// provider is always safe: the engine module loads lazily on first synthesis,
+// so a missing optional dependency fails (quietly, per turn) only when TTS is
+// both configured and used.
+const tts = appConfig.tts
+    ? new KokoroTtsProvider({
+          voice: appConfig.tts.voice,
+          speed: appConfig.tts.speed,
+      })
+    : undefined;
+logger.info(
+    tts
+        ? `TTS active: ${appConfig.tts?.provider} (voice: ${appConfig.tts?.voice})`
+        : "TTS disabled (JARVIS_TTS_PROVIDER unset)",
+);
+
+// Local STT model serving (#84 P3b): present only when configured — unset
+// JARVIS_STT_PROVIDER means GET /api/stt/model answers 404 and clients fall
+// back to their other engines. The archive downloads lazily on the first
+// client request, never at boot.
+logger.info(
+    appConfig.stt
+        ? `STT model serving active: ${appConfig.stt.modelUrl} → ${appConfig.stt.modelDir}`
+        : "STT model serving disabled (JARVIS_STT_PROVIDER unset)",
+);
+
+// Local wake-word model serving (#84 P4): present only when configured —
+// unset JARVIS_WAKE_PROVIDER means GET /api/wake/model/:file answers 404
+// and the client's wake toggle stays off. The three ONNX files download
+// lazily on the first client request, never at boot.
+logger.info(
+    appConfig.wake
+        ? `Wake model serving active: ${appConfig.wake.baseUrl} → ${appConfig.wake.modelDir}`
+        : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
+);
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
@@ -148,4 +186,5 @@ const { server } = createJarvisServer(webApp, {
 attachChatServer(server, store, {
     turnTimeoutMs: appConfig.turnTimeoutMs,
     attachments,
+    ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
 });

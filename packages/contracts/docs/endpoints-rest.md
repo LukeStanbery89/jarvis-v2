@@ -28,3 +28,5 @@ Source of truth: `spec/openapi.yaml` (regenerate with
 | `DELETE` | `/api/prefs` | device token or web session | Clear the caller's preferences |
 | `GET` | `/api/sessions` | device token or web session | List chat-thread sessions |
 | `DELETE` | `/api/sessions/{threadId}` | device token or web session | Delete a chat-thread session |
+| `GET` | `/api/stt/model` | none | Download the local speech-recognition model archive |
+| `GET` | `/api/wake/model/{file}` | none | Download a local wake-word model file |

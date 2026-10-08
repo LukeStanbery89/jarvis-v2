@@ -12,7 +12,9 @@
         "test": "vitest run"
     },
     "dependencies": {
+        "@lichess-org/vosk-browser": "^0.0.3",
         "@lukestanbery/jarvis-protocol": "^0.1.0",
+        "@lukestanbery/jarvis-voice": "^0.1.0",
         "lucide-react": "^1.52.0",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",

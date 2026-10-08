@@ -7,7 +7,7 @@
         "packages/*"
     ],
     "scripts": {
-        "build": "npm run build -w @lukestanbery/jarvis-protocol -w @lukestanbery/jarvis-logger -w @lukestanbery/jarvis-auth -w @lukestanbery/jarvis-cli -w @lukestanbery/jarvis-contracts -w @lukestanbery/jarvis-server -w @lukestanbery/jarvis-portal -w @lukestanbery/jarvis-web",
+        "build": "npm run build -w @lukestanbery/jarvis-protocol -w @lukestanbery/jarvis-logger -w @lukestanbery/jarvis-voice -w @lukestanbery/jarvis-auth -w @lukestanbery/jarvis-cli -w @lukestanbery/jarvis-contracts -w @lukestanbery/jarvis-server -w @lukestanbery/jarvis-portal -w @lukestanbery/jarvis-web",
         "check": "npm run check:deps && npm run lint && npm run build && npm run typecheck && npm test && npm run test:scripts && npm run format:check",
         "check:deps": "node scripts/check-dependencies.mjs",
         "lint": "eslint .",

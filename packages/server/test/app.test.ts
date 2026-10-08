@@ -38,6 +38,52 @@ describe("app", () => {
     });
 });
 
+describe("wake model route (#84 P4)", () => {
+    it("answers a JSON 404 when wake model serving is unconfigured", async () => {
+        const app = createApp(store, {
+            appDbPath: ":memory:",
+            turnTimeoutMs: 30_000,
+            bootstrapToken: undefined,
+        });
+        const res = await request(app).get(
+            "/api/wake/model/melspectrogram.onnx",
+        );
+        expect(res.status).toBe(404);
+        expect(res.headers["content-type"]).toMatch(/application\/json/);
+        expect(res.body).toMatchObject({
+            error: expect.stringContaining("JARVIS_WAKE_PROVIDER"),
+        });
+    });
+
+    it("serves the configured route past the contract validator (HEAD, no download)", async () => {
+        const modelDir = mkdtempSync(path.join(tmpdir(), "jarvis-wake-app-"));
+        try {
+            const app = createApp(store, {
+                appDbPath: ":memory:",
+                turnTimeoutMs: 30_000,
+                bootstrapToken: undefined,
+                wake: { baseUrl: "https://example.invalid/wake", modelDir },
+            });
+            // HEAD answers from configuration alone — proof the route is
+            // mounted and declared in the OpenAPI spec (an undeclared path
+            // would be rejected by the contract validator first).
+            const probe = await request(app).head(
+                "/api/wake/model/hey_jarvis_v0.1.onnx",
+            );
+            expect(probe.status).toBe(200);
+            // The allowlist is enforced inside the route, not by the shape
+            // layer, so an unknown file is the route's own JSON 404.
+            const unknown = await request(app).get("/api/wake/model/evil.onnx");
+            expect(unknown.status).toBe(404);
+            expect(unknown.body).toEqual({
+                error: "unknown wake model file",
+            });
+        } finally {
+            rmSync(modelDir, { recursive: true, force: true });
+        }
+    });
+});
+
 describe("web portal serving", () => {
     let portalDir: string;
     let portalApp: ReturnType<typeof createApp>;
@@ -147,12 +193,12 @@ describe("web chat client serving", () => {
         expect(res.text).toContain("JARVIS Web");
     });
 
-    it("widens img-src to https and allows the same-origin ws socket for the web chat client", async () => {
+    it("widens img-src, permits wasm compile, allows the same-origin ws socket, and declares the worker source for the web chat client", async () => {
         const web = await request(webApp).get("/web/");
         // supertest defaults Host to 127.0.0.1:<port>; the CSP derives the
         // socket origins from it.
         expect(web.headers["content-security-policy"]).toMatch(
-            /img-src 'self' data: https:; connect-src 'self' ws:\/\/127\.0\.0\.1:\d+ wss:\/\/127\.0\.0\.1:\d+$/,
+            /script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self'; img-src 'self' data: https:; connect-src 'self' ws:\/\/127\.0\.0\.1:\d+ wss:\/\/127\.0\.0\.1:\d+$/,
         );
     });
 
@@ -161,7 +207,28 @@ describe("web chat client serving", () => {
             .get("/web/")
             .set("Host", "evil.test; script-src *");
         expect(res.headers["content-security-policy"]).toBe(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'",
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self'; img-src 'self' data: https:; connect-src 'self'",
+        );
+    });
+
+    it("serves the speech engine's worker script with its own eval-permitting CSP, overriding the page's strict policy", async () => {
+        // The worker entry script declares a CSP of its own; for a dedicated
+        // worker that policy governs the worker scope instead of the owner's,
+        // so embind's runtime invoker synthesis (`new Function`) is legal
+        // inside the hashed module while the page never allows eval.
+        const worker = await request(webApp).get(
+            "/web/assets/vosk.worker-AB12cd34.js",
+        );
+        expect(worker.headers["content-security-policy"]).toBe(
+            "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'",
+        );
+        // Any other asset under /web keeps the page's strict policy.
+        const page = await request(webApp).get("/web/assets/index-OTHER123.js");
+        expect(page.headers["content-security-policy"]).toMatch(
+            /script-src 'self' 'wasm-unsafe-eval';/,
+        );
+        expect(page.headers["content-security-policy"]).not.toContain(
+            "'unsafe-eval';",
         );
     });
 

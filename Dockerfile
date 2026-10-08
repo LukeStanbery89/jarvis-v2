@@ -43,6 +43,7 @@ COPY packages/logger/package.json ./packages/logger/
 COPY packages/portal/package.json ./packages/portal/
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/server/package.json ./packages/server/
+COPY packages/voice/package.json ./packages/voice/
 COPY packages/web/package.json ./packages/web/
 
 # `allowScripts` in the root package.json already approves better-sqlite3's
@@ -92,12 +93,16 @@ COPY packages/logger/package.json ./packages/logger/
 COPY packages/portal/package.json ./packages/portal/
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/server/package.json ./packages/server/
+COPY packages/voice/package.json ./packages/voice/
 COPY packages/web/package.json ./packages/web/
 
 # `--ignore-scripts` is required, not an optimization: the root `prepare` script
 # runs husky, a devDependency that `--omit=dev` deliberately leaves out, so the
-# install would exit 127 without it.
-RUN npm ci --omit=dev --ignore-scripts \
+# install would exit 127 without it. `--omit=optional` keeps the optional TTS
+# stack (kokoro-js + transformers.js/onnxruntime, #83) out of the runtime image:
+# server TTS is config-gated and its provider reports itself unavailable when
+# the module is missing, so the image boots and serves identically without it.
+RUN npm ci --omit=dev --omit=optional --ignore-scripts \
     # better-sqlite3 is the one package whose native addon is genuinely needed at
     # runtime. Rebuilding it here (rather than copying from `deps`) keeps the
     # runtime image free of gcc/make/python.

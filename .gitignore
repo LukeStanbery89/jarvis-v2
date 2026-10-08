@@ -83,6 +83,9 @@ out
 dist
 .output
 
+# Wake-word runtime assets staged by copy-voice-assets.mjs (#84 P4)
+packages/web/public/ort/
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js

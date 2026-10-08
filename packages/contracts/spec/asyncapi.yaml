@@ -1,6 +1,6 @@
 # AsyncAPI 3.1 document for the J.A.R.V.I.S. chat endpoint.
 #
-# Contract-first: this file describes the JSON frames exchanged over the /ws
+# Contract-first: this file describes the frames exchanged over the /ws
 # WebSocket, mirroring the types in `@lukestanbery/jarvis-protocol` (the TS
 # source of truth). `npm run validate` checks it; the Phase 6 conformance
 # tests prove real frames still match it.
@@ -8,7 +8,9 @@
 # Phase 5: full spec. One message per frame (`clientHello`, `authHandshake`,
 # `chatPrompt`, `locationFrame`, `chunk`, `toolCall`, `toolResult`, `done`,
 # `error`, `authResult`) so docs and conformance tests can address each frame
-# individually. Payloads are strict (`additionalProperties: false`) and encode
+# individually — plus the #83 spoken-audio span (`audioStart`, binary
+# `pcmChunk` messages, `audioEnd`). Payloads are strict
+# (`additionalProperties: false`) and encode
 # the protocol's value bounds (`\S` non-empty-after-trim, 128-char
 # `sessionId`/`token` caps, the `hello` capability enum/caps, the #31
 # `location` lat/lon ranges). Edit it in lockstep with `packages/protocol` —
@@ -23,10 +25,13 @@ info:
         announcement declaring which response formats the client can render,
         then chat prompts. The server streams the agent's progress back as
         `tool` / `toolResult` notices, `chunk` tokens, and a terminal `done`
-        (or `error` + `done`). Frame shapes mirror
-        @lukestanbery/jarvis-protocol and must be updated in lockstep with it
-        (enforced by the conformance tests).
-    version: 0.3.0
+        (or `error` + `done`). Voice-mode prompts from a socket that declared
+        the `audio` capability (#83) additionally carry the turn's spoken
+        response: an `audioStart` frame, raw little-endian s16le PCM binary
+        messages, and an `audioEnd` frame, all before the terminal `done`.
+        Frame shapes mirror @lukestanbery/jarvis-protocol and must be updated
+        in lockstep with it (enforced by the conformance tests).
+    version: 0.4.0
 defaultContentType: application/json
 servers:
     chat:
@@ -55,6 +60,8 @@ channels:
                 $ref: "#/components/messages/chatPrompt"
             locationFrame:
                 $ref: "#/components/messages/locationFrame"
+            cancelFrame:
+                $ref: "#/components/messages/cancelFrame"
             authResult:
                 $ref: "#/components/messages/authResult"
             chunk:
@@ -67,13 +74,19 @@ channels:
                 $ref: "#/components/messages/done"
             error:
                 $ref: "#/components/messages/error"
+            audioStart:
+                $ref: "#/components/messages/audioStart"
+            audioEnd:
+                $ref: "#/components/messages/audioEnd"
+            pcmChunk:
+                $ref: "#/components/messages/pcmChunk"
 operations:
     sendClientFrame:
         action: send
         channel:
             $ref: "#/channels/ws"
         title: Send a client frame
-        summary: Auth handshake, capability announcement, location report, or chat prompt
+        summary: Auth handshake, capability announcement, location report, chat prompt, or turn cancellation
         description: >-
             The client's first frame may be the `auth` handshake, the `hello`
             capability announcement, or a prompt. `hello` must open the socket
@@ -86,12 +99,17 @@ operations:
             (#31) so location-aware tools can answer locationless questions.
             One turn at a time: a prompt while a previous turn is streaming —
             on this socket or any other sharing the thread — is answered with
-            an `error` frame.
+            an `error` frame. A `cancel` frame (#84 P6) — valid any time,
+            ignored when no turn is in flight — drops this socket's in-flight
+            turn: the model stream and spoken audio abort, the thread lock
+            releases, and the turn ends with a terminal `done` (text already
+            streamed stays in history; no error frame is sent).
         messages:
             - $ref: "#/channels/ws/messages/clientHello"
             - $ref: "#/channels/ws/messages/authHandshake"
             - $ref: "#/channels/ws/messages/chatPrompt"
             - $ref: "#/channels/ws/messages/locationFrame"
+            - $ref: "#/channels/ws/messages/cancelFrame"
     receiveServerFrame:
         action: receive
         channel:
@@ -104,7 +122,12 @@ operations:
             socket continues as a guest). Per prompt turn, `toolCall` /
             `toolResult` notices and `chunk` tokens interleave while the
             agent works (chunks concatenate in arrival order into the reply
-            text), and a terminal `done` ends the turn. Failures and
+            text), and a terminal `done` ends the turn. Voice-mode turns for
+            an `audio`-capable socket (#83) also speak: `audioStart` opens
+            the span, raw binary PCM `pcmChunk` messages follow (one per
+            spoken segment, in segment order), `audioEnd` closes it — always
+            before the terminal `done`, so the turn lock covers speaking.
+            Failures and
             pre-turn rejections (busy thread, foreign session, bad first
             frame, bad token) each answer `error` followed by a terminal
             `done`: the turn either never starts or does not continue.
@@ -115,6 +138,9 @@ operations:
             - $ref: "#/channels/ws/messages/toolResult"
             - $ref: "#/channels/ws/messages/done"
             - $ref: "#/channels/ws/messages/error"
+            - $ref: "#/channels/ws/messages/audioStart"
+            - $ref: "#/channels/ws/messages/audioEnd"
+            - $ref: "#/channels/ws/messages/pcmChunk"
 components:
     messages:
         clientHello:
@@ -126,9 +152,13 @@ components:
                 any prompt (an `auth` handshake may follow it); the server
                 stores the declared capabilities for the socket's lifetime and
                 conditions the agent's output on them. `capabilities` lists
-                tokens from the `markdown` / `html` / `image` / `link` enum —
-                at most 16 entries, each a non-empty string ≤16 characters. An
-                empty list declares a plain-text-only client.
+                tokens from the `markdown` / `html` / `image` / `link` /
+                `audio` enum — at most 16 entries, each a non-empty string
+                ≤16 characters. An empty list declares a plain-text-only
+                client. `audio` (#83) declares the client can play the turn's
+                spoken response: voice-mode prompts from such a socket are
+                also synthesized server-side and delivered as the
+                `audioStart` … `pcmChunk` … `audioEnd` span.
             payload:
                 type: object
                 additionalProperties: false
@@ -151,6 +181,7 @@ components:
                                 - html
                                 - image
                                 - link
+                                - audio
             examples:
                 - payload:
                       type: hello
@@ -306,6 +337,31 @@ components:
                       lat: 45.5231
                       lon: -122.6765
                       label: Portland, OR
+        cancelFrame:
+            title: Turn cancellation
+            summary: Drop the socket's in-flight turn (#84 P6)
+            description: >-
+                Asking the server to stop the in-flight turn — the user
+                talked over J.A.R.V.I.S. (barge-in) or pressed stop. Valid
+                at any point in the socket's lifetime and idempotent: with
+                no in-flight turn it is ignored (no reply). Otherwise the
+                model stream and the turn's spoken-audio synthesis abort,
+                the thread lock releases, and the turn closes with a
+                terminal `done` — the text already streamed stays in the
+                conversation history, and no `error` frame is sent. Audio
+                from a cancelled turn (the `generationId` from its
+                `audioStart` frame) must be discarded by clients.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - type
+                properties:
+                    type:
+                        const: cancel
+            examples:
+                - payload:
+                      type: cancel
         chunk:
             title: Response chunk
             summary: One streamed token of the assistant's reply
@@ -445,3 +501,94 @@ components:
                       authResult:
                           user: luke
                           device: cli
+        audioStart:
+            title: Spoken response begins
+            summary: Opens the turn's spoken-audio span (#83)
+            description: >-
+                Sent at most once per voice-mode turn for a socket that
+                declared the `audio` capability, immediately before the
+                first binary PCM chunk. Every binary message until the
+                matching `audioEnd` carries mono samples in the declared
+                format and rate; text frames may still interleave. The
+                `generationId` is the server's per-socket turn counter —
+                clients discard stale audio by it once they cancel a turn
+                (#84 P6) (a turn with no speakable text never sends any audio
+                frames at all). Synthesis failures end the turn's audio
+                without `audioEnd`; the text stream and the terminal `done`
+                are unaffected.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - audioStart
+                properties:
+                    audioStart:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - generationId
+                            - format
+                            - sampleRate
+                            - channels
+                        properties:
+                            generationId:
+                                type: integer
+                            format:
+                                type: string
+                                enum:
+                                    - pcm_s16le
+                            sampleRate:
+                                type: number
+                                exclusiveMinimum: 0
+                            channels:
+                                type: integer
+                                const: 1
+            examples:
+                - payload:
+                      audioStart:
+                          generationId: 7
+                          format: pcm_s16le
+                          sampleRate: 24000
+                          channels: 1
+        audioEnd:
+            title: Spoken response ends
+            summary: Closes the turn's spoken-audio span (#83)
+            description: >-
+                Sent at most once per turn, after the last binary PCM chunk
+                and before the terminal `done` — the turn lock covers
+                speaking, so a prompt sent while J.A.R.V.I.S. is still
+                speaking is rejected as busy unless the client cancelled the
+                turn first (`cancel`, #84 P6).
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - audioEnd
+                properties:
+                    audioEnd:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - generationId
+                        properties:
+                            generationId:
+                                type: integer
+            examples:
+                - payload:
+                      audioEnd:
+                          generationId: 7
+        pcmChunk:
+            title: Spoken-response audio chunk
+            summary: One synthesized segment's raw PCM samples (#83)
+            contentType: application/octet-stream
+            description: >-
+                A BINARY WebSocket message (never JSON, never parsed as a
+                frame): little-endian signed 16-bit mono samples — one
+                spoken segment's worth, delivered in segment order inside
+                the `audioStart` … `audioEnd` span. Clients decode via the
+                protocol's `s16leToPcm` and queue for playback; a client
+                that did not declare `audio` never receives binary
+                messages.
+            payload:
+                type: string
+                contentEncoding: binary
