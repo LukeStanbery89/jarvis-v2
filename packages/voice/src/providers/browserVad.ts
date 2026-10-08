@@ -65,6 +65,8 @@ interface MediaStreamAudioSourceNodeLike {
 
 /** The slice of `AudioContext` the detector needs. */
 interface AudioContextLike {
+    /** The context's sample rate — the rate of every analyzed frame. */
+    readonly sampleRate: number;
     createMediaStreamSource(
         stream: MediaStreamLike,
     ): MediaStreamAudioSourceNodeLike;
@@ -136,6 +138,8 @@ export class BrowserVadProvider implements VadProvider {
     private stream: MediaStreamLike | null = null;
     private context: AudioContextLike | null = null;
     private analyser: AnalyserNodeLike | null = null;
+    /** The active context's sample rate (the frames delivered to `onAudio`). */
+    private sampleRate = 48000;
     private timer: ReturnType<typeof setInterval> | null = null;
     private buffer: Float32Array = new Float32Array(0);
     /** Two-edge state machine: currently inside detected speech. */
@@ -205,6 +209,7 @@ export class BrowserVadProvider implements VadProvider {
         this.stream = stream;
         this.context = context;
         this.analyser = analyser;
+        this.sampleRate = context.sampleRate;
         this.buffer = new Float32Array(analyser.fftSize);
         this.speaking = false;
         this.loudSince = null;
@@ -274,6 +279,13 @@ export class BrowserVadProvider implements VadProvider {
         } catch {
             this.fail(this.voiceError("engine", "the audio analyser failed"));
             return;
+        }
+        // Optional raw-audio tap (#84 P6): a copy per tick — the analyser
+        // owns the backing buffer and overwrites it on the next read — at
+        // the context's sample rate. The barge-in watch rings these into a
+        // look-back window; endpointing-only callers never pass the tap.
+        if (callbacks.onAudio !== undefined) {
+            callbacks.onAudio(this.buffer.slice(), this.sampleRate);
         }
         const now = Date.now();
         if (rms >= this.threshold) {

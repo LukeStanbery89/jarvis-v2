@@ -215,6 +215,21 @@ ESM-only `openwakeword-web` and `onnxruntime-web`'s "extern wasm" entry
 through config aliases/conditions, so no 28 MB wasm is duplicated into the
 bundle — it is fetched only at arm time from the staged directory.
 
+### Barge-in (#84 P6)
+
+You can talk over J.A.R.V.I.S. while the reply is playing. While the
+lifecycle is `speaking`, the view arms the voice controller's barge-in
+watch — a VAD-only mic session (echo-cancelled track, the browser's AEC
+keeps JARVIS's own voice out) with a 2-second look-back ring. Sustained
+speech (~300 ms) triggers once: local playback stops immediately, the
+`cancel` frame drops the in-flight turn (the server ends it with `done` —
+text already streamed stays in history), and a listening session opens
+seeded with the look-back, so the interruption's opening words are
+transcribed whole. The composer's send button becomes a **stop button**
+while a turn streams — the same cancel path, for typed turns too. Every
+step is opportunistic: without VAD support (no Web Audio) the watch stays
+off and the stop button still works.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -232,7 +247,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/api.ts` — typed REST client (login, session list/delete; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
-- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83).
+- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b) and the wake-word helpers (`createWakeWord`, `createWakeStt`, `probeWakeSupport`, wake pref — #84 P4); the controller lives in `packages/voice`.
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83) + wake cue (`blip`, #84 P4).

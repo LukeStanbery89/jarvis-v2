@@ -24,6 +24,7 @@ import type {
     AuthRequest,
     ChatMode,
     ChatPrompt,
+    ClientCancelFrame,
     ClientCapability,
     ClientFrame,
     ClientHello,
@@ -358,11 +359,12 @@ function validateClientLocation(request: {
  *
  * A `type: "auth"` message is validated as the first-frame handshake, a
  * `type: "hello"` message as the first-frame capability announcement, a
- * `type: "location"` message as the device-location report, and anything
- * else as a legacy {@link ChatPrompt} (which may carry an optional `mode`).
- * Throws on malformed JSON (or a non-object) or shape violations; the thrown
- * message is surfaced to users by the server's error frames and must not
- * drift.
+ * `type: "location"` message as the device-location report, a
+ * `type: "cancel"` message (#84 P6) as the in-flight-turn cancellation, and
+ * anything else as a legacy {@link ChatPrompt} (which may carry an optional
+ * `mode`). Throws on malformed JSON (or a non-object) or shape violations;
+ * the thrown message is surfaced to users by the server's error frames and
+ * must not drift.
  */
 export function parseClientMessage(raw: string): ClientFrame {
     const msg = parseJson(raw) as {
@@ -385,6 +387,11 @@ export function parseClientMessage(raw: string): ClientFrame {
     }
     if (msg.type === "location") {
         return validateClientLocation(msg);
+    }
+    if (msg.type === "cancel") {
+        // A bare marker with no payload (#84 P6): nothing to validate. Extra
+        // keys are ignored — the frame is defined by its type alone.
+        return { type: "cancel" };
     }
     return validateChatPrompt(msg);
 }
@@ -455,6 +462,11 @@ export function serializeHello(capabilities: ClientCapability[]): string {
         type: "hello",
         capabilities,
     } satisfies ClientHello);
+}
+
+/** Serializes the `cancel` turn-cancellation frame (#84 P6) to its wire JSON text. */
+export function serializeCancel(): string {
+    return JSON.stringify({ type: "cancel" } satisfies ClientCancelFrame);
 }
 
 /**

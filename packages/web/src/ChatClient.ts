@@ -24,6 +24,7 @@ import {
     parseFrame,
     s16leToPcm,
     serializeAuth,
+    serializeCancel,
     serializeHello,
     serializeLocation,
     serializeRequest,
@@ -108,6 +109,14 @@ export class ChatClient {
     private turnStartedAt: number | null = null;
     private audioSpanStartedAt: number | null = null;
     private awaitingFirstAudioChunk = false;
+    /**
+     * The in-flight turn's spoken-audio `generationId` (#84 P6), from its
+     * `audioStart` frame — the id a `cancelTurn` records so late binary
+     * chunks of the cancelled span are dropped instead of played.
+     */
+    private audioGenerationId: number | null = null;
+    /** Generations cancelled by this client; their audio is never played. */
+    private droppedGenerations = new Set<number>();
     /** Reconnect attempt counter (drives backoff; reset on connect). */
     private attempt = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -242,6 +251,9 @@ export class ChatClient {
         this.turnStartedAt = performance.now();
         this.audioSpanStartedAt = null;
         this.awaitingFirstAudioChunk = false;
+        // A new turn is a new generation; drops only ever matter within a
+        // cancelled turn's span.
+        this.droppedGenerations.clear();
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;
             this.rejectPrompt = reject;
@@ -254,6 +266,30 @@ export class ChatClient {
     /** Whether a prompt turn is currently streaming. */
     isStreaming(): boolean {
         return this.streaming;
+    }
+
+    /**
+     * Cancels the in-flight turn (#84 P6): barge-in or the stop button.
+     * Sends the `cancel` frame when the socket is live (the server aborts
+     * the model stream and the spoken audio, and ends the turn with
+     * `done` — the text already streamed stays in history), and marks the
+     * turn's audio generation dropped so chunks still in flight are never
+     * played. Idempotent and safe with no turn in flight.
+     */
+    cancelTurn(): void {
+        if (!this.streaming) {
+            return;
+        }
+        if (this.audioGenerationId !== null) {
+            this.droppedGenerations.add(this.audioGenerationId);
+        }
+        if (
+            this.socket !== null &&
+            this.phase === "ready" &&
+            this.socket.readyState === WS_OPEN
+        ) {
+            this.socket.send(serializeCancel());
+        }
     }
 
     /**
@@ -298,6 +334,15 @@ export class ChatClient {
      */
     private onMessage(event: WebSocketMessageEvent): void {
         if (event.data instanceof ArrayBuffer) {
+            // Audio of a cancelled generation is dead on arrival (#84 P6):
+            // the span was stopped server-side, but chunks already in
+            // flight must never reach the player.
+            if (
+                this.audioGenerationId !== null &&
+                this.droppedGenerations.has(this.audioGenerationId)
+            ) {
+                return;
+            }
             if (this.awaitingFirstAudioChunk) {
                 this.awaitingFirstAudioChunk = false;
                 // First chunk of the span = first audible audio (#83 phase
@@ -378,6 +423,7 @@ export class ChatClient {
             if ("audioStart" in frame) {
                 this.audioSpanStartedAt = performance.now();
                 this.awaitingFirstAudioChunk = true;
+                this.audioGenerationId = frame.audioStart.generationId;
             }
             this.options.events.onFrame?.(frame);
         }

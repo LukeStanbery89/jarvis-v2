@@ -88,6 +88,20 @@ interface ConnectionState {
     guestThreads: Set<string>;
     /** Monotonic per-socket turn counter — the audio `generationId` (#83). */
     turnCounter: number;
+    /**
+     * The in-flight turn's cancellation source (#84 P6): created when the
+     * stream starts, aborted by a `cancel` frame, cleared when it settles.
+     * `null` between turns.
+     */
+    active: AbortController | null;
+    /**
+     * Set by a `cancel` that arrived while the prompt was still queued on
+     * the tail (not yet streaming); the stream consumes and honors it at
+     * start. Never left set across turns — the stream clears it when it
+     * runs, and socket events are macrotasks so a stale one cannot survive
+     * a settled turn's cleanup.
+     */
+    cancelPending: boolean;
 }
 
 /** Options for {@link attachChatServer}. */
@@ -149,6 +163,8 @@ export function attachChatServer(
             ctx: GUEST_CONTEXT,
             guestThreads: new Set(),
             turnCounter: 0,
+            active: null,
+            cancelPending: false,
         };
 
         socket.on("message", (raw) => {
@@ -162,6 +178,25 @@ export function attachChatServer(
                     err instanceof Error ? err.message : "unknown error";
                 logger.error(`Failed to parse WebSocket message: ${detail}`);
                 sendError(socket, detail);
+                return;
+            }
+            // A `cancel` (#84 P6) must never queue behind the turn it is
+            // cancelling — the tail chains on every step's completion, so a
+            // cancel that joined it would only run after the turn was over.
+            // It aborts the in-flight turn synchronously instead: the
+            // stream's loop checks the signal, the model calls reject
+            // (AbortSignal threaded to `graph.stream`), and the turn ends
+            // with `done`. With no turn running but one still queued on the
+            // tail, a pending flag makes the stream abort at start; with
+            // neither, the cancel is ignored (idempotent).
+            if ("type" in frame && frame.type === "cancel") {
+                if (conn.active !== null) {
+                    logger.info("Cancelling in-flight turn");
+                    conn.active.abort();
+                } else if (activePrompt !== null) {
+                    logger.info("Cancel queued: turn not started yet");
+                    conn.cancelPending = true;
+                }
                 return;
             }
             const isHandshake = "type" in frame;
@@ -222,6 +257,10 @@ export function attachChatServer(
  * and a prompt claims its session and streams the agent's events over the
  * socket. Returns a promise that settles when the response is fully streamed
  * (or the frame was rejected).
+ *
+ * A `cancel` frame (#84 P6) never reaches here — the connection's message
+ * handler intercepts it before the tail so it aborts synchronously; this
+ * branch only keeps the dispatcher total.
  */
 async function handleFrame(
     socket: WebSocket,
@@ -236,6 +275,10 @@ async function handleFrame(
             await handleHello(socket, conn, frame);
         } else if (frame.type === "location") {
             handleLocation(conn, frame);
+        } else if (frame.type === "cancel") {
+            // Unreachable via the message handler (intercepted before the
+            // tail); a no-op keeps the dispatch total.
+            logger.warn("Cancel frame reached the tail (ignored)");
         } else {
             await handleAuth(socket, conn, store, frame.token);
         }
@@ -353,21 +396,41 @@ async function handlePrompt(
         actor: conn.ctx,
         guestThreads: conn.guestThreads,
         mode,
-        stream: async (sessionId) =>
-            streamEventsToSocket(
-                socket,
-                prompt.prompt,
-                sessionId,
-                options.turnTimeoutMs,
-                conn.capabilities,
-                mode,
-                attachmentIds,
-                conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
-                conn.location,
-                options.tts,
-                options.ttsSegment,
-                ++conn.turnCounter,
-            ),
+        stream: async (sessionId) => {
+            // The turn's cancellation source (#84 P6): a `cancel` frame
+            // aborts it while streaming; a `cancel` that arrived while this
+            // prompt was queued aborts it at start (and is consumed — the
+            // flag must never leak into the next turn). Cleared in the
+            // finally so the connection is registry-clean when the
+            // per-thread lock releases.
+            const controller = new AbortController();
+            conn.active = controller;
+            try {
+                if (conn.cancelPending) {
+                    conn.cancelPending = false;
+                    controller.abort();
+                }
+                await streamEventsToSocket(
+                    socket,
+                    prompt.prompt,
+                    sessionId,
+                    options.turnTimeoutMs,
+                    conn.capabilities,
+                    mode,
+                    attachmentIds,
+                    conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
+                    conn.location,
+                    options.tts,
+                    options.ttsSegment,
+                    controller.signal,
+                    ++conn.turnCounter,
+                );
+            } finally {
+                if (conn.active === controller) {
+                    conn.active = null;
+                }
+            }
+        },
     });
     respondToTurn(socket, turn, prompt.sessionId);
 }
@@ -508,13 +571,16 @@ async function handleAuth(
  * frame is a later #83 phase).
  *
  * The timeout error is emitted by the timer itself; the in-flight generator is
- * `return()`d shortly after, which drains when its current await settles.
- * Draining is **best-effort on a hung model**: `return()` cannot interrupt a
- * TCP-stalled model read, so while that read is stuck the generator never
- * settles, `runAgent` never returns, and the per-thread lock stays held. Real
- * cancellation (an AbortController threaded down to the model call) is a
- * follow-up; for every settling model the lock drains as soon as the read
- * resolves.
+ * also `return()`d, which drains when its current await settles. A `cancel`
+ * frame (#84 P6) aborts the turn's {@link AbortSignal} instead: the signal
+ * rides into `graph.stream`, so the model's in-flight (even TCP-stalled)
+ * calls reject for real, the stream loop notices, the spoken audio is
+ * dropped, and the turn ends with a bare `done` — text already streamed
+ * stays in history, and no error frame is sent. Draining remains
+ * **best-effort on a hung model** that ignores the signal: `return()` cannot
+ * interrupt a TCP-stalled read that never resolves, so while that read is
+ * stuck the generator never settles and the per-thread lock stays held; for
+ * every signal-honoring model the lock drains the moment the abort lands.
  */
 async function streamEventsToSocket(
     socket: WebSocket,
@@ -528,6 +594,7 @@ async function streamEventsToSocket(
     location: DeviceLocation | undefined,
     tts: TtsProvider | undefined,
     ttsSegment: "sentence" | "clause" | undefined,
+    signal: AbortSignal,
     generationId: number,
 ): Promise<void> {
     const turnStartedAt = Date.now();
@@ -592,6 +659,19 @@ async function streamEventsToSocket(
         speaking?.abort();
         sendError(socket, message);
     };
+    // The `cancel` (#84 P6) epilogue: unlike a failure this is not an error
+    // — the text streamed so far stands (history keeps it), the audio drops
+    // (a presentation layer), and a bare terminal `done` closes the turn so
+    // the client's await settles and the thread lock releases.
+    const finishCancelled = () => {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        speaking?.abort();
+        logger.info(`Turn ${generationId} cancelled by client`);
+        sendFrame(socket, { done: true });
+    };
     const timer = setTimeout(() => {
         logger.warn(`Turn exceeded ${turnTimeoutMs}ms; aborting`);
         finishWithError(`turn timed out after ${turnTimeoutMs}ms`);
@@ -604,9 +684,14 @@ async function streamEventsToSocket(
             attachmentIds,
             userId,
             location,
+            signal,
         });
         try {
             for await (const event of generator) {
+                if (signal.aborted) {
+                    finishCancelled();
+                    return;
+                }
                 if (finished || socket.readyState !== WebSocket.OPEN) {
                     speaking?.abort();
                     return;
@@ -622,6 +707,13 @@ async function streamEventsToSocket(
                 sendFrame(socket, toServerFrame(event));
             }
         } catch (err) {
+            if (signal.aborted) {
+                // The model rejected the abort mid-read — the cancellation
+                // path, not a failure (the error frame must never fire for
+                // a deliberate cancel).
+                finishCancelled();
+                return;
+            }
             logger.error(
                 `LLM stream failed: ${err instanceof Error ? err.message : String(err)}`,
             );
@@ -629,6 +721,10 @@ async function streamEventsToSocket(
             return;
         }
         if (finished) {
+            return;
+        }
+        if (signal.aborted) {
+            finishCancelled();
             return;
         }
         logger.debug("Agent stream complete");
@@ -663,6 +759,12 @@ async function streamEventsToSocket(
             if (socket.readyState !== WebSocket.OPEN) {
                 return;
             }
+        }
+        if (signal.aborted) {
+            // A cancel that arrived during the audio drain: one `done` from
+            // the cancelled path, never a second terminal frame.
+            finishCancelled();
+            return;
         }
         finished = true;
         sendFrame(socket, { done: true });

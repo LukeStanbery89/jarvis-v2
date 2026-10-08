@@ -48,6 +48,22 @@
  * wake-during context — and their transcripts have the wake phrase stripped
  * (`stripWakePhrase`) before display or submission.
  *
+ * Barge-in (phase 6) — `startBargeWatch()` arms a VAD-only watch while
+ * J.A.R.V.I.S. speaks; sustained speech triggers {@link VoiceControllerOptions.onBargeIn}
+ * once and opens a recognition session seeded with the ringed look-back:
+ *
+ * ```text
+ * speaking ──► startBargeWatch ──► vad.start (watch callbacks + audio tap)
+ *     user talks ──► ring pre-trigger audio (BARGE_IN_LOOKBACK_MS)
+ *     sustained speech (BARGE_IN_SPEECH_MS) ──► fireBargeIn
+ *         ──► onBargeIn (client stops playback, cancels the turn)
+ *         ──► begin({feed: lookback}) ──► listening; old turn stale by id
+ * ```
+ *
+ * The watch is opportunistic: no VAD, a busy VAD (a session owns it), or a
+ * dying mic track all leave it silently off — a turn that plays fine is
+ * never disturbed by a failed interruption.
+ *
  * Flow of one press-to-talk turn:
  *
  * ```text
@@ -83,6 +99,20 @@ import type {
 
 /** Submits a final transcript as a chat turn (resolves when the turn settles). */
 export type VoiceSubmit = (text: string) => Promise<void>;
+
+/**
+ * What a barge-in trigger hands the client (#84 P6). The look-back window
+ * (mono PCM at {@link BargeInDetection.lookbackSampleRate}) is the audio the
+ * watch ringed before the sustained-speech trigger fired — replayed into the
+ * recognition session that opens, so the interruption's opening words
+ * survive the handoff. Absent when the watch's VAD had no audio tap.
+ */
+export interface BargeInDetection {
+    /** The pre-trigger audio, for `SttProvider.feed` replay. */
+    readonly lookback?: Float32Array;
+    /** The look-back's sample rate; absent with the look-back. */
+    readonly lookbackSampleRate?: number;
+}
 
 /** Construction options for {@link VoiceController}. */
 export interface VoiceControllerOptions {
@@ -127,6 +157,15 @@ export interface VoiceControllerOptions {
      * begins; a thrown/rejected cue does not stop the session from opening.
      */
     readonly onWakeCue?: () => void | Promise<void>;
+    /**
+     * The barge-in trigger (#84 P6): fires once, when the barge watch hears
+     * sustained speech while J.A.R.V.I.S. speaks. The client stops local
+     * playback and cancels the in-flight turn (the server ends it with
+     * `done`); the controller then opens a recognition session seeded with
+     * the look-back window. A thrown/rejected callback does not stop the
+     * session from opening.
+     */
+    readonly onBargeIn?: (detection: BargeInDetection) => void | Promise<void>;
     readonly schedule?: (callback: () => void, ms: number) => unknown;
     /**
      * Cancels a pending callback scheduled by
@@ -153,6 +192,20 @@ export const NO_SPEECH_MS = 4000;
 export const DEFAULT_WAKE_PHRASE = "Hey JARVIS";
 
 /**
+ * Sustained speech (watch VAD reports the mic continuously loud) before the
+ * barge-in trigger fires (#84 P6). Short enough to feel instant, long
+ * enough that residual speaker echo — imperfectly cancelled by the
+ * browser's AEC — cannot sustain a false trigger.
+ */
+export const BARGE_IN_SPEECH_MS = 300;
+
+/**
+ * How much pre-trigger audio the barge-in watch rings (at the watch's
+ * capture rate) and replays into the recognition session it opens.
+ */
+export const BARGE_IN_LOOKBACK_MS = 2000;
+
+/**
  * Owns one user's voice session: mic presses, engine and VAD wiring,
  * transcript submission, and the observable {@link VoiceSnapshot} the UI
  * renders.
@@ -167,6 +220,8 @@ export class VoiceController {
     private readonly wakeStt: SttProvider | null;
     private readonly wakePhrase: string;
     private readonly onWakeCue: (() => void | Promise<void>) | undefined;
+    private readonly onBargeIn:
+        ((detection: BargeInDetection) => void | Promise<void>) | undefined;
     private readonly schedule: (callback: () => void, ms: number) => unknown;
     private readonly unschedule: (handle: unknown) => void;
     /**
@@ -205,6 +260,26 @@ export class VoiceController {
      * transcript. Empty in engine-native sessions.
      */
     private finals: string[] = [];
+    /**
+     * Whether the barge-in watch (#84 P6) currently owns the VAD. The watch
+     * is a VAD-only session (no STT, no transcript) that lives exactly as
+     * long as J.A.R.V.I.S. is speaking; a normal session's VAD use and the
+     * watch are mutually exclusive.
+     */
+    private bargeWatchActive = false;
+    /** Pending sustained-speech timer of the watch; `null` when not pending. */
+    private bargeSpeechTimer: unknown = null;
+    /** The watch's look-back ring: recent analysis frames, oldest first. */
+    private bargeChunks: Float32Array[] = [];
+    /** The sample rate of the ringed frames (the watch context's rate). */
+    private bargeSampleRate = 48000;
+    /**
+     * The in-flight VAD release of a just-disarmed watch. A session opening
+     * concurrently (the barge's own `begin`) awaits it before
+     * `vad.start()`, so the new session's track can never be torn down by
+     * the watch's late cleanup.
+     */
+    private bargeStopping: Promise<void> | null = null;
 
     /**
      * @param options - The engine, the submit seam, the optional VAD, and
@@ -218,6 +293,7 @@ export class VoiceController {
         this.wakeStt = options.wakeStt ?? null;
         this.wakePhrase = options.wakePhrase ?? DEFAULT_WAKE_PHRASE;
         this.onWakeCue = options.onWakeCue;
+        this.onBargeIn = options.onBargeIn;
         this.schedule =
             options.schedule ?? ((callback, ms) => setTimeout(callback, ms));
         this.unschedule =
@@ -250,8 +326,8 @@ export class VoiceController {
      * The mic button: starts listening from `idle`, or stops-and-transcribes
      * while `listening` (in VAD sessions that is the same end-of-speech
      * pipeline the timer drives). Mid-flight states
-     * (transcribing/submitting/turn) are deliberately inert until barge-in
-     * (phase 6).
+     * (transcribing/submitting/turn) are deliberately inert — interrupting
+     * a turn is the barge-in watch's and the client's stop control's job.
      */
     press(): void {
         if (this.snapshot.state === "idle") {
@@ -320,6 +396,62 @@ export class VoiceController {
     }
 
     /**
+     * Arms the barge-in watch (#84 P6): a VAD-only session that listens
+     * while J.A.R.V.I.S. speaks and triggers {@link VoiceControllerOptions.onBargeIn}
+     * once it hears sustained speech ({@link BARGE_IN_SPEECH_MS}). The watch
+     * owns the VAD while armed, so a recognition session cannot start under
+     * it — arm it only for the span of playback, and disarm after (the chat
+     * view keys both on its `speaking` state).
+     *
+     * Silent no-op when there is no VAD, the controller is disposed, or the
+     * watch is already armed; when the VAD is busy (a recognition session is
+     * live) the arming fails quietly — barge-in is opportunistic.
+     *
+     * @returns Resolves once the watch is armed (or silently skipped).
+     */
+    async startBargeWatch(): Promise<void> {
+        if (
+            this.vad === null ||
+            this.disposed ||
+            this.bargeWatchActive ||
+            this.onBargeIn === undefined
+        ) {
+            return;
+        }
+        this.bargeChunks = [];
+        try {
+            await this.vad.start(this.bargeCallbacks());
+        } catch {
+            // VAD busy with a session, or the runtime lost the mic: the
+            // watch stays off; playback and the turn are unaffected.
+            return;
+        }
+        this.bargeWatchActive = true;
+    }
+
+    /**
+     * Disarms the barge-in watch: cancels a pending trigger, releases the
+     * VAD, and drops the look-back ring. Idempotent; never touches a
+     * recognition session's VAD (the watch only stops what it armed).
+     *
+     * @returns Resolves once the watch is disarmed.
+     */
+    async stopBargeWatch(): Promise<void> {
+        this.cancelBargeSpeechTimer();
+        this.bargeChunks = [];
+        if (!this.bargeWatchActive) {
+            return;
+        }
+        this.bargeWatchActive = false;
+        const stopping = this.stopVad();
+        this.bargeStopping = stopping;
+        await stopping;
+        if (this.bargeStopping === stopping) {
+            this.bargeStopping = null;
+        }
+    }
+
+    /**
      * Tears down: cancels any live recognition, releases both engines'
      * session-spanning resources (a WASM model worker, when an engine holds
      * one), stops the VAD and the wake detector, drops any pending timers,
@@ -339,6 +471,9 @@ export class VoiceController {
             await wakeStt.cancel();
             await wakeStt.dispose?.();
         }
+        this.cancelBargeSpeechTimer();
+        this.bargeWatchActive = false;
+        this.bargeChunks = [];
         await this.stopVad();
         await this.disarmWake();
         this.listeners.clear();
@@ -351,20 +486,34 @@ export class VoiceController {
      * to the (captured) session id, so late deliveries after a
      * re-activation are stale by construction. An armed wake detector is
      * disarmed first, so the session owns the microphone and the wake phrase
-     * can't fire mid-listen.
+     * can't fire mid-listen — and an armed barge watch is stopped first, so
+     * the VAD is free.
      *
-     * @param options - Open a session populated by the wake word: `fromWake`
-     * selects the wake engine, and `lookback` (16 kHz mono PCM captured by
-     * the detector) is replayed into it the moment capture is live, so the
+     * @param options - `fromWake` opens the session on the wake engine with
+     * wake-phrase stripping; `lookback` (16 kHz mono PCM captured by the
+     * detector) is replayed into it the moment capture is live, so the
      * command spoken in the same breath as the wake phrase is transcribed.
+     * `feed` plays the same role for a barge-in session (#84 P6): the
+     * watch's pre-trigger audio, at the watch's capture rate, on the
+     * primary engine.
      */
     private async begin({
         fromWake,
         lookback,
+        feed,
     }: {
         fromWake?: boolean;
         lookback?: Float32Array;
+        feed?: { pcm: Float32Array; sampleRate: number };
     } = {}): Promise<void> {
+        if (this.bargeWatchActive) {
+            await this.stopBargeWatch();
+        } else if (this.bargeStopping !== null) {
+            // The watch's VAD release is still settling (a barge just
+            // fired): wait it out so the session's track is never torn
+            // down by the watch's late cleanup.
+            await this.bargeStopping;
+        }
         this.reduce({ type: "activate" });
         const sessionId = this.snapshot.sessionId;
         this.finals = [];
@@ -397,12 +546,18 @@ export class VoiceController {
                 },
                 vadArmed ? { continuous: true } : undefined,
             );
-            // Capture is live: replay the wake context before any future mic
-            // frame, so "Hey JARVIS, turn on the lights" decodes as a whole.
-            // Engines that cannot take caller audio (no `feed`) simply start
-            // at the wake phrase instead.
-            if (this.sessionFromWake && lookback !== undefined) {
-                stt.feed?.(lookback, 16000);
+            // Capture is live: replay the caller-supplied pre-session audio
+            // before any future mic frame — the wake phrase's command ("Hey
+            // JARVIS, turn on the lights") or the barge-in's interrupted
+            // opening. Engines that cannot take caller audio (no `feed`)
+            // simply start at the live mic instead.
+            const replay =
+                feed ??
+                (fromWake === true && lookback !== undefined
+                    ? { pcm: lookback, sampleRate: 16000 }
+                    : undefined);
+            if (replay !== undefined) {
+                stt.feed?.(replay.pcm, replay.sampleRate);
             }
         } catch (err) {
             this.clearTimers();
@@ -578,6 +733,127 @@ export class VoiceController {
             return;
         }
         void this.armWake();
+    }
+
+    /**
+     * The barge-in watch's VAD callbacks (#84 P6): speech events drive the
+     * sustained-speech trigger, and the optional audio tap feeds the
+     * look-back ring. The watch has no session id — its lifetime is the
+     * `bargeWatchActive` flag, and `stop()` clears the provider's callbacks
+     * wholesale.
+     *
+     * @returns The callbacks object.
+     */
+    private bargeCallbacks(): VadCallbacks {
+        return {
+            onSpeechStart: () => this.onWatchSpeechStart(),
+            onSpeechEnd: () => this.onWatchSpeechEnd(),
+            onAudio: (pcm, sampleRate) => this.onWatchAudio(pcm, sampleRate),
+            onError: () => {
+                // The watch died (mic track ended): disarm quietly —
+                // barge-in is opportunistic and must never surface an error
+                // over a turn that is playing fine.
+                void this.stopBargeWatch();
+            },
+        };
+    }
+
+    /** Watch VAD heard speech: arm the sustained-speech deadline. */
+    private onWatchSpeechStart(): void {
+        if (!this.bargeWatchActive || this.bargeSpeechTimer !== null) {
+            return;
+        }
+        this.bargeSpeechTimer = this.schedule(() => {
+            this.bargeSpeechTimer = null;
+            this.fireBargeIn();
+        }, BARGE_IN_SPEECH_MS);
+    }
+
+    /** Watch VAD heard the speech stop: the trigger window closed. */
+    private onWatchSpeechEnd(): void {
+        this.cancelBargeSpeechTimer();
+    }
+
+    /**
+     * Watch audio tap: ring the frame into the look-back window, pruning
+     * from the oldest side once the window exceeds
+     * {@link BARGE_IN_LOOKBACK_MS}.
+     *
+     * @param pcm - One analysis frame (mono float samples).
+     * @param sampleRate - The frame's capture rate.
+     */
+    private onWatchAudio(pcm: Float32Array, sampleRate: number): void {
+        if (!this.bargeWatchActive) {
+            return;
+        }
+        this.bargeSampleRate = sampleRate;
+        this.bargeChunks.push(pcm);
+        let totalMs = 0;
+        for (const chunk of this.bargeChunks) {
+            totalMs += (chunk.length / sampleRate) * 1000;
+        }
+        // Prune from the oldest side while the remainder still covers the
+        // window (never drop the last chunk — it is the audio being heard
+        // right now).
+        while (
+            this.bargeChunks.length > 1 &&
+            totalMs - (this.bargeChunks[0]!.length / sampleRate) * 1000 >
+                BARGE_IN_LOOKBACK_MS
+        ) {
+            const dropped = this.bargeChunks.shift()!;
+            totalMs -= (dropped.length / sampleRate) * 1000;
+        }
+    }
+
+    /**
+     * The trigger fired: hand the client the look-back window (it stops
+     * playback and cancels the in-flight turn), disarm the watch, and open
+     * a recognition session replaying the interrupted opening. The old
+     * turn's events are stale by session id the moment the new session
+     * opens — the lifecycle's race discipline.
+     */
+    private fireBargeIn(): void {
+        if (!this.bargeWatchActive) {
+            return;
+        }
+        const chunks = this.bargeChunks;
+        const rate = this.bargeSampleRate;
+        void this.stopBargeWatch();
+        const lookback =
+            chunks.length > 0
+                ? (() => {
+                      const total = chunks.reduce((n, c) => n + c.length, 0);
+                      const joined = new Float32Array(total);
+                      let offset = 0;
+                      for (const chunk of chunks) {
+                          joined.set(chunk, offset);
+                          offset += chunk.length;
+                      }
+                      return joined;
+                  })()
+                : undefined;
+        try {
+            void this.onBargeIn?.({
+                ...(lookback !== undefined
+                    ? { lookback, lookbackSampleRate: rate }
+                    : {}),
+            });
+        } catch {
+            // A throwing callback must not stop the session from opening.
+        }
+        void this.begin({
+            ...(lookback !== undefined
+                ? { feed: { pcm: lookback, sampleRate: rate } }
+                : {}),
+        });
+    }
+
+    /** Cancels the watch's pending sustained-speech timer, if any. */
+    private cancelBargeSpeechTimer(): void {
+        if (this.bargeSpeechTimer !== null) {
+            this.unschedule(this.bargeSpeechTimer);
+            this.bargeSpeechTimer = null;
+        }
     }
 
     /**

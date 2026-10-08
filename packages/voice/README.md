@@ -291,6 +291,39 @@ engine were supplied at construction. The snapshot's `wakeArmed` flag drives
 the client's armed indicator; a `wakeFailed` lifecycle event surfaces as the
 session error.
 
+## Barge-in watch (#84 P6)
+
+While J.A.R.V.I.S. speaks, `startBargeWatch()` arms a **VAD-only mic
+session** on the same `VadProvider` sessions use for endpointing — no STT,
+no transcript, no user toggle: the watch lives exactly as long as playback.
+The client calls it when the lifecycle enters `speaking` and
+`stopBargeWatch()` when it leaves. While armed, the watch taps the VAD's
+optional raw-audio callback (`VadCallbacks.onAudio` — the energy VAD
+delivers its analysis frames as a copy per tick) into a ring buffer capped
+at `BARGE_IN_LOOKBACK_MS` (2000), and arms a sustained-speech deadline of
+`BARGE_IN_SPEECH_MS` (300) on the VAD's speech-start; a speech-end inside
+the window cancels it.
+
+When the deadline fires, the controller:
+
+1. steals the ring and disarms the watch (releasing the VAD — the session
+   it is about to open needs it);
+2. fires `onBargeIn({ lookback, lookbackSampleRate })` **once** — the
+   client's half: stop local playback immediately (before any server round
+   trip) and cancel the in-flight turn (`cancel` frame);
+3. opens a listening session on the primary STT engine, replaying the
+   look-back through `SttProvider.feed()` so the interruption's opening
+   words survive the handoff.
+
+The replaced turn's events are stale by session id the moment the new
+session opens — the lifecycle's race discipline. The watch is
+**opportunistic**: with no VAD, a busy VAD (a recognition session owns it),
+a throwing `onBargeIn`, or a dying mic track it stays off or disarms
+quietly — a turn that plays fine is never disturbed by a failed
+interruption. Caveat: detection rides on the browser's echo cancellation
+(`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by
+the 300 ms sustain, not eliminated — hardware AEC is out of scope.
+
 ## Traceability
 
 Phase 1 of the [voice-input issue](https://github.com/LukeStanbery89/jarvis-v2/issues/84):
@@ -301,10 +334,10 @@ lands here too — the energy VAD plus VAD-owned endpointing in the controller
 client reuses it) and the local WASM STT provider (P3b — Vosk, with the
 optional `dispose()` seam it added). Phase 4 (P4) is the wake-word
 detector (openWakeWord), its look-back ring and `feed()` replay through the
-`SttProvider` seam, phrase stripping, and controller arming — the P4 branch
-`feat/issue-84-p4-wake-word` delivers it. Later phases: barge-in handling
-(wake during a live session) and a Whisper-class engine benchmarked behind
-the same STT seam before any default changes.
+`SttProvider` seam, phrase stripping, and controller arming. Phase 6 (P6)
+is the barge-in watch — the VAD audio tap, the sustained-speech trigger,
+and the look-back-seeded session handoff. Later phases: a Whisper-class
+engine benchmarked behind the same STT seam before any default changes.
 
 ## Notes for maintainers
 

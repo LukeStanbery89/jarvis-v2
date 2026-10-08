@@ -39,6 +39,7 @@ import {
     parseClientMessage,
     parseFrame,
     serializeAuth,
+    serializeCancel,
     serializeFrame,
     serializeHello,
     serializeLocation,
@@ -72,12 +73,13 @@ const SERVER_FRAME_KEYS = [
     "audioEnd",
 ] as const satisfies readonly FrameKeys<ServerFrame>[];
 
-/** Client message names (not `ClientFrame` keys — it is a union of four shapes). */
+/** Client message names (not `ClientFrame` keys — it is a union of five shapes). */
 const CLIENT_MESSAGE_NAMES = [
     "authHandshake",
     "chatPrompt",
     "clientHello",
     "locationFrame",
+    "cancelFrame",
 ] as const;
 
 /**
@@ -117,6 +119,7 @@ const MESSAGE_FOR_CLIENT: Record<string, string> = {
     chatPrompt: "chatPrompt",
     clientHello: "clientHello",
     locationFrame: "locationFrame",
+    cancelFrame: "cancelFrame",
 };
 
 // ---------------------------------------------------------------------------
@@ -342,6 +345,13 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeLocation(45.5231, -122.6765, "Portland, OR"),
                 MESSAGE_FOR_CLIENT.locationFrame,
+            );
+        });
+
+        it("validates a turn cancellation through the serializer (#84 P6)", () => {
+            expectWireConformant(
+                () => serializeCancel(),
+                MESSAGE_FOR_CLIENT.cancelFrame,
             );
         });
 

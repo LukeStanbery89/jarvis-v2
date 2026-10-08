@@ -522,6 +522,14 @@ textarea::placeholder {
     border-color: var(--primary);
 }
 
+/* While streaming the send button is the stop control (#84 P6): an
+   attention-colored square, enabled mid-turn, same footprint. */
+.composer button.send.stop {
+    color: #000;
+    background: var(--warning, #d97706);
+    border-color: var(--warning, #d97706);
+}
+
 .chip .chip-remove {
     display: inline-flex;
     align-items: center;

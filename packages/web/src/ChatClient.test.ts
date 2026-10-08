@@ -435,3 +435,108 @@ describe("ChatClient.sendLocation (#31)", () => {
         expect(frames).toHaveLength(3);
     });
 });
+
+describe("turn cancellation (#84 P6)", () => {
+    /** Delivers one binary audio chunk the way the browser would. */
+    function deliverBinary(socket: FakeSocket, samples: number[]): void {
+        const binary = pcmToS16le(new Float32Array(samples));
+        socket.onmessage?.({
+            data: binary.buffer.slice(
+                binary.byteOffset,
+                binary.byteOffset + binary.byteLength,
+            ),
+        });
+    }
+
+    it("sends the cancel frame and drops the cancelled generation's audio", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => audioChunks.push(pcm),
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("hi", "s1");
+        socket.receive({
+            audioStart: {
+                generationId: 3,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        deliverBinary(socket, [0.5, -0.5]);
+        expect(audioChunks).toHaveLength(1);
+
+        harness.client.cancelTurn();
+        expect(socket.sent).toContain('{"type":"cancel"}');
+        // A chunk of the cancelled generation still in flight never plays.
+        deliverBinary(socket, [0.25, -0.25]);
+        expect(audioChunks).toHaveLength(1);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+    });
+
+    it("stops audio that arrives after the cancel even with no chunk played yet", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => audioChunks.push(pcm),
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("hi", "s1");
+        socket.receive({
+            audioStart: {
+                generationId: 1,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        harness.client.cancelTurn();
+        deliverBinary(socket, [0.5, -0.5]);
+        expect(audioChunks).toHaveLength(0);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+    });
+
+    it("a fresh turn's audio plays after a cancelled one", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => audioChunks.push(pcm),
+        });
+        const socket = connected(harness);
+        const cancelled = harness.client.prompt("hi", "s1");
+        socket.receive({
+            audioStart: {
+                generationId: 1,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        harness.client.cancelTurn();
+        socket.receive({ done: true });
+        await expect(cancelled).resolves.toBeUndefined();
+
+        const next = harness.client.prompt("and now?", "s1");
+        socket.receive({
+            audioStart: {
+                generationId: 2,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        deliverBinary(socket, [0.5, -0.5]);
+        expect(audioChunks).toHaveLength(1);
+        socket.receive({ done: true });
+        await expect(next).resolves.toBeUndefined();
+    });
+
+    it("cancelTurn with no turn in flight sends nothing", () => {
+        const harness = makeClient("tok");
+        connected(harness);
+        harness.client.cancelTurn();
+        const socket = harness.sockets[0]!;
+        // Only the handshake frames on the wire.
+        expect(socket.sent).toHaveLength(2);
+    });
+});
