@@ -40,44 +40,7 @@ Run from `packages/server`:
 
 ## Endpoints
 
-Authoritative tables: `packages/contracts/docs/endpoints-rest.md` (REST) and
-`endpoints-ws.md` (WebSocket), generated from the OpenAPI/AsyncAPI specs in
-`packages/contracts/spec/`. The table below is the orientation subset; update
-the specs, not this table, when routes change.
-
-| Method   | Path                       | Auth                                  | Description                                                                                           |
-| -------- | -------------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `GET`    | `/health`                  | none                                  | Machine health check → `{ "ok": true }`                                                               |
-| `GET`    | `/`                        | none                                  | Serves the built portal SPA ("Hello World" without one)                                               |
-| `GET`    | `/web`                     | none                                  | Serves the built web chat client (301 to `/web/`, then the SPA)                                       |
-| `WS`     | `/ws`                      | optional device token (first frame)   | Chat endpoint (WebSocket)                                                                             |
-| `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header            | Create the first (owner) account + device token                                                       |
-| `POST`   | `/api/auth/login`          | none                                  | Username + password → a (rotating) device token                                                       |
-| `POST`   | `/api/session`             | none                                  | Username + password → session cookie + CSRF token                                                     |
-| `GET`    | `/api/session`             | device token or session               | Current session user (+ the `csrfToken` for cookies)                                                  |
-| `DELETE` | `/api/session`             | device token or session (+ CSRF)      | Sign out: revoke the session + clear the cookie                                                       |
-| `GET`    | `/api/me`                  | device token or session               | Current user + their devices                                                                          |
-| `POST`   | `/api/devices`             | device token or session (+ CSRF)      | Provision a new device token for the caller                                                           |
-| `PATCH`  | `/api/devices/{id}`        | device token or session (+ CSRF)      | Rename an owned device                                                                                |
-| `DELETE` | `/api/devices/{id}`        | device token or session (+ CSRF)      | Revoke a device (own, or any as owner)                                                                |
-| `GET`    | `/api/users`               | device token or session (owner)       | List accounts                                                                                         |
-| `POST`   | `/api/users`               | device token or session (owner, CSRF) | Create an account (`role` optional, default `user`)                                                   |
-| `PATCH`  | `/api/users/{id}`          | device token or session (owner, CSRF) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409 `LAST_OWNER`) |
-| `GET`    | `/api/users/{id}/devices`  | device token or session (owner)       | List another account's devices (for management)                                                       |
-| `GET`    | `/api/users/{id}/prefs`    | device token or session (owner)       | Read any account's preferences                                                                        |
-| `PUT`    | `/api/users/{id}/prefs`    | device token or session (owner, CSRF) | Upsert any account's preferences                                                                      |
-| `DELETE` | `/api/users/{id}/prefs`    | device token or session (owner, CSRF) | Clear any account's preferences                                                                       |
-| `GET`    | `/api/prefs`               | device token or session               | Read the caller's preferences                                                                         |
-| `PUT`    | `/api/prefs`               | device token or session (+ CSRF)      | Upsert the caller's preferences                                                                       |
-| `DELETE` | `/api/prefs`               | device token or session (+ CSRF)      | Clear the caller's preferences                                                                        |
-| `GET`    | `/api/sessions`            | device token or session               | List sessions (owner sees all, with `userId`)                                                         |
-| `DELETE` | `/api/sessions/{threadId}` | device token or session (+ CSRF)      | Delete the caller's owned session (owner: any)                                                        |
-
-The server listens on port `54321` by default, overridable via `PORT`. REST auth is
-`Authorization: Bearer <device-token>` **or** the `jarvis_session` cookie (see `src/http/middleware.ts`):
-`requireAuth` tries the bearer first and falls back to the cookie; cookie-authenticated requests must send
-`x-csrf-token` on state-changing methods (`POST`/`PATCH`/`DELETE`/`PUT`) via `requireCsrf`. The session cookie is
-`HttpOnly`/`SameSite=Strict`, gets the `Secure` + `__Host-` prefix under TLS, and carries the device-echoed success. Session TTL defaults to `DEFAULT_SESSION_TTL_MS` (30 days), overridable via `JARVIS_SESSION_TTL_MS`.
+The canonical REST/WS surface lives in [`packages/contracts/spec/`](../../packages/contracts/spec/) and the generated docs in [`packages/contracts/docs/`](../../packages/contracts/docs/). Update specs, not ad-hoc tables, when routes change.
 
 ## Web portal
 
@@ -225,7 +188,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/stt/` — local STT model serving (#84 P3b): `model.ts` is the download-once cache (`SttModelCache` — lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the next request) plus `createSttModelHandler` for `GET /api/stt/model` (200 `application/gzip`; JSON 404 unconfigured; JSON 503 while an upstream fetch fails). Gated by `JARVIS_STT_PROVIDER=vosk`; the archive caches privately under `~/.jarvis/stt` (`JARVIS_STT_MODEL_DIR`) fetched from `JARVIS_STT_MODEL_URL`. The route is public by design (open-source weights, not user data; the recognition worker cannot attach auth headers) and mounts after the contract validator so it stays contract-checked (`sttModelGet` in the OpenAPI spec).
 - `src/wake/` — wake-word model serving (#84 P4): `model.ts` is a per-file download-once cache (`WakeModelCache` — three-file allowlist, lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the next request) plus `createWakeModelHandler` for `GET|HEAD /api/wake/model/:file` (200 `application/octet-stream` + `Cache-Control: public, max-age=86400`; JSON 404 unconfigured/unknown; JSON 503 while an upstream fetch fails). Gated by `JARVIS_WAKE_PROVIDER=openwakeword`; models cache privately under `~/.jarvis/wake` (`JARVIS_WAKE_MODEL_DIR`) fetched from the openWakeWord release host (`JARVIS_WAKE_MODEL_URL`). Public by design (open-source weights, no auth headers on the browser side) and mounts after the contract validator (`wakeModelGet`/`wakeModelHead` in the OpenAPI spec).
 - `src/llm/tools/` — the tool implementations; `analyzeImage.ts` resolves attachment ids and enforces ownership via `ToolRuntime.configurable`. Optional tools (`webSearch`, `getWeather`, `homeAssistant`) register only when their credentials are configured, and each gates on the verified `ToolRuntime.configurable.userId`.
-- `test/` — Vitest suites: `app.test.ts` (health + portal/web serving), `ws.test.ts` (frames + handshakes), `agent.test.ts` (capability prompt conditioning), `http.test.ts`, `sessionManager.test.ts`, `contract.test.ts`, `homeAssistant.client.test.ts`, `homeAssistant.tool.test.ts`.
+- `test/` — Vitest test suites under `test/*.test.ts` (28 suites total: app, ws, agent, http, sessionManager, contract, attachments, config, stt.model, tts.orchestrator, homeAssistant._, limits, auth._, user._, session._, device._, prefs._, etc.).
 
 `src/ws.ts` is the only module that touches the agent seam; exactly two modules know `@langchain/openai`
 (`chatModel.ts` for chat, `visionModel.ts` for image analysis); nothing outside `@lukestanbery/jarvis-auth` hashes or compares secrets (within it, only

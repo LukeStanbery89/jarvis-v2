@@ -329,20 +329,7 @@ interruption. Caveat: detection rides on the browser's echo cancellation
 (`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by
 the 300 ms sustain, not eliminated — hardware AEC is out of scope.
 
-## Traceability
-
-Phase 1 of the [voice-input issue](https://github.com/LukeStanbery89/jarvis-v2/issues/84):
-the provider interfaces and lifecycle this package ships are the units of
-work its P1 acceptance criteria name; the Web Speech provider is P2; phase 3
-lands here too — the energy VAD plus VAD-owned endpointing in the controller
-(the orchestrator itself moved from `packages/web` in P3 so any future
-client reuses it) and the local WASM STT provider (P3b — Vosk, with the
-optional `dispose()` seam it added). Phase 4 (P4) is the wake-word
-detector (openWakeWord), its look-back ring and `feed()` replay through the
-`SttProvider` seam, phrase stripping, and controller arming. Phase 6 (P6)
-is the barge-in watch — the VAD audio tap, the sustained-speech trigger,
-and the look-back-seeded session handoff. Later phases: a Whisper-class
-engine benchmarked behind the same STT seam before any default changes.
+**Traceability:** P0–P6 implementation history consolidated.
 
 ## Notes for maintainers
 

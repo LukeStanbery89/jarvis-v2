@@ -499,83 +499,9 @@ without touching the wire shape; non-browser clients cannot downscale, so
 they must stay under the per-attachment cap themselves (hard-rejected above
 it).
 
-## Web search
+## Web search and weather
 
-The agent answers questions about current or outside knowledge through one
-`webSearch` tool (#9) backed by two providers, chosen for economics and
-coverage:
-
-| Provider                     | Key              | Serves                                                                                                      | Economics                                                                                     |
-| ---------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| [Tavily](https://tavily.com) | `TAVILY_API_KEY` | `general`, `news`, `finance`                                                                                | LLM-optimized (synthesized answer + excerpts); **free monthly quota** — the preferred default |
-| [Serper](https://serper.dev) | `SERPER_API_KEY` | `images`, `videos`, `places`, `reviews`, `patents`, `shopping`, `scholar` (+ fallback for Tavily verticals) | Pay-as-you-go Google SERP — spent deliberately, on verticals Tavily does not have             |
-
-The model sees ONE tool with a `kind` parameter; the server routes. A
-Tavily-route search that fails (or runs with no Tavily key configured) falls
-back to Serper; a Serper-only vertical has no fallback. With **no** provider
-key configured the tool is not registered at all — a server that cannot
-search does not pretend to.
-
-Behavior:
-
-- **Metered per user** — `JARVIS_SEARCH_CALLS_PER_MIN` (20/min) through the
-  same fixed-window quota machinery as vision analysis (see
-  [Rate limiting](#rate-limiting)); refusals reach the model as retry text,
-  not error frames.
-- **Bounded per call** — `JARVIS_SEARCH_TIMEOUT_MS` (15 s) aborts a hung
-  provider; `JARVIS_SEARCH_MAX_RESULTS` (5) caps how much lands in the
-  model's context.
-- **Keys are secrets** — carried in the environment, never logged and never
-  included in any error the model or client sees (the broader
-  secret-management design is #27).
-- **Provider responses are untrusted** — both clients normalize defensively
-  and map malformed responses onto model-facing failure text; the model is
-  told to fall back to its own knowledge rather than fail the turn.
-
-## Weather
-
-The agent answers weather questions through one `getWeather` tool (#31) backed
-by the [OpenWeather](https://openweathermap.org) free tier — current
-conditions (`/data/2.5/weather`) and the 5-day/3-hour forecast
-(`/data/2.5/forecast`, folded into per-day min/max + headline condition
-server-side so the model sees days, not 40 raw steps). 60 calls/minute
-account-wide, no card required; paid tiers (hourly/16-day, One Call) are not
-used.
-
-- **Location resolves in three steps** — the model's explicit `location`
-  argument (the user named a place) wins; then the device's reported
-  location (a `location` frame from the web client, used by coordinates);
-  then the model is told to ask the user which city.
-- **An argument that names nothing falls through, and says so** — `location`
-  is not length-validated, and a stand-in value (`current`, `here`, `my
-location`, `unknown`, …) is treated as step 2 rather than step 1. Small
-  models pass those instead of omitting the field, and searching OpenWeather
-  for a city called "Current" only 404s. Every discard logs a `warn` naming
-  the _classification_ (`blank` / `placeholder`) and where it fell back to —
-  never the discarded value, which can echo user text. The match is
-  whole-string over a deliberately narrow list, so real places that read like
-  stand-ins (`Local`, OH; `Na`, China; `Default`, Derbyshire; `Hereford`)
-  still resolve as queries: a wrong answer about the wrong city is worse than
-  one failed lookup.
-- **Device location is automatic and memory-only** — the web client
-  requests a browser-geolocation fix on load (the browser's own permission
-  prompt is the consent gate; a sidebar MapPin is the opt-out), rounded to
-  four decimals (~11 m); the server keeps the latest report for the
-  socket's lifetime only and never persists it. Browser geolocation requires
-  a **secure context** (HTTPS or localhost) — over plain HTTP the client
-  reports "unsupported" and the tool asks for a city (the TLS work is a
-  separate issue, #79).
-- **Metered per user** — `JARVIS_WEATHER_CALLS_PER_MIN` (10/min) through the
-  same fixed-window quota machinery (see [Rate limiting](#rate-limiting)).
-- **Bounded per call** — `JARVIS_WEATHER_TIMEOUT_MS` (10 s).
-- **Units** — `JARVIS_WEATHER_UNITS` (`imperial` default, `metric`
-  supported; Kelvin deliberately unsupported).
-- **Keys are secrets** — same posture as search: env-only, never logged,
-  never in error text.
-- **Fresh keys take time** — a newly created OpenWeather key answers 401 for
-  10 minutes–2 hours before activation; the provider's reason lands in the
-  server's warn log while the model just reports weather being unavailable.
-- With **no** key configured the tool is not registered at all.
+See the configuration table for `TAVILY_API_KEY`, `SERPER_API_KEY`, and `OPENWEATHER_API_KEY`; tools are registered only when their keys are configured.
 
 ## Home Assistant
 
