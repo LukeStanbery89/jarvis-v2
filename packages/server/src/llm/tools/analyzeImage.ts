@@ -92,7 +92,20 @@ export function createAnalyzeImageTool(deps: AnalyzeImageDeps) {
             }
             const mime = sniffImageMime(bytes) ?? "image/png";
             const dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
-            const analysis = await deps.vision.analyze(dataUrl, query);
+            let analysis: string;
+            try {
+                analysis = await deps.vision.analyze(dataUrl, query);
+            } catch (err) {
+                // Every other metered tool maps failures to generic
+                // model-facing text; an unguarded throw here would ride
+                // LangGraph's tool-error path straight to the client's tool
+                // result (internal endpoint/stack detail) with no server
+                // log. Log it, and degrade the answer the model relays.
+                logger.error(
+                    `analyzeImage failed: ${err instanceof Error ? err.message : String(err)}`,
+                );
+                return "Image analysis failed right now. Tell the user that image analysis is temporarily unavailable and they can try again in a moment.";
+            }
             logger.debug(
                 `analyzeImage(${attachmentId.slice(0, 6)}…) answered (${analysis.length} chars)`,
             );

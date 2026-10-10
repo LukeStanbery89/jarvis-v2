@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+    DEFAULT_AGENT_MAX_TURNS,
     DEFAULT_HA_CACHE_TTL_MS,
     DEFAULT_HA_CALLS_PER_MIN,
     DEFAULT_HA_CONTROL_DOMAINS,
@@ -17,12 +18,15 @@ import {
     defaultPortalDir,
     defaultWebDir,
     getAppConfig,
+    getLlmConfig,
     getServerPort,
 } from "../src/config";
 import { homedir } from "node:os";
 
 afterEach(() => {
     delete process.env.PORT;
+    delete process.env.LLM_TEMPERATURE;
+    delete process.env.JARVIS_AGENT_MAX_TURNS;
     delete process.env.JARVIS_DB_PATH;
     delete process.env.JARVIS_TURN_TIMEOUT_MS;
     delete process.env.JARVIS_BOOTSTRAP_TOKEN;
@@ -94,6 +98,26 @@ describe("getAppConfig", () => {
             turnTimeoutMs: DEFAULT_TURN_TIMEOUT_MS,
             bootstrapToken: undefined,
         });
+    });
+
+    it("falls back to the default on a typo'd numeric env var instead of producing NaN", () => {
+        // The regression this pins: `Number("2h")` is NaN, and a NaN turn
+        // timeout fired its timer ~immediately, aborting every turn before
+        // the model answered. Every numeric knob goes through the guarded
+        // parser, so a typo degrades to the documented default.
+        process.env.JARVIS_TURN_TIMEOUT_MS = "2h";
+        expect(getAppConfig().turnTimeoutMs).toBe(DEFAULT_TURN_TIMEOUT_MS);
+        process.env.PORT = "80 thousand";
+        expect(getServerPort()).toBe(DEFAULT_PORT);
+        process.env.JARVIS_RATE_WINDOW_MS = "fifteen";
+        expect(getAppConfig().loginRateLimit?.windowMs).toBe(15 * 60_000);
+    });
+
+    it("keeps a valid 0 for zero-ok knobs (temperature), rejects it elsewhere", () => {
+        process.env.LLM_TEMPERATURE = "0";
+        expect(getLlmConfig().temperature).toBe(0);
+        process.env.JARVIS_AGENT_MAX_TURNS = "0";
+        expect(getLlmConfig().agentMaxTurns).toBe(DEFAULT_AGENT_MAX_TURNS);
     });
 
     it("reads JARVIS_BOOTSTRAP_TOKEN", () => {

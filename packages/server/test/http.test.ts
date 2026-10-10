@@ -896,13 +896,53 @@ describe("user role + disabled management", () => {
         expect(restored.status).toBe(200);
     });
 
+    it("disabling a user revokes their live cookie session immediately", async () => {
+        const pepperId = store.getUserByUsername("pepper")!.id;
+        const login = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        expect(login.status).toBe(201);
+        const cookie = sessionCookiePair(login);
+        expect(
+            (await request(app).get("/api/me").set("Cookie", cookie)).status,
+        ).toBe(200);
+
+        const disable = await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: true });
+        expect(disable.status).toBe(200);
+
+        // The cookie is dead at once — not at next login: the disable
+        // handler deletes the account's web sessions, and the middleware's
+        // disabled re-read is the backstop for anything issued in between.
+        expect(
+            (await request(app).get("/api/me").set("Cookie", cookie)).status,
+        ).toBe(401);
+
+        // Re-enabling does not resurrect the deleted session — pepper must
+        // sign in again (unlike device tokens, whose hash row survives).
+        await request(app)
+            .patch(`/api/users/${pepperId}`)
+            .set("authorization", await ownerHeader())
+            .send({ disabled: false });
+        expect(
+            (await request(app).get("/api/me").set("Cookie", cookie)).status,
+        ).toBe(401);
+        const fresh = await request(app).post("/api/session").send({
+            username: "pepper",
+            password: "pwd-1234",
+        });
+        expect(fresh.status).toBe(201);
+    });
+
     it("rejects a disabled account at both login endpoints", async () => {
         const pepperId = store.getUserByUsername("pepper")!.id;
         await request(app)
             .patch(`/api/users/${pepperId}`)
             .set("authorization", await ownerHeader())
             .send({ disabled: true });
-
         const session = await request(app).post("/api/session").send({
             username: "pepper",
             password: "pwd-1234",

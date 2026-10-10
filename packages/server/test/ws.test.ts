@@ -1,6 +1,6 @@
 import type { AddressInfo } from "net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { WebSocket } from "ws";
+import { WebSocket, type WebSocketServer } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
 import { runAgent } from "../src/agent";
@@ -99,9 +99,38 @@ const fakeTts: import("../src/tts/types").TtsProvider = {
 const ttsServer = createApp(store, appConfig).listen(0);
 attachChatServer(ttsServer, store, { turnTimeoutMs: 30_000, tts: fakeTts });
 
+// The hardening fixture: the wss reference is kept so tests can reach the
+// server-side sockets (error emissions, pong listeners, buffer bounds).
+const hardeningServer = createApp(store, appConfig).listen(0);
+const hardeningWss = attachChatServer(hardeningServer, store);
+
+// A deliberately slow TTS engine: each segment takes 150 ms, so the audio
+// drain (after the text stream ends) spans hundreds of milliseconds — wide
+// enough to land a `cancel` inside it deterministically.
+const slowTts: import("../src/tts/types").TtsProvider = {
+    id: "slow-fake",
+    synthesize: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return { pcm: new Float32Array([0.25, -0.25]), sampleRate: 24000 };
+    },
+};
+const slowTtsServer = createApp(store, appConfig).listen(0);
+attachChatServer(slowTtsServer, store, { turnTimeoutMs: 30_000, tts: slowTts });
+
+// A short-heartbeat variant, so the keepalive is testable in real time
+// (30 ms instead of the 30 s production default).
+const heartbeatServer = createApp(store, appConfig).listen(0);
+const heartbeatWss = attachChatServer(heartbeatServer, store, {
+    turnTimeoutMs: 30_000,
+    heartbeatIntervalMs: 30,
+});
+
 let url: string;
 let timeoutUrl: string;
 let ttsUrl: string;
+let hardeningUrl: string;
+let slowTtsUrl: string;
+let heartbeatUrl: string;
 
 beforeAll(() => {
     const address = server.address() as AddressInfo | null;
@@ -110,12 +139,21 @@ beforeAll(() => {
     timeoutUrl = `ws://localhost:${timeoutAddress?.port ?? 0}/ws`;
     const ttsAddress = ttsServer.address() as AddressInfo | null;
     ttsUrl = `ws://localhost:${ttsAddress?.port ?? 0}/ws`;
+    const hardeningAddress = hardeningServer.address() as AddressInfo | null;
+    hardeningUrl = `ws://localhost:${hardeningAddress?.port ?? 0}/ws`;
+    const slowTtsAddress = slowTtsServer.address() as AddressInfo | null;
+    slowTtsUrl = `ws://localhost:${slowTtsAddress?.port ?? 0}/ws`;
+    const heartbeatAddress = heartbeatServer.address() as AddressInfo | null;
+    heartbeatUrl = `ws://localhost:${heartbeatAddress?.port ?? 0}/ws`;
 });
 
 afterAll(async () => {
     server.close();
     timeoutServer.close();
     ttsServer.close();
+    hardeningServer.close();
+    slowTtsServer.close();
+    heartbeatServer.close();
     // Let pending server-side socket-close handlers (guest-session cleanup)
     // flush before the store is shut down.
     await settle();
@@ -1347,6 +1385,188 @@ describe("turn cancellation (#84 P6)", () => {
             }
         }
         expect(finalChunks).toBe("Hello, World!");
+        c.close();
+    });
+});
+
+/**
+ * Server hardening (#102): error listeners, keepalive heartbeat, send
+ * backpressure, and the cancel-vs-audio-drain race. These tests reach the
+ * server-side sockets through the kept `wss` references.
+ */
+describe("server hardening", () => {
+    /** Server-side OPEN socket for the only client of `wss`. */
+    function onlyClient(wss: WebSocketServer): WebSocket {
+        const sockets = [...wss.clients];
+        expect(sockets.length).toBe(1);
+        return sockets[0]!;
+    }
+
+    it("survives socket and server error emissions", async () => {
+        const c = await connect(hardeningUrl);
+        // Synthesized transport failures: with no listener these would be
+        // uncaught exceptions killing the process (the ws library re-emits
+        // receiver/sender errors as `'error'`).
+        onlyClient(hardeningWss).emit("error", new Error("boom"));
+        hardeningWss.emit("error", new Error("server-level boom"));
+        // The connection still works end to end.
+        c.send({ prompt: "hi", sessionId: "hardening-errors" });
+        let chunks = "";
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                chunks += item.frame.chunk;
+            }
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        expect(chunks).toBe("Hello, World!");
+        c.close();
+    });
+
+    it("terminates a socket that stops answering pings; a ponging socket survives", async () => {
+        // The 30 ms-heartbeat fixture keeps this test in real time.
+        const silent = new WebSocket(heartbeatUrl);
+        await new Promise((resolve) => silent.once("open", resolve));
+        const serverSocket = onlyClient(heartbeatWss);
+        // The ws client auto-pongs; removing the server-side listener
+        // simulates a vanished peer (sleep, NAT drop) whose pongs never
+        // arrive: after one unanswered interval the socket is terminated.
+        serverSocket.removeAllListeners("pong");
+        const silentClosed = new Promise<boolean>((resolve) =>
+            silent.once("close", () => resolve(true)),
+        );
+        const winner = await Promise.race([
+            silentClosed.then(() => "closed" as const),
+            new Promise((resolve) =>
+                setTimeout(() => resolve("open" as const), 300),
+            ),
+        ]);
+        expect(winner).toBe("closed");
+
+        // A healthy peer answers and is left alone.
+        const healthy = new WebSocket(heartbeatUrl);
+        await new Promise((resolve) => healthy.once("open", resolve));
+        const healthyClosed = new Promise<boolean>((resolve) =>
+            healthy.once("close", () => resolve(true)),
+        );
+        const survived = await Promise.race([
+            healthyClosed.then(() => "closed" as const),
+            new Promise((resolve) =>
+                setTimeout(() => resolve("open" as const), 300),
+            ),
+        ]);
+        // Several full intervals pass; the automatic pongs keep it alive.
+        expect(survived).toBe("open");
+        healthy.close();
+    });
+
+    it("drops chunk frames past the send bound but still ends the turn", async () => {
+        const c = await connect(hardeningUrl);
+        const serverSocket = onlyClient(hardeningWss);
+        // Shadow the prototype getter with a perpetually-full buffer.
+        Object.defineProperty(serverSocket, "bufferedAmount", {
+            value: 2_000_000,
+            configurable: true,
+        });
+        c.send({ prompt: "hi", sessionId: "hardening-backpressure" });
+        const chunks: string[] = [];
+        let error: string | null = null;
+        let done = false;
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                chunks.push(item.frame.chunk);
+            }
+            if (typeof item.frame.error === "string") {
+                error = item.frame.error;
+            }
+            if (item.frame.done === true) {
+                done = true;
+                break;
+            }
+        }
+        // Stream data dropped; the terminal frame always sent.
+        expect(chunks).toEqual([]);
+        expect(done).toBe(true);
+        expect(error).toBeNull();
+        delete (serverSocket as unknown as { bufferedAmount?: number })
+            .bufferedAmount;
+        c.close();
+    });
+
+    it("drops the spoken tail when a cancel lands during the audio drain", async () => {
+        const c = await connect(slowTtsUrl);
+        c.send({ type: "hello", capabilities: ["markdown", "audio"] });
+        c.send({
+            prompt: "stall",
+            sessionId: "hardening-drain-cancel",
+            mode: "voice",
+        });
+        // Consume the whole text stream. The 150 ms/segment synth means the
+        // drain outlives the text by hundreds of milliseconds — the cancel
+        // below lands inside it. Binaries are counted from the start: the
+        // first segment's PCM is delivered while the text is still
+        // streaming.
+        const binaries: number[] = [];
+        let seen = 0;
+        for (;;) {
+            const item = await c.next();
+            if (item.kind === "binary") {
+                binaries.push(item.bytes);
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                seen += 1;
+            }
+            if (seen === 6) {
+                break;
+            }
+        }
+        c.send({ type: "cancel" });
+        const frames: Record<string, unknown>[] = [];
+        for (;;) {
+            const item = await c.next();
+            if (item.kind === "binary") {
+                binaries.push(item.bytes);
+                continue;
+            }
+            frames.push(item.frame);
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        // The audio span never closes: the drain was abandoned mid-flight,
+        // so the tail segments are never delivered and `audioEnd` never
+        // goes out.
+        expect(binaries.length).toBeGreaterThanOrEqual(1);
+        expect(frames.some((f) => f.audioEnd !== undefined)).toBe(false);
+        expect(frames.some((f) => f.error !== undefined)).toBe(false);
+        // `done` is terminal.
+        expect(frames[frames.length - 1]!.done).toBe(true);
+        // The thread lock released: a follow-up turn completes.
+        c.send({ prompt: "hi", sessionId: "hardening-drain-cancel" });
+        let followUp = "";
+        for (;;) {
+            const item = await c.next();
+            if (item.kind !== "frame") {
+                continue;
+            }
+            if (typeof item.frame.chunk === "string") {
+                followUp += item.frame.chunk;
+            }
+            if (item.frame.done === true) {
+                break;
+            }
+        }
+        expect(followUp).toBe("Hello, World!");
         c.close();
     });
 });

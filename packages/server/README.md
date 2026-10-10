@@ -107,7 +107,10 @@ container, with two differences:
 
 The model is reached via LangChain (`@langchain/openai`) pointed at an
 OpenAI-compatible endpoint. Everything is configurable through environment
-variables:
+variables; a variable that is set but does not parse (a typo, trailing
+whitespace) falls back to its documented default with a startup warning
+naming the variable — a typo can never break the server start, and it cannot
+fail silently either:
 
 | `PORT` | `54321` | HTTP listener port |
 | `LLM_BASE_URL` | `http://localhost:1234/v1` | OpenAI-compatible base URL |
@@ -756,7 +759,10 @@ Every prompt is recorded in the app database (`JARVIS_DB_PATH`, default
 **session** tagged `guest`/`owned` and `text`/`voice` (the kind is the
 prompt's chat `mode`, recorded at first claim). Guest sessions are
 deleted when their socket closes; owned sessions persist and can be listed or
-deleted via the REST management API. Note that deleting a session removes the
+deleted via the REST management API. Sockets that vanish without a close
+frame (a dropped connection, a sleeping laptop) are terminated by a 30-second
+ping/pong keepalive, so their cleanup — guest rows included — still fires.
+Note that deleting a session removes the
 ledger row, not the conversation history in the LangGraph checkpointer (see
 `JARVIS_CHECKPOINT_PATH`) — that remains a documented limitation.
 

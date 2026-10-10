@@ -87,7 +87,15 @@ export async function verifyPassword(
     const N = Number(nRaw);
     const r = Number(rRaw);
     const p = Number(pRaw);
+    const salt = Buffer.from(saltRaw, "base64url");
+    const expected = Buffer.from(keyRaw, "base64url");
     if (
+        // A stored hash whose salt or key segment is empty (or the wrong
+        // size) is a corrupted store — and a 0-byte key would otherwise
+        // authenticate any password, since `timingSafeEqual(empty, empty)`
+        // is true. Fail loudly instead of silently accepting everything.
+        salt.length !== SALT_LENGTH ||
+        expected.length !== PASSWORD_KEY_LENGTH ||
         !Number.isFinite(N) ||
         !Number.isFinite(r) ||
         !Number.isFinite(p) ||
@@ -105,16 +113,12 @@ export async function verifyPassword(
             "stored password hash is malformed",
         );
     }
-    const salt = Buffer.from(saltRaw, "base64url");
-    const expected = Buffer.from(keyRaw, "base64url");
-    const actual = await scryptAsync(password, salt, expected.length, {
+    const actual = await scryptAsync(password, salt, PASSWORD_KEY_LENGTH, {
         N,
         r,
         p,
     });
-    return (
-        actual.length === expected.length && timingSafeEqual(actual, expected)
-    );
+    return timingSafeEqual(actual, expected);
 }
 
 /** Material for a freshly issued device token. */

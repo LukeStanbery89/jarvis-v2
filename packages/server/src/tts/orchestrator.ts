@@ -103,6 +103,16 @@ export function speakTurn(
     const segmenter = new ResponseSegmenter({
         granularity: options.granularity,
     });
+    /**
+     * The turn's own cancellation source: `abort()` fires it, and every
+     * `synthesize` call observes it. Without this the engine's cooperative
+     * checkpoints were dead code — an aborted turn's in-flight synthesis
+     * (and every still-queued segment) ran to completion, burning exactly
+     * the CPU the replacement turn's first segment needs (the barge-in
+     * moment). The queue drop alone stopped *future* work; the signal
+     * stops *current* work.
+     */
+    const turnAbort = new AbortController();
     /** Segments waiting for the (single) synthesis worker. */
     const queue: string[] = [];
     let finished = false;
@@ -141,15 +151,23 @@ export function speakTurn(
                 while (queue.length > 0 && !failed) {
                     const segment = queue.shift()!;
                     try {
-                        const speech = await provider.synthesize(segment);
+                        const speech = await provider.synthesize(segment, {
+                            signal: turnAbort.signal,
+                        });
                         if (!started) {
                             started = true;
                             sink.audioStart(speech.sampleRate);
                         }
                         sink.audio(speech.pcm);
                     } catch (err) {
-                        failed = true;
-                        onError?.(err);
+                        // `failed` is already true after `abort()`, so an
+                        // aborted in-flight synthesis (the engine's
+                        // cooperative checkpoint throwing) must not report
+                        // a *second* failure — onError is a once-callback.
+                        if (!failed) {
+                            failed = true;
+                            onError?.(err);
+                        }
                         break;
                     }
                 }
@@ -185,6 +203,13 @@ export function speakTurn(
         abort(): void {
             failed = true;
             queue.length = 0;
+            // Aborts the turn's signal: the in-flight synthesis abandons at
+            // its next cooperative checkpoint (see the catch in `pump`) and
+            // every future `synthesize` rejects before doing work. The
+            // engine's generate call itself has no abort hook, so a segment
+            // already inside the engine still completes there — its result
+            // is discarded.
+            turnAbort.abort();
         },
     };
 }

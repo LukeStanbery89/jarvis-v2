@@ -230,6 +230,27 @@ export function createApp(
 
     app.use(jsonErrorHandler);
 
+    // Terminal error handler: anything `jsonErrorHandler` passed through —
+    // a route throw outside /api's own handling, a `sendFile` failure —
+    // becomes one logged line plus a generic 500. Without it, Express's
+    // default handler dumps `err.stack` into the response whenever
+    // `NODE_ENV !== "production"`, and the bare `npm start` script sets
+    // nothing — a stack leak on every unhandled error in that deployment.
+    app.use(
+        (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+            logger.error(
+                `unhandled request error: ${
+                    err instanceof Error ? err.stack : String(err)
+                }`,
+            );
+            if (res.headersSent) {
+                res.end();
+                return;
+            }
+            res.status(500).json({ error: "internal server error" });
+        },
+    );
+
     return app;
 }
 
@@ -247,11 +268,20 @@ export function createApp(
 export function createHttpsRedirectApp(httpsPort: number) {
     const app = express();
     app.use((req, res) => {
-        // URL.parse → .hostname strips the port AND keeps IPv6 brackets
+        // `new URL(...).hostname` strips the port AND keeps IPv6 brackets
         // (`[::1]:54321` → `[::1]`), which a naive split(":") would mangle.
-        const host =
-            new URL(`http://${req.headers.host ?? "localhost"}`).hostname ??
-            "localhost";
+        // The parse can throw on a malformed `Host` (e.g. `[::1` with no
+        // closing bracket) — a broken client gets an honest 400 rather than
+        // an unhandled TypeError crashing into Express's default handler.
+        let host: string;
+        try {
+            host =
+                new URL(`http://${req.headers.host ?? "localhost"}`).hostname ??
+                "localhost";
+        } catch {
+            res.status(400).send("bad request");
+            return;
+        }
         res.redirect(302, `https://${host}:${httpsPort}${req.originalUrl}`);
     });
     return app;
