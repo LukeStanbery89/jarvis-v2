@@ -34,7 +34,7 @@ Run from the repository root:
 | Command                | Description                                                            |
 | ---------------------- | ---------------------------------------------------------------------- |
 | `npm install`          | Install all workspace dependencies                                     |
-| `npm run build`        | Build all packages (`tsc`, plus `vite build` for the portal)           |
+| `npm run build`        | Build all packages (`tsc`, plus `vite build` for the portal and web)   |
 | `npm run typecheck`    | Type-check all packages (src + tests)                                  |
 | `npm test`             | Run all package test suites (Vitest)                                   |
 | `npm run test:scripts` | Run the root tooling tests under `scripts/` (Vitest)                   |

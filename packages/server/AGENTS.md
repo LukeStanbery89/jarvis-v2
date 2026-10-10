@@ -134,9 +134,9 @@ parsing/serialization) is defined once in `@lukestanbery/jarvis-protocol`; the s
 re-declares frames.
 
 - Client → Server:
-    - **First frame, optional:** `{ "type": "hello", "capabilities": ["markdown", "image", "link"] }` — the client
+    - **First frame, optional:** `{ "type": "hello", "capabilities": ["markdown", "html", "image", "link", "audio"] }` — the client
       announces how it renders responses so the model can tailor formatting. Tokens are from the closed set
-      `markdown` / `html` / `image` / `link` (duplicates and unknown tokens are rejected; empty list = plain text).
+      `markdown` / `html` / `image` / `link` / `audio` (duplicates and unknown tokens are rejected; empty list = plain text).
       `systemPromptForCapabilities` frames each declared token into the system prompt (a client that claims
       `markdown` gets "Markdown is rendered…", etc.). A `hello` after any other frame is rejected as
       `hello frame must be the first frame`.

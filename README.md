@@ -89,7 +89,7 @@ plus a per-session CSRF nonce rather than device tokens. The server also hosts
 the **web chat client** (`packages/web`) at `/web`: a signed-in browser chat
 with conversation management and streaming Markdown/tables/images rendering
 (it announces those capabilities with a `hello` frame and chats with
-`mode: "text"` — voice mode is future work).
+`mode: "text"` ).
 
 During development the workspace packages resolve each other **through the
 workspace symlinks** npm creates in `node_modules` — edit source in
@@ -101,19 +101,19 @@ a published tarball.
 
 ## Commands
 
-| Command                | Description                                           |
-| ---------------------- | ----------------------------------------------------- |
-| `npm run build`        | Build all packages                                    |
-| `npm run typecheck`    | Type-check all packages (src + tests)                 |
-| `npm test`             | Run all package tests                                 |
-| `npm run test:scripts` | Run the root tooling tests under `scripts/`           |
-| `npm run check`        | Deps + lint + build + typecheck + test + format check |
-| `npm run check:deps`   | Verify no package imports an undeclared dependency    |
-| `npm run lint`         | Lint all TS/TSX sources with ESLint                   |
-| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost)    |
-| `npm run graph:health` | Report graphify structural health                     |
-| `npm run format`       | Auto-format all files with Prettier                   |
-| `npm run format:check` | Verify formatting without modifying files             |
+| Command                | Description                                                 |
+| ---------------------- | ----------------------------------------------------------- |
+| `npm run build`        | Build all packages                                          |
+| `npm run typecheck`    | Type-check all packages (src + tests)                       |
+| `npm test`             | Run all package tests                                       |
+| `npm run test:scripts` | Run the root tooling tests under `scripts/`                 |
+| `npm run check`        | Deps + lint + build + typecheck + test + format check       |
+| `npm run check:deps`   | Verify no package imports an undeclared dependency          |
+| `npm run lint`         | Lint all TS/TSX sources with ESLint (`lint:fix` to autofix) |
+| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost)          |
+| `npm run graph:health` | Report graphify structural health                           |
+| `npm run format`       | Auto-format all files with Prettier                         |
+| `npm run format:check` | Verify formatting without modifying files                   |
 
 ## API docs
 
@@ -148,7 +148,7 @@ Full keys, budgets, and semantics:
 ## Cross-origin clients
 
 Not needed for the default setups — the portal at `/` and the web client at `/web` are
-served by this server, and both Vite dev servers proxy `/api` and `/ws`, so every
+served by this server, and both Vite dev servers proxy `/api` and `/ws` for the web client; the portal dev server proxies only `/api` (web uses `/ws` directly over the server), so every
 request is same-origin.
 
 It matters only when a browser SPA is hosted on a _different_ origin than the API. Set

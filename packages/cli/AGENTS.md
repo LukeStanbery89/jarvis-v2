@@ -7,7 +7,7 @@
 ## Stack
 
 - TypeScript (strict, ES2020, CommonJS)
-- Node's built-in global `WebSocket` (Node 22+)
+- Node's built-in global `WebSocket` (Node 24+)
 - Logging via `@lukestanbery/jarvis-logger` (Consola-based; see `src/logger.ts`)
 - Tests via Vitest
 

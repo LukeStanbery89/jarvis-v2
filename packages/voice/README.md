@@ -20,9 +20,9 @@ Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
 Web Speech STT provider, the local WASM STT provider (Vosk), the energy VAD,
 and the openWakeWord wake-word provider ship here (phases 2–4, consumed by
 `packages/web`). The WASM engine's one dependency
-(`@lichess-org/vosk-browser`) is an **optional peer dependency** that loads
+(`@lichess-org/vosk-browser`) is a **peer dependency** that loads
 lazily at first `start()` — and the wake detector's
-(`openwakeword-web`, which pulls in `onnxruntime-web`) likewise — the
+(`openwakeword-web`, which pulls in `onnxruntime-web`) are **optionalDependencies** — the
 package never imports them at module scope, so node consumers and tests are
 unaffected.
 

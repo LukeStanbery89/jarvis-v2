@@ -26,7 +26,7 @@ npm install @lukestanbery/jarvis-protocol
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `type ServerFrame`                  | Union of every frame the server sends to a chat client                                                                                |
 | `type ClientFrame`                  | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame \| ClientCancelFrame`      |
-| `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link"` — a render guarantee a client declares                                                    |
+| `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link" \| "audio"` — a render guarantee a client declares                                         |
 | `type ChatMode`                     | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`)                                                           |
 | `interface AuthRequest`             | The `auth` handshake: `{ type: "auth", token }`                                                                                       |
 | `interface ClientHello`             | The capability announcement: `{ type: "hello", capabilities }`                                                                        |
@@ -61,7 +61,7 @@ JSON text frames over `/ws`:
       `{ "authResult": { "user": "<name>", "device": "<name>" } }` frame. A
       client that never sends `auth` is treated as a **guest** (ephemeral,
       identity-independent chats).
-    - Optionally, **first frame only**: `{ "type": "hello", "capabilities": ["markdown", "image", ...] }`
+    - Optionally, **first frame only**: `{ "type": "hello", "capabilities": ["markdown", "html", "image", "link", "audio", ...] }`
       — declares what the client can render in the response (`markdown`,
       `html`, `image`, `link`, ≤16 tokens). The server stores the declaration
       for the socket's lifetime and conditions the agent's output on it; an
@@ -92,13 +92,13 @@ JSON text frames over `/ws`:
 - Server → Client:
     - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output" } }`
       frames while the agent calls tools,
-    - then `{ "chunk": "<text>" }` … then `{ "done": true }`, plus
+    - then `{ "chunk": "<text>" }` … then `{ "done": true }`, then (for `audio`-capable sockets) `{ "audioStart": {...} }`, binary PCM chunks, `{ "audioEnd": {...} }`; and
       `{ "authResult": { "user", "device" } }` as the one-frame reply to an
       `auth` handshake.
 - Invalid input or model failure: `{ "error": "<message>" }` then `{ "done": true }`.
 
 Frames are key-discriminated (no `type` field), with exception only for the
-client `auth`, `hello`, and `location` frames, which carry a `type` so the
+client `auth`, `hello`, `location`, and `cancel` frames, which carry a `type` so the
 server can tell them apart from prompts. Chunks concatenate verbatim to the
 full response. The error messages thrown by
 `parseFrame`/`parseClientMessage`/`parseRequest` are user-facing on the CLI

@@ -6,7 +6,7 @@ screen.
 
 ## Prerequisites
 
-- Node.js 22+ (uses the built-in global `WebSocket`)
+- Node.js 24+ (uses the built-in global `WebSocket`)
 - npm
 
 ## Install
