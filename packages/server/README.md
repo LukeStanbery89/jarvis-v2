@@ -506,81 +506,38 @@ See the configuration table for `TAVILY_API_KEY`, `SERPER_API_KEY`, and `OPENWEA
 ## Home Assistant
 
 The agent reads and lightly controls the user's own Home Assistant instance
-through one `homeAssistant` tool (#15) over the local REST API — two
-endpoints, no new dependency: `GET /api/states` for the snapshot and
-`POST /api/services/<domain>/<service>` with `{"entity_id": …}` for a write.
-A write's **status code is the whole result**: the 2xx body reports the
-affected entities' states as they stood _at dispatch_ (a `turn_off` routinely
-answers `on`), so it is discarded rather than handed to the model as a
-post-action truth. The tool therefore reports the **accepted action**, never a
-verified outcome, and the model is told to use `get` for current state.
+through one `homeAssistant` tool (#15) over the local REST API — two endpoints,
+no new dependency: `GET /api/states` for the snapshot and
+`POST /api/services/<domain>/<service>` for a write. Configure
+`HOME_ASSISTANT_URL` and `HOME_ASSISTANT_ACCESS_TOKEN` (plus the optional
+`JARVIS_HA_*` knobs in the configuration table); with either unset the tool is
+not registered at all.
 
-- **One tool, one `action` argument** — `list`, `lights`, `switches`, `get`,
-  `turn_on`, `turn_off`, `toggle`, `set_brightness`, `set_temperature`. The
-  model picks an intent rather than choosing between tool names, which keeps
-  the tool surface small enough for a 4B model to route correctly.
-- **Lights and switches get their own discovery actions** — a light is not a
-  domain on many installations (the requester's own house models every lamp as
-  `switch.*`, leaving the `light` domain empty), and nothing in the REST payload
-  marks one. `lights` therefore matches the `light`/`switch` domains against the
-  `JARVIS_HA_LIGHT_TOKENS` fragments over both the entity id and the friendly
-  name; `switches` lists the `switch` domain minus the `_led` shadow children
-  that integrations create beside a real fixture. The overlap is intentional — a
-  light modeled as a switch appears in both. Both are honest about being
-  best-effort, both report how many of the readable entities they matched, and
-  an empty result says a device _may be missing_ and points at `list` rather
-  than declaring the house empty: quiet absence is the failure this exists to
-  prevent.
+- **One tool, one `action`** — `list`, `lights`, `switches`, `get`, `turn_on`,
+  `turn_off`, `toggle`, `set_brightness`, `set_temperature`. The two discovery
+  actions paper over the fact that a light is not always the `light` domain:
+  `lights` matches the `light`/`switch` domains against `JARVIS_HA_LIGHT_TOKENS`
+  over id and friendly name, and `switches` drops `_led` shadow children.
 - **Reads are broad, writes are narrow** — reads span lights, switches,
   climate, fans, sensors, covers, media players and locks
   (`JARVIS_HA_READ_DOMAINS`); writes are limited to light/switch/climate/fan
   (`JARVIS_HA_CONTROL_DOMAINS`), a strict subset. Locks, covers, scenes,
-  buttons and scripts stay **readable but not controllable** here: arming a
-  lock from a model turn is a different risk class than reading its state and
-  wants its own issue.
-- **Nothing is written that was not validated first** — every write resolves
-  `entity_id` against the live snapshot before a service call goes out, so a
-  typo, a hallucinated id, or an out-of-scope entity is refused in
-  model-facing prose instead of being sent to the house. An entity reading
-  `unavailable` or `unknown` is refused for the same reason: Home Assistant
-  acknowledging a command it cannot deliver is not a change. A name that
-  matches nothing, or more than one entity, returns the candidates rather than
-  picking one; `set_brightness` requires a `light.*` target, `set_temperature`
-  a `climate.*` one, and a write always names exactly one entity.
-- **Writes execute immediately, and are reported as accepted, not verified** —
-  there is no protocol-level confirmation step and no post-write polling: a
-  resolved service call is the success signal, and the result says so ("turned
-  off Living Room Light […]; Home Assistant accepted the request") without
-  asserting a state the instance never confirmed. The tool description tells
-  the model that a write means _accepted_, not that the device changed, and to
-  call `get` before reporting current state; the `HOME_CALL_RULE` system
-  paragraph instructs it to confirm sweeping or ambiguous requests ("turn
-  everything off") in words before acting, and to search again before declaring
-  a device or a whole category absent — an empty result proves only that one
-  search found nothing. Every write is logged at info as an
-  audit trail of what the assistant did, including the pre-write state it read.
-- **The snapshot is cached, then invalidated** — `GET /api/states` on a mature
-  install returns thousands of entities, so the filtered snapshot is reused for
-  `JARVIS_HA_CACHE_TTL_MS` and dropped after a successful write (a validation
-  that predates its own write is worse than none). A burst of concurrent calls
-  collapses into one request, and a failed read is never cached.
-- **Units come from the entity** — `unit_of_measurement` is surfaced with every
-  temperature and power reading, and a value argument is a bare number in the
-  instance's own unit, so the model cannot pass "70 °F" into a metric house.
-  `set_brightness` takes 0–100 (sent as `brightness_pct`), `set_temperature` the
-  target in the thermostat's unit.
-- **The instance is untrusted input** — responses are normalized defensively:
-  entries without a well-formed `domain.object_id` are dropped, only
-  model-relevant attributes survive the client boundary, and a non-array payload
-  is a typed error rather than a half-parsed house.
-- **The token is a secret** — sent as a `Bearer` header and nowhere else; never
-  in a URL, a log line, or error text, and scrubbed even from a provider error
-  body that echoes the request.
-- **Metered per user, bounded per call** — `JARVIS_HA_CALLS_PER_MIN` (10/min)
-  through the same fixed-window quota, `JARVIS_HA_TIMEOUT_MS` (10 s) per call.
-- With **no** URL/token configured the tool is not registered at all.
+  buttons and scripts stay readable but not controllable.
+- **A write reports the accepted action, never a verified state** — every
+  write resolves `entity_id` against the live snapshot and is checked against
+  the control domains, the action's required domain, and the entity's own
+  state (`unavailable`/`unknown` is refused) before any HTTP, and the 2xx body
+  (dispatch-time state, not the outcome) is discarded. The model is told to
+  call `get` for current state; writes are logged at info as an audit trail.
+- **Metered and bounded** — `JARVIS_HA_CALLS_PER_MIN` (10/min) through the
+  shared fixed-window quota and `JARVIS_HA_TIMEOUT_MS` (10 s) per call; the
+  token is a `Bearer` header only, never in a URL, a log line, or error text.
 
-### Endpoints
+The full per-bullet rationale, the snapshot-caching rules, and the
+untrusted-input handling live in the `packages/server/src/README.md` file map
+(`llm/tools/homeAssistant.ts`, `llm/tools/homeAssistant/client.ts`).
+
+## Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
 the spec'd REST surface in [`docs/endpoints-rest.md`](../contracts/docs/endpoints-rest.md)
@@ -610,7 +567,7 @@ table — "web session" is the `jarvis_session` cookie):
 "Device token" auth is `Authorization: Bearer <token>`; the web session is the
 `jarvis_session` cookie (+ `x-csrf-token` on state changes).
 
-### Chat protocol
+## Chat protocol
 
 The wire protocol (frames, limits, and parse/serialize logic) is defined once
 in the shared `@lukestanbery/jarvis-protocol` package (machine-readable mirror:
@@ -645,7 +602,7 @@ and exchange JSON text frames:
       the device's whereabouts (any time, refreshable; the latest report wins
       for subsequent turns). Feeds the `getWeather` tool so a locationless
       "what's the weather?" works without asking for a city. Kept in memory
-      for the socket's lifetime only; never persisted. See [Weather](#weather).
+      for the socket's lifetime only; never persisted. See [Weather](#web-search-and-weather).
     - `{ "type": "cancel" }` (#84 P6) — drop the socket's in-flight turn
       (barge-in or the stop button). Valid any time and idempotent: with no
       turn in flight it is ignored (no reply). The server aborts the model
@@ -699,14 +656,14 @@ Try it with the `@lukestanbery/jarvis-cli` REPL.
 
 ## Server-side TTS (#83)
 
-J.A.R.V.I.S. will speak its responses: text-to-speech is **server-side** (one
+J.A.R.V.I.S. speaks its responses: text-to-speech is **server-side** (one
 consistent voice for every client; clients only play audio — the mirror of
-client-side STT in `packages/voice`). Phase 1 ships the engine seam and the
-first engine; the response segmenter, audio orchestrator, and wire frames
-(`audioStart`/binary PCM/`audioEnd`/`audioError` behind a new `audio`
-capability) land in later phases — see the
+client-side STT in `packages/voice`). The engine seam, the Kokoro engine, the
+response segmenter, the audio orchestrator, and the wire frames
+(`audioStart`/binary PCM/`audioEnd` behind the `audio` capability) are all
+shipped (#83). See the
 [tracking issue](https://github.com/LukeStanbery89/jarvis-v2/issues/83) for
-the full strategy and its race-test matrix.
+the strategy and its race-test matrix.
 
 What exists now:
 

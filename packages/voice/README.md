@@ -247,7 +247,7 @@ touching any client.
 `createOpenWakeWord()` returns an `OpenWakeWordWakeProvider` (id
 `openwakeword`), or `null` when the runtime lacks a secure context, Web
 Audio, or an audio worklet. It is a client-side port of openWakeWord: at
-`start()` it lazy-imports `openwakeword-web` (an optional peer), downloads
+`start()` it lazy-imports `openwakeword-web` (an optional dependency), downloads
 the ONNX models it is registered for from `baseUrl` (default
 `/api/wake/model/` — see the server's wake-model route), and opens a
 16 kHz worklet microphone whose frames run through the continuously-running
@@ -335,7 +335,7 @@ the 300 ms sustain, not eliminated — hardware AEC is out of scope.
 
 - Zero mandatory runtime dependencies, so this package never needs a
   rebuild-then-check ordering like `@lukestanbery/jarvis-logger` consumers
-  do; `@lichess-org/vosk-browser` is an optional peer the browser client
+  do; `@lichess-org/vosk-browser` is a peer dependency the browser client
   provides.
 - No logging dependency either — the caller owns diagnostics. The
   `log?` option (controller and the WASM engine) carries the
