@@ -65,6 +65,11 @@ import voskWorkerUrl from "@lichess-org/vosk-browser/dist/vosk.worker.js?url";
 import voskWasmUrl from "@lichess-org/vosk-browser/dist/vosk.wasm?url";
 import { AudioPlayer } from "../audio";
 import { prepareForUpload } from "../downscale/browser";
+import { debugLog } from "../debug";
+
+/** The voice stack's debug sink: `jarvis.debug`-gated console lines. */
+const debugVoice = (message: string, error?: unknown): void =>
+    debugLog("voice", message, error);
 import {
     describeLocationState,
     isLocationSupported,
@@ -298,6 +303,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         sttRef.current = createStt({
             workerUrl: voskWorkerUrl,
             wasmUrl: voskWasmUrl,
+            log: debugVoice,
         });
     }
     const stt = sttRef.current;
@@ -323,6 +329,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         wakeSttRef.current = createWakeStt({
             workerUrl: voskWorkerUrl,
             wasmUrl: voskWasmUrl,
+            log: debugVoice,
         });
     }
     const wakeStt = wakeSttRef.current;
@@ -356,6 +363,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             vad,
             wake,
             wakeStt,
+            log: debugVoice,
             submit: (text) => {
                 const runTurn = runTurnRef.current;
                 if (runTurn === null) {

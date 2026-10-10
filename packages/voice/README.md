@@ -227,7 +227,12 @@ STT provider shares). It opens its own echo-cancelled `getUserMedia` track,
 feeds an `AnalyserNode`, and runs a two-edge energy state machine at a
 fixed cadence: loudness sustained past `onsetMs` (default 120) fires
 `onSpeechStart`; silence sustained past `releaseMs` (default 350) fires
-`onSpeechEnd`. `stop()` is idempotent and guarantees no callback fires
+`onSpeechEnd`. The onset gate is adaptive — `max(threshold, ambientFloor ×
+noiseMargin)` — where `ambientFloor` follows only quiet ticks (so real
+speech never raises it) and `threshold` (default 0.01) is the floor it can
+settle to in a quiet room; this keeps soft post-wake-pause commands
+starting a session while a raised ambient level still suppresses false
+onsets. `stop()` is idempotent and guarantees no callback fires
 after it resolves; `start()` rejects (rather than erroring the session)
 when the track or context cannot be established, so the controller degrades
 to engine-native endpointing instead of surfacing a failure.
@@ -345,5 +350,12 @@ engine benchmarked behind the same STT seam before any default changes.
   rebuild-then-check ordering like `@lukestanbery/jarvis-logger` consumers
   do; `@lichess-org/vosk-browser` is an optional peer the browser client
   provides.
+- No logging dependency either — the caller owns diagnostics. The
+  `log?` option (controller and the WASM engine) carries the
+  otherwise-silent decision points to the caller: a VAD that failed to arm
+  (the session silently degrades to press-to-stop endpointing), a barge
+  watch that failed to arm, a failed wake pre-warm, and an engine
+  cancelled mid-start. `packages/web` wires it to a `console.debug` sink
+  gated by `localStorage.setItem("jarvis.debug", "1")`.
 - The state machine readme diagram mirrors the module doc in
   `src/lifecycle.ts`; keep them in step.

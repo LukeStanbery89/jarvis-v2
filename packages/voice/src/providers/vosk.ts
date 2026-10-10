@@ -81,6 +81,14 @@ export interface VoskSttOptions {
      * bounds a wedged one.
      */
     readonly flushWaitMs?: number;
+    /**
+     * Debug sink for the engine's otherwise-silent cancellations: a
+     * `start()` whose model load, mic open, or context resume races a
+     * `cancel()` settles quietly, which a user experiences as "pressed and
+     * nothing happened". The caller owns diagnostics (no logging dep in
+     * this package); default: a no-op.
+     */
+    readonly log?: (message: string, error?: unknown) => void;
 }
 
 /** A mic track, structurally sliced (node tests install doubles). */
@@ -150,6 +158,45 @@ interface AudioContextLike extends AudioNodeLike {
 
 /** Constructor for an audio context, as found on `globalThis`. */
 type AudioContextCtor = new () => AudioContextLike;
+
+/**
+ * Linear-interpolation resampler for caller-supplied audio whose capture
+ * rate differs from the recognizer's.
+ *
+ * The recognizer is created at the engine `AudioContext`'s sample rate
+ * (typically 48 kHz), while replayed audio — the wake look-back ring, the
+ * barge-in look-back — is 16 kHz. Feeding a different rate makes the vosk
+ * worker *recreate the recognizer*, discarding every bit of recognition
+ * state (including the replayed audio itself) and re-flipping on the next
+ * live chunk — the "spotty transcription" failure. Resampling here keeps
+ * one recognizer per session at a single rate.
+ *
+ * @param input - The PCM samples captured at `fromRate`.
+ * @param fromRate - The rate the samples were captured at.
+ * @param toRate - The rate the recognizer expects.
+ * @returns The resampled PCM (identity when the rates match or input is
+ *   empty). Edge samples clamp to the boundary values.
+ */
+export function resampleLinear(
+    input: Float32Array,
+    fromRate: number,
+    toRate: number,
+): Float32Array {
+    if (fromRate === toRate || input.length === 0) {
+        return input;
+    }
+    const ratio = fromRate / toRate;
+    const outLength = Math.max(1, Math.floor(input.length / ratio));
+    const output = new Float32Array(outLength);
+    for (let i = 0; i < outLength; i += 1) {
+        const src = i * ratio;
+        const i0 = Math.floor(src);
+        const i1 = Math.min(i0 + 1, input.length - 1);
+        const t = src - i0;
+        output[i] = input[i0]! * (1 - t) + input[i1]! * t;
+    }
+    return output;
+}
 
 /**
  * One recognition message from the vosk worker (union, loosely sliced).
@@ -296,6 +343,13 @@ export class VoskSttProvider implements SttProvider {
     /** The loaded model, shared across sessions until `dispose()`. */
     private model: ModelLike | null = null;
     private recognizer: RecognizerLike | null = null;
+    /**
+     * The sample rate the active recognizer was created at (the engine
+     * `AudioContext`'s rate). Caller-supplied audio at any other rate is
+     * resampled to this before feeding — the worker otherwise recreates
+     * the recognizer on every rate flip, discarding recognition state.
+     */
+    private sessionSampleRate: number | null = null;
     /** Callbacks for the active session; dropped when the session settles. */
     private callbacks: SttCallbacks | null = null;
     /** Id of the active session; events from any other id are dropped. */
@@ -317,6 +371,8 @@ export class VoskSttProvider implements SttProvider {
     /** Resolver of the pending final-flush wait (`stop()`), if any. */
     private flushWaiter: ((text: string | null) => void) | null = null;
     private flushTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The injectable debug sink; a no-op unless the caller supplies one. */
+    private readonly debugLog: (message: string, error?: unknown) => void;
 
     /**
      * @param options - Model URL, log level, and flush tuning (see
@@ -330,6 +386,7 @@ export class VoskSttProvider implements SttProvider {
         this.logLevel = options.logLevel ?? -1;
         this.flushWaitMs = options.flushWaitMs ?? DEFAULT_FLUSH_WAIT_MS;
         this.loadModule = loadModule ?? defaultLoadModule;
+        this.debugLog = options.log ?? (() => {});
     }
 
     /** Current provider lifecycle, for UI display. */
@@ -375,7 +432,10 @@ export class VoskSttProvider implements SttProvider {
         try {
             const model = await this.loadModel();
             if (session !== this.activeSession) {
-                return; // Cancelled while the model loaded; nothing to do.
+                // Cancelled while the model loaded; nothing to do. Without
+                // a trace this reads as "pressed and nothing happened".
+                this.debugLog("vosk session cancelled while the model loaded");
+                return;
             }
             let stream: MediaStreamLike | null = null;
             let context: AudioContextLike;
@@ -398,9 +458,11 @@ export class VoskSttProvider implements SttProvider {
             }
             if (session !== this.activeSession) {
                 this.releaseStream(stream);
+                this.debugLog("vosk session cancelled while the mic opened");
                 return; // Cancelled while the mic opened.
             }
             const recognizer = new model.KaldiRecognizer(context.sampleRate);
+            this.sessionSampleRate = context.sampleRate;
             const source = context.createMediaStreamSource(stream);
             const processor = context.createScriptProcessor(4096, 1, 1);
             // The processor only fires while the graph pulls it; a zero-gain
@@ -437,11 +499,26 @@ export class VoskSttProvider implements SttProvider {
             this.processor = processor;
             this.gain = gain;
             this.recognizer = recognizer;
+            // Ordered replay (see SttStartOptions.feed): the look-back must
+            // reach the recognizer before any live chunk. The processor is
+            // wired but the context is still suspended — nothing live has
+            // been delivered — so feeding here keeps the decoder's feature
+            // stream sequential. After `resume()`, live chunks arrive and
+            // continue where the replay ended.
+            if (options?.feed !== undefined) {
+                const data = resampleLinear(
+                    options.feed.pcm,
+                    options.feed.sampleRate,
+                    context.sampleRate,
+                );
+                recognizer.acceptWaveformFloat(data, context.sampleRate);
+            }
             await context.resume().catch(() => {
                 // A context that will not resume is already running or dead;
                 // the first audio chunk decides which.
             });
             if (session !== this.activeSession) {
+                this.debugLog("vosk session cancelled while resuming");
                 return; // Cancelled while resuming; teardown already ran.
             }
             this.engineState = "running";
@@ -554,8 +631,15 @@ export class VoskSttProvider implements SttProvider {
         if (recognizer === null || this.engineState !== "running") {
             return;
         }
+        // Resample to the recognizer's rate: the worker recreates the
+        // recognizer on any rate flip (the wake/barge look-back replay is
+        // 16 kHz; the recognizer runs at the context rate, typically
+        // 48 kHz), and a recreation drops every accumulated result — the
+        // replayed opening of the utterance included.
+        const rate = this.sessionSampleRate ?? sampleRate;
+        const data = resampleLinear(pcm, sampleRate, rate);
         try {
-            recognizer.acceptWaveformFloat(pcm, sampleRate);
+            recognizer.acceptWaveformFloat(data, rate);
         } catch {
             this.fail(
                 this.voiceError("engine", "the recognizer rejected audio"),
@@ -796,6 +880,7 @@ export class VoskSttProvider implements SttProvider {
         this.teardownCapture();
         const recognizer = this.recognizer;
         this.recognizer = null;
+        this.sessionSampleRate = null;
         if (recognizer !== null) {
             try {
                 recognizer.remove();

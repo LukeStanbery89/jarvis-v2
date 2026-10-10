@@ -65,6 +65,29 @@ describe("stripWakePhrase", () => {
         );
     });
 
+    it("strips common ASR manglings of the phrase (fuzzy fallback)", () => {
+        // The local engine's real-world mishearings of "Hey JARVIS" —
+        // without this the mangled phrase rides into the prompt
+        // ("he jarvis how's the weather" went out verbatim).
+        expect(
+            stripWakePhrase("he jarvis how's the weather", "Hey JARVIS"),
+        ).toBe("how's the weather");
+        expect(
+            stripWakePhrase("he jarvis, what time is it", "Hey JARVIS"),
+        ).toBe("what time is it");
+        expect(stripWakePhrase("he jarvis", "Hey JARVIS")).toBe("");
+        // A token nothing like the phrase word refuses the strip — a
+        // genuine command starting with a similar shape is untouched.
+        expect(stripWakePhrase("he drove is what i hello", "Hey JARVIS")).toBe(
+            "he drove is what i hello",
+        );
+        // Only the phrase's leading positions match: a fuzzy pair later in
+        // the string is not a wake phrase.
+        expect(stripWakePhrase("please he jarvis for me", "Hey JARVIS")).toBe(
+            "please he jarvis for me",
+        );
+    });
+
     it("reduces a phrase-only transcript to an empty string", () => {
         expect(stripWakePhrase("Hey JARVIS", "Hey JARVIS")).toBe("");
         expect(stripWakePhrase("hey jarvis!", "Hey JARVIS")).toBe("");

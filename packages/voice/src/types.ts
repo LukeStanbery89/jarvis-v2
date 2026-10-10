@@ -89,6 +89,20 @@ export interface SttStartOptions {
      * own behavior (finalizes on its pause detection) when omitted.
      */
     readonly continuous?: boolean;
+    /**
+     * Caller audio to recognize before live capture begins: the wake
+     * detector's look-back ring (the phrase plus the command's opening) or
+     * the barge-in watch's interrupted opening. Riding `start()` — instead
+     * of a post-start `feed()` call — guarantees the order: the engine's
+     * own microphone is not delivering until `start()` resolves, so the
+     * replay can never interleave out of order with already-live chunks
+     * (out-of-order audio garbles a streaming decoder). Engines that
+     * cannot take caller audio ignore it and start at the live mic.
+     */
+    readonly feed?: {
+        readonly pcm: Float32Array;
+        readonly sampleRate: number;
+    };
 }
 
 /**
@@ -225,6 +239,19 @@ export interface WakeWordProvider {
     start(callbacks: WakeCallbacks): Promise<void>;
     /** Disarms detection; no callback fires after the returned promise resolves. */
     stop(): Promise<void>;
+    /**
+     * Hands back the detector's current look-back ring — the last ~2 seconds
+     * of 16 kHz mono float PCM, ending **now**, not at match time (the ring
+     * keeps capturing until `stop()`, so the window includes whatever the
+     * user said after the phrase while the session's own microphone was
+     * still opening). A wake session replays this through
+     * {@link SttStartOptions.feed} so the opening words survive the handoff.
+     * Callers drain BEFORE `stop()`, which discards the ring.
+     *
+     * Optional: detectors without a ring (or with nothing recorded) omit it
+     * or return `null`. The 16 kHz rate is the look-back convention.
+     */
+    drainPostMatch?(): Float32Array | null;
 }
 
 /** Per-listener callbacks handed to {@link VadProvider.start}. */

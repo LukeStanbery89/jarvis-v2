@@ -24,6 +24,7 @@ import {
     VoskSttProvider,
     createVoskStt,
     isVoskSupported,
+    resampleLinear,
 } from "../src/providers/vosk";
 import type {
     VoskModelMessage,
@@ -451,6 +452,61 @@ describe("session lifecycle", () => {
         expect(recognizer.chunks).toHaveLength(1);
     });
 
+    it("resamples look-back audio to the recognizer's rate instead of recreating it", async () => {
+        // The wake/barge look-back replay is 16 kHz; the recognizer runs at
+        // the context rate (48 kHz). Feeding the raw rate makes the vosk
+        // worker recreate the recognizer — discarding the replayed audio's
+        // recognition state and re-flipping on the next live chunk.
+        const fakes = installFakes();
+        const provider = makeProvider(fakes);
+        await provider.start(makeRecorder().callbacks);
+        const recognizer = fakes.recognizer;
+        provider.feed(new Float32Array([0, 1, 0, -1]), 16000);
+        expect(recognizer.chunks).toHaveLength(1);
+        expect(recognizer.chunks[0].sampleRate).toBe(48000);
+        // 16k → 48k is exact ×3: each input sample lands on every third
+        // output sample, linear interpolation between.
+        const data = recognizer.chunks[0].data;
+        expect(data.length).toBe(12);
+        expect(data[0]).toBeCloseTo(0, 5);
+        expect(data[1]).toBeCloseTo(1 / 3, 5);
+        expect(data[2]).toBeCloseTo(2 / 3, 5);
+        expect(data[3]).toBeCloseTo(1, 5);
+        // The recognizer was never recreated: the same instance still
+        // receives the live mic chunks afterwards.
+        fakes.context.processor.dispatch(
+            new FakeAudioBuffer(48000, new Float32Array([0.5])),
+        );
+        expect(fakes.model.recognizers).toHaveLength(1);
+        expect(recognizer.chunks).toHaveLength(2);
+        expect(recognizer.chunks[1].data[0]).toBeCloseTo(0.5, 5);
+    });
+
+    it("feeds the start() replay before any live capture", async () => {
+        // The wake/barge replay must reach the recognizer before the
+        // engine's own mic delivers: out-of-order audio garbles a streaming
+        // decoder. start({ feed }) places the replay between recognizer
+        // creation and the first live chunk.
+        const fakes = installFakes();
+        const provider = makeProvider(fakes);
+        const recorder = makeRecorder();
+        await provider.start(recorder.callbacks, {
+            continuous: true,
+            feed: { pcm: new Float32Array([0.25, -0.25]), sampleRate: 16000 },
+        });
+        const recognizer = fakes.recognizer;
+        expect(recognizer.chunks).toHaveLength(1);
+        expect(recognizer.chunks[0].sampleRate).toBe(48000);
+        expect(recognizer.chunks[0].data).toHaveLength(6); // 16k → 48k ×3
+        // A live chunk lands after the replay, in order.
+        fakes.context.processor.dispatch(
+            new FakeAudioBuffer(48000, new Float32Array([0.5])),
+        );
+        expect(recognizer.chunks).toHaveLength(2);
+        expect(recognizer.chunks[1].data[0]).toBeCloseTo(0.5, 5);
+        await provider.cancel();
+    });
+
     it("reuses one model across sessions and frees each recognizer", async () => {
         const fakes = installFakes();
         const provider = makeProvider(fakes);
@@ -829,5 +885,45 @@ describe("dispose", () => {
         expect(fakes.track.stopped).toBe(true);
         expect(fakes.model.terminated).toBe(true);
         expect(provider.state).toBe("idle");
+    });
+});
+
+describe("resampleLinear", () => {
+    it("returns the input unchanged when the rates match", () => {
+        const pcm = new Float32Array([0.1, -0.2, 0.3]);
+        expect(resampleLinear(pcm, 16000, 16000)).toBe(pcm);
+        expect(resampleLinear(new Float32Array(0), 16000, 48000)).toHaveLength(
+            0,
+        );
+    });
+
+    it("upsamples 16 kHz to 48 kHz at exact ×3 positions", () => {
+        const out = resampleLinear(new Float32Array([0, 1]), 16000, 48000);
+        expect(out.length).toBe(6);
+        expect(out[0]).toBeCloseTo(0, 5);
+        expect(out[1]).toBeCloseTo(1 / 3, 5);
+        expect(out[2]).toBeCloseTo(2 / 3, 5);
+        expect(out[3]).toBeCloseTo(1, 5);
+        // The tail clamps at the boundary sample.
+        expect(out[4]).toBeCloseTo(1, 5);
+        expect(out[5]).toBeCloseTo(1, 5);
+    });
+
+    it("downsamples 48 kHz to 16 kHz by picking interpolated positions", () => {
+        const out = resampleLinear(
+            new Float32Array([0, 3, 0, -3]),
+            48000,
+            16000,
+        );
+        expect(out.length).toBe(1);
+        expect(out[0]).toBeCloseTo(0, 5);
+        const out2 = resampleLinear(
+            new Float32Array([0, 3, 0, -3, 0, 3]),
+            48000,
+            16000,
+        );
+        expect(out2.length).toBe(2);
+        expect(out2[0]).toBeCloseTo(0, 5);
+        expect(out2[1]).toBeCloseTo(-3, 5);
     });
 });
