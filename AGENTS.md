@@ -101,17 +101,31 @@ Rules:
 
 ### Known graph health baseline
 
-As of the 2026-10-04 rebuild (1618 nodes, 2965 edges, 93 communities), `npm run graph:health` reports **0** missing/dangling endpoints, **0** exact duplicate edges, and **0** same-endpoint collapses in both `--directed` and default modes. The graph is a plain `Graph`/`DiGraph`, not a `MultiDiGraph`, so collapse is structurally impossible. The original full build reported 2 dangling / 107 duplicates / 222 directed + 247 undirected collapses; the AST rebuild cleared all of them.
+As extracted on 2026-10-11 (the P6-era tree) the graph holds **2848 nodes, 5563 edges, 161 communities**. `npm run graph:health` reports **0** missing/dangling endpoints, **0** exact duplicate edges, and **0** same-endpoint collapses in both `--directed` and default modes. The graph is a plain `Graph`/`DiGraph`, not a `MultiDiGraph`, so collapse is structurally impossible. (The original full build reported 2 dangling / 107 duplicates / 222 directed + 247 undirected collapses; the AST rebuild cleared all of them.) Eight false-positive self-loops were then pruned from `graph.json` by hand (see below), so the current file holds **5555 edges / 3 self-loops**.
 
-Two self-loops remain, both genuine recursion — neither indicates a defect in this repo:
+Three self-loops remain, all genuine recursion:
 
-| Node                                                 | Cause                                                              |
-| ---------------------------------------------------- | ------------------------------------------------------------------ |
-| `packages/server/src/llm/tools/math.ts` `unary()`    | Genuine recursion (line 67 calls `unary()` to fold unary `+`/`-`). |
-| `scripts/check-dependencies.mjs` `listSourceFiles()` | Genuine recursion (walks subdirectories).                          |
+| Node                                                  | Cause                                                                       |
+| ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| `packages/server/src/llm/tools/math.ts` `unary()`     | Recursion folding unary `+`/`-`.                                            |
+| `scripts/check-dependencies.mjs` `listSourceFiles()`  | Recursion walking subdirectories.                                           |
+| `packages/voice/test/lifecycle.test.ts` `sessionIn()` | Recursion replaying prior transitions to build a snapshot in a given state. |
 
-A build once reported four. The other two were one graphify extractor bug — a member call whose method name matched a local function was resolved to the local one, so `window.confirm(message)` in `packages/portal/src/components/ui.tsx` and `socket.close()` in `packages/web/src/ChatClient.ts` each produced a false self-loop on the same-named function in the same file. `this.method()` calls resolve correctly, so the fault is receiver-scoped. Filed upstream as [Graphify-Labs/graphify#4082](https://github.com/Graphify-Labs/graphify/issues/4082); 2 of 387 `calls` edges were affected.
+Eight further self-loops are false positives from one graphify extractor bug: a member call whose method name matched a local function of the same name resolved to that local function. `this.method()` calls resolve correctly, so the fault is receiver-scoped, and each false edge is a call on a _different_ receiver:
 
-If a later build reports those two again, they are the known artifact and can be pruned from `graph.json` by hand. That edit is local-only — `graphify-out/` is gitignored, and a full re-extraction or `graphify cluster-only` regenerates the graph, so expect to redo it after a broad rebuild. Verified: a post-commit rebuild re-extracts from source and does **not** reintroduce them, so the prune holds across ordinary commits — it only needs redoing after a `--force` update or a fresh full build.
+| Node (false self-loop)                                   | Actual call site          |
+| -------------------------------------------------------- | ------------------------- |
+| `packages/portal/src/components/ui.tsx` `confirm()`      | `window.confirm(message)` |
+| `packages/web/src/ChatClient.ts` `close()`               | `socket.close()`          |
+| `packages/web/src/audio.ts` `stop()`                     | `source.stop()`           |
+| `packages/voice/src/controller.ts` `dispose()`           | `wakeStt.dispose()`       |
+| `packages/voice/src/providers/openWakeWord.ts` `start()` | `mic.start()`             |
+| `packages/voice/src/providers/openWakeWord.ts` `stop()`  | `mic.stop()`              |
+| `packages/voice/src/providers/webSpeech.ts` `start()`    | `recognition.start()`     |
+| `packages/voice/src/providers/webSpeech.ts` `stop()`     | `recognition.stop()`      |
 
-The report's "isolated node" count is also mostly noise. Of 705 nodes with ≤1 connection, 311 come from `package.json` config keys (`name`, `version`, `workspaces`) and most of the rest are interface method declarations in `packages/auth/src/store.ts` (declared at lines 88–125, implemented at lines 520–691), which graphify models as separate nodes. Real signal: 0 duplicate node keys across 1618 nodes, and 4 genuinely zero-degree nodes (two `vite-env.d.ts`, two untyped). Do not restructure working code to raise the connectivity score.
+Filed upstream as [Graphify-Labs/graphify#4082](https://github.com/Graphify-Labs/graphify/issues/4082).
+
+The post-commit hook (`.husky/post-commit`) rebuilds **incrementally** — only the paths changed in the commit — so a docs-only commit leaves the hand-prune intact, and the eight edges reappear only once one of those source files is next edited. Expect 11 self-loops / 5563 edges again after a `--force` update or a fresh full build, and re-prune by deleting the eight `source == target` edges listed above.
+
+The report's "isolated node" count is mostly noise. By undirected degree, 1159 of 2848 nodes have ≤1 connection: 348 are `package.json` config keys (`name`/`version`/…), 23 are interface method declarations in `packages/auth/src/store.ts`, and 65 carry no `source_file` (re-export and type aliases). Only 19 nodes are genuinely zero-degree — protocol re-export aliases (`parseFrame`, the `serialize*`/`MAX_*` constants) and four untyped stub files (`vite-env.d.ts` ×2, `kokoro-modules.d.ts`, `copy-voice-assets.d.mts`). Real signal: 0 duplicate node keys across 2848 nodes. Do not restructure working code to raise the connectivity score.
