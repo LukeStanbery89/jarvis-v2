@@ -394,6 +394,26 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
     }
 
     /**
+     * The look-back ring's current contents, ending **now** — not at match
+     * time. A fired match does not stop capture: `onFrame` keeps pushing
+     * until `stop()`, so the ring at drain time covers the match-time ring
+     * plus everything the user said while the session's own microphone was
+     * still opening — the words a match-time snapshot loses. Drained by the
+     * controller just before `stop()` (which discards the ring) and replayed
+     * through the session's ordered `start()` feed.
+     *
+     * @returns The drained window (16 kHz mono), or `null` when no match
+     *   fired this arm or the ring is empty.
+     */
+    drainPostMatch(): Float32Array | null {
+        if (!this.fired) {
+            return null;
+        }
+        const drained = this.ring.snap();
+        return drained.length > 0 ? drained : null;
+    }
+
+    /**
      * One 16 kHz 16-bit PCM frame from the worklet: retained in the ring
      * unconditionally, then driven through the detection pass — busy-dropped
      * if a predict is already running, so a slow pass can never stack behind

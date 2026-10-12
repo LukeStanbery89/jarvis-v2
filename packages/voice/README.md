@@ -20,9 +20,9 @@ Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
 Web Speech STT provider, the local WASM STT provider (Vosk), the energy VAD,
 and the openWakeWord wake-word provider ship here (phases 2–4, consumed by
 `packages/web`). The WASM engine's one dependency
-(`@lichess-org/vosk-browser`) is an **optional peer dependency** that loads
+(`@lichess-org/vosk-browser`) is a **peer dependency** that loads
 lazily at first `start()` — and the wake detector's
-(`openwakeword-web`, which pulls in `onnxruntime-web`) likewise — the
+(`openwakeword-web`, which pulls in `onnxruntime-web`) are **optionalDependencies** — the
 package never imports them at module scope, so node consumers and tests are
 unaffected.
 
@@ -227,7 +227,12 @@ STT provider shares). It opens its own echo-cancelled `getUserMedia` track,
 feeds an `AnalyserNode`, and runs a two-edge energy state machine at a
 fixed cadence: loudness sustained past `onsetMs` (default 120) fires
 `onSpeechStart`; silence sustained past `releaseMs` (default 350) fires
-`onSpeechEnd`. `stop()` is idempotent and guarantees no callback fires
+`onSpeechEnd`. The onset gate is adaptive — `max(threshold, ambientFloor ×
+noiseMargin)` — where `ambientFloor` follows only quiet ticks (so real
+speech never raises it) and `threshold` (default 0.01) is the floor it can
+settle to in a quiet room; this keeps soft post-wake-pause commands
+starting a session while a raised ambient level still suppresses false
+onsets. `stop()` is idempotent and guarantees no callback fires
 after it resolves; `start()` rejects (rather than erroring the session)
 when the track or context cannot be established, so the controller degrades
 to engine-native endpointing instead of surfacing a failure.
@@ -242,7 +247,7 @@ touching any client.
 `createOpenWakeWord()` returns an `OpenWakeWordWakeProvider` (id
 `openwakeword`), or `null` when the runtime lacks a secure context, Web
 Audio, or an audio worklet. It is a client-side port of openWakeWord: at
-`start()` it lazy-imports `openwakeword-web` (an optional peer), downloads
+`start()` it lazy-imports `openwakeword-web` (an optional dependency), downloads
 the ONNX models it is registered for from `baseUrl` (default
 `/api/wake/model/` — see the server's wake-model route), and opens a
 16 kHz worklet microphone whose frames run through the continuously-running
@@ -324,26 +329,20 @@ interruption. Caveat: detection rides on the browser's echo cancellation
 (`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by
 the 300 ms sustain, not eliminated — hardware AEC is out of scope.
 
-## Traceability
-
-Phase 1 of the [voice-input issue](https://github.com/LukeStanbery89/jarvis-v2/issues/84):
-the provider interfaces and lifecycle this package ships are the units of
-work its P1 acceptance criteria name; the Web Speech provider is P2; phase 3
-lands here too — the energy VAD plus VAD-owned endpointing in the controller
-(the orchestrator itself moved from `packages/web` in P3 so any future
-client reuses it) and the local WASM STT provider (P3b — Vosk, with the
-optional `dispose()` seam it added). Phase 4 (P4) is the wake-word
-detector (openWakeWord), its look-back ring and `feed()` replay through the
-`SttProvider` seam, phrase stripping, and controller arming. Phase 6 (P6)
-is the barge-in watch — the VAD audio tap, the sustained-speech trigger,
-and the look-back-seeded session handoff. Later phases: a Whisper-class
-engine benchmarked behind the same STT seam before any default changes.
+**Traceability:** P0–P6 implementation history consolidated.
 
 ## Notes for maintainers
 
 - Zero mandatory runtime dependencies, so this package never needs a
   rebuild-then-check ordering like `@lukestanbery/jarvis-logger` consumers
-  do; `@lichess-org/vosk-browser` is an optional peer the browser client
+  do; `@lichess-org/vosk-browser` is a peer dependency the browser client
   provides.
+- No logging dependency either — the caller owns diagnostics. The
+  `log?` option (controller and the WASM engine) carries the
+  otherwise-silent decision points to the caller: a VAD that failed to arm
+  (the session silently degrades to press-to-stop endpointing), a barge
+  watch that failed to arm, a failed wake pre-warm, and an engine
+  cancelled mid-start. `packages/web` wires it to a `console.debug` sink
+  gated by `localStorage.setItem("jarvis.debug", "1")`.
 - The state machine readme diagram mirrors the module doc in
   `src/lifecycle.ts`; keep them in step.

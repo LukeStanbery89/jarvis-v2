@@ -110,7 +110,12 @@ export function requireAuth(
             return null;
         }
         const user = store.getUserById(session.userId);
-        if (!user) {
+        // A disabled account fails closed even with a live cookie: the
+        // session row survives the disable (the store's delete-all is the
+        // immediate revocation; this re-read is the backstop for a session
+        // issued moments before), mirroring how `resolveTokenHash` bakes
+        // `disabled = 0` into the device-token path.
+        if (!user || user.disabled) {
             return null;
         }
         return { kind: "session", user, csrfToken: session.csrfToken };

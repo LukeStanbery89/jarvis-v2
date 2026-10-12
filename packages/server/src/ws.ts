@@ -23,6 +23,17 @@
  * live in `@lukestanbery/jarvis-protocol` — the single source of truth for
  * the wire protocol — so the server never re-declares them.
  *
+ * The connection lifecycle is hardened against the failure modes that would
+ * otherwise take the process or leak its state: transport errors on the
+ * `wss` and on every socket are logged, never unhandled (a single malformed
+ * frame must not crash the server); a 30-second ping/pong heartbeat
+ * terminates half-open peers (a client that vanished without a close frame)
+ * so their guest-session cleanup still fires; and stream data (`chunk`
+ * frames, binary PCM) respects a send-buffer bound so a slow client cannot
+ * grow the send queue without bound — terminal and one-shot frames always
+ * send. Inbound frames are logged by shape, never raw: a raw-frame log would
+ * render `auth` device tokens and `location` coordinates verbatim.
+ *
  * Every prompt claims its `sessionId` in the app session ledger
  * (`claimSession`), runs under a **per-thread lock** (a concurrent turn on the
  * same thread is rejected) and a hard **turn timeout**. Guest sockets' claimed
@@ -63,6 +74,23 @@ import { logger } from "./logger";
 
 /** The identity every socket starts with and failed auth falls back to. */
 const GUEST_CONTEXT: AuthContext = Object.freeze({ kind: "guest" });
+
+/**
+ * How often the keepalive pings each socket (see the heartbeat in
+ * {@link attachChatServer}). A socket must answer a ping within one
+ * interval or it is terminated as half-open.
+ */
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * The send-buffer bound for stream data (`chunk` frames and binary PCM).
+ * Past it, non-terminal stream data is dropped instead of queued: a slow or
+ * stalled client would otherwise grow ws's internal send queue without
+ * bound — the only unbounded-memory path in the streaming pipeline.
+ * Terminal frames (`done`/`error`/`audioEnd`) and one-shot frames
+ * (`tool`/`toolResult`/`audioStart`) always send.
+ */
+const MAX_SEND_BUFFER_BYTES = 1_048_576;
 
 /** Per-connection auth + guest-ledger state. */
 interface ConnectionState {
@@ -127,6 +155,13 @@ export interface AttachmentOptions {
      * `"sentence"` (default) or `"clause"`. Meaningful only with `tts`.
      */
     ttsSegment?: "sentence" | "clause";
+    /**
+     * How often each socket is pinged for keepalive (default
+     * {@link HEARTBEAT_INTERVAL_MS}); a socket that does not answer within
+     * one interval is terminated as half-open. Injectable so tests can use
+     * a short interval instead of fake timers.
+     */
+    heartbeatIntervalMs?: number;
 }
 
 /**
@@ -147,8 +182,45 @@ export function attachChatServer(
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
     const sessions = createSessionManager(store);
 
+    // The ws library re-emits transport/receiver failures (a malformed
+    // frame, invalid UTF-8, an oversize message, a write error during a
+    // teardown race) as `'error'` on the WebSocketServer; with no listener
+    // that becomes an uncaught exception and kills the whole process — a
+    // single malformed frame from any LAN peer would be a remote crash. Log
+    // and keep serving.
+    wss.on("error", (err) => {
+        logger.warn(`WebSocket server error: ${err.message}`);
+    });
+
     wss.on("connection", (socket) => {
         logger.info("New WebSocket connection");
+        // Same footgun one level down: per-connection errors are re-emitted
+        // on the socket itself. Registered first, before any other listener
+        // or await, so there is no window where an error can land unhandled.
+        socket.on("error", (err) => {
+            logger.warn(`WebSocket error: ${err.message}`);
+        });
+        // Half-open sockets (a client that vanished without a close frame —
+        // mobile drop, laptop sleep, NAT expiry) never fire `close`, so
+        // their connection state and guest session rows would leak forever.
+        // The standard ws heartbeat: every interval, terminate when the
+        // previous ping went unanswered, otherwise mark-alive-cleared and
+        // ping. A client that answers keeps its `alive` flag true.
+        let alive = true;
+        socket.on("pong", () => {
+            alive = true;
+        });
+        const heartbeat = setInterval(() => {
+            if (!alive) {
+                logger.info(
+                    "WebSocket connection timed out (no pong); terminating",
+                );
+                socket.terminate();
+                return;
+            }
+            alive = false;
+            socket.ping();
+        }, options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS);
         // A promise chain serializing every frame, so a pipelined `hello` →
         // `auth` (or `auth` → prompt before `authResult` is read) still lands in
         // order. `activePrompt` is the streaming-guard half: one prompt streams
@@ -169,7 +241,6 @@ export function attachChatServer(
 
         socket.on("message", (raw) => {
             const frameText = raw.toString();
-            logger.sensitive("Received message from WebSocket", frameText);
             let frame: ClientFrame;
             try {
                 frame = parseClientMessage(frameText);
@@ -179,6 +250,17 @@ export function attachChatServer(
                 logger.error(`Failed to parse WebSocket message: ${detail}`);
                 sendError(socket, detail);
                 return;
+            }
+            // Log the shape, not the bytes: a raw-frame log renders `auth`
+            // device tokens (and `location` coordinates) verbatim in
+            // development — credentials the repo promises never to log.
+            // Prompts are the designed sensitive payload and keep their
+            // `sensitive` line (redacted in production); every typed frame
+            // is logged by type only.
+            if ("type" in frame) {
+                logger.debug(`Received ${frame.type} frame`);
+            } else {
+                logger.sensitive("Received prompt", frame.prompt);
             }
             // A `cancel` (#84 P6) must never queue behind the turn it is
             // cancelling — the tail chains on every step's completion, so a
@@ -240,6 +322,7 @@ export function attachChatServer(
         });
 
         socket.on("close", () => {
+            clearInterval(heartbeat);
             sessions.cleanupGuests(conn.guestThreads);
             logger.info("WebSocket connection closed");
         });
@@ -631,6 +714,27 @@ async function streamEventsToSocket(
                       audio: (pcm) => {
                           firstAudioSentAt ??= Date.now();
                           if (socket.readyState === WebSocket.OPEN) {
+                              // A cancel during the drain must stop the
+                              // audio at the wire too: a synthesis that
+                              // resolved just after the abort (the engine
+                              // has no abort hook) is a straggler — dropped
+                              // here rather than delivered. Past the
+                              // send-buffer bound, dropping also bounds the
+                              // queue (a gap in the audio is the honest cost
+                              // of a client that cannot keep up; the span
+                              // still closes with `audioEnd`).
+                              if (
+                                  signal.aborted ||
+                                  socket.bufferedAmount > MAX_SEND_BUFFER_BYTES
+                              ) {
+                                  if (!signal.aborted) {
+                                      noteDroppedStreamData(
+                                          socket,
+                                          "audio segment(s)",
+                                      );
+                                  }
+                                  return;
+                              }
                               socket.send(pcmToS16le(pcm), { binary: true });
                           }
                       },
@@ -754,9 +858,26 @@ async function streamEventsToSocket(
         }
         // Speak everything the text stream left buffered before closing the
         // turn: `audioEnd` then `done`, with the per-thread lock still held.
+        // The drain runs under the turn's signal: a `cancel` that arrives
+        // while the tail is still synthesizing must drop the remaining
+        // audio (the cancelled path below), not finish speaking a response
+        // the client just interrupted.
         if (speaking !== null) {
-            await speaking.finish();
+            const drained = await Promise.race([
+                speaking.finish().then(() => true as const),
+                aborted(signal).then(() => false as const),
+            ]);
+            if (!drained) {
+                finishCancelled();
+                return;
+            }
             if (socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            // A failure landed while the tail drained (the turn timeout, a
+            // closed socket's error path): it already sent the terminal
+            // frames — do not send a second `done` behind it.
+            if (finished) {
                 return;
             }
         }
@@ -793,6 +914,43 @@ function logAgentEvent(event: AgentEvent): void {
     }
 }
 
+/**
+ * Resolves when `signal` aborts — immediately if it is already aborted.
+ * Used to race a long-running await (the audio drain) against a `cancel`.
+ */
+function aborted(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+}
+
+/**
+ * Stream-data drop counters per socket, so slow-client drops can be logged
+ * without a line per dropped frame: the first drop announces the condition,
+ * then every 100th reports the running total.
+ */
+const droppedStreamData = new WeakMap<WebSocket, number>();
+
+/**
+ * Records one dropped piece of stream data (a `chunk` frame or a binary PCM
+ * message) against the socket, logging the condition coarsely.
+ *
+ * @param socket - The socket whose send buffer is over the bound.
+ * @param what - What was dropped, for the log line.
+ */
+function noteDroppedStreamData(socket: WebSocket, what: string): void {
+    const count = (droppedStreamData.get(socket) ?? 0) + 1;
+    droppedStreamData.set(socket, count);
+    if (count === 1 || count % 100 === 0) {
+        logger.warn(
+            `Send buffer exceeded ${MAX_SEND_BUFFER_BYTES} bytes; dropped ${count} × ${what} to a slow client`,
+        );
+    }
+}
+
 /** Sends an error frame followed by a `done` frame. */
 function sendError(socket: WebSocket, message: string): void {
     logger.info(`Sending error frame to WebSocket: ${message}`);
@@ -807,9 +965,19 @@ function sendError(socket: WebSocket, message: string): void {
  * library throws `WebSocket is not open` otherwise, which (from inside the
  * turn-timeout timer, for example) would become an uncaught exception and
  * crash the whole server. Frame delivery is best-effort by nature here.
+ *
+ * A plain `chunk` frame additionally respects the send-buffer bound
+ * ({@link MAX_SEND_BUFFER_BYTES}): once the client's queue passes it,
+ * further chunk frames are dropped (counted, logged coarsely) instead of
+ * queued — bounding the only unbounded-memory path in the pipeline. One-shot
+ * and terminal frames always send, so every turn still ends coherently.
  */
 function sendFrame(socket: WebSocket, frame: ServerFrame): void {
     if (socket.readyState !== WebSocket.OPEN) {
+        return;
+    }
+    if ("chunk" in frame && socket.bufferedAmount > MAX_SEND_BUFFER_BYTES) {
+        noteDroppedStreamData(socket, "chunk frame(s)");
         return;
     }
     socket.send(serializeFrame(frame));

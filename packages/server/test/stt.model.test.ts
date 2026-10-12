@@ -82,6 +82,26 @@ describe("SttModelCache", () => {
         expect(cache.fileName).toBe("model.tar.gz");
     });
 
+    it("never resolves the cache name to a relative segment", () => {
+        // The sanitizer keeps dots, so a URL whose last segment is all dots
+        // would otherwise sanitize to `.`/`..` and `path.join` would land
+        // outside the cache dir.
+        for (const url of [
+            "https://example.com/models/..",
+            "https://example.com/models/.",
+            // Dot-prefixed names that are not relative segments stay usable.
+            "https://example.com/..tar.gz",
+        ]) {
+            const cache = new SttModelCache(
+                { modelUrl: url, modelDir },
+                okFetcher({ count: 0 }),
+            );
+            expect(cache.fileName).not.toBe(".");
+            expect(cache.fileName).not.toBe("..");
+            expect(cache.targetPath.startsWith(modelDir + path.sep)).toBe(true);
+        }
+    });
+
     it("downloads once, then serves from the cache", async () => {
         const calls = { count: 0 };
         const cache = new SttModelCache(

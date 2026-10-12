@@ -37,6 +37,12 @@ export interface SttEngineOptions {
      * passes the Vite-bundled asset URL (imported with `?url`).
      */
     readonly wasmUrl?: string;
+    /**
+     * Debug sink handed to the WASM engine (see `debugLog`): the engine's
+     * silent cancellations (a start racing a stop mid-model-load) become
+     * console lines under the `jarvis.debug` flag.
+     */
+    readonly log?: (message: string, error?: unknown) => void;
 }
 
 /**
@@ -63,6 +69,7 @@ export function createStt(options: SttEngineOptions = {}): SttProvider | null {
             modelUrl: options.modelUrl,
             workerUrl: options.workerUrl,
             wasmUrl: options.wasmUrl,
+            log: options.log,
         })
     );
 }
@@ -87,6 +94,7 @@ export function createWakeStt(
         modelUrl: options.modelUrl,
         workerUrl: options.workerUrl,
         wasmUrl: options.wasmUrl,
+        log: options.log,
     });
 }
 

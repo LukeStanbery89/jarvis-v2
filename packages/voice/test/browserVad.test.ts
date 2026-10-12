@@ -309,6 +309,47 @@ describe("energy state machine", () => {
         expect(recorder.started).toBe(0);
         await provider.stop();
     });
+
+    it("an adaptive floor lets soft speech in a quiet room cross the gate", async () => {
+        const fakes = installFakes();
+        const provider = new BrowserVadProvider({
+            intervalMs: 10,
+            onsetMs: 30,
+            releaseMs: 25,
+        });
+        const recorder = makeRecorder();
+        await provider.start(recorder.callbacks);
+        // A quiet room: the floor settles well below the static default, so
+        // the gate drops and soft speech (which a flat 0.02 gate would
+        // swallow — exactly the post-wake-pause commands the energy VAD
+        // missed) starts a session.
+        fakes.context.analyser.setLevel(0.003);
+        vi.advanceTimersByTime(200);
+        fakes.context.analyser.setLevel(0.013);
+        vi.advanceTimersByTime(40);
+        expect(recorder.started).toBe(1);
+        await provider.stop();
+    });
+
+    it("loud speech never poisons the tracked floor", async () => {
+        const fakes = installFakes();
+        const provider = new BrowserVadProvider({
+            intervalMs: 10,
+            onsetMs: 30,
+            releaseMs: 25,
+        });
+        const recorder = makeRecorder();
+        await provider.start(recorder.callbacks);
+        fakes.context.analyser.setLevel(0.3);
+        vi.advanceTimersByTime(100); // speech: floor does not follow it
+        fakes.context.analyser.setLevel(0);
+        vi.advanceTimersByTime(150); // silence: floor drops back
+        fakes.context.analyser.setLevel(0.013); // soft speech still crosses
+        vi.advanceTimersByTime(40);
+        expect(recorder.started).toBe(2); // second utterance: new session onset
+        expect(recorder.ended).toBe(1);
+        await provider.stop();
+    });
 });
 
 describe("mid-session failures", () => {

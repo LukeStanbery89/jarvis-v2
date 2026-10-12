@@ -90,6 +90,7 @@ import type { VoiceSnapshot } from "./lifecycle";
 import { stripWakePhrase } from "./wakeText";
 import type {
     SttProvider,
+    SttStartOptions,
     VadCallbacks,
     VadProvider,
     VoiceError,
@@ -144,6 +145,16 @@ export interface VoiceControllerOptions {
      * omitted makes wake sessions reuse the primary `stt`.
      */
     readonly wakeStt?: SttProvider | null;
+    /**
+     * Debug sink for the controller's otherwise-silent decision points:
+     * the VAD failing to arm (the session then degrades to the engine's
+     * own endpointing — the difference between automatic submit and
+     * press-to-stop), the barge-in watch failing to arm, and a failed wake
+     * pre-warm. The package deliberately has no logging dependency (the
+     * caller owns diagnostics); pass a console- or logger-backed function
+     * to make degradation visible. Default: a no-op.
+     */
+    readonly log?: (message: string, error?: unknown) => void;
     /**
      * The phrase removed from wake-session transcripts — `stripWakePhrase`
      * turns "Hey JARVIS, turn on the lights" into "turn on the lights".
@@ -224,6 +235,8 @@ export class VoiceController {
         ((detection: BargeInDetection) => void | Promise<void>) | undefined;
     private readonly schedule: (callback: () => void, ms: number) => unknown;
     private readonly unschedule: (handle: unknown) => void;
+    /** The injectable debug sink; a no-op unless the caller supplies one. */
+    private readonly log: (message: string, error?: unknown) => void;
     /**
      * The engine driving the active session: the primary `stt` for press
      * turns, the wake engine (`wakeStt`) for wake-word turns. `null` while
@@ -299,6 +312,7 @@ export class VoiceController {
         this.unschedule =
             options.unschedule ??
             ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+        this.log = options.log ?? (() => {});
     }
 
     /**
@@ -421,9 +435,12 @@ export class VoiceController {
         this.bargeChunks = [];
         try {
             await this.vad.start(this.bargeCallbacks());
-        } catch {
+        } catch (err) {
             // VAD busy with a session, or the runtime lost the mic: the
-            // watch stays off; playback and the turn are unaffected.
+            // watch stays off; playback and the turn are unaffected. A
+            // silent barge-in is exactly the kind of failure a user
+            // reports as "barge-in doesn't work" — leave a trace.
+            this.log("barge-in watch failed to arm; staying off", err);
             return;
         }
         this.bargeWatchActive = true;
@@ -521,15 +538,40 @@ export class VoiceController {
         this.sessionStt = this.sessionFromWake
             ? (this.wakeStt ?? this.stt)
             : this.stt;
+        // The replayed pre-session audio, in recognition order. Explicit
+        // `feed` (the barge-in handoff) wins; a wake session drains the
+        // detector's look-back ring — BEFORE `stop()` discards it — so the
+        // replay covers the match-time ring **plus** whatever the user said
+        // while this session's own microphone was still opening, which a
+        // match-time snapshot loses ("the lookback misses my first word").
+        // A press never replays (a stale ring would inject phantom audio).
+        let replayPcm: Float32Array | null = null;
+        let replayRate = 16000;
+        if (feed !== undefined) {
+            replayPcm = feed.pcm;
+            replayRate = feed.sampleRate;
+        } else if (fromWake === true) {
+            const drained = this.wake?.drainPostMatch?.() ?? null;
+            replayPcm =
+                lookback !== undefined && drained !== null
+                    ? concatFloat32(lookback, drained)
+                    : (lookback ?? drained);
+        }
         this.disarmDetectorForSession();
         let vadArmed = false;
         if (this.vad !== null) {
             try {
                 await this.vad.start(this.vadCallbacks(sessionId));
                 vadArmed = true;
-            } catch {
+            } catch (err) {
                 // Detector unavailable (e.g. no microphone track): fall back
-                // to the engine's own endpointing for this session.
+                // to the engine's own endpointing for this session. This is
+                // the difference between automatic submit and
+                // press-to-stop, so it must be observable.
+                this.log(
+                    `session ${sessionId}: VAD unavailable; using the engine's own endpointing`,
+                    err,
+                );
             }
         }
         this.vadSession = vadArmed;
@@ -537,6 +579,12 @@ export class VoiceController {
             this.armNoSpeechTimer(sessionId);
         }
         const stt = this.sessionStt;
+        const startOptions: SttStartOptions = {
+            ...(vadArmed ? { continuous: true } : {}),
+            ...(replayPcm !== null
+                ? { feed: { pcm: replayPcm, sampleRate: replayRate } }
+                : {}),
+        };
         try {
             await stt.start(
                 {
@@ -544,21 +592,18 @@ export class VoiceController {
                     onResult: (text) => this.onTranscript(sessionId, text),
                     onError: (error) => this.onEngineError(sessionId, error),
                 },
-                vadArmed ? { continuous: true } : undefined,
+                startOptions.continuous === true ||
+                    startOptions.feed !== undefined
+                    ? startOptions
+                    : undefined,
             );
-            // Capture is live: replay the caller-supplied pre-session audio
-            // before any future mic frame — the wake phrase's command ("Hey
-            // JARVIS, turn on the lights") or the barge-in's interrupted
-            // opening. Engines that cannot take caller audio (no `feed`)
-            // simply start at the live mic instead.
-            const replay =
-                feed ??
-                (fromWake === true && lookback !== undefined
-                    ? { pcm: lookback, sampleRate: 16000 }
-                    : undefined);
-            if (replay !== undefined) {
-                stt.feed?.(replay.pcm, replay.sampleRate);
-            }
+            this.log(
+                `session ${sessionId}: listening (${vadArmed ? "vad-owned endpointing" : "engine-native endpointing"}${
+                    startOptions.feed !== undefined
+                        ? ", replayed look-back"
+                        : ""
+                })`,
+            );
         } catch (err) {
             this.clearTimers();
             void this.stopVad();
@@ -577,6 +622,7 @@ export class VoiceController {
      * through the callbacks.
      */
     private async finish(): Promise<void> {
+        this.log(`session ${this.snapshot.sessionId}: manual stop requested`);
         if (this.vadSession && this.snapshot.state === "listening") {
             this.onEndOfSpeechTimeout(this.snapshot.sessionId);
             return;
@@ -666,8 +712,11 @@ export class VoiceController {
                 onWake: (detection) => void this.handleWake(detection),
                 onError: (error) => this.onWakeError(error),
             });
-            void this.wakeStt.prepare?.().catch(() => {
-                // The first wake session's own start() owns any failure.
+            void this.wakeStt.prepare?.().catch((err) => {
+                // The first wake session's own start() owns any failure —
+                // but a failed pre-warm means the first wake session stalls
+                // on a model download with no other trace.
+                this.log("wake engine pre-warm failed", err);
             });
             this.reduce({ type: "wakeArmed" });
         } catch (err) {
@@ -816,6 +865,9 @@ export class VoiceController {
         if (!this.bargeWatchActive) {
             return;
         }
+        this.log(
+            `barge-in fired (${this.bargeChunks.length} look-back chunk(s))`,
+        );
         const chunks = this.bargeChunks;
         const rate = this.bargeSampleRate;
         void this.stopBargeWatch();
@@ -885,6 +937,7 @@ export class VoiceController {
         ) {
             return;
         }
+        this.log(`session ${sessionId}: speech start`);
         this.cancelNoSpeechTimer();
         this.cancelEndOfSpeechTimer();
     }
@@ -903,6 +956,9 @@ export class VoiceController {
         ) {
             return;
         }
+        this.log(
+            `session ${sessionId}: speech end; pausing ${END_OF_SPEECH_MS}ms before sending`,
+        );
         this.endOfSpeechTimer = this.schedule(() => {
             this.endOfSpeechTimer = null;
             this.onEndOfSpeechTimeout(sessionId);
@@ -934,7 +990,7 @@ export class VoiceController {
      *
      * @param sessionId - The session being endpointed.
      */
-    private onEndOfSpeechTimeout(sessionId: number): void {
+    private async onEndOfSpeechTimeout(sessionId: number): Promise<void> {
         if (
             this.snapshot.sessionId !== sessionId ||
             this.snapshot.state !== "listening"
@@ -942,15 +998,44 @@ export class VoiceController {
             return;
         }
         this.reduce({ type: "endOfSpeech", sessionId });
+        this.log(`session ${sessionId}: pause window elapsed; flushing engine`);
         void this.stopVad();
-        void this.activeStt()
-            .stop()
-            .catch(() => {
-                // Engine failures surface through onError; nothing to do here.
-            });
-        // Flush deadline: the transcript must land within NO_SPEECH_MS or
-        // the session gives up (submitting what it has, or going quiet).
+        // The flush deadline stays armed as the safety net for a wedged
+        // engine — but the normal path does not wait for it.
         this.armNoSpeechTimer(sessionId);
+        try {
+            // Awaiting the flush means the transcript decision happens the
+            // moment the engine settles (vosk: ≤ flushWaitMs; Web Speech:
+            // its own `onend`) — a final result submits through
+            // `onTranscript` while we wait. Previously this was
+            // fire-and-forget: an engine flush that produced no final
+            // (continuous mode suppresses the no-speech error) parked the
+            // user on the full deadline before the partials were submitted,
+            // which read as "it doesn't submit until I say something else".
+            await this.activeStt().stop();
+        } catch {
+            // Engine failures surface through onError.
+        }
+        if (
+            this.snapshot.sessionId !== sessionId ||
+            // A fresh read through the getter — the top guard's narrowing
+            // (state === "listening") is stale across the flush await.
+            this.getSnapshot().state !== "transcribing"
+        ) {
+            // The flush's own final already submitted (or the session
+            // failed) — nothing left to decide.
+            return;
+        }
+        if (this.finals.length > 0) {
+            this.submitAccumulated(sessionId);
+            return;
+        }
+        // The flush settled with nothing recognized at all: end the
+        // session quietly instead of parking it until the deadline.
+        this.clearTimers();
+        void this.activeStt().cancel();
+        void this.stopVad();
+        this.reduce({ type: "noSpeech", sessionId });
     }
 
     /**
@@ -1122,9 +1207,13 @@ export class VoiceController {
         }
         this.clearTimers();
         if (state === "transcribing" && this.finals.length > 0) {
+            this.log(
+                `session ${sessionId}: flush deadline with partial transcript; submitting what was heard`,
+            );
             this.submitAccumulated(sessionId);
             return;
         }
+        this.log(`session ${sessionId}: no speech detected; going quiet`);
         void this.activeStt().cancel();
         void this.stopVad();
         this.reduce({ type: "noSpeech", sessionId });
@@ -1210,6 +1299,21 @@ export class VoiceController {
  * @param err - The thrown value.
  * @returns A voice error.
  */
+/**
+ * Joins two PCM buffers into one, for a wake replay that combines the
+ * match-time look-back with the post-match audio drained at session open.
+ *
+ * @param a - The leading buffer.
+ * @param b - The trailing buffer.
+ * @returns A new buffer containing `a` followed by `b`.
+ */
+function concatFloat32(a: Float32Array, b: Float32Array): Float32Array {
+    const out = new Float32Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+}
+
 function toVoiceError(err: unknown): VoiceError {
     if (typeof err === "object" && err !== null) {
         const candidate = err as { code?: unknown; message?: unknown };

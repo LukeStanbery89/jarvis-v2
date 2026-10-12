@@ -7,8 +7,7 @@ API from `@lukestanbery/jarvis-server`.
 It is the owner-facing management surface: accounts, devices, sessions, and
 prefs. It authenticates with the browser **cookie session** (`jarvis_session`)
 — not device tokens — and echoes the per-session CSRF nonce on every mutation,
-which is why the portal only ships alongside the TLS/CSRF-capable server (Phase
-C).
+which is why the portal only ships alongside the TLS/CSRF-capable server.
 
 ## What it does
 

@@ -281,6 +281,42 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
+    it("drains post-match audio the ring kept capturing", async () => {
+        // A fired match does not stop capture: frames after the match keep
+        // filling the ring, so the drain hands back the match-time window
+        // PLUS the words spoken while the session's mic was still opening —
+        // the words a frozen match-time snapshot loses.
+        const { module, provider } = makeHarness({ lookbackMs: 2000 });
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        module.mics[0].emitFrame(frameWith(1));
+        module.instances[0].fire("hey_jarvis", 0.9);
+        expect(record.wakes).toHaveLength(1);
+        // Post-match frames keep flowing (the worklet mic is still alive).
+        module.mics[0].emitFrame(frameWith(7));
+        const drained = provider.drainPostMatch?.();
+        expect(drained).not.toBeNull();
+        expect(drained?.length).toBe(2560);
+        // The tail is the post-match frame — the drain ends "now".
+        expect(Array.from(drained ?? []).slice(-3)).toEqual([
+            1284 / 32768,
+            1285 / 32768,
+            1286 / 32768,
+        ]);
+        // One drain does not empty the ring (stop() does).
+        expect(provider.drainPostMatch?.()).not.toBeNull();
+        await provider.stop();
+        expect(provider.drainPostMatch?.()).toBeNull();
+    });
+
+    it("drains nothing when no match fired this arm", async () => {
+        const { module, provider } = makeHarness();
+        await provider.start(makeRecord().callbacks);
+        module.mics[0].emitFrame(frameWith(1));
+        expect(provider.drainPostMatch?.()).toBeNull();
+        await provider.stop();
+    });
+
     it("a model load error rejects and arms nothing", async () => {
         const { module, provider } = makeHarness();
         module.createError = new Error("model fetch failed");

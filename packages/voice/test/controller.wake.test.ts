@@ -10,7 +10,7 @@
  * clocks.
  */
 import { describe, expect, it } from "vitest";
-import { END_OF_SPEECH_MS, NO_SPEECH_MS, VoiceController } from "../src/index";
+import { END_OF_SPEECH_MS, VoiceController } from "../src/index";
 import type {
     SttCallbacks,
     SttProvider,
@@ -119,6 +119,8 @@ class FakeWake implements WakeWordProvider {
     readonly id = "fake-wake";
     startCalls = 0;
     stopCalls = 0;
+    /** Optional drain the controller reads before disarming (the seam). */
+    drained: Float32Array | null = null;
     private callbacks: WakeCallbacks | null = null;
 
     async start(callbacks: WakeCallbacks): Promise<void> {
@@ -129,6 +131,10 @@ class FakeWake implements WakeWordProvider {
     async stop(): Promise<void> {
         this.stopCalls += 1;
         this.callbacks = null;
+    }
+
+    drainPostMatch(): Float32Array | null {
+        return this.drained;
     }
 
     emitWake(detection: WakeDetection): void {
@@ -290,14 +296,38 @@ describe("wake sessions", () => {
         await drain();
 
         // The detector disarmed in favor of the session; the wake engine
-        // (not the primary) owns the mic and received the look-back.
+        // (not the primary) owns the mic and received the look-back —
+        // through the ordered start() feed (the replay must reach the
+        // decoder before any live chunk).
         expect(controller.getSnapshot().wakeArmed).toBe(false);
         expect(controller.getSnapshot().state).toBe("listening");
         expect(stt.startCalls).toBe(0);
         expect(wakeStt.startCalls).toBe(1);
-        expect(wakeStt.fed).toHaveLength(1);
-        expect(wakeStt.fed[0].sampleRate).toBe(16000);
-        expect(Array.from(wakeStt.fed[0].pcm)).toEqual([...lookback]);
+        expect(wakeStt.lastStartOptions?.continuous).toBe(true);
+        expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(16000);
+        expect(Array.from(wakeStt.lastStartOptions?.feed?.pcm ?? [])).toEqual([
+            ...lookback,
+        ]);
+    });
+
+    it("appends the drained post-match audio to the replay", async () => {
+        const harness = makeHarness();
+        const { wakeStt, wake, controller } = harness;
+        // The detector kept capturing after the match; the controller
+        // drains it before disarming and concatenates it onto the
+        // match-time look-back, so the replay spans the full utterance.
+        const postMatch = Float32Array.from([90, 91, 92, 93]);
+        wake.drained = postMatch;
+        await controller.enableWake();
+        await drain();
+        wake.emitWake({ confidence: 0.9, lookback });
+        await drain();
+        const feed = wakeStt.lastStartOptions?.feed;
+        expect(feed?.sampleRate).toBe(16000);
+        expect(Array.from(feed?.pcm ?? [])).toEqual([
+            ...lookback,
+            ...postMatch,
+        ]);
     });
 
     it("phrase stripping turns the transcript into the command", async () => {
@@ -333,10 +363,10 @@ describe("wake sessions", () => {
         vad.emitSpeechEnd();
         scheduler.fireByMs(END_OF_SPEECH_MS);
         await drain();
-        // The flush deadline fires because the fake engine never delivers a
-        // final on stop; the accumulated segments submit as the command.
-        scheduler.fireByMs(NO_SPEECH_MS);
-        await drain();
+        // The flush settles without delivering a final (the fake engine
+        // never does) — the controller submits the accumulated segments the
+        // moment the flush resolves, instead of parking the user on the
+        // flush deadline for NO_SPEECH_MS.
         expect(submits).toEqual(["turn on the lights"]);
     });
 

@@ -43,6 +43,27 @@ describe("hashPassword / verifyPassword", () => {
             verifyPassword("x", `scrypt$${4}$${0}$${1}$${"AAAA"}$${"AAAA"}`),
         ).rejects.toMatchObject({ code: "MALFORMED_HASH" });
     });
+
+    it("throws malformed-hash for an empty key segment instead of accepting any password", async () => {
+        // `scrypt$…$…$…$<salt>$` (empty key): the base64url decode is a
+        // 0-byte buffer, and `timingSafeEqual(0 bytes, 0 bytes)` is true —
+        // without the length guard every password would verify against a
+        // corrupted row. The malformed-hash path exists precisely to fail
+        // loudly here.
+        await expect(
+            verifyPassword("anything", "scrypt$4$1$1$AAAA$"),
+        ).rejects.toMatchObject({ code: "MALFORMED_HASH" });
+    });
+
+    it("throws malformed-hash for an empty salt or a wrong-size key", async () => {
+        await expect(
+            verifyPassword("anything", "scrypt$4$1$1$$AAAA"),
+        ).rejects.toMatchObject({ code: "MALFORMED_HASH" });
+        // A truncated (or oversized) key is equally a corrupted store.
+        await expect(
+            verifyPassword("anything", "scrypt$4$1$1$AAAA$AA"),
+        ).rejects.toMatchObject({ code: "MALFORMED_HASH" });
+    });
 });
 
 describe("generateDeviceToken / hashDeviceToken", () => {

@@ -23,12 +23,15 @@ class ScriptedProvider implements TtsProvider {
     readonly resolvers: Array<(s: SynthesizedSpeech) => void> = [];
     /** Makes the next synth call fail. */
     failNext: Error | null = null;
+    /** The signal each synth call received, in call order. */
+    readonly seenSignals: (AbortSignal | undefined)[] = [];
 
     async synthesize(
         text: string,
-        _options?: SynthesizeOptions,
+        options?: SynthesizeOptions,
     ): Promise<SynthesizedSpeech> {
         this.calls.push(text);
+        this.seenSignals.push(options?.signal);
         if (this.failNext !== null) {
             const err = this.failNext;
             this.failNext = null;
@@ -44,6 +47,38 @@ class ScriptedProvider implements TtsProvider {
         this.resolvers.shift()?.({
             pcm: new Float32Array(chars),
             sampleRate: 24_000,
+        });
+    }
+}
+
+/**
+ * A provider that mimics Kokoro's cooperative checkpoints: its pending
+ * synthesis rejects the moment the call's signal aborts (and never resolves
+ * otherwise — the engine work is what resolves a real provider).
+ */
+class AbortableProvider implements TtsProvider {
+    readonly id = "abortable";
+
+    async synthesize(
+        _text: string,
+        options?: SynthesizeOptions,
+    ): Promise<SynthesizedSpeech> {
+        const signal = options?.signal;
+        if (!signal) {
+            return { pcm: new Float32Array(4), sampleRate: 24_000 };
+        }
+        return new Promise<SynthesizedSpeech>((_resolve, reject) => {
+            if (signal.aborted) {
+                reject(new Error("aborted"));
+                return;
+            }
+            signal.addEventListener(
+                "abort",
+                () => reject(new Error("aborted")),
+                {
+                    once: true,
+                },
+            );
         });
     }
 }
@@ -151,6 +186,43 @@ describe("speakTurn", () => {
         // "One." entered the engine before the abort; its result is
         // discarded — the sink sees nothing.
         expect(provider.calls).toEqual(["One."]);
+        expect(events).toEqual([]);
+    });
+
+    it("threads the turn's signal into every synthesize call", async () => {
+        const provider = new ScriptedProvider();
+        const { sink } = makeSink();
+        const turn = speakTurn(provider, sink);
+        turn.push("One. Two. Three.");
+        provider.settle();
+        await pumpTicks();
+        expect(provider.seenSignals.length).toBeGreaterThan(0);
+        for (const signal of provider.seenSignals) {
+            expect(signal).toBeInstanceOf(AbortSignal);
+        }
+        // abort() fires the shared signal the calls already carry.
+        const signal = provider.seenSignals[0]!;
+        expect(signal.aborted).toBe(false);
+        turn.abort();
+        expect(signal.aborted).toBe(true);
+    });
+
+    it("an aborted in-flight synthesis reports no second failure", async () => {
+        // The abort path: abort() drops the queue AND fires the signal, so
+        // the engine's cooperative checkpoint rejects the in-flight call —
+        // `failed` is already true, so that rejection must not surface as a
+        // second onError (it is the cancellation, not a failure).
+        const provider = new AbortableProvider();
+        const { events, sink } = makeSink();
+        const failures: unknown[] = [];
+        const turn = speakTurn(provider, sink, (err) => failures.push(err));
+        turn.push("One. Two. Three.");
+        // One synth is in flight (pending forever until aborted).
+        await pumpTicks();
+        turn.abort();
+        await turn.finish();
+        await pumpTicks();
+        expect(failures).toEqual([]);
         expect(events).toEqual([]);
     });
 });

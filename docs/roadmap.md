@@ -1,36 +1,43 @@
 # J.A.R.V.I.S. — roadmap
 
-The long-term picture for the `jarvis-v2` monorepo. Short log of where we are
+The long-term picture for the `jarvis-v2` monorepo. A short log of where we are
 today, the near-term work on the GitHub tracker, and the further-out ideas that
 do not have issues of their own yet. Everything below is a direction, not a
 commitment — re-verify the current code before trusting an old plan here.
 
 ## Today
 
-A small multi-user assistant: one WS chat endpoint (`/ws`) streams LangGraph
-agent turns to a CLI/REPL, a browser chat client at `/web` (and, soon, voice
-clients), backed by durable SQLite checkpoints per `sessionId`. Auth from
-[#22](https://github.com/LukeStanbery89/jarvis-v2/issues/22) is delivered:
-device-token handshake on `/ws`, an account/session ledger in the app
-database, per-thread locks + turn timeout, and a `/api` REST layer
-(bootstrap, login, devices, users, sessions). Transport internals were
-recentered in [#13](https://github.com/LukeStanbery89/jarvis-v2/issues/13)
-(closed): a pure `toServerFrame` adapter in the server, named render handlers
-in the CLI, and `TurnOptions` for the agent loop.
+A small multi-user assistant. One WS chat endpoint (`/ws`) streams LangGraph
+agent turns to a CLI REPL, the browser chat client at `/web`, and the admin
+portal at `/`; conversations are durable SQLite checkpoints keyed by
+`sessionId`. The auth stack ([#22](https://github.com/LukeStanbery89/jarvis-v2/issues/22)),
+its security hardening ([#23](https://github.com/LukeStanbery89/jarvis-v2/issues/23)),
+and the cookie portal ([#24](https://github.com/LukeStanbery89/jarvis-v2/issues/24))
+are delivered, along with the contract-first OpenAPI/AsyncAPI tooling
+([#35](https://github.com/LukeStanbery89/jarvis-v2/issues/35)), the web chat
+client ([#12](https://github.com/LukeStanbery89/jarvis-v2/issues/12)),
+server-side TTS
+([#83](https://github.com/LukeStanbery89/jarvis-v2/issues/83)), and
+client-side voice input — local STT, "Hey JARVIS" wake word, and barge-in
+([#84](https://github.com/LukeStanbery89/jarvis-v2/issues/84)).
 
 ## Near term
 
-| Issue                                                        | What                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [#22](https://github.com/LukeStanbery89/jarvis-v2/issues/22) | **User accounts, auth, multiple sessions.** ✅ Delivered: guest/owned sessions, role-based accounts, per-device rotating tokens, device revocation enforced on live sockets, strict session ownership, REST `/api`, per-thread locks + turn timeout, WS auth handshake, and the CLI's authenticated connect + `login`/`logout` (token sent as the socket's first frame; rejected tokens self-heal to a guest).                                                                                                                                                                |
-| [#23](https://github.com/LukeStanbery89/jarvis-v2/issues/23) | **Security hardening.** ✅ LAN items landed: login/bootstrap rate limiting + lockout, single-use bootstrap token, optional in-node TLS + HTTP→HTTPS upgrade, `JARVIS_HOST` binding, `~/.jarvis` `0700`/`0600` permissions, and CSRF nonces on the cookie portal. Remaining: pre-internet posture review, audit cadence.                                                                                                                                                                                                                                                       |
-| [#24](https://github.com/LukeStanbery89/jarvis-v2/issues/24) | **Web admin portal.** ✅ Delivered: cookie-session browser UI over the REST API at `/` (accounts, devices, sessions, prefs), with per-session CSRF nonces; extracted `@lukestanbery/jarvis-auth` from the server auth module.                                                                                                                                                                                                                                                                                                                                                 |
-| [#25](https://github.com/LukeStanbery89/jarvis-v2/issues/25) | **Biometric (voice/face) auth.** Pluggable verifier seam built in #22, enrolled speaker ID for always-on devices.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| [#35](https://github.com/LukeStanbery89/jarvis-v2/issues/35) | **API contracts (OpenAPI + AsyncAPI).** ✅ Delivered: contract-first, machine-checkable specs for the REST `/api` surface and the `/ws` chat channel — `packages/contracts` holds the YAML, generated TS types, lint/validate tooling, conformance tests, and docs (endpoint tables + static HTML reference on GitHub Pages). The `/ws` frame shapes mirror `@lukestanbery/jarvis-protocol` and are pinned by conformance tests.                                                                                                                                              |
-| [#12](https://github.com/LukeStanbery89/jarvis-v2/issues/12) | **New JARVIS client: web (in progress).** A browser chat client (`packages/web`) served at `/web`: forced sign-in (`POST /api/auth/login`, device token in localStorage), ChatGPT-style conversation management (sidebar from `GET /api/sessions`, client-side localStorage transcripts keyed by `sessionId`), and streaming markdown/tables/images rendering over `/ws` with the `hello` capability announcement and per-prompt `mode` (`"text"`; `"voice"` yields plain conversational text — a voice UI is future). Remaining: hardening/UX polish from post-merge review. |
+Open work on the tracker, roughly in priority order.
 
-Dependencies: #22 → #24 and #25 (they consume its seam and API); #24 wants
-#23 (TLS/CSRF) before shipping cookies. This ordering is the plan of record.
+| Issue                                                          | What                                                                                                               |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| [#102](https://github.com/LukeStanbery89/jarvis-v2/issues/102) | **Server hardening follow-ups** — WS crash/DoS guards, config NaN footgun, disable-revoke gap, cancel-vs-drain.    |
+| [#103](https://github.com/LukeStanbery89/jarvis-v2/issues/103) | **AbortSignal through metered tools** — thread the turn's signal into the tool HTTP clients and dedupe them.       |
+| [#104](https://github.com/LukeStanbery89/jarvis-v2/issues/104) | **Voice controller races** — first-press / begin / watch ordering fixes.                                           |
+| [#105](https://github.com/LukeStanbery89/jarvis-v2/issues/105) | **Web robustness** — StrictMode-safe client construction, parked-prompt cancel, render batching.                   |
+| [#106](https://github.com/LukeStanbery89/jarvis-v2/issues/106) | **CLI resilience** — survive malformed frames and unwritable state.                                                |
+| [#107](https://github.com/LukeStanbery89/jarvis-v2/issues/107) | **Cross-package dedupe** — protocol drift-proofing, model caches, voice provider scaffolding, auth store helpers.  |
+| [#109](https://github.com/LukeStanbery89/jarvis-v2/issues/109) | **Split `Chat.tsx`** — decompose the web god component into composable views and hooks.                            |
+| [#110](https://github.com/LukeStanbery89/jarvis-v2/issues/110) | **Extract BargeWatch/WakeManager** from `VoiceController`.                                                         |
+| [#100](https://github.com/LukeStanbery89/jarvis-v2/issues/100) | **Voice quality** — wake sensitivity knob, noise-robust transcription.                                             |
+| [#65](https://github.com/LukeStanbery89/jarvis-v2/issues/65)   | **Rate-limit the `/ws` chat path** (guest sockets especially).                                                     |
+| [#25](https://github.com/LukeStanbery89/jarvis-v2/issues/25)   | **Biometric (voice/face) auth** — the pluggable verifier seam exists; enrollment and always-on-device flow remain. |
 
 ## Further out (no issues yet)
 
@@ -54,6 +61,8 @@ Ideas worth keeping on the list; each becomes its own issue when it moves up.
 - **Multi-process.** The single-process server is fine at household scale;
   document what breaks first (per-thread locks and the app DB lock) when a
   second instance appears.
-- **Client packages beyond CLI.** Voice and other clients land as new packages
-  under `packages/`, per the repo convention; the auth seam in #22 keeps them
-  from forking the verifier logic.
+- **Client packages beyond CLI.** New clients land as packages under
+  `packages/` on the shared protocol/auth/voice seams — a browser extension
+  ([#32](https://github.com/LukeStanbery89/jarvis-v2/issues/32)), and packaging
+  the clients alongside the server
+  ([#29](https://github.com/LukeStanbery89/jarvis-v2/issues/29)).

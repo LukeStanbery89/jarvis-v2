@@ -7,10 +7,9 @@ import { copyVoiceAssets } from "./scripts/copy-voice-assets.mjs";
 
 /**
  * Locates an installed package's directory by walking `node_modules`
- * upward. openwakeword-web exports ESM-only with no `require` entry, but
- * `@lukestanbery/jarvis-voice`'s CJS build dynamic-imports — no — its
- * `import()`s compile to `require`, so Rolldown refuses to resolve it under
- * the `require` condition. Alias it to its raw ESM sources.
+ * upward. openwakeword-web exports ESM-only with no `require` entry, and
+ * `onnxruntime-web` is pulled in under the "extern wasm" resolve condition,
+ * so both are aliased to their raw sources below.
  */
 function findPackageRoot(name: string, fromDir: string): string {
     let dir = fromDir;
@@ -83,7 +82,14 @@ export default defineConfig({
         ],
     },
     optimizeDeps: {
-        include: ["@lukestanbery/jarvis-protocol"],
+        include: [
+            "@lukestanbery/jarvis-protocol",
+            // Same situation as the protocol: a linked workspace package
+            // whose build output is CommonJS. Without the forced pre-bundle
+            // the dev server serves voice's dist raw and every named import
+            // from it fails ("does not provide an export named …").
+            "@lukestanbery/jarvis-voice",
+        ],
     },
     server: {
         proxy: {

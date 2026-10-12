@@ -32,7 +32,7 @@ FROM node:24-bookworm AS deps
 WORKDIR /app
 
 # Manifests first: this layer is only invalidated when a package.json or the
-# lockfile changes, not on every source edit. All eight workspace manifests are
+# lockfile changes, not on every source edit. All nine workspace manifests are
 # copied because `npm ci` validates the whole workspace against the lockfile —
 # omitting cli/portal/web makes it silently install an incomplete tree.
 COPY package.json package-lock.json ./

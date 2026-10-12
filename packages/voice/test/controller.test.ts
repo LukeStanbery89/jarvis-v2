@@ -456,6 +456,46 @@ describe("vad endpointing", () => {
         expect(submitControl.calls).toEqual(["hello there"]);
     });
 
+    it("submits accumulated finals the moment the flush settles without a final", async () => {
+        // The regression this pins: an engine flush that produced no final
+        // (vosk's continuous mode suppresses the no-speech error) used to
+        // park the user on the full NO_SPEECH_MS deadline before the
+        // accumulated transcript was submitted — read as "it doesn't submit
+        // until I say something else". The flush await resolves; the
+        // decision is immediate.
+        const { stt, vad, scheduler, controller, submitControl } = makeHarness({
+            vad: new FakeVad(),
+        });
+        controller.press();
+        await drain();
+        vad?.emitSpeechStart();
+        stt.emitResult("what time"); // a mid-capture final segment
+        vad?.emitSpeechEnd();
+        scheduler.fireByMs(END_OF_SPEECH_MS);
+        await drain(); // the flush await settles — FakeStt delivers no final
+        expect(controller.getSnapshot().state).toBe("waiting");
+        expect(submitControl.calls).toEqual(["what time"]);
+        // The flush deadline was cleared, never fired.
+        expect(scheduler.pendingMs()).toEqual([]);
+    });
+
+    it("ends quietly when the flush settles with nothing recognized", async () => {
+        const { stt, vad, scheduler, controller, submitControl } = makeHarness({
+            vad: new FakeVad(),
+        });
+        controller.press();
+        await drain();
+        vad?.emitSpeechStart();
+        vad?.emitSpeechEnd();
+        scheduler.fireByMs(END_OF_SPEECH_MS);
+        await drain();
+        expect(controller.getSnapshot().state).toBe("idle");
+        expect(controller.getSnapshot().error).toBeNull();
+        expect(submitControl.calls).toEqual([]);
+        expect(stt.cancelCalls).toBe(1);
+        expect(scheduler.pendingMs()).toEqual([]);
+    });
+
     it("continuous finals accumulate into one transcript", async () => {
         const { stt, vad, scheduler, controller, submitControl } = makeHarness({
             vad: new FakeVad(),
@@ -488,14 +528,16 @@ describe("vad endpointing", () => {
         controller.press();
         await drain();
         vad?.emitSpeechStart();
-        controller.press();
+        stt.emitResult("send now"); // a mid-capture final segment
+        controller.press(); // stop-and-send
         await drain();
-        expect(controller.getSnapshot().state).toBe("transcribing");
+        // The flush settled (no further final); the accumulated finals
+        // submitted immediately.
+        expect(controller.getSnapshot().state).toBe("waiting");
         expect(stt.stopCalls).toBe(1);
         expect(vad?.stopCalls).toBe(1);
-        expect(scheduler.pendingMs()).toEqual([NO_SPEECH_MS]);
-        stt.emitResult("send now");
         expect(submitControl.calls).toEqual(["send now"]);
+        expect(scheduler.pendingMs()).toEqual([]);
     });
 
     it("resumed speech dominates the end-of-speech timer", async () => {
@@ -646,5 +688,44 @@ describe("vad unavailability fallback", () => {
         expect(scheduler.pendingMs()).toEqual([]);
         stt.emitResult("hi");
         expect(controller.getSnapshot().state).toBe("waiting");
+    });
+
+    it("logs the VAD-start failure through the injectable sink", async () => {
+        // The engine-native fallback is the difference between automatic
+        // submit and press-to-stop; without the sink it was invisible (the
+        // exact "endpointing silently stopped working" report).
+        const vad = new FakeVad();
+        vad.startError = { code: "engine", message: "no microphone track" };
+        const logged: Array<{ message: string; error: unknown }> = [];
+        const stt = new FakeStt();
+        const scheduler = makeScheduler();
+        const submitControl = makeSubmit();
+        const resolvers: Array<() => void> = [];
+        const rejecters: Array<(err: Error) => void> = [];
+        const controller = new VoiceController({
+            stt,
+            vad,
+            schedule: scheduler.schedule,
+            unschedule: scheduler.unschedule,
+            log: (message, error) => logged.push({ message, error }),
+            submit: (text) => {
+                submitControl.calls.push(text);
+                return new Promise<void>((resolve, reject) => {
+                    resolvers.push(resolve);
+                    rejecters.push(reject);
+                });
+            },
+        });
+        controller.press();
+        await drain();
+        expect(logged).toHaveLength(2);
+        expect(logged[0]!.message).toMatch(/VAD unavailable/);
+        expect(logged[0]!.error).toMatchObject({
+            message: "no microphone track",
+        });
+        // And the session announces which endpointing mode it degraded to.
+        expect(logged[1]!.message).toMatch(/engine-native endpointing/);
+        // Degradation is otherwise unchanged: engine-native session runs.
+        expect(controller.getSnapshot().state).toBe("listening");
     });
 });

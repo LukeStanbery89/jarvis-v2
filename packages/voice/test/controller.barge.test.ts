@@ -237,12 +237,11 @@ describe("barge-in watch (#84 P6)", () => {
         expect(harness.controller.getSnapshot().sessionId).toBe(2);
         // The watch disarmed itself and the new session owns the VAD again.
         expect(harness.vad.stopCalls).toBeGreaterThanOrEqual(1);
-        expect(harness.stt.fed).toEqual([
-            {
-                pcm: fire.lookback,
-                sampleRate: 48000,
-            },
-        ]);
+        // The look-back rides the ordered start() feed now.
+        expect(harness.stt.lastStartOptions?.feed).toEqual({
+            pcm: fire.lookback,
+            sampleRate: 48000,
+        });
     });
 
     it("does not fire when speech releases before the deadline", async () => {

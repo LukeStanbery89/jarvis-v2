@@ -293,6 +293,34 @@ describe("analyzeImage tool", () => {
         expect(vision.vision.analyze).not.toHaveBeenCalled();
     });
 
+    it("maps a VL-model failure to generic text and logs it, not the raw error", async () => {
+        // The tool must never throw: LangGraph's tool-error path would
+        // forward the raw error text ("Error: fetch failed: connect
+        // ECONNREFUSED …") to the client's tool result, and no server log
+        // would explain the outage.
+        const store = fakeStore();
+        const errorLog = vi.spyOn(logger, "error");
+        const tool = createAnalyzeImageTool({
+            attachments: store,
+            vision: {
+                analyze: vi.fn(async () => {
+                    throw new Error("fetch failed: connect ECONNREFUSED");
+                }),
+            },
+            vlLimiter: new VlCallLimiter(10),
+        });
+        const result = (await tool.invoke(
+            { attachmentId: "q83hZxLm5sVvT1yKwB9dE2nA", query: "q" },
+            { configurable: { userId: OWNER } },
+        )) as string;
+        expect(result).toMatch(/temporarily unavailable/i);
+        expect(result).not.toMatch(/ECONNREFUSED/);
+        expect(errorLog).toHaveBeenCalledWith(
+            expect.stringContaining("ECONNREFUSED"),
+        );
+        errorLog.mockRestore();
+    });
+
     it("never logs attachment bytes or base64 payloads", async () => {
         const sensitive = vi.spyOn(logger, "sensitive");
         const sensitiveDebug = vi.spyOn(logger, "sensitiveDebug");

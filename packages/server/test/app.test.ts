@@ -325,4 +325,13 @@ describe("https redirect app", () => {
         // supertest sends Host: 127.0.0.1 by default; the redirect honors it.
         expect(res.headers.location).toBe("https://127.0.0.1:443/");
     });
+
+    it("answers 400 on a malformed Host instead of throwing", async () => {
+        // `new URL("http://[::1")` throws (unclosed IPv6 bracket); the
+        // uncaught TypeError used to hit Express's default handler.
+        const res = await request(createHttpsRedirectApp(54321))
+            .get("/")
+            .set("Host", "[::1");
+        expect(res.status).toBe(400);
+    });
 });

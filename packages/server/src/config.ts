@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { DEFAULT_SESSION_TTL_MS } from "@lukestanbery/jarvis-auth";
 import { DEFAULT_KOKORO_VOICE } from "./tts/kokoro";
+import { logger } from "./logger";
 
 export const DEFAULT_LLM_BASE_URL = "http://localhost:1234/v1";
 
@@ -394,29 +395,39 @@ export interface LlmConfig {
  * (`packages/cli/src/config.ts`) — keep them in sync.
  */
 export function getServerPort(): number {
-    return Number(process.env.PORT ?? DEFAULT_PORT);
+    // Port 0 is a legitimate setting (ephemeral bind), so the zero-ok
+    // parser applies — anything else non-numeric falls back with a warning.
+    return zeroOkOr("PORT", process.env.PORT, DEFAULT_PORT);
 }
 
 export function getLlmConfig(): LlmConfig {
     return {
         baseUrl: process.env.LLM_BASE_URL ?? DEFAULT_LLM_BASE_URL,
         model: process.env.LLM_MODEL ?? DEFAULT_LLM_MODEL,
-        temperature: Number(
-            process.env.LLM_TEMPERATURE ?? DEFAULT_LLM_TEMPERATURE,
+        temperature: zeroOkOr(
+            "LLM_TEMPERATURE",
+            process.env.LLM_TEMPERATURE,
+            DEFAULT_LLM_TEMPERATURE,
         ),
         streamUsage: false,
         systemPrompt: process.env.LLM_SYSTEM_PROMPT ?? DEFAULT_SYSTEM_PROMPT,
-        agentMaxTurns: Number(
-            process.env.JARVIS_AGENT_MAX_TURNS ?? DEFAULT_AGENT_MAX_TURNS,
+        agentMaxTurns: numberOr(
+            "JARVIS_AGENT_MAX_TURNS",
+            process.env.JARVIS_AGENT_MAX_TURNS,
+            DEFAULT_AGENT_MAX_TURNS,
         ),
         checkpointPath:
             process.env.JARVIS_CHECKPOINT_PATH ?? defaultCheckpointPath(),
         vlModel: process.env.LLM_VL_MODEL ?? DEFAULT_LLM_VL_MODEL,
-        vlMaxTokens: Number(
-            process.env.LLM_VL_MAX_TOKENS ?? DEFAULT_LLM_VL_MAX_TOKENS,
+        vlMaxTokens: numberOr(
+            "LLM_VL_MAX_TOKENS",
+            process.env.LLM_VL_MAX_TOKENS,
+            DEFAULT_LLM_VL_MAX_TOKENS,
         ),
-        vlTimeoutMs: Number(
-            process.env.LLM_VL_TIMEOUT_MS ?? DEFAULT_LLM_VL_TIMEOUT_MS,
+        vlTimeoutMs: numberOr(
+            "LLM_VL_TIMEOUT_MS",
+            process.env.LLM_VL_TIMEOUT_MS,
+            DEFAULT_LLM_VL_TIMEOUT_MS,
         ),
     };
 }
@@ -671,28 +682,70 @@ export function normalizeOrigin(origin: string): string {
     return trimmed.toLowerCase();
 }
 
+/**
+ * Parses a positive numeric env var, falling back to the documented default
+ * when the variable is unset or not a finite positive number.
+ *
+ * The repo's config posture is that a typo can never break the server start —
+ * an unparseable value degrades to the default rather than throwing. Since a
+ * silent fallback is exactly how a mistyped `JARVIS_TURN_TIMEOUT_MS` once
+ * turned into NaN-driven behavior, an invalid **provided** value is also
+ * announced with a `warn` naming the variable; an unset (or empty) variable
+ * falls back quietly, because that is the normal default path.
+ *
+ * @param name - The env var's name, for the fallback warning.
+ * @param raw - The raw env value, or `undefined` when unset.
+ * @param fallback - The documented default.
+ */
+function numberOr(
+    name: string,
+    raw: string | undefined,
+    fallback: number,
+): number {
+    if (raw === undefined || raw === "") {
+        return fallback;
+    }
+    const value = Number(raw);
+    if (Number.isFinite(value) && value > 0) {
+        return value;
+    }
+    logger.warn(`${name} invalid (${JSON.stringify(raw)}); using ${fallback}`);
+    return fallback;
+}
+
+/**
+ * Like {@link numberOr} but accepts 0, for knobs where zero is a real setting
+ * rather than a missing one (the Home Assistant cache TTL: 0 disables
+ * caching, which is how you debug against a live instance without stale
+ * reads — or the LLM temperature, where 0 means fully deterministic).
+ */
+function zeroOkOr(
+    name: string,
+    raw: string | undefined,
+    fallback: number,
+): number {
+    if (raw === undefined || raw === "") {
+        return fallback;
+    }
+    const value = Number(raw);
+    if (Number.isFinite(value) && value >= 0) {
+        return value;
+    }
+    logger.warn(`${name} invalid (${JSON.stringify(raw)}); using ${fallback}`);
+    return fallback;
+}
+
 export function getAppConfig(): AppConfig {
-    const numberOr = (raw: string | undefined, fallback: number): number => {
-        const value = Number(raw);
-        return Number.isFinite(value) && value > 0 ? value : fallback;
-    };
-    /**
-     * Like `numberOr` but accepts 0, for knobs where zero is a real setting
-     * rather than a missing one (the Home Assistant cache TTL: 0 disables
-     * caching, which is how you debug against a live instance without stale
-     * reads).
-     */
-    const zeroOkOr = (raw: string | undefined, fallback: number): number => {
-        const value = Number(raw);
-        return Number.isFinite(value) && value >= 0 ? value : fallback;
-    };
     return {
         appDbPath: process.env.JARVIS_DB_PATH ?? defaultAppDbPath(),
-        turnTimeoutMs: Number(
-            process.env.JARVIS_TURN_TIMEOUT_MS ?? DEFAULT_TURN_TIMEOUT_MS,
+        turnTimeoutMs: numberOr(
+            "JARVIS_TURN_TIMEOUT_MS",
+            process.env.JARVIS_TURN_TIMEOUT_MS,
+            DEFAULT_TURN_TIMEOUT_MS,
         ),
         bootstrapToken: process.env.JARVIS_BOOTSTRAP_TOKEN || undefined,
         sessionTtlMs: numberOr(
+            "JARVIS_SESSION_TTL_MS",
             process.env.JARVIS_SESSION_TTL_MS,
             DEFAULT_SESSION_TTL_MS,
         ),
@@ -700,7 +753,11 @@ export function getAppConfig(): AppConfig {
         tlsCertPath: process.env.JARVIS_TLS_CERT || undefined,
         tlsKeyPath: process.env.JARVIS_TLS_KEY || undefined,
         httpRedirectPort: process.env.JARVIS_HTTP_REDIRECT_PORT
-            ? numberOr(process.env.JARVIS_HTTP_REDIRECT_PORT, 0) || undefined
+            ? numberOr(
+                  "JARVIS_HTTP_REDIRECT_PORT",
+                  process.env.JARVIS_HTTP_REDIRECT_PORT,
+                  0,
+              ) || undefined
             : undefined,
         portalDir:
             process.env.JARVIS_PORTAL_DIR === ""
@@ -711,10 +768,23 @@ export function getAppConfig(): AppConfig {
                 ? undefined
                 : process.env.JARVIS_WEB_DIR || defaultWebDir(),
         loginRateLimit: {
-            windowMs: numberOr(process.env.JARVIS_RATE_WINDOW_MS, 15 * 60_000),
-            maxFailures: numberOr(process.env.JARVIS_RATE_MAX_FAILURES, 10),
-            lockoutMs: numberOr(process.env.JARVIS_RATE_LOCKOUT_MS, 60_000),
+            windowMs: numberOr(
+                "JARVIS_RATE_WINDOW_MS",
+                process.env.JARVIS_RATE_WINDOW_MS,
+                15 * 60_000,
+            ),
+            maxFailures: numberOr(
+                "JARVIS_RATE_MAX_FAILURES",
+                process.env.JARVIS_RATE_MAX_FAILURES,
+                10,
+            ),
+            lockoutMs: numberOr(
+                "JARVIS_RATE_LOCKOUT_MS",
+                process.env.JARVIS_RATE_LOCKOUT_MS,
+                60_000,
+            ),
             maxIpFailures: numberOr(
+                "JARVIS_RATE_MAX_IP_FAILURES",
                 process.env.JARVIS_RATE_MAX_IP_FAILURES,
                 100,
             ),
@@ -734,18 +804,22 @@ export function getAppConfig(): AppConfig {
                               process.env.JARVIS_ATTACHMENT_TTL_MINUTES,
                           ) ?? DEFAULT_ATTACHMENT_TTL_MS,
                       maxBytes: numberOr(
+                          "JARVIS_ATTACHMENT_MAX_BYTES",
                           process.env.JARVIS_ATTACHMENT_MAX_BYTES,
                           DEFAULT_ATTACHMENT_MAX_BYTES,
                       ),
                       maxTotalBytes: numberOr(
+                          "JARVIS_ATTACHMENT_MAX_TOTAL_BYTES",
                           process.env.JARVIS_ATTACHMENT_MAX_TOTAL_BYTES,
                           DEFAULT_ATTACHMENT_MAX_TOTAL_BYTES,
                       ),
                       vlCallsPerMin: numberOr(
+                          "JARVIS_ATTACHMENT_VL_CALLS_PER_MIN",
                           process.env.JARVIS_ATTACHMENT_VL_CALLS_PER_MIN,
                           DEFAULT_ATTACHMENT_VL_CALLS_PER_MIN,
                       ),
                       maxInflight: numberOr(
+                          "JARVIS_ATTACHMENT_MAX_INFLIGHT",
                           process.env.JARVIS_ATTACHMENT_MAX_INFLIGHT,
                           DEFAULT_ATTACHMENT_MAX_INFLIGHT,
                       ),
@@ -758,14 +832,17 @@ export function getAppConfig(): AppConfig {
                       tavilyApiKey: process.env.TAVILY_API_KEY || undefined,
                       serperApiKey: process.env.SERPER_API_KEY || undefined,
                       timeoutMs: numberOr(
+                          "JARVIS_SEARCH_TIMEOUT_MS",
                           process.env.JARVIS_SEARCH_TIMEOUT_MS,
                           DEFAULT_SEARCH_TIMEOUT_MS,
                       ),
                       maxResults: numberOr(
+                          "JARVIS_SEARCH_MAX_RESULTS",
                           process.env.JARVIS_SEARCH_MAX_RESULTS,
                           DEFAULT_SEARCH_MAX_RESULTS,
                       ),
                       callsPerMin: numberOr(
+                          "JARVIS_SEARCH_CALLS_PER_MIN",
                           process.env.JARVIS_SEARCH_CALLS_PER_MIN,
                           DEFAULT_SEARCH_CALLS_PER_MIN,
                       ),
@@ -782,10 +859,12 @@ export function getAppConfig(): AppConfig {
                           ? "metric"
                           : DEFAULT_WEATHER_UNITS,
                   timeoutMs: numberOr(
+                      "JARVIS_WEATHER_TIMEOUT_MS",
                       process.env.JARVIS_WEATHER_TIMEOUT_MS,
                       DEFAULT_WEATHER_TIMEOUT_MS,
                   ),
                   callsPerMin: numberOr(
+                      "JARVIS_WEATHER_CALLS_PER_MIN",
                       process.env.JARVIS_WEATHER_CALLS_PER_MIN,
                       DEFAULT_WEATHER_CALLS_PER_MIN,
                   ),
@@ -811,19 +890,23 @@ export function getAppConfig(): AppConfig {
                               (domain) => domain.toLowerCase(),
                           ) ?? DEFAULT_HA_CONTROL_DOMAINS,
                       callsPerMin: numberOr(
+                          "JARVIS_HA_CALLS_PER_MIN",
                           process.env.JARVIS_HA_CALLS_PER_MIN,
                           DEFAULT_HA_CALLS_PER_MIN,
                       ),
                       timeoutMs: numberOr(
+                          "JARVIS_HA_TIMEOUT_MS",
                           process.env.JARVIS_HA_TIMEOUT_MS,
                           DEFAULT_HA_TIMEOUT_MS,
                       ),
                       // 0 is allowed: it turns the snapshot cache off.
                       cacheTtlMs: zeroOkOr(
+                          "JARVIS_HA_CACHE_TTL_MS",
                           process.env.JARVIS_HA_CACHE_TTL_MS,
                           DEFAULT_HA_CACHE_TTL_MS,
                       ),
                       listLimit: numberOr(
+                          "JARVIS_HA_LIST_LIMIT",
                           process.env.JARVIS_HA_LIST_LIMIT,
                           DEFAULT_HA_LIST_LIMIT,
                       ),
@@ -839,7 +922,11 @@ export function getAppConfig(): AppConfig {
                       provider: "kokoro",
                       voice:
                           process.env.JARVIS_TTS_VOICE || DEFAULT_KOKORO_VOICE,
-                      speed: numberOr(process.env.JARVIS_TTS_SPEED, 1),
+                      speed: numberOr(
+                          "JARVIS_TTS_SPEED",
+                          process.env.JARVIS_TTS_SPEED,
+                          1,
+                      ),
                       segment:
                           process.env.JARVIS_TTS_SEGMENT === "clause"
                               ? "clause"

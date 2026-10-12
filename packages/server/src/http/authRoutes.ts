@@ -36,6 +36,7 @@ import {
 import { authed, requireAuth, requireCsrf, requireOwner } from "./middleware";
 import type { CookieAuthOptions } from "./middleware";
 import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
+import { logger } from "../logger";
 import { RateLimiter } from "./rateLimit";
 
 const USERNAME_MAX = 64;
@@ -398,6 +399,16 @@ export function createAuthRouter(
                         );
                     }
                     store.setUserDisabled(target.id, disabled);
+                    if (disabled) {
+                        // Disabling is an immediate revocation for web
+                        // sessions, not just a future-login block: the
+                        // account's live cookies are deleted now, matching
+                        // how the device-token path fails closed on the
+                        // next resolve. The middleware's `user.disabled`
+                        // re-read is the backstop for a session issued
+                        // moments before.
+                        cookieSessions.deleteAllForUser(target.id);
+                    }
                 }
                 const updated = store.getUserById(target.id)!;
                 res.status(200).json({ user: userJson(updated) });
@@ -822,5 +833,12 @@ function handleError(res: Response, err: unknown): void {
         });
         return;
     }
+    // An unexpected error (a store failure, a bug) must not vanish: the
+    // client gets a generic 500, and the operator gets the one line that
+    // makes it diagnosable. No request payloads are involved — expected
+    // AuthError failures already return above without logging.
+    logger.error(
+        `/api unhandled error: ${err instanceof Error ? err.stack : String(err)}`,
+    );
     res.status(500).json({ error: "internal server error" });
 }

@@ -22,10 +22,20 @@ import type { VadCallbacks, VadProvider, VoiceError } from "../types";
 /** Options for {@link BrowserVadProvider}. */
 export interface BrowserVadOptions {
     /**
-     * RMS level above which the mic is considered to carry speech. Defaults
-     * to `0.02` (quiet room ≈ <0.005, speech ≈ 0.05–0.3 after AEC/AGC).
+     * Lower bound on the onset gate — the RMS level the mic must carry
+     * (sustained for {@link onsetMs}) to count as speech. The live gate is
+     * `max(threshold, ambientFloor * noiseMargin)`, so a loud room raises it
+     * (fewer false onsets) while a quiet room lets it fall toward `threshold`
+     * (soft speech still starts a session — vosk hears what a flat 0.02
+     * energy gate misses). Defaults to `0.01` (quiet room ≈ <0.005, speech ≈
+     * 0.05–0.3 after AEC/AGC).
      */
     readonly threshold?: number;
+    /**
+     * Multiplier applied to the tracked ambient noise floor when forming the
+     * live onset gate. Defaults to 3.
+     */
+    readonly noiseMargin?: number;
     /** Loudness sustained this long before `onSpeechStart`. Defaults to 120 ms. */
     readonly onsetMs?: number;
     /** Silence sustained this long before `onSpeechEnd`. Defaults to 350 ms. */
@@ -129,6 +139,7 @@ export class BrowserVadProvider implements VadProvider {
     readonly id = "browser-energy";
 
     private readonly threshold: number;
+    private readonly noiseMargin: number;
     private readonly onsetMs: number;
     private readonly releaseMs: number;
     private readonly intervalMs: number;
@@ -142,6 +153,12 @@ export class BrowserVadProvider implements VadProvider {
     private sampleRate = 48000;
     private timer: ReturnType<typeof setInterval> | null = null;
     private buffer: Float32Array = new Float32Array(0);
+    /**
+     * Tracked ambient level: an exponential follower over quiet ticks only,
+     * so speech never poisons it. Capped at `threshold` — the gate can drift
+     * to `max(threshold, threshold * noiseMargin)` at most, never past it.
+     */
+    private noiseFloor = 0;
     /** Two-edge state machine: currently inside detected speech. */
     private speaking = false;
     /** Timestamp loudness was first seen in the current onset run (`Date.now()`). */
@@ -150,11 +167,12 @@ export class BrowserVadProvider implements VadProvider {
     private quietSince: number | null = null;
 
     /**
-     * @param options - Threshold and debounce tuning (see
+     * @param options - Threshold, noise-margin and debounce tuning (see
      * {@link BrowserVadOptions}).
      */
     constructor(options: BrowserVadOptions = {}) {
-        this.threshold = options.threshold ?? 0.02;
+        this.threshold = options.threshold ?? 0.01;
+        this.noiseMargin = options.noiseMargin ?? 3;
         this.onsetMs = options.onsetMs ?? 120;
         this.releaseMs = options.releaseMs ?? 350;
         this.intervalMs = options.intervalMs ?? 50;
@@ -288,7 +306,17 @@ export class BrowserVadProvider implements VadProvider {
             callbacks.onAudio(this.buffer.slice(), this.sampleRate);
         }
         const now = Date.now();
-        if (rms >= this.threshold) {
+        // The live gate adapts to the ambient floor: in a quiet room it
+        // settles at `threshold` alone (soft speech crossings still onset),
+        // while measured background at `>= threshold` lifts it up to
+        // `threshold * noiseMargin` (so a fan or road noise can't start a
+        // session). The floor only follows quiet ticks, so actual speech
+        // never raises it.
+        const gate = Math.max(
+            this.threshold,
+            this.noiseFloor * this.noiseMargin,
+        );
+        if (rms >= gate) {
             this.quietSince = null;
             if (!this.speaking) {
                 if (this.loudSince === null) {
@@ -300,6 +328,12 @@ export class BrowserVadProvider implements VadProvider {
             }
         } else {
             this.loudSince = null;
+            if (!this.speaking) {
+                this.noiseFloor = Math.min(
+                    this.threshold,
+                    this.noiseFloor + (rms - this.noiseFloor) * 0.05,
+                );
+            }
             if (this.speaking) {
                 if (this.quietSince === null) {
                     this.quietSince = now;

@@ -38,7 +38,7 @@ validate representative real frames against each message payload.
 
 ## REST spec inventory (`spec/openapi.yaml`)
 
-23 operations covering `GET /health`, the 21 `/api` management routes, and the
+26 operations covering `GET /health`, the 25 `/api` management routes, and the
 `POST /api/attachments` upload route (#10). The management routes mirror the
 handlers in `packages/server/src/http/authRoutes.ts`; the attachment route is
 owned by `packages/server/src/http/attachmentRoutes.ts`:
@@ -119,13 +119,13 @@ check:endpoints` regenerates the endpoint tables the same way (`build`
 
 ## WS spec inventory (`spec/asyncapi.yaml`)
 
-One channel (`/ws`), two operations, ten messages — one per frame, mirroring
+One channel (`/ws`), two operations, fourteen messages mirroring
 `@lukestanbery/jarvis-protocol`'s types:
 
-| Operation            | Direction     | Messages                                                                                                                                                |
-| -------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable) |
-| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`                                                                                        |
+| Operation            | Direction     | Messages                                                                                                                                                                          |
+| -------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time) |
+| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`                                                                            |
 
 A client may open the socket with either the `hello` capability announcement or
 the `auth` handshake (and `auth` may also come immediately after `hello`); any

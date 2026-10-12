@@ -70,7 +70,13 @@ export class SttModelCache {
                 .split("/")
                 .pop();
             const safe = (base ?? "").replace(/[^\w.-]/g, "_");
-            return safe === "" ? "model.tar.gz" : safe;
+            // The sanitizer keeps dots, so a URL ending in `.` or `..`
+            // sanitizes to a relative segment — `path.join` would then land
+            // outside the cache dir, breaking the stated invariant. Fall
+            // back to the default name.
+            return safe === "" || safe === "." || safe === ".."
+                ? "model.tar.gz"
+                : safe;
         } catch {
             return "model.tar.gz";
         }
