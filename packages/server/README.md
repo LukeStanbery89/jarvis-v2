@@ -5,7 +5,7 @@ WebSocket and streams a response back to the client.
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 24+
 - npm
 - A running OpenAI-compatible inference server. [LM Studio](https://lmstudio.ai) is the
   default — launch it, load a model, and start its local server on port `1234`.
