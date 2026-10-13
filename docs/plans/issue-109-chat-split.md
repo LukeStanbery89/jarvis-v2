@@ -727,10 +727,14 @@ controller's `rejected` state as today.
    `UploadIo`, `src/hooks/useThreads.test.ts` (reducer transitions incl.
    attachment ids + toolResult merge), and `src/hooks/useVoiceSession.test.ts`
    (`voiceStatusText` mapping). `npm run check` green.
-2. **Phase B — hooks.** Extract the eight hooks; Chat consumes them. The two
-   StrictMode fixes land here (construct-in-effect `useChatClient` +
-   `useVoiceSession` controller). No JSX movement yet. Commit after green + dev
-   smoke covering **socket AND wake/barge-in** (see E2E).
+2. **Phase B — hooks. ✅ done.** Extracted the eight hooks (`useThreads`
+   extended, plus new `useSessions`, `useAudio`, `useChatClient`,
+   `useVoiceSession` extended, `useLocationSharing`, `useAttachments`,
+   `useAutoScroll`); Chat consumes them and keeps all JSX (no movement). The two
+   StrictMode fixes landed here (construct-in-effect `useChatClient` +
+   `useVoiceSession` controller). `npm run check` green. The StrictMode dev smoke
+   covering **socket AND wake/barge-in** is deferred to the Phase D manual E2E
+   pass (needs a browser).
 3. **Phase C — components.** Extract Sidebar/Transcript/Composer/PendingAttachments;
    Chat becomes the ~210-line composition. Commit.
 4. **Phase D — docs + manual script + PR.** Update the web README — `Chat.tsx`
