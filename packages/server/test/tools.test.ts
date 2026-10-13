@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateResult } from "../src/llm/tools/math";
+import { format12Hour } from "../src/llm/tools/clock";
 import { clockFacet, localClock } from "../src/llm/tools/time";
 import { createTools } from "../src/llm/tools";
 import type { ToolDeps } from "../src/llm/tools";
@@ -101,6 +102,18 @@ describe("localClock", () => {
                   ][instant.getDay()];
         expect(output).toContain(weekday);
         expect(output).toContain(String(instant.getFullYear()));
+    });
+});
+
+describe("format12Hour", () => {
+    it("renders midnight and noon as 12 with the right meridiem", () => {
+        expect(format12Hour(0, 5)).toBe("12:05 AM");
+        expect(format12Hour(12, 0)).toBe("12:00 PM");
+    });
+
+    it("converts afternoon hours and zero-pads minutes", () => {
+        expect(format12Hour(13, 7)).toBe("1:07 PM");
+        expect(format12Hour(23, 59)).toBe("11:59 PM");
     });
 });
 

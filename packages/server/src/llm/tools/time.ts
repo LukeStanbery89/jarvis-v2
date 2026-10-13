@@ -9,6 +9,7 @@
  */
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { format12Hour } from "./clock";
 
 export const getCurrentTime = tool(
     async ({ question }) => localClock(question),
@@ -67,16 +68,12 @@ export function clockFacet(question: string): ClockFacet {
  */
 export function localClock(question: string, now: Date = new Date()): string {
     const facet = clockFacet(question);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const hours = now.getHours();
-    const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
-    const meridiem = hours < 12 ? "AM" : "PM";
     const weekday = WEEKDAYS[now.getDay()];
     const month = MONTHS[now.getMonth()];
     const date = `${month} ${now.getDate()}, ${now.getFullYear()}`;
     switch (facet) {
         case "time":
-            return `${hour12}:${pad(now.getMinutes())} ${meridiem}`;
+            return format12Hour(now.getHours(), now.getMinutes());
         case "date":
             return date;
         case "weekday":
