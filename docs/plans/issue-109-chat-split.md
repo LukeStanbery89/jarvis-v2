@@ -746,11 +746,14 @@ controller's `rejected` state as today.
    files/128 tests) + `npm run build -w @lukestanbery/jarvis-web` green.
    Contract note: `TranscriptProps` carries `activeId` (the plan's props sketch
    omitted it) so `useAutoScroll` keeps its exact `[messages, activeId]` deps.
-4. **Phase D — docs + manual script + PR.** Update the web README — `Chat.tsx`
-   references at `:81`, `:168`, and the `Source layout` row at `:256`, plus the
-   voice-wiring paragraph (:162-172) — and root AGENTS if the file map changes;
-   JSDoc on every new/modified function (root AGENTS rule); record the manual
-   E2E script in the PR; `npm run check` + `npm run build`; PR closes `#109`.
+4. **Phase D — docs + manual script + PR. ✅ done.** Updated the web README's
+   voice-wiring paragraph (:162-172) and the `Source layout` section (added
+   `views/chat/`, `hooks/`, `sidebar.ts`, `attachments.ts`; the `:81` hello
+   reference stays accurate — `CHAT_CAPABILITIES` still lives in `Chat.tsx`).
+   Root AGENTS needs no change (it carries no per-file web map). JSDoc on every
+   new/modified function. Manual E2E script recorded in the PR — its StrictMode
+   socket + wake/barge-in smoke is the outstanding acceptance step. `npm run
+check` green (includes `npm run build`). PR closes `#109`.
 
 ## Manual E2E script (recorded in the PR, per acceptance)
 
