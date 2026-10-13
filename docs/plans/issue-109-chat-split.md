@@ -753,7 +753,7 @@ controller's `rejected` state as today.
    Root AGENTS needs no change (it carries no per-file web map). JSDoc on every
    new/modified function. Manual E2E script recorded in the PR — its StrictMode
    socket + wake/barge-in smoke is the outstanding acceptance step. `npm run
-check` green (includes `npm run build`). PR closes `#109`.
+check` green (includes `npm run build`). Delivered in #112 (closes `#109`).
 
 ## Manual E2E script (recorded in the PR, per acceptance)
 
