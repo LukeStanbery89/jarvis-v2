@@ -1,14 +1,14 @@
 /**
- * The chat view: conversation sidebar + transcript + composer.
+ * The chat view: the ~200-line composition root.
  *
- * This is the composition root: it owns the chat-turn orchestration
- * (record → send → settle) and the JSX, while the eight hooks in `hooks/` own
- * their slices of state — the transcript store, the REST session list, the
- * audio player, the chat socket, the voice session, location sharing,
- * attachments, and auto-scroll. The {@link ChatClient} and the
- * {@link VoiceController} are constructed inside those hooks' mount effects, so
- * both survive React's StrictMode double-invoke (previously: a stuck
- * `Disconnected` socket and a dead wake/barge-in controller in dev).
+ * It owns the cross-cutting chat-turn orchestration — `runTurn` (record →
+ * send → settle), `send` (ready attachment ids + error bubble), `remove`,
+ * `signOut`, `toggleWake`, and the socket frame → reducer wiring — over the
+ * eight hooks in `hooks/` and the presentational components in `views/chat/`.
+ * The {@link ChatClient} and the {@link VoiceController} are constructed inside
+ * those hooks' mount effects, so both survive React's StrictMode double-invoke
+ * (previously: a stuck `Disconnected` socket and a dead wake/barge-in
+ * controller in dev).
  *
  * Transcript state is a reducer over the pure `threads.ts` helpers, persisted
  * (throttled) to localStorage under the signed-in user's namespace. The
@@ -17,10 +17,10 @@
  * threads, so conversations created on other clients appear (empty) and
  * locally-created ones appear before their first server claim.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { StoredCredential } from "../credentials";
-import { mergeSessions, describeWakeState } from "../sidebar";
+import { mergeSessions } from "../sidebar";
 import { determineReady } from "../attachments";
 import { useThreads } from "../hooks/useThreads";
 import { useSessions } from "../hooks/useSessions";
@@ -29,28 +29,13 @@ import { useChatClient } from "../hooks/useChatClient";
 import { useVoiceSession, voiceStatusText } from "../hooks/useVoiceSession";
 import { useLocationSharing } from "../hooks/useLocationSharing";
 import { useAttachments } from "../hooks/useAttachments";
-import { useAutoScroll } from "../hooks/useAutoScroll";
-import { Markdown } from "../Markdown";
-import { ToolCall } from "../components/ToolCall";
 import {
     type ChatMode,
     type ClientCapability,
 } from "@lukestanbery/jarvis-protocol";
-import { describeLocationState } from "../location";
-import {
-    AudioLines,
-    Image as ImageIcon,
-    LogOut,
-    MapPin,
-    Mic,
-    MicOff,
-    Paperclip,
-    SendHorizontal,
-    Square,
-    SquarePen,
-    Trash2,
-    X,
-} from "lucide-react";
+import { Sidebar } from "./chat/Sidebar";
+import { Transcript } from "./chat/Transcript";
+import { Composer } from "./chat/Composer";
 
 /**
  * The capabilities this client announces in its `hello` frame. Module-level so
@@ -106,7 +91,6 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         unlock: unlockAudio,
     } = useAudio();
 
-    const [draft, setDraft] = useState("");
     const [banner, setBanner] = useState<string | null>(null);
     const [streaming, setStreaming] = useState(false);
 
@@ -192,43 +176,19 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         sendLocation,
     });
 
-    /** The scrolling transcript container (auto-scroll target). */
-    const transcriptRef = useRef<HTMLDivElement | null>(null);
-    const fileInputRef = useRef<HTMLInputElement | null>(null);
-    /** The composer textarea (refocused after each turn so chat stays fluid). */
-    const composerRef = useRef<HTMLTextAreaElement | null>(null);
-
     /** Sidebar rows: server sessions merged with local threads, newest first. */
     const entries = useMemo(
         () => mergeSessions(rows, threads),
         [rows, threads],
     );
-
     const activeThread = activeId !== null ? (threads[activeId] ?? null) : null;
     const transcriptMessages = activeThread?.messages ?? [];
-    useAutoScroll(transcriptRef, transcriptMessages, activeId);
 
     /** Status-line text for the current voice session (null hides it). */
     const voiceStatus =
         voiceSnapshot.state === "speaking" || audioSpeaking
             ? "Speaking…"
             : voiceStatusText(voiceSnapshot);
-    /** A voice session that ended in failure, kept until the next press. */
-    const voiceErrorText = voiceUi.voiceErrorText;
-
-    /** Tooltip/a11y text for the wake toggle state (#84 P4). */
-    const wakeStateText = describeWakeState(
-        voiceUi.wakeAvailable,
-        voiceSnapshot.wakeArmed,
-    );
-
-    // Restore focus to the composer once a streaming turn ends, so the next
-    // message can be typed without re-clicking the textarea.
-    useEffect(() => {
-        if (!streaming) {
-            composerRef.current?.focus();
-        }
-    }, [streaming]);
 
     /** Deletes a conversation server-side and locally. */
     async function remove(id: string): Promise<void> {
@@ -292,14 +252,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     // The voice controller reads this at submit time — see runTurnRef.
     runTurnRef.current = runTurn;
 
-    /** Sends the composer draft (plus any ready attachments) as one chat turn. */
-    async function send(): Promise<void> {
-        const text = draft.trim();
-        const readyIds = determineReady(pending);
-        if (text === "" || activeId === null || streaming) {
+    /** Sends the composer text (plus any ready attachments) as one chat turn. */
+    async function send(text: string): Promise<void> {
+        if (activeId === null) {
             return;
         }
-        setDraft("");
+        const readyIds = determineReady(pending);
         clearPending();
         try {
             await runTurn(text, "text", readyIds);
@@ -310,14 +268,6 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 text: err instanceof Error ? err.message : "the request failed",
                 at: Date.now(),
             });
-        }
-    }
-
-    /** Composer keyboard: Enter sends, Shift+Enter inserts a newline. */
-    function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
-        if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            void send();
         }
     }
 
@@ -351,108 +301,23 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
 
     return (
         <main className="chat">
-            <aside className="sidebar">
-                <div className="sidebar-head">
-                    <span>{credential.username}</span>
-                    <span className="sidebar-actions">
-                        <button
-                            type="button"
-                            className={
-                                locationState === "active"
-                                    ? "icon-btn location active"
-                                    : "icon-btn location"
-                            }
-                            aria-pressed={locationOn}
-                            aria-label={describeLocationState(locationState)}
-                            title={describeLocationState(locationState)}
-                            onClick={toggleLocation}
-                        >
-                            <MapPin size={16} />
-                        </button>
-                        {voiceUi.wakeAvailable && (
-                            <button
-                                type="button"
-                                className={
-                                    voiceSnapshot.wakeArmed
-                                        ? "icon-btn location active"
-                                        : "icon-btn location"
-                                }
-                                aria-pressed={voiceUi.wakeOn}
-                                aria-label={wakeStateText}
-                                title={wakeStateText}
-                                onClick={toggleWake}
-                            >
-                                <AudioLines size={16} />
-                            </button>
-                        )}
-                        <button
-                            type="button"
-                            className="icon-btn"
-                            aria-label="Sign out"
-                            title="Sign out"
-                            onClick={signOut}
-                        >
-                            <LogOut size={16} />
-                        </button>
-                    </span>
-                </div>
-                {locationOn && locationState !== "active" && (
-                    <p className="location-note" role="status">
-                        {locationState === "unsupported" &&
-                            "Location unavailable — HTTPS or localhost required"}
-                        {locationState === "locating" && "Locating…"}
-                        {locationState === "denied" &&
-                            "Location denied — allow it in the browser, then toggle the pin again"}
-                        {locationState === "failed" &&
-                            "Location lookup failed — toggle the pin to retry"}
-                    </p>
-                )}
-                <button
-                    type="button"
-                    className="new-chat"
-                    title="New chat"
-                    onClick={newChat}
-                >
-                    <SquarePen size={16} />
-                    New chat
-                </button>
-                <nav>
-                    {entries.map((entry) => (
-                        <div
-                            key={entry.id}
-                            className={
-                                entry.id === activeId
-                                    ? "thread-row active"
-                                    : "thread-row"
-                            }
-                        >
-                            <button
-                                type="button"
-                                className="thread-open"
-                                disabled={streaming}
-                                onClick={() => openThread(entry.id)}
-                                title={
-                                    entry.kind === "voice"
-                                        ? "voice conversation"
-                                        : undefined
-                                }
-                            >
-                                {entry.title}
-                                {entry.kind === "voice" ? " (voice)" : ""}
-                            </button>
-                            <button
-                                type="button"
-                                className="thread-delete icon-btn"
-                                aria-label={`Delete ${entry.title}`}
-                                title={`Delete ${entry.title}`}
-                                onClick={() => void remove(entry.id)}
-                            >
-                                <Trash2 size={16} />
-                            </button>
-                        </div>
-                    ))}
-                </nav>
-            </aside>
+            <Sidebar
+                username={credential.username}
+                entries={entries}
+                activeId={activeId}
+                streaming={streaming}
+                locationOn={locationOn}
+                locationState={locationState}
+                wakeAvailable={voiceUi.wakeAvailable}
+                wakeOn={voiceUi.wakeOn}
+                wakeArmed={voiceSnapshot.wakeArmed}
+                onNewChat={newChat}
+                onOpenThread={openThread}
+                onRemoveThread={(id) => void remove(id)}
+                onToggleLocation={toggleLocation}
+                onToggleWake={toggleWake}
+                onSignOut={signOut}
+            />
             <section className="conversation">
                 {status !== "connected" && (
                     <p className="status" role="status">
@@ -467,235 +332,41 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         {banner}
                     </p>
                 )}
-                <div className="transcript" ref={transcriptRef}>
-                    {activeThread === null && (
-                        <p className="hint">
-                            Pick a conversation or start a new one
-                        </p>
-                    )}
-                    {activeThread?.messages.map((message) => {
-                        if (message.role === "user") {
-                            const ids = message.attachmentIds ?? [];
-                            return (
-                                <div className="msg user" key={message.id}>
-                                    {ids.map((attachmentId) =>
-                                        previews[attachmentId] ? (
-                                            <img
-                                                key={attachmentId}
-                                                className="attachment-thumb"
-                                                src={previews[attachmentId]}
-                                                alt="attached image"
-                                            />
-                                        ) : (
-                                            <ImageIcon
-                                                key={attachmentId}
-                                                className="attachment-gone"
-                                                size={36}
-                                                role="img"
-                                                aria-label="image not retained"
-                                            />
-                                        ),
-                                    )}
-                                    {message.text}
-                                </div>
-                            );
-                        }
-                        if (message.role === "tool") {
-                            return (
-                                <ToolCall
-                                    key={message.id}
-                                    name={message.tool.name}
-                                    args={message.tool.args}
-                                    output={message.tool.output}
-                                />
-                            );
-                        }
-                        return message.error ? (
-                            <div
-                                className="msg assistant error"
-                                key={message.id}
-                            >
-                                {message.text}
-                            </div>
-                        ) : (
-                            <div className="msg assistant" key={message.id}>
-                                <Markdown text={message.text} />
-                            </div>
-                        );
-                    })}
-                </div>
+                <Transcript
+                    messages={transcriptMessages}
+                    previews={previews}
+                    hasThread={activeThread !== null}
+                    activeId={activeId}
+                />
                 {voiceStatus !== null && (
                     <p className="voice-status" role="status">
                         {voiceStatus}
                     </p>
                 )}
-                {voiceErrorText !== null && (
+                {voiceUi.voiceErrorText !== null && (
                     <p className="voice-status error" role="alert">
-                        {voiceErrorText}
+                        {voiceUi.voiceErrorText}
                     </p>
                 )}
                 {activeId !== null && (
-                    <div
-                        className="composer"
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                            e.preventDefault();
-                            if (!streaming) {
-                                attachFiles(e.dataTransfer.files);
-                            }
+                    <Composer
+                        streaming={streaming}
+                        sttAvailable={voiceUi.sttAvailable}
+                        voiceState={voiceSnapshot.state}
+                        voiceTurnInFlight={voiceUi.voiceTurnInFlight}
+                        pending={pending}
+                        onSend={send}
+                        onStop={stopTurn}
+                        onAttach={attachFiles}
+                        onRemoveChip={detachChip}
+                        onMicPress={() => {
+                            // The press is the user gesture: resume the audio
+                            // context so this session's spoken response is
+                            // audible (#83).
+                            unlockAudio();
+                            voice?.press();
                         }}
-                    >
-                        {pending.length > 0 && (
-                            <div className="pending-attachments">
-                                {pending.map((chip) => (
-                                    <span className="chip" key={chip.id}>
-                                        {chip.dataUrl !== "" && (
-                                            <img
-                                                src={chip.dataUrl}
-                                                alt={chip.name}
-                                                className="attachment-thumb"
-                                            />
-                                        )}
-                                        <span>
-                                            {chip.state.kind === "uploading" &&
-                                                `uploading ${chip.name}…`}
-                                            {chip.state.kind === "ready" &&
-                                                chip.name}
-                                            {chip.state.kind === "failed" &&
-                                                `${chip.name}: ${chip.state.reason}`}
-                                        </span>
-                                        <button
-                                            type="button"
-                                            className="chip-remove"
-                                            aria-label={`remove ${chip.name}`}
-                                            onClick={() => detachChip(chip.id)}
-                                        >
-                                            <X size={14} />
-                                        </button>
-                                    </span>
-                                ))}
-                            </div>
-                        )}
-                        <input
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            hidden
-                            ref={fileInputRef}
-                            onChange={(e) => {
-                                if (e.target.files !== null) {
-                                    attachFiles(e.target.files);
-                                }
-                                e.target.value = "";
-                            }}
-                        />
-                        <button
-                            type="button"
-                            className={
-                                voiceSnapshot.state === "listening"
-                                    ? "mic active"
-                                    : "mic"
-                            }
-                            aria-label={
-                                !voiceUi.sttAvailable
-                                    ? "Voice input unavailable"
-                                    : voiceSnapshot.state === "listening"
-                                      ? "Stop and transcribe"
-                                      : "Start voice input"
-                            }
-                            title={
-                                !voiceUi.sttAvailable
-                                    ? "Voice input unavailable — HTTPS or localhost required"
-                                    : voiceSnapshot.state === "listening"
-                                      ? "Stop and transcribe"
-                                      : "Talk to JARVIS"
-                            }
-                            disabled={
-                                streaming ||
-                                !voiceUi.sttAvailable ||
-                                voiceUi.voiceTurnInFlight
-                            }
-                            onClick={() => {
-                                // The press is the user gesture: resume the
-                                // audio context so this session's spoken
-                                // response is audible (#83).
-                                unlockAudio();
-                                voice?.press();
-                            }}
-                        >
-                            {!voiceUi.sttAvailable ? (
-                                <MicOff size={18} />
-                            ) : (
-                                <Mic
-                                    size={18}
-                                    className={
-                                        voiceSnapshot.state === "listening"
-                                            ? "pulse"
-                                            : undefined
-                                    }
-                                />
-                            )}
-                        </button>
-                        <button
-                            type="button"
-                            className="attach"
-                            aria-label="attach images"
-                            title="Attach images"
-                            disabled={streaming}
-                            onClick={() => fileInputRef.current?.click()}
-                        >
-                            <Paperclip size={18} />
-                        </button>
-                        <textarea
-                            id="message"
-                            name="message"
-                            value={draft}
-                            placeholder="Message JARVIS…"
-                            disabled={streaming}
-                            ref={composerRef}
-                            onChange={(e) => setDraft(e.target.value)}
-                            onKeyDown={onKeyDown}
-                            onPaste={(e) => {
-                                const files = Array.from(
-                                    e.clipboardData.files,
-                                ).filter((f) => f.type.startsWith("image/"));
-                                if (files.length > 0) {
-                                    e.preventDefault();
-                                    attachFiles(files);
-                                }
-                            }}
-                        />
-                        <button
-                            type="button"
-                            className={
-                                streaming
-                                    ? "send stop"
-                                    : draft.trim() !== ""
-                                      ? "send active"
-                                      : "send"
-                            }
-                            aria-label={
-                                streaming ? "stop generating" : "send message"
-                            }
-                            title={
-                                streaming ? "Stop generating" : "Send message"
-                            }
-                            disabled={!streaming && draft.trim() === ""}
-                            onClick={() => {
-                                if (streaming) {
-                                    stopTurn();
-                                } else {
-                                    void send();
-                                }
-                            }}
-                        >
-                            {streaming ? (
-                                <Square size={18} />
-                            ) : (
-                                <SendHorizontal size={18} />
-                            )}
-                        </button>
-                    </div>
+                    />
                 )}
             </section>
         </main>

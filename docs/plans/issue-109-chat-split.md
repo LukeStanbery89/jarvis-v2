@@ -735,8 +735,17 @@ controller's `rejected` state as today.
    `useVoiceSession` controller). `npm run check` green. The StrictMode dev smoke
    covering **socket AND wake/barge-in** is deferred to the Phase D manual E2E
    pass (needs a browser).
-3. **Phase C — components.** Extract Sidebar/Transcript/Composer/PendingAttachments;
-   Chat becomes the ~210-line composition. Commit.
+3. **Phase C — components. ✅ done.** Added `src/views/chat/Sidebar.tsx`,
+   `Transcript.tsx` (memoized `MessageRow`, owns the transcript ref +
+   `useAutoScroll(ref, messages, activeId)`), `Composer.tsx` (owns draft/refs,
+   focus effect, paste/drop/file-picker, mic/attach/send), and
+   `PendingAttachments.tsx`. Chat is now a 374-line composition root (above the
+   ~210 sketch because the turn orchestration stays here). JSX/DOM parity
+   verified by literal-diff against the Phase B `Chat.tsx` (no classname, aria,
+   title, placeholder, or text-node changes). `npm run check` green (web 14
+   files/128 tests) + `npm run build -w @lukestanbery/jarvis-web` green.
+   Contract note: `TranscriptProps` carries `activeId` (the plan's props sketch
+   omitted it) so `useAutoScroll` keeps its exact `[messages, activeId]` deps.
 4. **Phase D — docs + manual script + PR.** Update the web README — `Chat.tsx`
    references at `:81`, `:168`, and the `Source layout` row at `:256`, plus the
    voice-wiring paragraph (:162-172) — and root AGENTS if the file map changes;
