@@ -13,13 +13,17 @@ portal at `/`; conversations are durable SQLite checkpoints keyed by
 `sessionId`. The auth stack ([#22](https://github.com/LukeStanbery89/jarvis-v2/issues/22)),
 its security hardening ([#23](https://github.com/LukeStanbery89/jarvis-v2/issues/23)),
 and the cookie portal ([#24](https://github.com/LukeStanbery89/jarvis-v2/issues/24))
-are delivered, along with the contract-first OpenAPI/AsyncAPI tooling
-([#35](https://github.com/LukeStanbery89/jarvis-v2/issues/35)), the web chat
+are delivered, along with the web chat
 client ([#12](https://github.com/LukeStanbery89/jarvis-v2/issues/12)),
 server-side TTS
 ([#83](https://github.com/LukeStanbery89/jarvis-v2/issues/83)), and
 client-side voice input — local STT, "Hey JARVIS" wake word, and barge-in
-([#84](https://github.com/LukeStanbery89/jarvis-v2/issues/84)).
+([#84](https://github.com/LukeStanbery89/jarvis-v2/issues/84)). The
+contract-first OpenAPI/AsyncAPI tooling
+([#35](https://github.com/LukeStanbery89/jarvis-v2/issues/35)) exists —
+specs, generated types, and lint/bundle/validate run under
+`packages/contracts` — but the research issue that scoped it is still open
+and stays the source of truth for contract follow-ups.
 
 ## Near term
 

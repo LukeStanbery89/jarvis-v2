@@ -39,6 +39,7 @@ import {
 import { FixedWindowQuota } from "../../rate/fixedWindowQuota";
 import { logger } from "../../logger";
 import type { DeviceLocation } from "../../agent";
+import { format12Hour } from "./clock";
 
 /** Everything the tool needs, injected at wiring time. */
 export interface WeatherDeps {
@@ -70,7 +71,7 @@ export function formatCurrentConditions(
         `${place} — ${round(conditions.temp)}${temp} (feels like ${round(conditions.feelsLike)}${temp}), ${conditions.description}.`,
         `Humidity ${round(conditions.humidity)}%, wind ${round(conditions.windSpeed)} ${speed}${windCompass(conditions.windDeg)}.`,
     ];
-    const local = localClock(
+    const local = formatObservedClock(
         conditions.observedAt,
         conditions.timezoneOffsetSeconds,
     );
@@ -132,11 +133,13 @@ function windCompass(deg?: number): string {
 /**
  * Renders a unix timestamp as the location's wall clock ("2:05 PM").
  *
- * Pure and exported for tests. Returns "" for a missing or non-finite
- * timestamp — the observation instant is optional information, never worth
- * failing the whole formatting over.
+ * Pure and exported for tests. Applies the location's UTC offset to the
+ * observation instant, then defers the `h:mm AM/PM` shape to the shared
+ * {@link format12Hour}. Returns "" for a missing or non-finite timestamp — the
+ * observation instant is optional information, never worth failing the whole
+ * formatting over.
  */
-export function localClock(
+export function formatObservedClock(
     observedAt: number,
     timezoneOffsetSeconds: number,
 ): string {
@@ -150,11 +153,7 @@ export function localClock(
     if (Number.isNaN(local.getTime())) {
         return "";
     }
-    const hours = local.getUTCHours();
-    const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
-    const meridiem = hours < 12 ? "AM" : "PM";
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${hour12}:${pad(local.getUTCMinutes())} ${meridiem}`;
+    return format12Hour(local.getUTCHours(), local.getUTCMinutes());
 }
 
 /** Model-facing text for a failed lookup; never leaks keys or internals. */

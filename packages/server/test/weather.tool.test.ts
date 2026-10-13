@@ -9,7 +9,7 @@ import {
     discardedLocationReason,
     formatCurrentConditions,
     formatForecast,
-    localClock,
+    formatObservedClock,
     resolveLocation,
 } from "../src/llm/tools/getWeather";
 import { logger } from "../src/logger";
@@ -269,8 +269,10 @@ describe("getWeather formatters", () => {
     });
 
     it("renders an empty clock for missing observation timestamps", () => {
-        expect(localClock(NaN, 0)).toBe("");
-        expect(localClock(1_791_270_000 + 50_640, -25_200)).toBe("2:04 PM");
+        expect(formatObservedClock(NaN, 0)).toBe("");
+        expect(formatObservedClock(1_791_270_000 + 50_640, -25_200)).toBe(
+            "2:04 PM",
+        );
     });
 });
 

@@ -165,11 +165,13 @@ The wiring splits cleanly: `packages/voice` owns the engine seam
 reuse it). The controller arms the engines, tags every event with its
 session id, submits transcripts, and routes turn outcomes back through the
 reducer, so stale engine callbacks or old turn ends can never disturb a
-newer session. `src/views/Chat.tsx` renders the snapshot, forwards server
-frames (`noteResponseFrame`), and passes `createBrowserVad()` in at
-construction; unmount disposes the controller (cancelling any live session
-and releasing the WASM model worker). No behavior lives only in the
-component.
+newer session. `src/hooks/useVoiceSession.ts` owns the controller's lifetime:
+it constructs the controller (passing `createBrowserVad()` in and re-installing
+the submit seam) inside a mount effect — so React StrictMode's double-invoke
+gets a fresh instance rather than a permanently-disposed one — and disposes it
+on unmount (cancelling any live session and releasing the WASM model worker).
+The view renders the snapshot and forwards server frames (`noteResponseFrame`)
+through `useChatClient`'s frame handler. No behavior lives only in a component.
 
 Two honest limits: the WASM engine's model archive must be fetchable from
 the server (a 404 from `GET /api/stt/model` — `JARVIS_STT_PROVIDER` unset —
@@ -253,7 +255,11 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83) + wake cue (`blip`, #84 P4).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
-- `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens (Chat owns the wake toggle + arming effect).
+- `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens. `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
+- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
+- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useAutoScroll`.
+- `src/sidebar.ts` — sidebar-row merge (`mergeSessions`) + wake/location label helpers.
+- `src/attachments.ts` — attachment chip lifecycle + upload/retry helpers (#10).
 - `src/components/ToolCall.tsx` — collapsible tool/toolResult notices.
 - `src/wsUrl.ts` — derives the page-origin `ws(s)://…/ws` URL.
 - `src/styles.css` — shell styling.
