@@ -25,17 +25,18 @@ import {
 } from "react";
 import { api, ApiError, type SessionSummary } from "../api";
 import type { StoredCredential } from "../credentials";
+import { loadThreads, saveThreads } from "../threads";
+import { mergeSessions, describeWakeState } from "../sidebar";
 import {
-    appendChunk,
-    appendMessage,
-    appendToolResult,
-    deleteThread,
-    ensureThread,
-    loadThreads,
-    markAssistantError,
-    saveThreads,
-    type ThreadMap,
-} from "../threads";
+    capExceeded,
+    determineReady,
+    readAsDataUrl,
+    runChipUpload,
+    type PendingImage,
+    type UploadIo,
+} from "../attachments";
+import { threadsReducer } from "../hooks/useThreads";
+import { voiceStatusText } from "../hooks/useVoiceSession";
 import { ChatClient, type ChatStatus } from "../ChatClient";
 import { webSocketUrl } from "../wsUrl";
 import { Markdown } from "../Markdown";
@@ -46,7 +47,6 @@ import {
     initialVoiceSnapshot,
     type SttProvider,
     type VadProvider,
-    type VoiceSnapshot,
     type WakeWordProvider,
 } from "@lukestanbery/jarvis-voice";
 import {
@@ -93,134 +93,12 @@ import {
     X,
 } from "lucide-react";
 
-/**
- * The upload budget the downscale policy plans against, in bytes.
- *
- * Mirrors the server's per-attachment cap (`DEFAULT_ATTACHMENT_MAX_BYTES`,
- * 4 MiB decoded). There is no endpoint exposing the cap, so the two constants
- * must stay in sync; a drifted server answer surfaces as a 413 and the send
- * path retries once with a stricter budget, so drift degrades gracefully.
- */
-const UPLOAD_BUDGET_BYTES = 4 * 1024 * 1024;
-
-/** One image attached to the composer, through its upload lifecycle. */
-interface PendingImage {
-    /** Local chip id (not the server attachment id). */
-    id: string;
-    name: string;
-    /** `data:` preview (R6 — not `blob:`, no revoke bookkeeping). */
-    dataUrl: string;
-    /** Upload state: in flight, resolved id, or failure text. */
-    state:
-        | { kind: "uploading" }
-        | { kind: "ready"; attachmentId: string }
-        | { kind: "failed"; reason: string };
-}
-
-/** Transcript-store actions, all flowing through the pure threads helpers. */
-type ThreadsAction =
-    | {
-          type: "user";
-          sessionId: string;
-          text: string;
-          at: number;
-          attachmentIds?: string[];
-      }
-    | { type: "chunk"; sessionId: string; text: string; at: number }
-    | {
-          type: "tool";
-          sessionId: string;
-          name: string;
-          args?: unknown;
-          at: number;
-      }
-    | {
-          type: "toolResult";
-          sessionId: string;
-          name: string;
-          output?: unknown;
-          at: number;
-      }
-    | { type: "assistantError"; sessionId: string; text: string; at: number }
-    | { type: "ensure"; sessionId: string; at: number }
-    | { type: "deleted"; sessionId: string };
-
-/** Applies one action via the pure helpers (reducer for the thread map). */
-function threadsReducer(map: ThreadMap, action: ThreadsAction): ThreadMap {
-    switch (action.type) {
-        case "user":
-            return appendMessage(map, action.sessionId, {
-                id: crypto.randomUUID(),
-                role: "user",
-                text: action.text,
-                at: action.at,
-                ...(action.attachmentIds?.length
-                    ? { attachmentIds: action.attachmentIds }
-                    : {}),
-            });
-        case "chunk":
-            return appendChunk(map, action.sessionId, action.text, action.at);
-        case "tool":
-            return appendMessage(map, action.sessionId, {
-                id: crypto.randomUUID(),
-                role: "tool",
-                tool: { name: action.name, args: action.args },
-                at: action.at,
-            });
-        case "toolResult":
-            return appendToolResult(
-                map,
-                action.sessionId,
-                action.name,
-                action.output,
-                action.at,
-            );
-        case "assistantError":
-            return markAssistantError(
-                map,
-                action.sessionId,
-                action.text,
-                action.at,
-            );
-        case "ensure":
-            return ensureThread(map, action.sessionId, action.at);
-        case "deleted":
-            return deleteThread(map, action.sessionId);
-    }
-}
-
-/** One merged sidebar row. */
-interface SidebarRow {
-    id: string;
-    title: string;
-    lastActive: number;
-    kind?: "text" | "voice";
-}
-
-/**
- * Human text for the voice session's status line (#84 P2): the live partial
- * transcript while listening, then the stage. Returns `null` once the
- * response itself is visible (responding/speaking) or there is nothing to
- * say (idle without an error) — the caller renders errors separately as an
- * alert so a failed session stays on screen until the next press.
- *
- * @param snapshot - The current voice snapshot.
- * @returns Status text, or `null` when the line should not render.
- */
-function voiceStatusText(snapshot: VoiceSnapshot): string | null {
-    switch (snapshot.state) {
-        case "listening":
-            return snapshot.partial ?? "Listening…";
-        case "transcribing":
-            return "Transcribing…";
-        case "submitting":
-            return "Sending…";
-        case "waiting":
-            return "Thinking…";
-        default:
-            return null;
-    }
-}
+/** Real I/O for the attachment upload policy (`attachments.ts`). */
+const uploadIo: UploadIo = {
+    readDataUrl: readAsDataUrl,
+    prepare: (file, budgetBytes) => prepareForUpload(file, budgetBytes),
+    upload: (token, base64) => api.uploadAttachment(token, base64),
+};
 
 /** Props for {@link Chat}. */
 export interface ChatProps {
@@ -638,38 +516,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     );
 
     /** Sidebar rows: server sessions merged with local threads, newest first. */
-    const entries = useMemo<SidebarRow[]>(() => {
-        const byId = new Map<string, SidebarRow>();
-        for (const row of rows) {
-            const local = threads[row.threadId];
-            byId.set(row.threadId, {
-                id: row.threadId,
-                title:
-                    local?.title ??
-                    (row.threadId.length > 8
-                        ? `Thread ${row.threadId.slice(0, 8)}`
-                        : `Thread ${row.threadId}`),
-                lastActive: Date.parse(row.lastActiveAt) || 0,
-                kind: row.kind,
-            });
-        }
-        for (const [id, record] of Object.entries(threads)) {
-            const existing = byId.get(id);
-            if (existing) {
-                existing.lastActive = Math.max(
-                    existing.lastActive,
-                    record.updatedAt,
-                );
-            } else {
-                byId.set(id, {
-                    id,
-                    title: record.title,
-                    lastActive: record.updatedAt,
-                });
-            }
-        }
-        return [...byId.values()].sort((a, b) => b.lastActive - a.lastActive);
-    }, [rows, threads]);
+    const entries = useMemo(
+        () => mergeSessions(rows, threads),
+        [rows, threads],
+    );
 
     const activeThread = activeId !== null ? (threads[activeId] ?? null) : null;
 
@@ -711,121 +561,31 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 setBanner(`${file.name} is not an image`);
                 continue;
             }
-            if (pending.length >= MAX_ATTACHMENTS) {
+            if (capExceeded(pending)) {
                 setBanner(`At most ${MAX_ATTACHMENTS} images per message`);
                 break;
             }
-            const id = crypto.randomUUID();
-            setPending((current) => [
-                ...current,
-                {
-                    id,
-                    name: file.name || "pasted image",
-                    dataUrl: "",
-                    state: { kind: "uploading" },
+            const chip: PendingImage = {
+                id: crypto.randomUUID(),
+                name: file.name || "pasted image",
+                dataUrl: "",
+                state: { kind: "uploading" },
+            };
+            setPending((current) => [...current, chip]);
+            void runChipUpload(uploadIo, credential.token, chip, file).then(
+                ({ chip: next, preview }) => {
+                    setPending((current) =>
+                        current.map((p) => (p.id === next.id ? next : p)),
+                    );
+                    if (preview !== undefined) {
+                        setPreviews((prev) => ({
+                            ...prev,
+                            [preview.attachmentId]: preview.dataUrl,
+                        }));
+                    }
                 },
-            ]);
-            void prepareAndUpload(file, id);
-        }
-    }
-
-    /** Prepares one file (policy + re-encode) and uploads it, retrying a 413 once stricter. */
-    async function prepareAndUpload(file: File, chipId: string): Promise<void> {
-        const dataUrl = await readAsDataUrl(file).catch(() => "");
-        setPending((c) =>
-            c.map((p) => (p.id === chipId ? { ...p, dataUrl } : p)),
-        );
-        try {
-            let prepared = await prepareForUpload(file, UPLOAD_BUDGET_BYTES);
-            let uploaded: { attachmentId: string };
-            try {
-                uploaded = await api.uploadAttachment(
-                    credential.token,
-                    prepared.base64,
-                );
-            } catch (err) {
-                // One retry at half the reported cap — the "stricter budget"
-                // rung for a file that slipped past the client-side policy.
-                if (
-                    err instanceof ApiError &&
-                    err.status === 413 &&
-                    err.code === "ATTACHMENT_TOO_LARGE"
-                ) {
-                    prepared = await prepareForUpload(
-                        file,
-                        Math.floor((err.maxBytes ?? UPLOAD_BUDGET_BYTES) / 2),
-                    );
-                    uploaded = await api.uploadAttachment(
-                        credential.token,
-                        prepared.base64,
-                    );
-                } else {
-                    throw err;
-                }
-            }
-            // The preview comes from the PREPARED bytes — always available
-            // post-downscale. The raw file's data URL is "" for >4 MB files
-            // (too big to preview raw), which used to surface as the
-            // missing-preview note on a fresh upload.
-            const previewUrl = `data:${prepared.mime};base64,${prepared.base64}`;
-            setPending((c) =>
-                c.map((p) =>
-                    p.id === chipId
-                        ? {
-                              ...p,
-                              dataUrl:
-                                  p.dataUrl === "" ? previewUrl : p.dataUrl,
-                              state: {
-                                  kind: "ready",
-                                  attachmentId: uploaded.attachmentId,
-                              },
-                          }
-                        : p,
-                ),
-            );
-            setPreviews((prev) => ({
-                ...prev,
-                [uploaded.attachmentId]: previewUrl,
-            }));
-        } catch (err) {
-            setPending((c) =>
-                c.map((p) =>
-                    p.id === chipId
-                        ? {
-                              ...p,
-                              state: {
-                                  kind: "failed",
-                                  reason:
-                                      err instanceof Error
-                                          ? err.message
-                                          : "upload failed",
-                              },
-                          }
-                        : p,
-                ),
             );
         }
-    }
-
-    /** Reads a file as a `data:` URL for its composer chip. */
-    async function readAsDataUrl(file: File): Promise<string> {
-        const blob = await new Promise<Blob | null>((resolve) => {
-            if (file.size <= 4 * 1024 * 1024) {
-                resolve(file);
-            } else {
-                resolve(null); // too big to preview raw; chip shows a note
-            }
-        });
-        if (blob === null) {
-            return "";
-        }
-        return new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result));
-            reader.onerror = () =>
-                reject(reader.error ?? new Error("read failed"));
-            reader.readAsDataURL(blob);
-        });
     }
 
     /** Drops one pending chip (and its upload, if any). */
@@ -905,13 +665,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     /** Sends the composer draft (plus any ready attachments) as one chat turn. */
     async function send(): Promise<void> {
         const text = draft.trim();
-        const readyIds = pending
-            .filter((p) => p.state.kind === "ready")
-            .map(
-                (p) =>
-                    (p.state as { kind: "ready"; attachmentId: string })
-                        .attachmentId,
-            );
+        const readyIds = determineReady(pending);
         if (text === "" || activeId === null || streaming) {
             return;
         }
@@ -976,14 +730,10 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     }
 
     /** Tooltip/a11y text for the wake toggle state (#84 P4). */
-    function describeWakeState(): string {
-        if (!wakeAvailable) {
-            return "Wake word unavailable";
-        }
-        return voiceSnapshot.wakeArmed
-            ? "Listening for “Hey JARVIS”"
-            : "Wake word off";
-    }
+    const wakeStateText = describeWakeState(
+        wakeAvailable,
+        voiceSnapshot.wakeArmed,
+    );
 
     return (
         <main className="chat">
@@ -1014,8 +764,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                                         : "icon-btn location"
                                 }
                                 aria-pressed={wakeOn}
-                                aria-label={describeWakeState()}
-                                title={describeWakeState()}
+                                aria-label={wakeStateText}
+                                title={wakeStateText}
                                 onClick={toggleWake}
                             >
                                 <AudioLines size={16} />
