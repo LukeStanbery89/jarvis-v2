@@ -4,8 +4,8 @@
  * Serper's value is breadth: per-vertical endpoints (`/images`, `/video`,
  * `/patents`, …) covering everything Tavily does not, so the tool defers
  * here for those verticals and as a fallback when Tavily is unavailable.
- * Hand-rolled `fetch` — one endpoint family, full timeout/error control,
- * zero new dependencies.
+ * One endpoint family over the shared `requestJson` transport (#103) —
+ * full timeout/error control, zero new dependencies.
  */
 import {
     SearchError,
@@ -14,6 +14,7 @@ import {
     type SearchVertical,
     type SearchResult,
 } from "./types";
+import { asString, requestJson } from "../http";
 
 /** Serper's API root; the vertical selects the path. */
 const SERPER_ROOT = "https://google.serper.dev";
@@ -40,15 +41,10 @@ export interface SerperOptions {
     readonly apiKey: string;
     /** Results per call (`JARVIS_SEARCH_MAX_RESULTS`). */
     readonly maxResults: number;
-    /** Wall-clock cap applied when the caller supplies no signal. */
+    /** Wall-clock cap per request, combined with any caller signal. */
     readonly timeoutMs: number;
     /** Injectable for tests (defaults to global `fetch`). */
     readonly fetchImpl?: typeof fetch;
-}
-
-/** Defensive field coercion for untrusted provider JSON: a string or nothing. */
-function asString(value: unknown): string {
-    return typeof value === "string" ? value : "";
 }
 
 /**
@@ -104,10 +100,11 @@ function normalizeAnswer(parsed: unknown): SearchAnswer {
  *
  * Serves every vertical (routing to the vertical's endpoint path) — the
  * tool decides when to spend Serper calls and when to prefer Tavily.
+ * Transport is the shared `requestJson` (#103): the caller's signal and
+ * `timeoutMs` are combined, so a cancelled turn aborts the fetch while a
+ * quiet caller stays bounded.
  */
 export function createSerperClient(opts: SerperOptions): SearchProvider {
-    const doFetch = opts.fetchImpl ?? ((...args) => fetch(...args));
-
     return {
         name: "serper",
         async search(
@@ -115,40 +112,25 @@ export function createSerperClient(opts: SerperOptions): SearchProvider {
             vertical: SearchVertical,
             signal?: AbortSignal,
         ): Promise<SearchAnswer> {
-            const effectiveSignal =
-                signal ?? AbortSignal.timeout(opts.timeoutMs);
-            let response: Response;
-            try {
-                response = await doFetch(
-                    `${SERPER_ROOT}${VERTICAL_PATH[vertical]}`,
-                    {
-                        method: "POST",
-                        headers: {
-                            "X-API-KEY": opts.apiKey,
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                            q: query,
-                            num: opts.maxResults,
-                        }),
-                        signal: effectiveSignal,
-                    },
-                );
-            } catch (err) {
-                // Abort/timeout or transport failure — never the key.
-                throw new SearchError(
-                    `serper unreachable: ${err instanceof Error ? err.message : "unknown error"}`,
-                );
-            }
-            if (!response.ok) {
-                throw new SearchError(`serper returned ${response.status}`);
-            }
-            let parsed: unknown;
-            try {
-                parsed = await response.json();
-            } catch {
-                throw new SearchError("serper returned invalid JSON");
-            }
+            // Transport failures throw typed `SearchError`s already mapped by
+            // the shared helper (never the key).
+            const parsed = await requestJson({
+                url: `${SERPER_ROOT}${VERTICAL_PATH[vertical]}`,
+                label: "serper",
+                method: "POST",
+                headers: {
+                    "X-API-KEY": opts.apiKey,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    q: query,
+                    num: opts.maxResults,
+                }),
+                timeoutMs: opts.timeoutMs,
+                signal,
+                fetchImpl: opts.fetchImpl,
+                mapFailure: (f) => new SearchError(f.message, f.cause),
+            });
             const answer = normalizeAnswer(parsed);
             answer.results = answer.results.slice(0, opts.maxResults);
             return answer;

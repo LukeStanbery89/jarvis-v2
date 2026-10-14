@@ -405,3 +405,33 @@ describe("homeAssistant client failures", () => {
         }
     });
 });
+
+describe("homeAssistant client signal threading (#103)", () => {
+    it("aborts a hung request when the caller's signal fires", async () => {
+        // The turn's signal reaches the fetch combined with the timeout —
+        // cancelling a turn aborts the in-flight call instead of leaving it
+        // running to its own timeout. The shared in-flight snapshot collapse
+        // passes the caller's signal through unchanged (a cancel landing
+        // mid-fetch fails co-sharers transiently; failures are not cached).
+        const controller = new AbortController();
+        const impl = (async (
+            _input: unknown,
+            init?: RequestInit,
+        ): Promise<Response> =>
+            new Promise((_, reject) => {
+                init?.signal?.addEventListener(
+                    "abort",
+                    () => reject(init.signal?.reason),
+                    { once: true },
+                );
+            })) as unknown as typeof fetch;
+        const client = createHomeAssistantClient({
+            ...BASE,
+            timeoutMs: 60_000,
+            fetchImpl: impl,
+        });
+        const pending = client.entities(controller.signal);
+        controller.abort();
+        await expect(pending).rejects.toThrow(HomeAssistantError);
+    });
+});

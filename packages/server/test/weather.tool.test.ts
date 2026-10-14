@@ -31,24 +31,32 @@ function fakeProvider(script: {
     provider: WeatherProvider;
     currentCalls: WeatherLocation[];
     forecastCalls: WeatherLocation[];
+    currentSignals: (AbortSignal | undefined)[];
+    forecastSignals: (AbortSignal | undefined)[];
 } {
     const currentCalls: WeatherLocation[] = [];
     const forecastCalls: WeatherLocation[] = [];
+    const currentSignals: (AbortSignal | undefined)[] = [];
+    const forecastSignals: (AbortSignal | undefined)[] = [];
     return {
         currentCalls,
         forecastCalls,
+        currentSignals,
+        forecastSignals,
         provider: {
             name: "openweather",
-            async current(location) {
+            async current(location, signal) {
                 currentCalls.push(location);
+                currentSignals.push(signal);
                 const outcome = script.current;
                 if (outcome instanceof Error) {
                     throw outcome;
                 }
                 return outcome ?? CONDITIONS;
             },
-            async forecast(location) {
+            async forecast(location, signal) {
                 forecastCalls.push(location);
+                forecastSignals.push(signal);
                 const outcome = script.forecast;
                 if (outcome instanceof Error) {
                     throw outcome;
@@ -104,7 +112,10 @@ async function run(
         units: WeatherUnits;
     }>,
     args: { location?: string; scope?: "now" | "forecast" } = {},
-    runtime: { configurable?: Record<string, unknown> } = OWNER,
+    runtime: {
+        configurable?: Record<string, unknown>;
+        signal?: AbortSignal;
+    } = OWNER,
 ): Promise<string> {
     const tool = createGetWeatherTool({
         provider: deps?.provider ?? fakeProvider({}).provider,
@@ -427,5 +438,44 @@ describe("getWeather discarded-argument warning", () => {
         } finally {
             warn.mockRestore();
         }
+    });
+});
+
+describe("getWeather signal threading (#103)", () => {
+    it("passes the turn's signal to the provider", async () => {
+        const controller = new AbortController();
+        const fake = fakeProvider({});
+        await run(
+            { provider: fake.provider },
+            { location: "Paris" },
+            { configurable: { userId: 7 }, signal: controller.signal },
+        );
+        expect(fake.currentSignals).toEqual([controller.signal]);
+        await run(
+            { provider: fake.provider },
+            { location: "Paris", scope: "forecast" },
+            { configurable: { userId: 7 }, signal: controller.signal },
+        );
+        expect(fake.forecastSignals).toEqual([controller.signal]);
+    });
+
+    it("rejects instead of returning failure text when the turn is cancelled", async () => {
+        // throwIfAborted in the tool's catch: a cancelled turn must ride the
+        // graph's bare-done path, not hand the model "weather unavailable"
+        // text to relay.
+        const controller = new AbortController();
+        controller.abort();
+        const fake = fakeProvider({
+            current: new WeatherError(
+                "openweather unreachable: This operation was aborted",
+            ),
+        });
+        await expect(
+            run(
+                { provider: fake.provider },
+                { location: "Paris" },
+                { configurable: { userId: 7 }, signal: controller.signal },
+            ),
+        ).rejects.toThrow();
     });
 });

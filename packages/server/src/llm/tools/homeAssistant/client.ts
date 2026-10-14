@@ -1,8 +1,9 @@
 /**
  * The Home Assistant REST client (#15).
  *
- * Two endpoints, hand-rolled `fetch` for the same reasons as the weather client:
- * full control over timeout and error shapes, zero new dependencies.
+ * Two endpoints over the shared `requestJson` transport (#103) for the same
+ * reasons as the weather client: full control over timeout and error shapes,
+ * zero new dependencies.
  *
  * - `GET /api/states` — every entity in the instance. A mature install has
  *   thousands, so the response is filtered to the deployment's readable domains
@@ -24,6 +25,7 @@ import {
     type HomeAssistantEntity,
     type HomeAssistantProvider,
 } from "./types";
+import { requestJson } from "../http";
 import { logger } from "../../../logger";
 
 /** Options for {@link createHomeAssistantClient}. */
@@ -34,7 +36,7 @@ export interface HomeAssistantOptions {
     readonly accessToken: string;
     /** Domains whose entities are exposed to the tool. */
     readonly readDomains: readonly string[];
-    /** Wall-clock cap applied when the caller supplies no signal. */
+    /** Wall-clock cap per request, combined with any caller signal. */
     readonly timeoutMs: number;
     /** How long a fetched snapshot is reused. */
     readonly cacheTtlMs: number;
@@ -152,9 +154,11 @@ export function createHomeAssistantClient(
     /**
      * Issues one authenticated request and parses the JSON body.
      *
-     * Applies the timeout when the caller supplies no signal and maps
-     * transport, HTTP, and JSON failures onto typed `HomeAssistantError`s. The
-     * request line is logged without headers, so the token never reaches a log.
+     * Delegates to the shared `requestJson`, which combines the caller's
+     * signal with the configured timeout (either aborts the request) and
+     * maps transport, HTTP, and JSON failures onto typed
+     * `HomeAssistantError`s. The request line is logged without headers, so
+     * the token never reaches a log.
      *
      * `ignoreBody` asserts only that the status was 2xx: the write path needs
      * nothing from a response whose contents are discarded anyway, so a proxy
@@ -166,55 +170,39 @@ export function createHomeAssistantClient(
         init: { method: "GET" | "POST"; body?: unknown; ignoreBody?: boolean },
         signal?: AbortSignal,
     ): Promise<unknown> => {
-        const effectiveSignal = signal ?? AbortSignal.timeout(opts.timeoutMs);
         logger.debug(
             `home assistant ${init.method} ${opts.url}${path} (${readable.size} readable domains)`,
         );
-        let response: Response;
-        try {
-            response = await (opts.fetchImpl ?? fetch)(`${opts.url}${path}`, {
-                method: init.method,
-                signal: effectiveSignal,
-                headers: {
-                    Authorization: `Bearer ${opts.accessToken}`,
-                    "Content-Type": "application/json",
-                },
-                ...(init.body === undefined
-                    ? {}
-                    : { body: JSON.stringify(init.body) }),
-            });
-        } catch (err) {
-            throw new HomeAssistantError(
-                `home assistant unreachable: ${
-                    err instanceof Error ? err.message : "unknown error"
-                }`,
-            );
-        }
-        if (!response.ok) {
-            // The body is untrusted and may echo the request, so it is scrubbed
-            // of the token before it can reach a log line.
-            let detail = "";
-            try {
-                detail = scrub(await response.text());
-            } catch {
-                detail = "";
-            }
-            throw new HomeAssistantError(
-                `home assistant returned ${response.status}${
+        return requestJson({
+            url: `${opts.url}${path}`,
+            label: "home assistant",
+            method: init.method,
+            headers: {
+                Authorization: `Bearer ${opts.accessToken}`,
+                "Content-Type": "application/json",
+            },
+            ...(init.body === undefined
+                ? {}
+                : { body: JSON.stringify(init.body) }),
+            ignoreBody: init.ignoreBody,
+            timeoutMs: opts.timeoutMs,
+            signal,
+            fetchImpl: opts.fetchImpl,
+            httpErrorText: async (response) => {
+                // The body is untrusted and may echo the request, so the token
+                // is scrubbed out of it before it can reach a log line.
+                let detail = "";
+                try {
+                    detail = scrub(await response.text());
+                } catch {
+                    detail = "";
+                }
+                return `home assistant returned ${response.status}${
                     detail ? ` (${detail})` : ""
-                }`,
-            );
-        }
-        if (init.ignoreBody) {
-            return undefined;
-        }
-        try {
-            return await response.json();
-        } catch {
-            throw new HomeAssistantError(
-                "home assistant returned invalid JSON",
-            );
-        }
+                }`;
+            },
+            mapFailure: (f) => new HomeAssistantError(f.message, f.cause),
+        });
     };
 
     return {
@@ -229,7 +217,13 @@ export function createHomeAssistantClient(
                 return snapshot.entities;
             }
             if (inFlight) {
-                // A burst of calls in one turn must make one request.
+                // A burst of calls in one turn must make one request. The
+                // caller's signal is threaded into that shared request
+                // (#103), so a cancel landing mid-fetch fails co-sharers of
+                // the same in-flight promise too — rare, transient, and
+                // never cached (failures are not cached), which is strictly
+                // better than a cancelled turn holding the thread lock for
+                // the full timeout.
                 return inFlight;
             }
             inFlight = (async () => {

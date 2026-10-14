@@ -4,9 +4,9 @@
  * Tavily is the preferred provider: it is built for LLM consumption (a
  * synthesized `answer` plus clean result excerpts) and it is the metered-but-
  * free-quota API, so the tool routes every vertical Tavily supports here
- * before spending pay-as-you-go Serper calls. Hand-rolled `fetch` rather
- * than the community package — one endpoint, full control over timeout and
- * error shapes, zero new dependencies.
+ * before spending pay-as-you-go Serper calls. One endpoint over the shared
+ * `requestJson` transport (#103) — full control over timeout and error
+ * shapes, zero new dependencies.
  */
 import {
     SearchError,
@@ -15,6 +15,7 @@ import {
     type SearchVertical,
     type SearchResult,
 } from "./types";
+import { asString, requestJson } from "../http";
 
 /** Tavily's search endpoint. */
 const TAVILY_ENDPOINT = "https://api.tavily.com/search";
@@ -25,28 +26,21 @@ export interface TavilyOptions {
     readonly apiKey: string;
     /** Results per call (`JARVIS_SEARCH_MAX_RESULTS`). */
     readonly maxResults: number;
-    /** Wall-clock cap applied when the caller supplies no signal. */
+    /** Wall-clock cap per request, combined with any caller signal. */
     readonly timeoutMs: number;
     /** Injectable for tests (defaults to global `fetch`). */
     readonly fetchImpl?: typeof fetch;
 }
 
 /**
- * Defensive field coercion for untrusted provider JSON: a string or nothing.
- */
-function asString(value: unknown): string {
-    return typeof value === "string" ? value : "";
-}
-
-/**
  * Builds the Tavily provider.
  *
  * Serves only its verticals (`general` / `news` / `finance`) — the tool owns
- * routing and never asks Tavily for anything else.
+ * routing and never asks Tavily for anything else. Transport is the shared
+ * `requestJson` (#103): the caller's signal and `timeoutMs` are combined, so
+ * a cancelled turn aborts the fetch while a quiet caller stays bounded.
  */
 export function createTavilyClient(opts: TavilyOptions): SearchProvider {
-    const doFetch = opts.fetchImpl ?? ((...args) => fetch(...args));
-
     return {
         name: "tavily",
         async search(
@@ -54,39 +48,27 @@ export function createTavilyClient(opts: TavilyOptions): SearchProvider {
             vertical: SearchVertical,
             signal?: AbortSignal,
         ): Promise<SearchAnswer> {
-            const effectiveSignal =
-                signal ?? AbortSignal.timeout(opts.timeoutMs);
-            let response: Response;
-            try {
-                response = await doFetch(TAVILY_ENDPOINT, {
-                    method: "POST",
-                    headers: {
-                        Authorization: `Bearer ${opts.apiKey}`,
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        query,
-                        topic: vertical,
-                        max_results: opts.maxResults,
-                        include_answer: true,
-                    }),
-                    signal: effectiveSignal,
-                });
-            } catch (err) {
-                // Abort/timeout or transport failure — never the key.
-                throw new SearchError(
-                    `tavily unreachable: ${err instanceof Error ? err.message : "unknown error"}`,
-                );
-            }
-            if (!response.ok) {
-                throw new SearchError(`tavily returned ${response.status}`);
-            }
-            let parsed: unknown;
-            try {
-                parsed = await response.json();
-            } catch {
-                throw new SearchError("tavily returned invalid JSON");
-            }
+            // Transport failures throw typed `SearchError`s already mapped by
+            // the shared helper (never the key).
+            const parsed = await requestJson({
+                url: TAVILY_ENDPOINT,
+                label: "tavily",
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${opts.apiKey}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    query,
+                    topic: vertical,
+                    max_results: opts.maxResults,
+                    include_answer: true,
+                }),
+                timeoutMs: opts.timeoutMs,
+                signal,
+                fetchImpl: opts.fetchImpl,
+                mapFailure: (f) => new SearchError(f.message, f.cause),
+            });
             const body = parsed as {
                 answer?: unknown;
                 results?: unknown;

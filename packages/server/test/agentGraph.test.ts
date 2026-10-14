@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     AIMessage,
     AIMessageChunk,
@@ -10,7 +10,11 @@ import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import type { Runnable } from "@langchain/core/runnables";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
-import { tool, type StructuredToolInterface } from "@langchain/core/tools";
+import {
+    tool,
+    type StructuredToolInterface,
+    type ToolRuntime,
+} from "@langchain/core/tools";
 import { z } from "zod";
 import {
     createAgentGraph,
@@ -127,6 +131,60 @@ describe("createAgentGraph", () => {
             text: "The time is 2026-09-20.",
         });
         expect(model.callInputs).toHaveLength(2);
+    });
+
+    it("threads the turn's signal into tool runtimes (#103)", async () => {
+        // The metered tools pass `runtime.signal` into their provider calls;
+        // this pins that a mid-turn cancel actually aborts the signal the
+        // tool sees — the premise the #103 threading rests on. LangChain
+        // re-wraps the config signal in derived runnables (identity is not
+        // preserved), so the probe hangs until its signal aborts — exactly
+        // what a provider fetch does — and the turn must reject with it.
+        let seen: AbortSignal | undefined;
+        const probe = tool(
+            async (_args, runtime: ToolRuntime) => {
+                seen = runtime.signal;
+                await new Promise<never>((_, reject) => {
+                    runtime.signal?.addEventListener(
+                        "abort",
+                        () => reject(runtime.signal?.reason),
+                        { once: true },
+                    );
+                });
+                return "unreachable";
+            },
+            {
+                name: "probeSignal",
+                description: "Hangs until its runtime signal aborts.",
+                schema: z.object({}),
+            },
+        );
+        const model = new ScriptedChatModel([
+            new AIMessage({
+                content: "",
+                tool_calls: [{ name: "probeSignal", args: {}, id: "call-1" }],
+            }),
+            new AIMessage({ content: "done" }),
+        ]);
+        const graph = createAgentGraph({
+            model: model as unknown as Parameters<
+                typeof createAgentGraph
+            >[0]["model"],
+            tools: [probe] as StructuredToolInterface[],
+            checkpointer: new MemorySaver(),
+        });
+        const controller = new AbortController();
+        const turn = collect(
+            streamAgentTurn(graph, "probe", "t-signal", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+                signal: controller.signal,
+            }),
+        );
+        await vi.waitFor(() => expect(seen).toBeDefined());
+        controller.abort();
+        await expect(turn).rejects.toThrow();
+        expect(seen?.aborted).toBe(true);
     });
 
     it("never streams messages from a model invoked inside a tool (#70)", async () => {
