@@ -18,6 +18,15 @@
  * seam without touching any client.
  */
 import type { VadCallbacks, VadProvider, VoiceError } from "../types";
+import {
+    findAudioContextCtor,
+    findUserMedia,
+    openMicContext,
+    releaseStream,
+    voiceError,
+    wireTrackEnded,
+    type MediaStreamLike,
+} from "./internal";
 
 /** Options for {@link BrowserVadProvider}. */
 export interface BrowserVadOptions {
@@ -44,24 +53,6 @@ export interface BrowserVadOptions {
     readonly intervalMs?: number;
 }
 
-/** A mic track, structurally sliced (node tests install doubles). */
-interface MediaStreamTrackLike {
-    stop(): void;
-    onended: (() => void) | null;
-}
-
-/** A media stream carrying one or more tracks. */
-interface MediaStreamLike {
-    getTracks(): MediaStreamTrackLike[];
-}
-
-/** The slice of `MediaDevices` the detector needs. */
-interface MediaDevicesLike {
-    getUserMedia(constraints: {
-        audio: { echoCancellation: boolean };
-    }): Promise<MediaStreamLike>;
-}
-
 /** The slice of `AnalyserNode` the detector reads. */
 interface AnalyserNodeLike {
     fftSize: number;
@@ -84,51 +75,16 @@ interface AudioContextLike {
     close(): Promise<void>;
 }
 
-/** Constructor for an audio context, as found on `globalThis`. */
-type AudioContextCtor = new () => AudioContextLike;
-
-/**
- * Finds `getUserMedia`, standard or vendor-prefixed paths.
- *
- * The function is returned **bound to its `MediaDevices` receiver**: the
- * browser requires it to be invoked with the `mediaDevices` object as
- * `this` (Chrome throws `Illegal invocation` otherwise), and the caller
- * here holds it detached from its own object.
- *
- * @returns The function, or `null` outside a browser that offers one
- * (node, plain-HTTP non-localhost origins, permission-less contexts).
- */
-function findUserMedia(): MediaDevicesLike["getUserMedia"] | null {
-    const globals = globalThis as {
-        navigator?: { mediaDevices?: MediaDevicesLike };
-    };
-    const devices = globals.navigator?.mediaDevices;
-    if (devices?.getUserMedia === undefined) {
-        return null;
-    }
-    return devices.getUserMedia.bind(devices);
-}
-
-/**
- * Finds the audio-context constructor, standard or prefixed.
- *
- * @returns The constructor, or `null` where Web Audio is unavailable.
- */
-function findAudioContextCtor(): AudioContextCtor | null {
-    const globals = globalThis as {
-        AudioContext?: AudioContextCtor;
-        webkitAudioContext?: AudioContextCtor;
-    };
-    return globals.AudioContext ?? globals.webkitAudioContext ?? null;
-}
-
 /**
  * Whether the current runtime offers everything the energy detector needs.
  * Cheap and side-effect free — UIs call this to decide whether VAD-driven
  * endpointing is available (see `createBrowserVad`).
  */
 export function isVadSupported(): boolean {
-    return findUserMedia() !== null && findAudioContextCtor() !== null;
+    return (
+        findUserMedia() !== null &&
+        findAudioContextCtor<AudioContextLike>() !== null
+    );
 }
 
 /**
@@ -189,38 +145,26 @@ export class BrowserVadProvider implements VadProvider {
      */
     async start(callbacks: VadCallbacks): Promise<void> {
         if (this.sessionActive) {
-            throw this.voiceError(
+            throw voiceError(
                 "engine",
                 "voice activity detection is already active",
             );
         }
         const getUserMedia = findUserMedia();
-        const contextCtor = findAudioContextCtor();
+        const contextCtor = findAudioContextCtor<AudioContextLike>();
         if (getUserMedia === null || contextCtor === null) {
-            throw this.voiceError(
+            throw voiceError(
                 "unsupported",
                 "voice activity detection is unavailable in this browser",
             );
         }
-        let stream: MediaStreamLike | null = null;
-        let context: AudioContextLike;
-        try {
-            stream = await getUserMedia({
-                audio: { echoCancellation: true },
-            });
-            context = new contextCtor();
-        } catch (err) {
-            this.releaseStream(stream);
-            throw this.voiceError(
-                err instanceof Error &&
-                    /permission|denied|not allowed/i.test(err.message)
-                    ? "permission-denied"
-                    : "engine",
-                err instanceof Error
-                    ? err.message
-                    : "could not open the microphone",
-            );
-        }
+        const capture = await openMicContext(
+            getUserMedia,
+            contextCtor,
+            "could not open the microphone",
+        );
+        const stream = capture.stream;
+        const context = capture.context;
         const analyser = context.createAnalyser();
         analyser.fftSize = 2048;
         context.createMediaStreamSource(stream).connect(analyser);
@@ -235,14 +179,9 @@ export class BrowserVadProvider implements VadProvider {
         this.callbacks = callbacks;
         this.sessionActive = true;
         // A revoked/reaped track ends detection mid-session.
-        const track = stream.getTracks()[0];
-        if (track !== undefined) {
-            track.onended = () => {
-                this.fail(
-                    this.voiceError("engine", "the microphone track ended"),
-                );
-            };
-        }
+        wireTrackEnded(stream, () => {
+            this.fail(voiceError("engine", "the microphone track ended"));
+        });
         this.timer = setInterval(() => {
             this.tick();
         }, this.intervalMs);
@@ -262,7 +201,7 @@ export class BrowserVadProvider implements VadProvider {
             clearInterval(this.timer);
             this.timer = null;
         }
-        this.releaseStream(this.stream);
+        releaseStream(this.stream);
         this.stream = null;
         const context = this.context;
         this.context = null;
@@ -295,7 +234,7 @@ export class BrowserVadProvider implements VadProvider {
             }
             rms = Math.sqrt(sum / this.buffer.length);
         } catch {
-            this.fail(this.voiceError("engine", "the audio analyser failed"));
+            this.fail(voiceError("engine", "the audio analyser failed"));
             return;
         }
         // Optional raw-audio tap (#84 P6): a copy per tick — the analyser
@@ -358,36 +297,6 @@ export class BrowserVadProvider implements VadProvider {
         const callbacks = this.callbacks;
         void this.stop();
         callbacks.onError?.(error);
-    }
-
-    /**
-     * Stops every track of a stream, ignoring failures.
-     *
-     * @param stream - The stream to release, or `null`.
-     */
-    private releaseStream(stream: MediaStreamLike | null): void {
-        if (stream === null) {
-            return;
-        }
-        for (const track of stream.getTracks()) {
-            track.onended = null;
-            try {
-                track.stop();
-            } catch {
-                // A track that will not stop is already dead.
-            }
-        }
-    }
-
-    /**
-     * Builds a {@link VoiceError} (used for throws as well as deliveries).
-     *
-     * @param code - Machine-readable failure class.
-     * @param message - Human-readable detail.
-     * @returns The error object.
-     */
-    private voiceError(code: VoiceError["code"], message: string): VoiceError {
-        return { code, message };
     }
 }
 

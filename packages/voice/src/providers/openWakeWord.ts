@@ -33,6 +33,7 @@
  * sized to `lookbackMs`.
  */
 import type { VoiceError, WakeCallbacks, WakeWordProvider } from "../types";
+import { micError, voiceError } from "./internal";
 
 /** The detector's capture rate; the ring and reports are mono at this rate. */
 const MIC_SAMPLE_RATE = 16000;
@@ -303,7 +304,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
      */
     async start(callbacks: WakeCallbacks): Promise<void> {
         if (this.armed) {
-            throw this.voiceError("engine", "wake detection is already active");
+            throw voiceError("engine", "wake detection is already active");
         }
         this.callbacks = callbacks;
         this.fired = false;
@@ -354,15 +355,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             } catch {
                 // Models that will not reset are already gone.
             }
-            throw this.voiceError(
-                err instanceof Error &&
-                    /permission|denied|not allowed/i.test(err.message)
-                    ? "permission-denied"
-                    : "engine",
-                err instanceof Error
-                    ? err.message
-                    : "could not start wake detection",
-            );
+            throw micError(err, "could not start wake detection");
         }
     }
 
@@ -438,7 +431,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             .predict(frame)
             .catch((err: unknown) => {
                 this.fail(
-                    this.voiceError(
+                    voiceError(
                         "engine",
                         err instanceof Error
                             ? err.message
@@ -485,17 +478,6 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             // A detector that will not stop is already dead.
         });
         callbacks?.onError?.(error);
-    }
-
-    /**
-     * Builds a {@link VoiceError} (used for throws as well as deliveries).
-     *
-     * @param code - Machine-readable failure class.
-     * @param message - Human-readable detail.
-     * @returns The error object.
-     */
-    private voiceError(code: VoiceError["code"], message: string): VoiceError {
-        return { code, message };
     }
 }
 

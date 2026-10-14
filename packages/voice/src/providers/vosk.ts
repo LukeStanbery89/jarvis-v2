@@ -49,6 +49,16 @@ import type {
     SttState,
     VoiceError,
 } from "../types";
+import { toVoiceError } from "../errors";
+import {
+    findAudioContextCtor,
+    findUserMedia,
+    openMicContext,
+    releaseStream,
+    voiceError,
+    wireTrackEnded,
+    type MediaStreamLike,
+} from "./internal";
 
 /** Options for {@link VoskSttProvider}. */
 export interface VoskSttOptions {
@@ -89,24 +99,6 @@ export interface VoskSttOptions {
      * this package); default: a no-op.
      */
     readonly log?: (message: string, error?: unknown) => void;
-}
-
-/** A mic track, structurally sliced (node tests install doubles). */
-interface MediaStreamTrackLike {
-    stop(): void;
-    onended: (() => void) | null;
-}
-
-/** A media stream carrying one or more tracks. */
-interface MediaStreamLike {
-    getTracks(): MediaStreamTrackLike[];
-}
-
-/** The slice of `MediaDevices` the provider needs. */
-interface MediaDevicesLike {
-    getUserMedia(constraints: {
-        audio: { echoCancellation: boolean };
-    }): Promise<MediaStreamLike>;
 }
 
 /** A graph target node (sources, processors, gains, the destination). */
@@ -155,9 +147,6 @@ interface AudioContextLike extends AudioNodeLike {
     resume(): Promise<void>;
     close(): Promise<void>;
 }
-
-/** Constructor for an audio context, as found on `globalThis`. */
-type AudioContextCtor = new () => AudioContextLike;
 
 /**
  * Linear-interpolation resampler for caller-supplied audio whose capture
@@ -269,41 +258,6 @@ export const DEFAULT_VOSK_MODEL_URL = "/api/stt/model";
 const DEFAULT_FLUSH_WAIT_MS = 300;
 
 /**
- * Finds `getUserMedia`, standard path (the vendor-prefixed era is over for
- * every engine this provider targets — they all ship WASM).
- *
- * The function is returned **bound to its `MediaDevices` receiver**: the
- * browser requires `getUserMedia` to be invoked with the `mediaDevices`
- * object as `this` (otherwise Chrome throws `Illegal invocation`), and
- * every call site here holds the function detached from its object.
- *
- * @returns The function, or `null` outside a browser that offers one.
- */
-function findUserMedia(): MediaDevicesLike["getUserMedia"] | null {
-    const globals = globalThis as {
-        navigator?: { mediaDevices?: MediaDevicesLike };
-    };
-    const devices = globals.navigator?.mediaDevices;
-    if (devices?.getUserMedia === undefined) {
-        return null;
-    }
-    return devices.getUserMedia.bind(devices);
-}
-
-/**
- * Finds the audio-context constructor, standard or prefixed.
- *
- * @returns The constructor, or `null` where Web Audio is unavailable.
- */
-function findAudioContextCtor(): AudioContextCtor | null {
-    const globals = globalThis as {
-        AudioContext?: AudioContextCtor;
-        webkitAudioContext?: AudioContextCtor;
-    };
-    return globals.AudioContext ?? globals.webkitAudioContext ?? null;
-}
-
-/**
  * Whether the current runtime offers everything the WASM engine needs: mic
  * access (secure contexts only), Web Audio, and WebAssembly. Cheap and
  * side-effect free — UIs call this to decide whether the local engine is
@@ -315,7 +269,7 @@ export function isVoskSupported(): boolean {
     const wasm = (globalThis as { WebAssembly?: unknown }).WebAssembly;
     return (
         findUserMedia() !== null &&
-        findAudioContextCtor() !== null &&
+        findAudioContextCtor<AudioContextLike>() !== null &&
         typeof wasm === "object" &&
         wasm !== null
     );
@@ -419,12 +373,12 @@ export class VoskSttProvider implements SttProvider {
         options?: SttStartOptions,
     ): Promise<void> {
         if (this.engineState !== "idle") {
-            throw this.voiceError("engine", "recognition is already active");
+            throw voiceError("engine", "recognition is already active");
         }
         const getUserMedia = findUserMedia();
-        const contextCtor = findAudioContextCtor();
+        const contextCtor = findAudioContextCtor<AudioContextLike>();
         if (getUserMedia === null || contextCtor === null) {
-            throw this.voiceError(
+            throw voiceError(
                 "unsupported",
                 "speech recognition is unavailable in this browser",
             );
@@ -444,27 +398,15 @@ export class VoskSttProvider implements SttProvider {
                 this.debugLog("vosk session cancelled while the model loaded");
                 return;
             }
-            let stream: MediaStreamLike | null = null;
-            let context: AudioContextLike;
-            try {
-                stream = await getUserMedia({
-                    audio: { echoCancellation: true },
-                });
-                context = new contextCtor();
-            } catch (err) {
-                this.releaseStream(stream);
-                throw this.voiceError(
-                    err instanceof Error &&
-                        /permission|denied|not allowed/i.test(err.message)
-                        ? "permission-denied"
-                        : "engine",
-                    err instanceof Error
-                        ? err.message
-                        : "could not open the microphone",
-                );
-            }
+            const capture = await openMicContext(
+                getUserMedia,
+                contextCtor,
+                "could not open the microphone",
+            );
+            const stream = capture.stream;
+            const context = capture.context;
             if (session !== this.activeSession) {
-                this.releaseStream(stream);
+                releaseStream(stream);
                 this.debugLog("vosk session cancelled while the mic opened");
                 return; // Cancelled while the mic opened.
             }
@@ -492,14 +434,9 @@ export class VoskSttProvider implements SttProvider {
             recognizer.on("error", (message) => {
                 this.onRecognizerError(session, message);
             });
-            const track = stream.getTracks()[0];
-            if (track !== undefined) {
-                track.onended = () => {
-                    this.fail(
-                        this.voiceError("engine", "the microphone track ended"),
-                    );
-                };
-            }
+            wireTrackEnded(stream, () => {
+                this.fail(voiceError("engine", "the microphone track ended"));
+            });
             this.stream = stream;
             this.context = context;
             this.source = source;
@@ -586,7 +523,7 @@ export class VoskSttProvider implements SttProvider {
         ) {
             this.errorDelivered = true;
             this.callbacks?.onError?.(
-                this.voiceError("no-speech", "no transcript was produced"),
+                voiceError("no-speech", "no transcript was produced"),
             );
         }
         this.settle();
@@ -648,9 +585,7 @@ export class VoskSttProvider implements SttProvider {
         try {
             recognizer.acceptWaveformFloat(data, rate);
         } catch {
-            this.fail(
-                this.voiceError("engine", "the recognizer rejected audio"),
-            );
+            this.fail(voiceError("engine", "the recognizer rejected audio"));
         }
     }
 
@@ -713,7 +648,7 @@ export class VoskSttProvider implements SttProvider {
                         } catch {
                             // Already gone; nothing to release.
                         }
-                        throw this.voiceError(
+                        throw voiceError(
                             "engine",
                             "the engine was disposed during model load",
                         );
@@ -723,7 +658,7 @@ export class VoskSttProvider implements SttProvider {
                             return;
                         }
                         this.fail(
-                            this.voiceError(
+                            voiceError(
                                 "engine",
                                 `the speech model failed: ${message.error ?? "unknown error"}`,
                             ),
@@ -767,9 +702,7 @@ export class VoskSttProvider implements SttProvider {
                 buffer.sampleRate,
             );
         } catch {
-            this.fail(
-                this.voiceError("engine", "the recognizer rejected audio"),
-            );
+            this.fail(voiceError("engine", "the recognizer rejected audio"));
         }
     }
 
@@ -837,7 +770,7 @@ export class VoskSttProvider implements SttProvider {
             return;
         }
         this.fail(
-            this.voiceError(
+            voiceError(
                 "engine",
                 `recognition failed: ${message.error ?? "unknown error"}`,
             ),
@@ -975,7 +908,7 @@ export class VoskSttProvider implements SttProvider {
         }
         this.source = null;
         this.gain = null;
-        this.releaseStream(this.stream);
+        releaseStream(this.stream);
         this.stream = null;
         const context = this.context;
         this.context = null;
@@ -984,36 +917,6 @@ export class VoskSttProvider implements SttProvider {
                 // A context that will not close is already unusable.
             });
         }
-    }
-
-    /**
-     * Stops every track of a stream, ignoring failures.
-     *
-     * @param stream - The stream to release, or `null`.
-     */
-    private releaseStream(stream: MediaStreamLike | null): void {
-        if (stream === null) {
-            return;
-        }
-        for (const track of stream.getTracks()) {
-            track.onended = null;
-            try {
-                track.stop();
-            } catch {
-                // A track that will not stop is already dead.
-            }
-        }
-    }
-
-    /**
-     * Builds a {@link VoiceError} (used for throws as well as deliveries).
-     *
-     * @param code - Machine-readable failure class.
-     * @param message - Human-readable detail.
-     * @returns The error object.
-     */
-    private voiceError(code: VoiceError["code"], message: string): VoiceError {
-        return { code, message };
     }
 }
 
@@ -1034,32 +937,4 @@ export function createVoskStt(
         return null;
     }
     return new VoskSttProvider(options, loadModule);
-}
-
-/**
- * Normalizes an unknown `start()` rejection into a {@link VoiceError}
- * (`VoiceError`-shaped values pass through; anything else becomes an
- * engine error).
- *
- * @param err - The thrown value.
- * @param fallback - Message for the generic engine error.
- * @returns A voice error.
- */
-function toVoiceError(err: unknown, fallback: string): VoiceError {
-    if (typeof err === "object" && err !== null) {
-        const candidate = err as { code?: unknown; message?: unknown };
-        if (
-            typeof candidate.code === "string" &&
-            typeof candidate.message === "string"
-        ) {
-            return {
-                code: candidate.code as VoiceError["code"],
-                message: candidate.message,
-            };
-        }
-    }
-    return {
-        code: "engine",
-        message: err instanceof Error ? err.message : fallback,
-    };
 }
