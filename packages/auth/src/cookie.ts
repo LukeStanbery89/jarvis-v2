@@ -70,6 +70,11 @@ export function createCookieSessionProvider(
 
     return {
         issue(userId) {
+            // Housekeeping rides on issue (issue #107 P5): expired rows fail
+            // verification anyway, so sweeping them here — the one write the
+            // provider performs — keeps `web_sessions` from growing without
+            // bound on long-lived deployments, with no timer to run.
+            webSessions.deleteExpiredWebSessions();
             const token =
                 randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
             const csrfToken =

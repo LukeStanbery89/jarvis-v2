@@ -17,10 +17,9 @@
  * only ever mention the username and device name. The path can be overridden
  * with `JARVIS_CREDENTIALS_FILE` (tests use this).
  */
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { getCredentialsFilePath } from "./config";
-import { ensurePrivateDir } from "./privateFs";
+import { isRecord, writePrivateFile } from "./privateFs";
 import { logger } from "./logger";
 
 /** One server's stored login: the device token plus display metadata. */
@@ -39,11 +38,6 @@ export interface StoredCredentials {
 interface CredentialFile {
     version: 1;
     servers: Record<string, StoredCredentials>;
-}
-
-/** Returns whether `value` is a plain (non-array) object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Returns whether `value` is a well-formed `StoredCredentials` entry. */
@@ -93,33 +87,16 @@ function readStore(path: string): CredentialFile | null {
 }
 
 /**
- * Serializes `store` to `path` atomically and with owner-only permissions.
- *
- * The payload is written to a `0600` temp file (pid-suffixed, so concurrent
- * CLI instances don't collide) in the target directory and renamed over the
- * target: a crash mid-write leaves the previous file intact rather than a
- * truncated one, and the secret never touches disk at looser permissions
- * (the rename also tightens a pre-existing loose file). The temp file is
- * removed best-effort on failure. Throws when the file cannot be written.
+ * Serializes `store` to `path` atomically and with owner-only permissions —
+ * the shared {@link writePrivateFile} (#107 P6). Throws when the file cannot
+ * be written.
  */
 function writeStore(path: string, store: CredentialFile): void {
-    const tmp = `${path}.${process.pid}.tmp`;
-    try {
-        ensurePrivateDir(dirname(path));
-        writeFileSync(tmp, `${JSON.stringify(store, null, 4)}\n`, {
-            mode: 0o600,
-        });
-        renameSync(tmp, path);
-    } catch (err) {
-        try {
-            unlinkSync(tmp);
-        } catch {
-            // nothing to clean up (or already removed)
-        }
-        throw new Error(
-            `could not write credentials file ${path}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-    }
+    writePrivateFile(
+        path,
+        `${JSON.stringify(store, null, 4)}\n`,
+        "credentials file",
+    );
 }
 
 /**

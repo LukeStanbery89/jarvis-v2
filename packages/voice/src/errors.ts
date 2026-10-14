@@ -13,9 +13,11 @@ import type { VoiceError } from "./types";
  * are already `VoiceError`-shaped; anything else becomes an engine error).
  *
  * @param err - The thrown value.
+ * @param fallback - Message for the generic engine error when the thrown
+ *   value is not an `Error`; defaults to `"voice input failed"`.
  * @returns A voice error.
  */
-export function toVoiceError(err: unknown): VoiceError {
+export function toVoiceError(err: unknown, fallback?: string): VoiceError {
     if (typeof err === "object" && err !== null) {
         const candidate = err as { code?: unknown; message?: unknown };
         if (
@@ -30,6 +32,9 @@ export function toVoiceError(err: unknown): VoiceError {
     }
     return {
         code: "engine",
-        message: err instanceof Error ? err.message : "voice input failed",
+        message:
+            err instanceof Error
+                ? err.message
+                : (fallback ?? "voice input failed"),
     };
 }

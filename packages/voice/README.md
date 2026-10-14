@@ -32,6 +32,13 @@ storage:
   its look-back ring. `BargeInDetection` and the `BARGE_IN_*` constants are the
   only public symbols from here.
 - `src/errors.ts` — `toVoiceError`, the shared rejection normalizer.
+- `src/providers/internal.ts` — shared provider scaffolding (#107): the
+  structural `MediaStream`/`MediaDevices` slices, the `globalThis` lookups
+  (`findUserMedia`/`findAudioContextCtor`), stream teardown
+  (`releaseStream`), the `{ code, message }` error builder (`voiceError`),
+  the permission-denied mapping (`micError`), the shared mic-open prologue
+  (`openMicContext`), and track-end wiring (`wireTrackEnded`). Internal to
+  the package — not re-exported from `src/index.ts`.
 
 Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
 Web Speech STT provider, the local WASM STT provider (Vosk), the energy VAD,

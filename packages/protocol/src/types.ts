@@ -106,6 +106,35 @@ export interface AuthRequest {
 }
 
 /**
+ * The error text the server sends when a mid-session request is rejected
+ * because the socket's device token was revoked (#107 P1).
+ *
+ * Clients match this exact string to distinguish "your session was revoked,
+ * sign in again" from a generic turn error and react by re-authenticating; the
+ * server, the CLI, and the web client all import this constant so the wire
+ * text cannot drift between the sender and its two matchers.
+ */
+export const REVOKED_TOKEN_ERROR =
+    "device token revoked; reconnect to re-authenticate";
+
+/**
+ * The capability tokens the protocol recognizes, in wire order.
+ *
+ * The {@link ClientCapability} union is derived from this tuple — there is no
+ * second list to keep in sync — so removing a token here is a compile error at
+ * every exhaustive consumer (the parser's membership set, `Record<
+ * ClientCapability, …>` maps, switches), and adding one cannot be forgotten by
+ * the parser.
+ */
+export const CLIENT_CAPABILITIES = [
+    "markdown",
+    "html",
+    "image",
+    "link",
+    "audio",
+] as const;
+
+/**
  * What one chat client is capable of rendering in the server's response.
  *
  * Tokens are coarse render guarantees the client absorbs as plain text; the
@@ -119,7 +148,7 @@ export interface AuthRequest {
  * rendering is unaffected — a client may hold `audio` and any other tokens
  * at once.
  */
-export type ClientCapability = "markdown" | "html" | "image" | "link" | "audio";
+export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number];
 
 /**
  * The capability announcement: a client's optional first frame declaring, in
@@ -134,6 +163,15 @@ export interface ClientHello {
 }
 
 /**
+ * The chat-mode tokens the protocol recognizes, in wire order.
+ *
+ * The {@link ChatMode} union derives from this tuple; see
+ * {@link CLIENT_CAPABILITIES} for why the derivation (rather than a parallel
+ * hand-maintained union) is the point.
+ */
+export const CHAT_MODES = ["text", "voice"] as const;
+
+/**
  * The chat mode a prompt runs under.
  *
  * Structurally mirrors the session ledger's `SessionKind` ("text" | "voice")
@@ -142,7 +180,7 @@ export interface ClientHello {
  * are answered using the client's declared render capabilities; `"voice"`
  * chats always yield plain conversational text.
  */
-export type ChatMode = "text" | "voice";
+export type ChatMode = (typeof CHAT_MODES)[number];
 
 /**
  * A chat request from a client: the free-text `prompt` and the `sessionId`
@@ -227,8 +265,7 @@ export const MAX_TOKEN_LENGTH = 128;
  * Longest `capabilities` list a client may send in a `hello` frame.
  *
  * A 16-token cap bounds the frame without sacrificing the known token set,
- * which is itself bounded by the `"markdown" | "html" | "image" | "link"`
- * union.
+ * which is itself bounded by the {@link CLIENT_CAPABILITIES} tuple.
  */
 export const MAX_CAPABILITIES = 16;
 

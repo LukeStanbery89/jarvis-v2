@@ -20,6 +20,7 @@
  */
 import {
     parseFrame,
+    REVOKED_TOKEN_ERROR,
     serializeAuth,
     serializeRequest,
 } from "@lukestanbery/jarvis-protocol";
@@ -141,10 +142,7 @@ export class ChatClient {
                         );
                     } else if ("error" in frame) {
                         teardown();
-                        if (
-                            frame.error ===
-                            "device token revoked; reconnect to re-authenticate"
-                        ) {
+                        if (frame.error === REVOKED_TOKEN_ERROR) {
                             this.token = undefined;
                             this.onAuthRejected?.("revoked");
                         }

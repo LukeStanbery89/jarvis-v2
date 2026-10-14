@@ -22,15 +22,22 @@ import { logger } from "./logger";
 import { createSttModelHandler, SttModelCache } from "./stt/model";
 import { createWakeModelHandler, WakeModelCache } from "./wake/model";
 
+/**
+ * Whether an error is Express's "request body exceeded the configured limit"
+ * — either the body-parser's typed `entity.too.large` or a raw 413 status.
+ * Both 413 mappers in this file (`attachmentBodyTooLarge` and the JSON
+ * error handler) must agree on this, so the predicate lives once (#107 P4).
+ */
+const isBodyTooLarge = (err: unknown): boolean =>
+    typeof err === "object" &&
+    err !== null &&
+    ((err as { type?: string }).type === "entity.too.large" ||
+        (err as { statusCode?: number }).statusCode === 413);
+
 /** Returns `413` with the {@link AttachmentTooLarge} contract shape. */
 const attachmentBodyTooLarge = (_appConfig: AppConfig, maxBytes: number) => {
     const handler: ErrorRequestHandler = (err, _req, res, next) => {
-        if (
-            typeof err === "object" &&
-            err !== null &&
-            ((err as { type?: string }).type === "entity.too.large" ||
-                (err as { statusCode?: number }).statusCode === 413)
-        ) {
+        if (isBodyTooLarge(err)) {
             res.status(413).json({
                 error: "request body too large",
                 code: "ATTACHMENT_TOO_LARGE",
@@ -297,12 +304,7 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
         res.status(400).json({ error: "invalid JSON body" });
         return;
     }
-    if (
-        typeof err === "object" &&
-        err !== null &&
-        ((err as { type?: string }).type === "entity.too.large" ||
-            (err as { statusCode?: number }).statusCode === 413)
-    ) {
+    if (isBodyTooLarge(err)) {
         res.status(413).json({ error: "request body too large" });
         return;
     }

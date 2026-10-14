@@ -6,6 +6,7 @@ import { attachChatServer } from "../src/ws";
 import { runAgent } from "../src/agent";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
+import { REVOKED_TOKEN_ERROR } from "@lukestanbery/jarvis-protocol";
 import type { AgentEvent } from "../src/llm/agentGraph";
 
 vi.mock("../src/agent", () => ({
@@ -767,7 +768,7 @@ describe("session ledger", () => {
                 if (
                     authed &&
                     typeof msg.error === "string" &&
-                    /device token revoked/.test(msg.error)
+                    msg.error === REVOKED_TOKEN_ERROR
                 ) {
                     revoked = true;
                     return;

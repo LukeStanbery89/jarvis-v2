@@ -1,31 +1,16 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { copyVoiceAssets } from "./scripts/copy-voice-assets.mjs";
+import {
+    copyVoiceAssets,
+    findPackageRoot,
+} from "./scripts/copy-voice-assets.mjs";
 
-/**
- * Locates an installed package's directory by walking `node_modules`
- * upward. openwakeword-web exports ESM-only with no `require` entry, and
- * `onnxruntime-web` is pulled in under the "extern wasm" resolve condition,
- * so both are aliased to their raw sources below.
- */
-function findPackageRoot(name: string, fromDir: string): string {
-    let dir = fromDir;
-    for (;;) {
-        const candidate = path.join(dir, "node_modules", name, "package.json");
-        if (existsSync(candidate)) {
-            return path.dirname(candidate);
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir) {
-            throw new Error(`${name} not found above ${fromDir}`);
-        }
-        dir = parent;
-    }
-}
-
+// Aliasing note: `openwakeword-web` exports ESM-only with no `require`
+// entry, and `onnxruntime-web` is pulled in under the "extern wasm" resolve
+// condition, so both are aliased to their raw sources below — located by
+// the shared `findPackageRoot` from the asset copier (#107 P7).
 const CONFIG_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OWW_SRC = path.join(
     findPackageRoot("openwakeword-web", CONFIG_DIR),

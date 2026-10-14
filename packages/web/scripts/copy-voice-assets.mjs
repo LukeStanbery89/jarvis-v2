@@ -29,12 +29,14 @@ const OUT_DIR = path.join(WEB_ROOT, "public", "ort");
 /**
  * Locates an installed package's directory by walking `node_modules` upward
  * from `fromDir` — bypasses `exports` maps (which hide `package.json`).
+ * Exported for `vite.config.ts`, which previously carried an identical
+ * hand-copied finder (#107 P7).
  *
  * @param {string} name - Package name to find.
  * @param {string} fromDir - Directory to start the upward walk at.
  * @returns {string} The package's root directory.
  */
-function findPackageRoot(name, fromDir) {
+export function findPackageRoot(name, fromDir) {
     let dir = fromDir;
     for (;;) {
         const candidate = path.join(dir, "node_modules", name, "package.json");

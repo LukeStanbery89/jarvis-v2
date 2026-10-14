@@ -24,11 +24,11 @@
  * and mode `0600`, so the file never exists at looser permissions and a crash
  * mid-write cannot truncate it.
  */
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { MAX_SESSION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { getSessionFilePath } from "./config";
-import { ensurePrivateDir } from "./privateFs";
+import { isRecord, writePrivateFile } from "./privateFs";
 import { logger } from "./logger";
 
 /** The CLI's current identity — the thread slot to read/write. */
@@ -42,17 +42,6 @@ export interface SessionIds {
     guest: string;
     /** Id per canonical server username — that account's conversation thread. */
     users: Record<string, string>;
-}
-
-/**
- * Max session-id length the server accepts (`MAX_SESSION_ID_LENGTH` in
- * `@lukestanbery/jarvis-protocol`).
- */
-const MAX_SESSION_ID_LENGTH = 128;
-
-/** Returns whether `value` is a plain (non-array) object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Returns whether `id` is a well-formed session id (non-empty, within bounds). */
@@ -133,30 +122,16 @@ export function loadSessionIds(): SessionIds {
 
 /**
  * Serializes `ids` to the session file atomically and with owner-only
- * permissions: a `0600` temp file (pid-suffixed) is renamed over the target,
- * so a crash mid-write leaves the previous store intact and the file never
- * exists at looser permissions. Throws when the file cannot be written; the
- * caller decides whether that is fatal.
+ * permissions — the shared {@link writePrivateFile} (#107 P6). Throws when
+ * the file cannot be written; the caller decides whether that is fatal.
  */
 export function saveSessionIds(ids: SessionIds): void {
     const path = getSessionFilePath();
-    const tmp = `${path}.${process.pid}.tmp`;
-    try {
-        ensurePrivateDir(dirname(path));
-        writeFileSync(tmp, `${JSON.stringify(ids, null, 4)}\n`, {
-            mode: 0o600,
-        });
-        renameSync(tmp, path);
-    } catch (err) {
-        try {
-            unlinkSync(tmp);
-        } catch {
-            // nothing to clean up (or already removed)
-        }
-        throw new Error(
-            `could not write session-id file ${path}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-    }
+    writePrivateFile(
+        path,
+        `${JSON.stringify(ids, null, 4)}\n`,
+        "session-id file",
+    );
 }
 
 /**

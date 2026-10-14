@@ -29,8 +29,8 @@ import type {
     SttProvider,
     SttStartOptions,
     SttState,
-    VoiceError,
 } from "../types";
+import { voiceError } from "./internal";
 
 /** One recognized alternative (structural slice of the DOM type). */
 interface SpeechAlternativeLike {
@@ -158,11 +158,11 @@ export class WebSpeechSttProvider implements SttProvider {
         options?: SttStartOptions,
     ): Promise<void> {
         if (this.engineState !== "idle") {
-            throw this.voiceError("engine", "recognition is already active");
+            throw voiceError("engine", "recognition is already active");
         }
         const ctor = findRecognitionCtor();
         if (ctor === null) {
-            throw this.voiceError(
+            throw voiceError(
                 "unsupported",
                 "speech recognition is unavailable in this browser",
             );
@@ -199,7 +199,7 @@ export class WebSpeechSttProvider implements SttProvider {
             recognition.start();
         } catch (err) {
             this.settle();
-            throw this.voiceError(
+            throw voiceError(
                 "engine",
                 err instanceof Error ? err.message : "could not start capture",
             );
@@ -292,13 +292,13 @@ export class WebSpeechSttProvider implements SttProvider {
         }
         const error =
             code === "no-speech"
-                ? this.voiceError("no-speech", "no speech was detected")
+                ? voiceError("no-speech", "no speech was detected")
                 : code === "not-allowed" || code === "service-not-allowed"
-                  ? this.voiceError(
+                  ? voiceError(
                         "permission-denied",
                         "microphone access was denied",
                     )
-                  : this.voiceError("engine", `recognition failed: ${code}`);
+                  : voiceError("engine", `recognition failed: ${code}`);
         this.errorDelivered = true;
         this.callbacks?.onError?.(error);
     }
@@ -316,7 +316,7 @@ export class WebSpeechSttProvider implements SttProvider {
         if (!this.usableFinal && !this.errorDelivered) {
             this.errorDelivered = true;
             this.callbacks?.onError?.(
-                this.voiceError("no-speech", "no transcript was produced"),
+                voiceError("no-speech", "no transcript was produced"),
             );
         }
         this.settle();
@@ -336,17 +336,6 @@ export class WebSpeechSttProvider implements SttProvider {
         for (const waiter of waiters) {
             waiter();
         }
-    }
-
-    /**
-     * Builds a {@link VoiceError} (used for throws as well as deliveries).
-     *
-     * @param code - Machine-readable failure class.
-     * @param message - Human-readable detail.
-     * @returns The error object.
-     */
-    private voiceError(code: VoiceError["code"], message: string): VoiceError {
-        return { code, message };
     }
 }
 

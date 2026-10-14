@@ -771,22 +771,22 @@ export function getAppConfig(): AppConfig {
             windowMs: numberOr(
                 "JARVIS_RATE_WINDOW_MS",
                 process.env.JARVIS_RATE_WINDOW_MS,
-                15 * 60_000,
+                DEFAULT_RATE_LIMIT_CONFIG.windowMs,
             ),
             maxFailures: numberOr(
                 "JARVIS_RATE_MAX_FAILURES",
                 process.env.JARVIS_RATE_MAX_FAILURES,
-                10,
+                DEFAULT_RATE_LIMIT_CONFIG.maxFailures,
             ),
             lockoutMs: numberOr(
                 "JARVIS_RATE_LOCKOUT_MS",
                 process.env.JARVIS_RATE_LOCKOUT_MS,
-                60_000,
+                DEFAULT_RATE_LIMIT_CONFIG.lockoutMs,
             ),
             maxIpFailures: numberOr(
                 "JARVIS_RATE_MAX_IP_FAILURES",
                 process.env.JARVIS_RATE_MAX_IP_FAILURES,
-                100,
+                DEFAULT_RATE_LIMIT_CONFIG.maxIpFailures,
             ),
         },
         apiContractVerify: process.env.JARVIS_API_CONTRACT === "verify",

@@ -287,6 +287,20 @@ describe("sessions", () => {
         expect(second.session.id).toBe(first.session.id);
     });
 
+    it("stamps a fresh claim's created_at and last_active_at with one clock read", () => {
+        store.claimSession("stamped", {
+            userId: null,
+            deviceId: null,
+            kind: "text",
+        });
+        const row = db
+            .prepare(
+                "SELECT created_at, last_active_at FROM sessions WHERE thread_id = 'stamped'",
+            )
+            .get() as { created_at: string; last_active_at: string };
+        expect(row.created_at).toBe(row.last_active_at);
+    });
+
     it("records guest sessions and owned sessions separately", () => {
         const owner = store.createUser("luke", "hash", "owner");
         const guest = store.claimSession("guest-thread", {
@@ -403,6 +417,28 @@ describe("web sessions", () => {
         // the user row directly through the database handle.
         db.prepare("DELETE FROM users WHERE id = ?").run(user.id);
         expect(store.getWebSessionByHash("a")).toBeNull();
+    });
+
+    it("deletes only expired sessions and reports the count", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        store.createWebSession(
+            user.id,
+            "expired",
+            "csrf-old",
+            "2000-01-01T00:00:00.000Z",
+        );
+        store.createWebSession(
+            user.id,
+            "live",
+            "csrf-new",
+            "2999-01-01T00:00:00.000Z",
+        );
+
+        expect(store.deleteExpiredWebSessions()).toBe(1);
+        expect(store.getWebSessionByHash("expired")).toBeNull();
+        expect(store.getWebSessionByHash("live")).not.toBeNull();
+        // Idempotent: nothing left to sweep.
+        expect(store.deleteExpiredWebSessions()).toBe(0);
     });
 });
 
@@ -530,7 +566,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(5);
+            expect(check.pragma("user_version", { simple: true })).toBe(6);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
@@ -613,7 +649,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(5);
+            expect(check.pragma("user_version", { simple: true })).toBe(6);
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -634,6 +670,134 @@ describe("openAppDatabase", () => {
             expect(statSync(dir).mode & 0o777).toBe(0o700);
             expect(statSync(path).mode & 0o777).toBe(0o600);
             first.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+/** The names of every UNIQUE index over exactly (user_id, name) on `devices`. */
+function uniqueUserNameIndexes(check: Database.Database): string[] {
+    const indexes = check.pragma("index_list(devices)") as {
+        name: string;
+        unique: number;
+    }[];
+    const names: string[] = [];
+    for (const index of indexes) {
+        if (index.unique !== 1) {
+            continue;
+        }
+        const columns = (
+            check.pragma(`index_info('${index.name}')`) as { name: string }[]
+        ).map((c) => c.name);
+        if (
+            columns.length === 2 &&
+            columns.includes("user_id") &&
+            columns.includes("name")
+        ) {
+            names.push(index.name);
+        }
+    }
+    return names;
+}
+
+describe("device-name unique index convergence (v6)", () => {
+    it("keeps exactly one enforcement on a fresh database (the inline constraint)", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            const store = openAppDatabase(path);
+            const owner = store.createUser("luke", "hash", "owner");
+            // Uniqueness still enforced…
+            expect(() =>
+                store.createDevice(owner.id, "macbook", "h1", "p1"),
+            ).not.toThrow();
+            expect(() =>
+                store.createDevice(owner.id, "macbook", "h2", "p2"),
+            ).toThrow();
+            store.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(6);
+            const uniques = uniqueUserNameIndexes(check);
+            expect(uniques).toHaveLength(1);
+            // The v2 migration's named index is gone; the inline constraint's
+            // automatic index is the one that remains.
+            expect(uniques[0]).not.toBe("idx_devices_user_name");
+            expect(
+                uniqueUserNameIndexes(check).every((n) =>
+                    n.startsWith("sqlite_autoindex"),
+                ),
+            ).toBe(true);
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("keeps exactly one enforcement on a legacy store that lacked the inline constraint", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            // A pre-v2-shaped database: the devices table has no UNIQUE
+            // (user_id, name) — the named index v2 creates is its only
+            // enforcement, so v6 must NOT drop it.
+            const old = new Database(path);
+            old.exec(`
+                CREATE TABLE users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+                    created_at    TEXT NOT NULL
+                );
+                CREATE TABLE devices (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    secret_hash  TEXT NOT NULL,
+                    prefix       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    last_seen_at TEXT
+                );
+                CREATE TABLE sessions (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id      TEXT NOT NULL UNIQUE,
+                    user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                    kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+                    created_at     TEXT NOT NULL,
+                    last_active_at TEXT NOT NULL
+                );
+                CREATE TABLE prefs (
+                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    key        TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, key)
+                );
+                INSERT INTO users (username, password_hash, role, created_at)
+                    VALUES ('luke', 'hash', 'owner', '2026-01-01T00:00:00.000Z');
+                PRAGMA user_version = 1;
+            `);
+            old.close();
+
+            const store = openAppDatabase(path);
+            const owner = store.getUserByUsername("luke")!;
+            // Uniqueness still enforced (through the kept named index)…
+            expect(() =>
+                store.createDevice(owner.id, "macbook", "h1", "p1"),
+            ).not.toThrow();
+            expect(() =>
+                store.createDevice(owner.id, "macbook", "h2", "p2"),
+            ).toThrow();
+            store.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(6);
+            const uniques = uniqueUserNameIndexes(check);
+            expect(uniques).toEqual(["idx_devices_user_name"]);
+            check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

@@ -22,6 +22,7 @@
  */
 import {
     parseFrame,
+    REVOKED_TOKEN_ERROR,
     s16leToPcm,
     serializeAuth,
     serializeCancel,
@@ -61,9 +62,6 @@ interface WebSocketMessageEvent {
     /** Text for JSON frames; an ArrayBuffer for binary audio (#83). */
     readonly data: unknown;
 }
-
-/** Exact server wording for a mid-life token revocation. */
-const REVOKED_MESSAGE = "device token revoked; reconnect to re-authenticate";
 
 /** Backoff cap for reconnect attempts. */
 const MAX_BACKOFF_MS = 10_000;
@@ -412,7 +410,7 @@ export class ChatClient {
             return;
         }
         if ("error" in frame) {
-            if (frame.error === REVOKED_MESSAGE) {
+            if (frame.error === REVOKED_TOKEN_ERROR) {
                 this.rejectPermanently();
                 return;
             }

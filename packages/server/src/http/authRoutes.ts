@@ -12,7 +12,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import {
     AuthError,
     canManage,
@@ -138,8 +138,27 @@ export function createAuthRouter(
     };
     const authenticated = requireAuth(store, cookieOptions);
 
-    router.post("/bootstrap", async (req, res) => {
-        try {
+    /**
+     * The uniform outermost try/catch, factored out (issue #107 P4): any
+     * throw from a route body maps through {@link handleError} (`AuthError`
+     * → its status; anything else → a logged generic 500). The body is
+     * invoked inside the promise chain, so both synchronous throws (the
+     * sync handlers) and async rejections take the same path. Handlers with
+     * finer-grained recovery keep their own inner try/catch inside.
+     */
+    const route =
+        (
+            handler: (req: Request, res: Response) => Promise<void> | void,
+        ): RequestHandler =>
+        (req, res) => {
+            void Promise.resolve()
+                .then(() => handler(req, res))
+                .catch((err) => handleError(res, err));
+        };
+
+    router.post(
+        "/bootstrap",
+        route(async (req, res) => {
             if (!bootstrapGate.isEnabled()) {
                 throw new AuthError(
                     "BOOTSTRAP_DISABLED",
@@ -187,13 +206,12 @@ export function createAuthRouter(
                 user: userJson(owner),
                 device: issuedDeviceJson(device, material.token),
             });
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
-    router.post("/auth/login", async (req, res) => {
-        try {
+    router.post(
+        "/auth/login",
+        route(async (req, res) => {
             if (!store.hasOwner()) {
                 throw new AuthError(
                     "NOT_FOUND",
@@ -220,13 +238,12 @@ export function createAuthRouter(
                 user: userJson(user),
                 device: issuedDeviceJson(device, material.token),
             });
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
-    router.post("/session", async (req, res) => {
-        try {
+    router.post(
+        "/session",
+        route(async (req, res) => {
             if (!store.hasOwner()) {
                 throw new AuthError(
                     "NOT_FOUND",
@@ -251,10 +268,8 @@ export function createAuthRouter(
                 csrfToken: material.csrfToken,
                 expiresAt: material.expiresAt,
             });
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
     router.get("/session", authenticated, (req: Request, res: Response) => {
         const jarv = authed(req).jarv;
@@ -288,8 +303,11 @@ export function createAuthRouter(
         res.status(200).json({ user: userJson(jarv.user), devices });
     });
 
-    router.post("/devices", authenticated, requireCsrf, (req, res) => {
-        try {
+    router.post(
+        "/devices",
+        authenticated,
+        requireCsrf,
+        route((req, res) => {
             const jarv = authed(req).jarv;
             const name = deviceNameFrom(req.body);
             const material = generateDeviceToken();
@@ -302,33 +320,33 @@ export function createAuthRouter(
             res.status(201).json({
                 device: issuedDeviceJson(device, material.token),
             });
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
-    router.delete("/devices/:id", authenticated, requireCsrf, (req, res) => {
-        try {
+    router.delete(
+        "/devices/:id",
+        authenticated,
+        requireCsrf,
+        route((req, res) => {
             const jarv = authed(req).jarv;
             const device = ownedDeviceOrThrow(store, req, jarv.user);
             store.revokeDevice(device.id);
             res.status(204).end();
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
-    router.patch("/devices/:id", authenticated, requireCsrf, (req, res) => {
-        try {
+    router.patch(
+        "/devices/:id",
+        authenticated,
+        requireCsrf,
+        route((req, res) => {
             const jarv = authed(req).jarv;
             const device = ownedDeviceOrThrow(store, req, jarv.user);
             const name = renameNameFrom(req.body);
             const updated = store.renameDevice(device.id, name);
             res.status(200).json({ device: deviceJson(updated) });
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
     router.get("/users", authenticated, requireOwner, (req, res) => {
         const users = store.listUsers().map((u) => userJson(u));
@@ -340,20 +358,16 @@ export function createAuthRouter(
         authenticated,
         requireOwner,
         requireCsrf,
-        async (req, res) => {
-            try {
-                const { username, password } = usernamePasswordBody(req);
-                const role = roleFrom(req.body);
-                const user = store.createUser(
-                    username,
-                    await credentials.hash(password),
-                    role,
-                );
-                res.status(201).json({ user: userJson(user) });
-            } catch (err) {
-                handleError(res, err);
-            }
-        },
+        route(async (req, res) => {
+            const { username, password } = usernamePasswordBody(req);
+            const role = roleFrom(req.body);
+            const user = store.createUser(
+                username,
+                await credentials.hash(password),
+                role,
+            );
+            res.status(201).json({ user: userJson(user) });
+        }),
     );
 
     router.patch(
@@ -361,61 +375,57 @@ export function createAuthRouter(
         authenticated,
         requireOwner,
         requireCsrf,
-        (req, res) => {
-            try {
-                const jarv = authed(req).jarv;
-                const target = userParamOrThrow(store, req);
-                const body = (req.body ?? {}) as Record<string, unknown>;
-                const hasRole = "role" in body;
-                const hasDisabled = "disabled" in body;
-                if (!hasRole && !hasDisabled) {
+        route((req, res) => {
+            const jarv = authed(req).jarv;
+            const target = userParamOrThrow(store, req);
+            const body = (req.body ?? {}) as Record<string, unknown>;
+            const hasRole = "role" in body;
+            const hasDisabled = "disabled" in body;
+            if (!hasRole && !hasDisabled) {
+                throw new AuthError(
+                    "BAD_REQUEST",
+                    "provide 'role' or 'disabled' to update",
+                );
+            }
+            if (hasRole) {
+                const role = body.role;
+                if (role !== "owner" && role !== "user") {
                     throw new AuthError(
                         "BAD_REQUEST",
-                        "provide 'role' or 'disabled' to update",
+                        "'role' must be 'owner' or 'user'",
                     );
                 }
-                if (hasRole) {
-                    const role = body.role;
-                    if (role !== "owner" && role !== "user") {
-                        throw new AuthError(
-                            "BAD_REQUEST",
-                            "'role' must be 'owner' or 'user'",
-                        );
-                    }
-                    store.setUserRole(target.id, role);
-                }
-                if (hasDisabled) {
-                    const disabled = body.disabled;
-                    if (typeof disabled !== "boolean") {
-                        throw new AuthError(
-                            "BAD_REQUEST",
-                            "'disabled' must be a boolean",
-                        );
-                    }
-                    if (disabled && target.id === jarv.user.id) {
-                        throw new AuthError(
-                            "BAD_REQUEST",
-                            "you cannot disable your own account",
-                        );
-                    }
-                    store.setUserDisabled(target.id, disabled);
-                    if (disabled) {
-                        // Disabling is an immediate revocation for web
-                        // sessions, not just a future-login block: the
-                        // account's live cookies are deleted now, matching
-                        // how the device-token path fails closed on the
-                        // next resolve. The middleware's `user.disabled`
-                        // re-read is the backstop for a session issued
-                        // moments before.
-                        cookieSessions.deleteAllForUser(target.id);
-                    }
-                }
-                const updated = store.getUserById(target.id)!;
-                res.status(200).json({ user: userJson(updated) });
-            } catch (err) {
-                handleError(res, err);
+                store.setUserRole(target.id, role);
             }
-        },
+            if (hasDisabled) {
+                const disabled = body.disabled;
+                if (typeof disabled !== "boolean") {
+                    throw new AuthError(
+                        "BAD_REQUEST",
+                        "'disabled' must be a boolean",
+                    );
+                }
+                if (disabled && target.id === jarv.user.id) {
+                    throw new AuthError(
+                        "BAD_REQUEST",
+                        "you cannot disable your own account",
+                    );
+                }
+                store.setUserDisabled(target.id, disabled);
+                if (disabled) {
+                    // Disabling is an immediate revocation for web
+                    // sessions, not just a future-login block: the
+                    // account's live cookies are deleted now, matching
+                    // how the device-token path fails closed on the
+                    // next resolve. The middleware's `user.disabled`
+                    // re-read is the backstop for a session issued
+                    // moments before.
+                    cookieSessions.deleteAllForUser(target.id);
+                }
+            }
+            const updated = store.getUserById(target.id)!;
+            res.status(200).json({ user: userJson(updated) });
+        }),
     );
 
     router.get("/sessions", authenticated, (req, res) => {
@@ -464,15 +474,16 @@ export function createAuthRouter(
         res.status(200).json(store.getPrefs(jarv.user.id));
     });
 
-    router.put("/prefs", authenticated, requireCsrf, (req, res) => {
-        try {
+    router.put(
+        "/prefs",
+        authenticated,
+        requireCsrf,
+        route((req, res) => {
             const jarv = authed(req).jarv;
             store.setPrefs(jarv.user.id, prefsFrom(req.body));
             res.status(200).json(store.getPrefs(jarv.user.id));
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
     router.delete("/prefs", authenticated, requireCsrf, (req, res) => {
         const jarv = authed(req).jarv;
@@ -483,31 +494,26 @@ export function createAuthRouter(
         res.status(204).end();
     });
 
-    router.get("/users/:id/prefs", authenticated, requireOwner, (req, res) => {
-        try {
+    router.get(
+        "/users/:id/prefs",
+        authenticated,
+        requireOwner,
+        route((req, res) => {
             const target = userParamOrThrow(store, req);
             res.status(200).json(store.getPrefs(target.id));
-        } catch (err) {
-            handleError(res, err);
-        }
-    });
+        }),
+    );
 
     router.get(
         "/users/:id/devices",
         authenticated,
         requireOwner,
-        (req, res) => {
-            try {
-                const target = userParamOrThrow(store, req);
-                res.status(200).json(
-                    store
-                        .listDevicesByUser(target.id)
-                        .map((d) => deviceJson(d)),
-                );
-            } catch (err) {
-                handleError(res, err);
-            }
-        },
+        route((req, res) => {
+            const target = userParamOrThrow(store, req);
+            res.status(200).json(
+                store.listDevicesByUser(target.id).map((d) => deviceJson(d)),
+            );
+        }),
     );
 
     router.put(
@@ -515,15 +521,11 @@ export function createAuthRouter(
         authenticated,
         requireOwner,
         requireCsrf,
-        (req, res) => {
-            try {
-                const target = userParamOrThrow(store, req);
-                store.setPrefs(target.id, prefsFrom(req.body));
-                res.status(200).json(store.getPrefs(target.id));
-            } catch (err) {
-                handleError(res, err);
-            }
-        },
+        route((req, res) => {
+            const target = userParamOrThrow(store, req);
+            store.setPrefs(target.id, prefsFrom(req.body));
+            res.status(200).json(store.getPrefs(target.id));
+        }),
     );
 
     router.delete(
@@ -531,18 +533,14 @@ export function createAuthRouter(
         authenticated,
         requireOwner,
         requireCsrf,
-        (req, res) => {
-            try {
-                const target = userParamOrThrow(store, req);
-                const keys = Object.keys(store.getPrefs(target.id));
-                if (keys.length > 0) {
-                    store.deletePrefKeys(target.id, keys);
-                }
-                res.status(204).end();
-            } catch (err) {
-                handleError(res, err);
+        route((req, res) => {
+            const target = userParamOrThrow(store, req);
+            const keys = Object.keys(store.getPrefs(target.id));
+            if (keys.length > 0) {
+                store.deletePrefKeys(target.id, keys);
             }
-        },
+            res.status(204).end();
+        }),
     );
 
     return router;

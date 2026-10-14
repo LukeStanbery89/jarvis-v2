@@ -5,7 +5,11 @@
  * environment without a browser or network).
  */
 import { describe, expect, it, vi } from "vitest";
-import { pcmToS16le, type ServerFrame } from "@lukestanbery/jarvis-protocol";
+import {
+    pcmToS16le,
+    REVOKED_TOKEN_ERROR,
+    type ServerFrame,
+} from "@lukestanbery/jarvis-protocol";
 import { ChatClient, type ChatClientEvents } from "./ChatClient";
 
 /** Minimal WebSocket double: records sends, dispatches driven events. */
@@ -312,7 +316,7 @@ describe("ChatClient prompts", () => {
         const socket = connected(harness);
         const pending = harness.client.prompt("hi", "s1");
         socket.receive({
-            error: "device token revoked; reconnect to re-authenticate",
+            error: REVOKED_TOKEN_ERROR,
         });
         await expect(pending).rejects.toThrow("authentication failed");
         expect(harness.authRejected).toBe(1);
