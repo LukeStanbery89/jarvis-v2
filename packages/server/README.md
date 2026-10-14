@@ -737,11 +737,20 @@ open-source model weights, never user data, and the recognition worker
 cannot attach auth headers; browsers cache it via long-lived headers). The
 archive never lands in the Docker image and is never downloaded at boot.
 
-- `src/stt/model.ts` — the download-once cache (`SttModelCache`: lazy first
-  fetch, in-flight collapse, temp-file-then-rename so a partial download
-  never masquerades as a model, retry on the next request after a failure)
-  plus the route handler (`createSttModelHandler`: 200 `application/gzip`,
-  JSON 404 unconfigured, JSON 503 while an upstream fetch fails).
+- `src/modelFileCache.ts` — the shared serving machinery both model routes
+  use (issue #107 P3): `ModelFileCache` (lazy first fetch, per-key in-flight
+  collapse, a **streamed** temp-file-then-rename write so a partial download
+  never masquerades as a model and the ~40 MB archive never sits whole in
+  memory, a hard fetch timeout — `DEFAULT_DOWNLOAD_TIMEOUT_MS`, 10 minutes —
+  so a hung upstream cannot stall a request forever, retry on the next
+  request after a failure) plus `createModelFileHandler` (200 with the
+  route's `Content-Type` and `Cache-Control: public, max-age=86400`; JSON
+  404 unconfigured/unknown; JSON 503 while an upstream fetch fails; optional
+  `HEAD` 200 capability probe).
+- `src/stt/model.ts` — the STT spec on that machinery: `SttModelCache`
+  (single archive key; the cached file name is derived and sanitized from
+  `JARVIS_STT_MODEL_URL`) and `createSttModelHandler` for
+  `GET /api/stt/model` (200 `application/gzip`).
 
 | Variable               | Default                              | Description                                   |
 | ---------------------- | ------------------------------------ | --------------------------------------------- |
@@ -760,12 +769,13 @@ no CORS headers and a `/web`-mounted SPA must load them without them. The
 route is an exact per-file allowlist — an unknown name 404s before any
 fetch; `HEAD` answers 200 without downloading.
 
-- `src/wake/model.ts` — the per-file download-once cache (`WakeModelCache`:
-  lazy first fetch, in-flight collapse, temp-file-then-rename, retry on the
-  next request) plus `createWakeModelHandler` for `GET|HEAD
-/api/wake/model/:file` (200 `application/octet-stream` + `Cache-Control
-public, max-age=86400`; JSON 404 unconfigured/unknown; JSON 503 while an
-  upstream fetch fails).
+- `src/wake/model.ts` — the wake spec on the shared machinery: the
+  `WAKE_MODEL_FILES`/`isWakeModelFile` three-file allowlist (an unknown
+  `:file` 404s before any fetch, so the route is never an open proxy),
+  `WakeModelCache` (per-file keys over `ModelFileCache`), and
+  `createWakeModelHandler` for `GET|HEAD /api/wake/model/:file`
+  (200 `application/octet-stream` + `Cache-Control public, max-age=86400`;
+  `HEAD` answers 200 without downloading).
 
 | Variable                | Default                                   | Description                                       |
 | ----------------------- | ----------------------------------------- | ------------------------------------------------- |
