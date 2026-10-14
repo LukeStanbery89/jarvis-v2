@@ -68,7 +68,7 @@ import type { SessionManager, TurnOutcome } from "./sessionManager";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
-import { speakTurn } from "./tts/orchestrator";
+import { speakTurn, type AudioTurn } from "./tts/orchestrator";
 import type { TtsProvider } from "./tts/types";
 import type { AttachmentStore } from "./attachments/store";
 import { logger } from "./logger";
@@ -134,7 +134,7 @@ interface ConnectionState {
 }
 
 /** Options for {@link attachChatServer}. */
-export interface AttachmentOptions {
+export interface ChatServerOptions {
     /** Hard cap for one agent turn before the server aborts it. */
     turnTimeoutMs: number;
     /**
@@ -178,7 +178,7 @@ export interface AttachmentOptions {
 export function attachChatServer(
     httpServer: Server,
     store: AppDatabase,
-    options: AttachmentOptions = { turnTimeoutMs: DEFAULT_TURN_TIMEOUT_MS },
+    options: ChatServerOptions = { turnTimeoutMs: DEFAULT_TURN_TIMEOUT_MS },
 ): WebSocketServer {
     const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
     const sessions = createSessionManager(store);
@@ -352,7 +352,7 @@ async function handleFrame(
     store: AppDatabase,
     sessions: SessionManager,
     frame: ClientFrame,
-    options: AttachmentOptions,
+    options: ChatServerOptions,
 ): Promise<void> {
     if ("type" in frame) {
         if (frame.type === "hello") {
@@ -416,7 +416,7 @@ async function handlePrompt(
     store: AppDatabase,
     sessions: SessionManager,
     prompt: Extract<ClientFrame, { prompt: string }>,
-    options: AttachmentOptions,
+    options: ChatServerOptions,
 ): Promise<void> {
     if (!conn.firstSeen) {
         conn.firstSeen = true;
@@ -491,21 +491,24 @@ async function handlePrompt(
                     conn.cancelPending = false;
                     controller.abort();
                 }
-                await streamEventsToSocket(
+                await streamEventsToSocket({
                     socket,
-                    prompt.prompt,
+                    prompt: prompt.prompt,
                     sessionId,
-                    options.turnTimeoutMs,
-                    conn.capabilities,
+                    turnTimeoutMs: options.turnTimeoutMs,
+                    capabilities: conn.capabilities,
                     mode,
                     attachmentIds,
-                    conn.ctx.kind === "authed" ? conn.ctx.user.id : undefined,
-                    conn.location,
-                    options.tts,
-                    options.ttsSegment,
-                    controller.signal,
-                    ++conn.turnCounter,
-                );
+                    userId:
+                        conn.ctx.kind === "authed"
+                            ? conn.ctx.user.id
+                            : undefined,
+                    location: conn.location,
+                    tts: options.tts,
+                    ttsSegment: options.ttsSegment,
+                    signal: controller.signal,
+                    generationId: ++conn.turnCounter,
+                });
             } finally {
                 if (conn.active === controller) {
                     conn.active = null;
@@ -663,21 +666,152 @@ async function handleAuth(
  * stuck the generator never settles and the per-thread lock stays held; for
  * every signal-honoring model the lock drains the moment the abort lands.
  */
-async function streamEventsToSocket(
-    socket: WebSocket,
-    prompt: string,
-    sessionId: string,
-    turnTimeoutMs: number,
-    capabilities: ClientCapability[],
-    mode: ChatMode,
-    attachmentIds: string[],
-    userId: number | undefined,
-    location: DeviceLocation | undefined,
-    tts: TtsProvider | undefined,
-    ttsSegment: "sentence" | "clause" | undefined,
-    signal: AbortSignal,
-    generationId: number,
-): Promise<void> {
+/**
+ * One in-flight turn's forward, as an options object (#107 P4) — the
+ * thirteen positional parameters `streamEventsToSocket` previously took were
+ * one swapped argument away from a silent bug; named fields make every call
+ * site self-describing.
+ */
+interface StreamEventsOptions {
+    /** The prompting socket (frames and binary audio go here). */
+    socket: WebSocket;
+    /** The prompt text. */
+    prompt: string;
+    /** The claimed session/thread id. */
+    sessionId: string;
+    /** Hard cap for the turn before the server aborts it. */
+    turnTimeoutMs: number;
+    /** The socket's declared render capabilities (emptied for voice turns). */
+    capabilities: ClientCapability[];
+    /** The prompt's chat mode. */
+    mode: ChatMode;
+    /** Validated attachment ids the prompt references (may be empty). */
+    attachmentIds: string[];
+    /** The authenticated user's id, or `undefined` for a guest socket. */
+    userId: number | undefined;
+    /** The socket's latest device-location report, if any. */
+    location: DeviceLocation | undefined;
+    /** The configured TTS engine, if any (from `ChatServerOptions`). */
+    tts: TtsProvider | undefined;
+    /** Segmenter granularity for spoken turns (from `ChatServerOptions`). */
+    ttsSegment: "sentence" | "clause" | undefined;
+    /** The turn's cancellation signal (#84 P6). */
+    signal: AbortSignal;
+    /** The socket's per-connection turn counter (audio generation id). */
+    generationId: number;
+}
+
+/**
+ * Creates the turn's spoken-audio pipeline when TTS is configured and the
+ * turn is eligible — a **voice-mode prompt from a socket that declared the
+ * `audio` capability** (#83) — and `null` otherwise. The sink wires the
+ * engine's `audioStart`/binary-PCM/`audioEnd` deliveries to the socket,
+ * dropping stragglers after a cancel (the engine has no abort hook) and
+ * past the send-buffer bound; the TTFA timestamps (first segment, first
+ * audio sent) land in `ttfa` for the caller's end-of-turn log.
+ *
+ * @param opts - The turn's forward options (see {@link StreamEventsOptions}).
+ * @param ttfa - Mutable TTFA bookkeeping the pipeline's callbacks stamp.
+ * @returns The pipeline to `push`/`finish`/`abort`, or `null` when the turn
+ *   is text-only or TTS is unconfigured.
+ */
+function startTurnAudio(
+    opts: StreamEventsOptions,
+    ttfa: TurnAudioTtfa,
+): AudioTurn | null {
+    const {
+        socket,
+        capabilities,
+        mode,
+        tts,
+        ttsSegment,
+        generationId,
+        signal,
+    } = opts;
+    if (
+        mode !== "voice" ||
+        !capabilities.includes("audio") ||
+        tts === undefined
+    ) {
+        return null;
+    }
+    return speakTurn(
+        tts,
+        {
+            audioStart: (sampleRate) => {
+                sendFrame(socket, {
+                    audioStart: {
+                        generationId,
+                        format: "pcm_s16le",
+                        sampleRate,
+                        channels: 1,
+                    },
+                });
+            },
+            audio: (pcm) => {
+                ttfa.firstAudioSentAt ??= Date.now();
+                if (socket.readyState === WebSocket.OPEN) {
+                    // A cancel during the drain must stop the
+                    // audio at the wire too: a synthesis that
+                    // resolved just after the abort (the engine
+                    // has no abort hook) is a straggler — dropped
+                    // here rather than delivered. Past the
+                    // send-buffer bound, dropping also bounds the
+                    // queue (a gap in the audio is the honest cost
+                    // of a client that cannot keep up; the span
+                    // still closes with `audioEnd`).
+                    if (
+                        signal.aborted ||
+                        socket.bufferedAmount > MAX_SEND_BUFFER_BYTES
+                    ) {
+                        if (!signal.aborted) {
+                            noteDroppedStreamData(socket, "audio segment(s)");
+                        }
+                        return;
+                    }
+                    socket.send(pcmToS16le(pcm), { binary: true });
+                }
+            },
+            audioEnd: () => {
+                sendFrame(socket, { audioEnd: { generationId } });
+            },
+        },
+        (err) => {
+            logger.error(
+                `TTS failed (turn ${generationId}): ${err instanceof Error ? err.message : String(err)}`,
+            );
+        },
+        {
+            granularity: ttsSegment ?? "sentence",
+            onFirstSegment: () => {
+                ttfa.firstSegmentAt = Date.now();
+            },
+        },
+    );
+}
+
+/** TTFA timestamps the audio pipeline stamps for the caller's log. */
+interface TurnAudioTtfa {
+    /** When the first segment was queued for synthesis (`Date.now()`). */
+    firstSegmentAt: number | null;
+    /** When the first PCM chunk hit the socket (`Date.now()`). */
+    firstAudioSentAt: number | null;
+}
+
+async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
+    const {
+        socket,
+        prompt,
+        sessionId,
+        turnTimeoutMs,
+        capabilities,
+        mode,
+        attachmentIds,
+        userId,
+        location,
+        signal,
+        generationId,
+    } = opts;
     const turnStartedAt = Date.now();
     let finished = false;
     let generator: AsyncGenerator<AgentEvent> | null = null;
@@ -690,69 +824,13 @@ async function streamEventsToSocket(
     // token, first queued segment, first PCM delivered — deltas against
     // the turn's start, logged once when the stream completes.
     let firstTokenAt: number | null = null;
-    let firstSegmentAt: number | null = null;
-    let firstAudioSentAt: number | null = null;
+    const ttfa: TurnAudioTtfa = {
+        firstSegmentAt: null,
+        firstAudioSentAt: null,
+    };
     // The turn's spoken-audio pipeline, created only when TTS is configured
     // and the turn is eligible (voice mode + audio-capable socket, #83).
-    const speaking =
-        mode === "voice" && capabilities.includes("audio") && tts !== undefined
-            ? speakTurn(
-                  tts,
-                  {
-                      audioStart: (sampleRate) => {
-                          sendFrame(socket, {
-                              audioStart: {
-                                  generationId,
-                                  format: "pcm_s16le",
-                                  sampleRate,
-                                  channels: 1,
-                              },
-                          });
-                      },
-                      audio: (pcm) => {
-                          firstAudioSentAt ??= Date.now();
-                          if (socket.readyState === WebSocket.OPEN) {
-                              // A cancel during the drain must stop the
-                              // audio at the wire too: a synthesis that
-                              // resolved just after the abort (the engine
-                              // has no abort hook) is a straggler — dropped
-                              // here rather than delivered. Past the
-                              // send-buffer bound, dropping also bounds the
-                              // queue (a gap in the audio is the honest cost
-                              // of a client that cannot keep up; the span
-                              // still closes with `audioEnd`).
-                              if (
-                                  signal.aborted ||
-                                  socket.bufferedAmount > MAX_SEND_BUFFER_BYTES
-                              ) {
-                                  if (!signal.aborted) {
-                                      noteDroppedStreamData(
-                                          socket,
-                                          "audio segment(s)",
-                                      );
-                                  }
-                                  return;
-                              }
-                              socket.send(pcmToS16le(pcm), { binary: true });
-                          }
-                      },
-                      audioEnd: () => {
-                          sendFrame(socket, { audioEnd: { generationId } });
-                      },
-                  },
-                  (err) => {
-                      logger.error(
-                          `TTS failed (turn ${generationId}): ${err instanceof Error ? err.message : String(err)}`,
-                      );
-                  },
-                  {
-                      granularity: ttsSegment ?? "sentence",
-                      onFirstSegment: () => {
-                          firstSegmentAt = Date.now();
-                      },
-                  },
-              )
-            : null;
+    const speaking = startTurnAudio(opts, ttfa);
     const finishWithError = (message: string) => {
         if (finished) {
             return;
@@ -837,7 +915,7 @@ async function streamEventsToSocket(
             const elapsed = (at: number | null) =>
                 at === null ? "—" : `+${at - turnStartedAt}ms`;
             logger.debug(
-                `voice turn ${generationId} TTFA: first token ${elapsed(firstTokenAt)}, first segment ${elapsed(firstSegmentAt)}, first audio sent ${elapsed(firstAudioSentAt)}`,
+                `voice turn ${generationId} TTFA: first token ${elapsed(firstTokenAt)}, first segment ${elapsed(ttfa.firstSegmentAt)}, first audio sent ${elapsed(ttfa.firstAudioSentAt)}`,
             );
         }
         logger.sensitive("Agent response", {
