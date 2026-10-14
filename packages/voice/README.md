@@ -13,8 +13,25 @@ halves, deliberately independent:
   time.
 - **Controller** (`src/controller.ts`) — the imperative orchestrator
   (`VoiceController`) that drives engines through the state machine: mic
-  presses, endpointing, transcript submission, and response-frame
-  forwarding. React- and transport-free, so every voice client reuses it.
+  presses, opening and tearing down sessions, and response-frame forwarding.
+  React- and transport-free, so every voice client reuses it.
+
+Feature machines sit beside the controller (issue #110), each over the
+shared `src/core.ts` (`VoiceCore`) context and each owning its own
+interlocks, so the controller is their composition root rather than their
+storage:
+
+- `src/session.ts` — `VoiceSession` + `END_OF_SPEECH_MS`/`NO_SPEECH_MS`: owns
+  one recognition session's endpointing (VAD-owned or engine-native),
+  transcript accumulation, wake-phrase stripping, and submission. The
+  controller creates one per `begin()` and delegates every engine/VAD
+  callback to it.
+- `src/wake.ts` — `WakeManager`: arms/disarms the detector, pre-warms the
+  wake engine, and re-arms once a session lands `idle`.
+- `src/barge.ts` — `BargeWatch` + `BARGE_IN_*`: the VAD-only barge-in watch and
+  its look-back ring. `BargeInDetection` and the `BARGE_IN_*` constants are the
+  only public symbols from here.
+- `src/errors.ts` — `toVoiceError`, the shared rejection normalizer.
 
 Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe. The
 Web Speech STT provider, the local WASM STT provider (Vosk), the energy VAD,
@@ -68,19 +85,23 @@ The reducer is pure: hold the latest `VoiceSnapshot`, feed it `VoiceEvent`s,
 render from the result. There is no hidden state and no I/O — callsite logging
 (via `@lukestanbery/jarvis-logger`) is the caller's job.
 
-## Controller (endpointing)
+## Session (endpointing)
 
 `VoiceController` is the imperative half of the interaction: it arms the
-engine and VAD, feeds their events into the reducer, accumulates the
-transcript, and submits the turn. Client UIs render from
+engine and VAD, opens a `VoiceSession` for each `begin()`, and reaches each
+one's events into the reducer. Client UIs render from
 `controller.getSnapshot()` (an external store — `useSyncExternalStore` in
 React) and call `press()` / `noteResponseFrame()` / `noteAudioStarted()` /
 `dispose()`.
 
-Endpointing — who decides "the user stopped talking" — is phase 3's
-deterministic answer:
+`VoiceSession` (in `src/session.ts`) owns everything that lives for exactly
+one recognition session — the engine/VAD callbacks, the "pause ⇒ send" and
+"press with silence" timers, the accumulated final segments, and the
+transcript's submission — while `VoiceController` stays the composition root
+that creates it. Endpointing — who decides "the user stopped talking" — is
+phase 3's deterministic answer:
 
-- **With a `vad`** (`VadProvider`), the controller owns endpointing. The
+- **With a `vad`** (`VadProvider`), the session owns endpointing. The
   engine is started `{ continuous: true }` so it never finalizes on its own
   pause detection; final segments arrive while speech continues and are
   accumulated. The VAD's `onSpeechEnd` arms an `END_OF_SPEECH_MS` (800 ms)
@@ -97,7 +118,7 @@ deterministic answer:
   and no timer is ever armed — identical to phase 2.
 
 Timer seams (`schedule`/`unschedule` options) are injectable, so tests fire
-expiries by hand; the controller never reads a real clock.
+expiries by hand; the code never reads a real clock.
 
 ### Design rules
 

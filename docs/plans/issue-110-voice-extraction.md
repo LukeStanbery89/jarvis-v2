@@ -2,11 +2,11 @@
 
 ## Goal
 
-Reduce `packages/voice/src/controller.ts` to lifecycle + endpointing +
-composition (target: <700 lines including mandated JSDoc) by lifting the two
-self-contained feature state machines into their own modules over a minimal
-shared context. Behavior and the public API stay identical; the full voice
-suite (171 cases as of #104) must stay green with **no test-intent changes**.
+Reduce `packages/voice/src/controller.ts` to lifecycle + session composition
+(target: <700 lines including mandated JSDoc) by lifting the self-contained
+feature state machines into their own modules over a minimal shared context.
+Behavior and the public API stay identical; the full voice suite (171 cases as
+of #104) must stay green with **no test-intent changes**.
 
 ## Why
 
@@ -26,7 +26,8 @@ packages/voice/src/
   core.ts        VoiceCore context (snapshot/reduce/vad/schedule/unschedule/log/isDisposed/stopVad)
   barge.ts       BargeWatch + BargeInDetection + BARGE_* constants
   wake.ts        WakeManager + DEFAULT_WAKE_PHRASE + wakeReplay helper
-  controller.ts  VoiceController: lifecycle, endpointing, composition
+  session.ts     VoiceSession + END_OF_SPEECH_MS/NO_SPEECH_MS (endpointing)
+  controller.ts  VoiceController: lifecycle, session composition, VAD/wake/barge seams
   index.ts       re-exports moved symbols from their new modules (public API unchanged)
 ```
 
@@ -96,16 +97,54 @@ class WakeManager {
 
 ### Phase C — slim + docs
 
-- Drop now-dead controller privates and fix the orphaned `toVoiceError` JSDoc.
+- Drop now-dead controller privates and fix the orphaned `toVoiceError` JSDoc
+  (moved to `src/errors.ts` in Phase B).
 - Update the controller header diagram, `index.ts` package doc, and
   `packages/voice/README.md`.
-- Record the final controller line count (target <700).
+
+### Phase D — extract `VoiceSession` (endpointing)
+
+Chosen over "keep endpointing in `controller.ts`, accept ~1050 lines": the
+session/endpointing cluster moves wholesale into `src/session.ts`
+(`VoiceSession`), so `controller.ts` reaches the `<700` target.
+
+- New `VoiceSession` owns one recognition session's engine/VAD callbacks,
+  the `END_OF_SPEECH_MS`/`NO_SPEECH_MS` timers, the accumulated finals, and
+  submission; the constants move here (re-exported from `index.ts`).
+- `begin()` computes the engine, applies the stale-activation guard, arms the
+  VAD with `session.vadCallbacks()`, sets `session.setVadOwned(...)`, assigns
+  `this.session`, then awaits `session.start(replay)`.
+- `press()` listening branch delegates to `session.finish()`; `dispose()`
+  calls `session.dispose()`.
+- New `test/session.test.ts` (fake `VoiceCore`, scripted STT + timer queue).
+
+## Outcome
+
+Three machines live in their own modules over `VoiceCore`; the controller
+keeps lifecycle, session composition, and the wake/barge/VAD seams only.
+
+| File            | Lines |
+| --------------- | ----- |
+| `controller.ts` | 559   |
+| `session.ts`    | 620   |
+| `wake.ts`       | 301   |
+| `barge.ts`      | 353   |
+| `core.ts`       | 38    |
+| `errors.ts`     | 35    |
+
+`controller.ts` fell 1393 → 1076 (barge + wake extraction) → **559**
+(session/endpointing extraction), meeting the aspirational `<700 incl. JSDoc`
+target. `session.ts`'s size is dominated by the endpointing/race JSDoc the
+behavior depends on.
 
 ## Acceptance (from the issue)
 
-- [ ] `BargeWatch` + `WakeManager` extracted over a minimal `VoiceCore`
-- [ ] `controller.ts` reduced to lifecycle + endpointing + composition (<700 lines incl. JSDoc)
-- [ ] Full voice suite green with no test-intent changes
-- [ ] Race-suite re-run: barge start/stop, wake+press, stale watch (#104)
+- [x] `BargeWatch` + `WakeManager` extracted over a minimal `VoiceCore`
+- [x] `controller.ts` reduced to lifecycle + session composition (559 incl.
+      JSDoc, `<700` met)
+- [x] Full voice suite green with no test-intent changes (barge/wake/controller
+      suites unchanged; 219 tests after the new `session`/`barge`/`wake` units)
+- [x] Race-suite re-run: barge start/stop, wake+press, stale watch (#104)
+- [x] Public API in `index.ts` unchanged (new classes stay internal)
 
 Closes #110.
