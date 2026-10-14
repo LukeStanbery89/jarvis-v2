@@ -42,19 +42,15 @@ export type {
 } from "./types";
 export type { VoiceEvent, VoiceSnapshot, VoiceState } from "./lifecycle";
 export { VOICE_STATES, initialVoiceSnapshot, reduceVoice } from "./lifecycle";
+export { BARGE_IN_LOOKBACK_MS, BARGE_IN_SPEECH_MS } from "./barge";
+export type { BargeInDetection } from "./barge";
 export {
-    BARGE_IN_LOOKBACK_MS,
-    BARGE_IN_SPEECH_MS,
     DEFAULT_WAKE_PHRASE,
     END_OF_SPEECH_MS,
     NO_SPEECH_MS,
     VoiceController,
 } from "./controller";
-export type {
-    BargeInDetection,
-    VoiceControllerOptions,
-    VoiceSubmit,
-} from "./controller";
+export type { VoiceControllerOptions, VoiceSubmit } from "./controller";
 export {
     WebSpeechSttProvider,
     createBrowserStt,
