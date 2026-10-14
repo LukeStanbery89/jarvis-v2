@@ -2,7 +2,7 @@
  * `@lukestanbery/jarvis-voice` — shared voice-input abstractions for
  * J.A.R.V.I.S. clients (issue #84, phases 1–6).
  *
- * Five halves, deliberately independent:
+ * Independent modules:
  *
  * - `./types` — the engine seam: {@link SttProvider},
  *   {@link WakeWordProvider}, and {@link VadProvider} keep speech engines
@@ -15,10 +15,13 @@
  *   explicit {@link VoiceState} at a time (plus detector-armed state).
  * - `./controller` — the imperative orchestrator ({@link VoiceController})
  *   that drives engines through the state machine: mic presses, wake-word
- *   matches, endpointing (VAD-driven or engine-native), transcript
- *   accumulation, turn submission, and the barge-in watch (#84 P6) that
- *   interrupts a playing response on sustained speech. React- and
- *   transport-free, so any voice client reuses it.
+ *   matches, session lifetime, and turn submission. React- and
+ *   transport-free, so any voice client reuses it. Feature state machines
+ *   live beside it (issue #110), each over a shared `VoiceCore` context:
+ *   `./session` (`VoiceSession` — one session's endpointing + transcript
+ *   accumulation + submission), `./wake` (`WakeManager` — the detector-armed
+ *   machine), and `./barge` (`BargeWatch` — the barge-in watch that
+ *   interrupts a playing response on sustained speech, #84 P6).
  * - `./wakeText` — transcript hygiene for wake sessions ({@link stripWakePhrase}).
  *
  * Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe (no
@@ -42,19 +45,12 @@ export type {
 } from "./types";
 export type { VoiceEvent, VoiceSnapshot, VoiceState } from "./lifecycle";
 export { VOICE_STATES, initialVoiceSnapshot, reduceVoice } from "./lifecycle";
-export {
-    BARGE_IN_LOOKBACK_MS,
-    BARGE_IN_SPEECH_MS,
-    DEFAULT_WAKE_PHRASE,
-    END_OF_SPEECH_MS,
-    NO_SPEECH_MS,
-    VoiceController,
-} from "./controller";
-export type {
-    BargeInDetection,
-    VoiceControllerOptions,
-    VoiceSubmit,
-} from "./controller";
+export { BARGE_IN_LOOKBACK_MS, BARGE_IN_SPEECH_MS } from "./barge";
+export type { BargeInDetection } from "./barge";
+export { DEFAULT_WAKE_PHRASE } from "./wake";
+export { END_OF_SPEECH_MS, NO_SPEECH_MS } from "./session";
+export { VoiceController } from "./controller";
+export type { VoiceControllerOptions, VoiceSubmit } from "./controller";
 export {
     WebSpeechSttProvider,
     createBrowserStt,

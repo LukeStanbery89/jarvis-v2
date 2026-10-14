@@ -197,18 +197,26 @@ export interface SttProvider {
  * spoken in the same breath as the wake phrase ("Hey JARVIS, turn on the
  * lights") is carried here so a wake session can replay it into the STT
  * engine via {@link SttProvider.feed}; a detector that cannot retain audio
- * simply omits it. When present it is mono PCM at 16 kHz normalized to
- * `[-1, 1]` (the openWakeWord mic's framing convention, issue #84, phase 4).
+ * simply omits it. When present it is mono PCM normalized to `[-1, 1]`
+ * (the openWakeWord mic's framing convention is 16 kHz, issue #84, phase 4).
  */
 export interface WakeDetection {
     /** Engine-reported match strength, when the engine provides one. */
     readonly confidence?: number;
     /**
-     * The 16 kHz mono audio that preceded the wake phrase, for replay into
-     * the STT engine that opens the session. Optional; engines that cannot
-     * retain it omit it, and the session simply starts at the wake phrase.
+     * The mono audio that preceded the wake phrase, for replay into the STT
+     * engine that opens the session. Optional; engines that cannot retain it
+     * omit it, and the session simply starts at the wake phrase. Paired with
+     * {@link WakeDetection.lookbackSampleRate}, which defaults to 16 kHz.
      */
     readonly lookback?: Float32Array;
+    /**
+     * The sample rate {@link WakeDetection.lookback} was captured at. Omit
+     * to assume the 16 kHz openWakeWord convention; a detector that captures
+     * at another rate must report it so the replay is not resampled wrongly
+     * (#104).
+     */
+    readonly lookbackSampleRate?: number;
 }
 
 /** Per-listener callbacks handed to {@link WakeWordProvider.start}. */

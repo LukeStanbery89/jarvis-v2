@@ -886,6 +886,31 @@ describe("dispose", () => {
         expect(fakes.model.terminated).toBe(true);
         expect(provider.state).toBe("idle");
     });
+
+    it("frees a model that finishes loading after dispose (#104)", async () => {
+        const fakes = installFakes();
+        // Gate the model load so dispose() lands mid-load.
+        let release!: (model: FakeModel) => void;
+        const gated = new Promise<FakeModel>((resolve) => {
+            release = resolve;
+        });
+        fakes.module.createVoskClient.mockImplementation(() => gated);
+        const provider = makeProvider(fakes);
+        const startPromise = provider.start(makeRecorder().callbacks);
+        await provider.dispose();
+        release(fakes.model);
+        await expect(startPromise).rejects.toMatchObject({ code: "engine" });
+        // The late model was terminated, never cached into the dead engine.
+        expect(fakes.model.terminated).toBe(true);
+        expect(provider.state).toBe("idle");
+        // The poisoned cache did not survive: a fresh session reloads.
+        fakes.module.createVoskClient.mockImplementation(() =>
+            Promise.resolve(fakes.model),
+        );
+        await provider.start(makeRecorder().callbacks);
+        expect(fakes.module.createVoskClient).toHaveBeenCalledTimes(2);
+        await provider.cancel();
+    });
 });
 
 describe("resampleLinear", () => {

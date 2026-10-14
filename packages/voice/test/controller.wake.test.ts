@@ -454,6 +454,81 @@ describe("re-arming after turns", () => {
     });
 });
 
+describe("wake race fixes (#104)", () => {
+    it("a press landing while the wake cue plays is not clobbered", async () => {
+        // Race 2: handleWake blocks on the cue; the user presses in that
+        // window and opens a primary session. When the cue releases, the
+        // wake session's begin() must find the reducer already past idle
+        // and bail instead of opening a second session over the live one.
+        const stt = new FakeStt("primary");
+        const wakeStt = new FakeStt("wake");
+        const wake = new FakeWake();
+        let releaseCue: (() => void) | null = null;
+        const cue = new Promise<void>((resolve) => {
+            releaseCue = resolve;
+        });
+        const controller = new VoiceController({
+            stt,
+            wakeStt,
+            wake,
+            wakePhrase: "Hey JARVIS",
+            onWakeCue: () => cue,
+            submit: async () => {},
+        });
+        await controller.enableWake();
+        wake.emitWake({ confidence: 0.9, lookback });
+        await Promise.resolve();
+        // The cue is still playing: the user presses the mic button.
+        controller.press();
+        await drain();
+        expect(controller.getSnapshot().state).toBe("listening");
+        expect(stt.startCalls).toBe(1);
+        // Release the cue: the stale wake open is a no-op.
+        releaseCue!();
+        await drain();
+        expect(wakeStt.startCalls).toBe(0);
+        expect(stt.startCalls).toBe(1);
+        expect(controller.getSnapshot().state).toBe("listening");
+        await controller.dispose();
+    });
+
+    it("enableWake during a live session defers arming until idle", async () => {
+        // Race 6: arming the detector mid-session would open a second
+        // microphone alongside the live one.
+        const harness = makeHarness(false);
+        const { stt, wake, controller, settleSubmit } = harness;
+        controller.press();
+        await drain();
+        expect(controller.getSnapshot().state).toBe("listening");
+        void controller.enableWake();
+        await drain();
+        expect(wake.startCalls).toBe(0);
+        expect(controller.getSnapshot().wakeArmed).toBe(false);
+        // The session settles; the deferred arm now runs.
+        stt.emitResult("shuffle my playlist");
+        await drain();
+        settleSubmit();
+        await drain();
+        expect(controller.getSnapshot().state).toBe("idle");
+        expect(wake.startCalls).toBe(1);
+        expect(controller.getSnapshot().wakeArmed).toBe(true);
+    });
+
+    it("threads the detection's look-back sample rate into the replay", async () => {
+        const harness = makeHarness();
+        const { wakeStt, wake, controller } = harness;
+        await controller.enableWake();
+        await drain();
+        wake.emitWake({
+            confidence: 0.9,
+            lookback,
+            lookbackSampleRate: 48000,
+        });
+        await drain();
+        expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(48000);
+    });
+});
+
 describe("wake failures", () => {
     it("a mid-run detector failure records the error and stays disarmed", async () => {
         const harness = makeHarness();
