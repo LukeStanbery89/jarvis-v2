@@ -44,12 +44,8 @@ export type { VoiceEvent, VoiceSnapshot, VoiceState } from "./lifecycle";
 export { VOICE_STATES, initialVoiceSnapshot, reduceVoice } from "./lifecycle";
 export { BARGE_IN_LOOKBACK_MS, BARGE_IN_SPEECH_MS } from "./barge";
 export type { BargeInDetection } from "./barge";
-export {
-    DEFAULT_WAKE_PHRASE,
-    END_OF_SPEECH_MS,
-    NO_SPEECH_MS,
-    VoiceController,
-} from "./controller";
+export { DEFAULT_WAKE_PHRASE } from "./wake";
+export { END_OF_SPEECH_MS, NO_SPEECH_MS, VoiceController } from "./controller";
 export type { VoiceControllerOptions, VoiceSubmit } from "./controller";
 export {
     WebSpeechSttProvider,

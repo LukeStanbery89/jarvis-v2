@@ -88,8 +88,10 @@
 import { BargeWatch } from "./barge";
 import type { BargeInDetection } from "./barge";
 import type { VoiceCore } from "./core";
+import { toVoiceError } from "./errors";
 import { initialVoiceSnapshot, reduceVoice } from "./lifecycle";
 import type { VoiceSnapshot } from "./lifecycle";
+import { DEFAULT_WAKE_PHRASE, WakeManager, wakeReplay } from "./wake";
 import { stripWakePhrase } from "./wakeText";
 import type {
     SttProvider,
@@ -97,7 +99,6 @@ import type {
     VadCallbacks,
     VadProvider,
     VoiceError,
-    WakeDetection,
     WakeWordProvider,
 } from "./types";
 
@@ -190,9 +191,6 @@ export const END_OF_SPEECH_MS = 800;
  */
 export const NO_SPEECH_MS = 4000;
 
-/** The default wake phrase (must match the detector's trained phrase). */
-export const DEFAULT_WAKE_PHRASE = "Hey JARVIS";
-
 /**
  * Owns one user's voice session: mic presses, engine and VAD wiring,
  * transcript submission, and the observable {@link VoiceSnapshot} the UI
@@ -204,7 +202,6 @@ export class VoiceController {
     private readonly stt: SttProvider;
     private readonly submit: VoiceSubmit;
     private readonly vad: VadProvider | null;
-    private readonly wake: WakeWordProvider | null;
     private readonly wakeStt: SttProvider | null;
     private readonly wakePhrase: string;
     private readonly onWakeCue: (() => void | Promise<void>) | undefined;
@@ -220,16 +217,6 @@ export class VoiceController {
     private sessionStt: SttProvider | null = null;
     /** Whether the active session was opened by the wake word. */
     private sessionFromWake = false;
-    /** Whether the user wants wake detection on (persisted by the client). */
-    private wakeEnabled = false;
-    /**
-     * Set when the detector was disarmed for a session (or a wake just
-     * opened one) and a successful return to `idle` should re-arm it. The
-     * only trigger for {@link maybeReArm}; cleared by toggling.
-     */
-    private pendingReArm = false;
-    /** Serializes the occasional re-arm so two races don't double-stop the detector. */
-    private wakeBusy = false;
     /** Set by `dispose()`; makes every wake/no-op path return immediately. */
     private disposed = false;
     /**
@@ -273,6 +260,12 @@ export class VoiceController {
      * session's are mutually exclusive.
      */
     private readonly bargeWatch: BargeWatch;
+    /**
+     * The wake-word manager (#84 P4) — owns the detector-armed state machine
+     * and its interlocks; the controller forwards toggles and opens the
+     * session on a match.
+     */
+    private readonly wakeManager: WakeManager;
 
     /**
      * @param options - The engine, the submit seam, the optional VAD, and
@@ -282,7 +275,6 @@ export class VoiceController {
         this.stt = options.stt;
         this.submit = options.submit;
         this.vad = options.vad ?? null;
-        this.wake = options.wake ?? null;
         this.wakeStt = options.wakeStt ?? null;
         this.wakePhrase = options.wakePhrase ?? DEFAULT_WAKE_PHRASE;
         this.onWakeCue = options.onWakeCue;
@@ -307,6 +299,25 @@ export class VoiceController {
                 ? { onBargeIn: options.onBargeIn }
                 : {}),
             onDetected: (feed) => void this.begin(feed ? { feed } : {}),
+        });
+        this.wakeManager = new WakeManager(this.core, {
+            wake: options.wake ?? null,
+            wakeStt: options.wakeStt ?? null,
+            onMatch: async (detection) => {
+                try {
+                    await this.onWakeCue?.();
+                } catch {
+                    // A cue that will not play must not stop the session from
+                    // opening; the blip is cosmetic.
+                }
+                await this.begin({
+                    fromWake: true,
+                    lookback: detection.lookback,
+                    ...(detection.lookbackSampleRate !== undefined
+                        ? { lookbackSampleRate: detection.lookbackSampleRate }
+                        : {}),
+                });
+            },
         });
     }
 
@@ -385,16 +396,7 @@ export class VoiceController {
      * wake support is unavailable).
      */
     async enableWake(): Promise<void> {
-        this.wakeEnabled = true;
-        this.pendingReArm = false;
-        if (this.snapshot.state !== "idle") {
-            // A session owns the microphone; arming the detector now would
-            // open a second one alongside it (#104, race 6). Defer to
-            // `maybeReArm`, which arms the moment the session lands `idle`.
-            this.pendingReArm = true;
-            return;
-        }
-        await this.armWake();
+        await this.wakeManager.enable();
     }
 
     /**
@@ -406,9 +408,7 @@ export class VoiceController {
      * @returns Resolves once the detector is disarmed.
      */
     async disableWake(): Promise<void> {
-        this.wakeEnabled = false;
-        this.pendingReArm = false;
-        await this.disarmWake();
+        await this.wakeManager.disable();
     }
 
     /**
@@ -450,8 +450,6 @@ export class VoiceController {
      */
     async dispose(): Promise<void> {
         this.disposed = true;
-        this.wakeEnabled = false;
-        this.pendingReArm = false;
         // Supersede a barge start still awaiting `vad.start()` so its late
         // completion releases the VAD instead of arming a dead controller
         // (#104, race 3).
@@ -465,7 +463,7 @@ export class VoiceController {
             await wakeStt.dispose?.();
         }
         await this.stopVad();
-        await this.disarmWake();
+        await this.wakeManager.dispose();
         this.listeners.clear();
     }
 
@@ -541,13 +539,9 @@ export class VoiceController {
             replayPcm = feed.pcm;
             replayRate = feed.sampleRate;
         } else if (fromWake === true) {
-            const drained = this.wake?.drainPostMatch?.() ?? null;
-            replayPcm =
-                lookback !== undefined && drained !== null
-                    ? concatFloat32(lookback, drained)
-                    : (lookback ?? drained);
+            replayPcm = wakeReplay(lookback, this.wakeManager.drainPostMatch());
         }
-        this.disarmDetectorForSession();
+        this.wakeManager.disarmForSession();
         let vadArmed = false;
         if (this.vad !== null) {
             try {
@@ -650,148 +644,6 @@ export class VoiceController {
      */
     private activeStt(): SttProvider {
         return this.sessionStt ?? this.stt;
-    }
-
-    /**
-     * A wake-phrase match: opens a wake session that reuses the detector's
-     * look-back buffer. Ignored unless idle — a wake that lands mid-turn
-     * (barge-in, phase 6) is dropped; the detector stays armed until the
-     * turn settles, then re-arms.
-     *
-     * @param detection - The detector's match, carrying the phrase's
-     * confidence and the look-back audio to replay into the wake engine.
-     */
-    private async handleWake(detection: WakeDetection): Promise<void> {
-        if (this.wake === null || this.wakeStt === null || this.disposed) {
-            return;
-        }
-        if (this.snapshot.state !== "idle") {
-            return;
-        }
-        try {
-            await this.onWakeCue?.();
-        } catch {
-            // A cue that will not play must not stop the session from
-            // opening; the blip is cosmetic.
-        }
-        await this.begin({
-            fromWake: true,
-            lookback: detection.lookback,
-            ...(detection.lookbackSampleRate !== undefined
-                ? { lookbackSampleRate: detection.lookbackSampleRate }
-                : {}),
-        });
-        if (this.snapshot.state === "idle") {
-            // The session failed to open (its reducer said no); re-arm the
-            // pair so the wake word works again without a manual toggle.
-            this.pendingReArm = true;
-            this.maybeReArm();
-        }
-    }
-
-    /**
-     * The detector died mid-run (engine failure, mic track ended): record
-     * the failure in the snapshot (`wakeArmed` drops to false, the error
-     * banner shows at `idle`) and stay disarmed — no auto-retry spiral. The
-     * user toggles the wake switch to re-arm.
-     *
-     * @param error - The detector's mapped failure.
-     */
-    private onWakeError(error: VoiceError): void {
-        this.reduce({ type: "wakeFailed", error });
-    }
-
-    /**
-     * Arms the detector (and, alongside it, pre-warms the wake engine's
-     * model so the first wake session has nothing to stall on). No-ops while
-     * armed, while arming, or when wake support is unavailable.
-     */
-    private async armWake(): Promise<void> {
-        if (
-            this.wake === null ||
-            this.wakeStt === null ||
-            this.disposed ||
-            this.snapshot.wakeArmed ||
-            this.wakeBusy
-        ) {
-            return;
-        }
-        this.wakeBusy = true;
-        try {
-            await this.wake.start({
-                onWake: (detection) => void this.handleWake(detection),
-                onError: (error) => this.onWakeError(error),
-            });
-            void this.wakeStt.prepare?.().catch((err) => {
-                // The first wake session's own start() owns any failure —
-                // but a failed pre-warm means the first wake session stalls
-                // on a model download with no other trace.
-                this.log("wake engine pre-warm failed", err);
-            });
-            this.reduce({ type: "wakeArmed" });
-        } catch (err) {
-            this.reduce({ type: "wakeFailed", error: toVoiceError(err) });
-        } finally {
-            this.wakeBusy = false;
-        }
-    }
-
-    /**
-     * Disarms the detector, dropping any in-flight callbacks, and marks the
-     * snapshot accordingly (safe when already disarmed).
-     */
-    private async disarmWake(): Promise<void> {
-        if (this.wake === null) {
-            return;
-        }
-        try {
-            await this.wake.stop();
-        } catch {
-            // A detector that failed to stop is already dead.
-        }
-        if (this.snapshot.wakeArmed) {
-            this.reduce({ type: "wakeDisarmed" });
-        }
-    }
-
-    /**
-     * Disarms an armed detector because a session is about to own the mic.
-     * Runs from `begin()` for every session (wake or press), and re-arms
-     * when that turn lands `idle` — so wake detection pauses while the
-     * microphone is live and resumes automatically once it is free.
-     */
-    private disarmDetectorForSession(): void {
-        if (this.wake === null || !this.snapshot.wakeArmed) {
-            return;
-        }
-        this.pendingReArm = this.wakeEnabled;
-        void this.wake.stop().catch(() => {
-            // A detector that failed to stop is already dead.
-        });
-        this.reduce({ type: "wakeDisarmed" });
-    }
-
-    /**
-     * Re-arms the detector after a session that interrupted it, when the
-     * user still wants wake detection. Fired from {@link reduce} whenever a
-     * session lands `idle`; the `pendingReArm` flag (set by
-     * {@link disarmDetectorForSession} or a failed wake open) makes it
-     * idempotent and stops it racing a manual toggle.
-     */
-    private maybeReArm(): void {
-        if (
-            !this.wakeEnabled ||
-            !this.pendingReArm ||
-            this.disposed ||
-            this.wake === null ||
-            this.wakeStt === null
-        ) {
-            return;
-        }
-        if (this.snapshot.wakeArmed || this.snapshot.state !== "idle") {
-            return;
-        }
-        void this.armWake();
     }
 
     /**
@@ -1212,49 +1064,7 @@ export class VoiceController {
             }
             // A session landing on `idle` (after a turn, a quiet no-op, a
             // failure) is a moment to bring wake detection back online.
-            this.maybeReArm();
+            this.wakeManager.maybeReArm();
         }
     }
-}
-
-/**
- * Normalizes an unknown `start()` rejection into a {@link VoiceError}
- * (provider throws are already `VoiceError`-shaped; anything else becomes
- * an engine error).
- *
- * @param err - The thrown value.
- * @returns A voice error.
- */
-/**
- * Joins two PCM buffers into one, for a wake replay that combines the
- * match-time look-back with the post-match audio drained at session open.
- *
- * @param a - The leading buffer.
- * @param b - The trailing buffer.
- * @returns A new buffer containing `a` followed by `b`.
- */
-function concatFloat32(a: Float32Array, b: Float32Array): Float32Array {
-    const out = new Float32Array(a.length + b.length);
-    out.set(a, 0);
-    out.set(b, a.length);
-    return out;
-}
-
-function toVoiceError(err: unknown): VoiceError {
-    if (typeof err === "object" && err !== null) {
-        const candidate = err as { code?: unknown; message?: unknown };
-        if (
-            typeof candidate.code === "string" &&
-            typeof candidate.message === "string"
-        ) {
-            return {
-                code: candidate.code as VoiceError["code"],
-                message: candidate.message,
-            };
-        }
-    }
-    return {
-        code: "engine",
-        message: err instanceof Error ? err.message : "voice input failed",
-    };
 }
