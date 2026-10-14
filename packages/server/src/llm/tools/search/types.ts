@@ -71,7 +71,13 @@ export interface SearchProvider {
 
 /** Why a search failed; drives the tool's user-facing error text. */
 export class SearchError extends Error {
-    /** The underlying error (transport/parse), chained by the shared client. */
+    /**
+     * The underlying error (transport/parse), chained by the shared client.
+     *
+     * Hand-assigned rather than `super(message, { cause })`: the ES2020 lib's
+     * `Error` interface predates `ErrorOptions`, so the options bag does not
+     * typecheck under this tsconfig.
+     */
     readonly cause?: unknown;
 
     constructor(message: string, cause?: unknown) {

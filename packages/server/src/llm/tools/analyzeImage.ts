@@ -79,6 +79,9 @@ export function createAnalyzeImageTool(deps: AnalyzeImageDeps) {
             try {
                 bytes = await deps.attachments.get(gate.userId, attachmentId);
             } catch (err) {
+                // Uniform with the other metered tools: an aborted turn
+                // rejects rather than mapping to failure text (#103).
+                runtime.signal?.throwIfAborted();
                 const code = (err as AttachmentError).code;
                 if (typeof code === "string" && code in FAILURE_TEXT) {
                     return FAILURE_TEXT[code];
