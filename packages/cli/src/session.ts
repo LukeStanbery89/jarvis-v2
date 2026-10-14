@@ -27,6 +27,7 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { MAX_SESSION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { getSessionFilePath } from "./config";
 import { ensurePrivateDir } from "./privateFs";
 import { logger } from "./logger";
@@ -43,12 +44,6 @@ export interface SessionIds {
     /** Id per canonical server username — that account's conversation thread. */
     users: Record<string, string>;
 }
-
-/**
- * Max session-id length the server accepts (`MAX_SESSION_ID_LENGTH` in
- * `@lukestanbery/jarvis-protocol`).
- */
-const MAX_SESSION_ID_LENGTH = 128;
 
 /** Returns whether `value` is a plain (non-array) object. */
 function isRecord(value: unknown): value is Record<string, unknown> {

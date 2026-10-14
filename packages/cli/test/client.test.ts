@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ChatClient, type AuthRejection } from "../src/client";
+import { REVOKED_TOKEN_ERROR } from "@lukestanbery/jarvis-protocol";
 import { getServerUrl, getSessionFilePath, serverOrigin } from "../src/config";
 import { loadSessionIds, sessionIdFor } from "../src/session";
 
@@ -239,7 +240,7 @@ describe("ChatClient", () => {
                 socket.send(JSON.stringify({ chunk: "partial" }));
                 socket.send(
                     JSON.stringify({
-                        error: "device token revoked; reconnect to re-authenticate",
+                        error: REVOKED_TOKEN_ERROR,
                     }),
                 );
             }

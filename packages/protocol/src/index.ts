@@ -23,6 +23,8 @@ export type {
     ServerFrame,
 } from "./types";
 export {
+    CHAT_MODES,
+    CLIENT_CAPABILITIES,
     MAX_ATTACHMENTS,
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
@@ -30,6 +32,7 @@ export {
     MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    REVOKED_TOKEN_ERROR,
 } from "./types";
 export {
     parseClientMessage,

@@ -49,6 +49,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
     parseClientMessage,
     pcmToS16le,
+    REVOKED_TOKEN_ERROR,
     serializeFrame,
     type ChatMode,
     type ClientCapability,
@@ -434,10 +435,7 @@ async function handlePrompt(
             logger.warn(
                 `Dropping socket: device token for ${conn.ctx.user.username} was revoked`,
             );
-            sendError(
-                socket,
-                "device token revoked; reconnect to re-authenticate",
-            );
+            sendError(socket, REVOKED_TOKEN_ERROR);
             socket.close();
             return;
         }

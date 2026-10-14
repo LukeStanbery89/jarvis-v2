@@ -12,6 +12,8 @@
  * it must not drift.
  */
 import {
+    CHAT_MODES,
+    CLIENT_CAPABILITIES,
     MAX_ATTACHMENTS,
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
@@ -32,14 +34,19 @@ import type {
     ServerFrame,
 } from "./types";
 
-/** The capability tokens the protocol recognizes (mirrors `ClientCapability`). */
-const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set<string>([
-    "markdown",
-    "html",
-    "image",
-    "link",
-    "audio",
-]);
+/**
+ * The capability tokens the protocol recognizes, derived from
+ * {@link CLIENT_CAPABILITIES} so the parser cannot drift from the union.
+ */
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set<string>(
+    CLIENT_CAPABILITIES,
+);
+
+/**
+ * The chat-mode tokens the protocol recognizes, derived from
+ * {@link CHAT_MODES} so the parser cannot drift from the union.
+ */
+const KNOWN_MODES: ReadonlySet<string> = new Set<string>(CHAT_MODES);
 
 /** User-facing wording for a malformed JSON payload; must not drift. */
 const MALFORMED_JSON = "malformed request; expected a JSON object";
@@ -146,9 +153,6 @@ function parseJson(raw: string): Record<string, unknown> {
     }
     return parsed as Record<string, unknown>;
 }
-
-/** The chat-mode tokens the protocol recognizes (mirrors `ChatMode`). */
-const KNOWN_MODES: ReadonlySet<string> = new Set<string>(["text", "voice"]);
 
 /**
  * Parses + validates a ChatPrompt-shaped object.

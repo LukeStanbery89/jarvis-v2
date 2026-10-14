@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+    CHAT_MODES,
+    CLIENT_CAPABILITIES,
     MAX_ATTACHMENTS,
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_CAPABILITIES,
@@ -11,6 +13,7 @@ import {
     parseFrame,
     parseRequest,
     pcmToS16le,
+    REVOKED_TOKEN_ERROR,
     s16leToPcm,
     serializeAuth,
     serializeCancel,
@@ -19,7 +22,7 @@ import {
     serializeLocation,
     serializeRequest,
 } from "../src/index";
-import type { ClientCapability, ServerFrame } from "../src/index";
+import type { ChatMode, ClientCapability, ServerFrame } from "../src/index";
 
 describe("parseFrame", () => {
     it("parses a chunk frame", () => {
@@ -729,5 +732,42 @@ describe("cancel frames (#84 P6)", () => {
 
     it("serializes to the exact wire shape", () => {
         expect(serializeCancel()).toBe('{"type":"cancel"}');
+    });
+});
+
+describe("protocol token tuples (#107 P1)", () => {
+    it.each(CLIENT_CAPABILITIES)(
+        "the parser accepts the recognized capability %s",
+        (capability) => {
+            expect(
+                parseClientMessage(
+                    JSON.stringify({
+                        type: "hello",
+                        capabilities: [capability],
+                    }),
+                ),
+            ).toEqual({ type: "hello", capabilities: [capability] });
+        },
+    );
+
+    it.each(CHAT_MODES)("the parser accepts the chat mode %s", (mode) => {
+        expect(
+            parseRequest(
+                JSON.stringify({ prompt: "hi", sessionId: "abc", mode }),
+            ),
+        ).toMatchObject({ mode });
+    });
+
+    it("derives each union from its tuple (compile-time drift guard)", () => {
+        const capabilities: readonly ClientCapability[] = CLIENT_CAPABILITIES;
+        const modes: readonly ChatMode[] = CHAT_MODES;
+        expect(capabilities).toContain("audio");
+        expect(modes).toEqual(["text", "voice"]);
+    });
+
+    it("exports the shared revocation error text the server and clients match", () => {
+        expect(REVOKED_TOKEN_ERROR).toBe(
+            "device token revoked; reconnect to re-authenticate",
+        );
     });
 });
