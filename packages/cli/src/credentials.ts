@@ -19,7 +19,7 @@
  */
 import { readFileSync } from "node:fs";
 import { getCredentialsFilePath } from "./config";
-import { isRecord, writePrivateFile } from "./privateFs";
+import { errorMessage, isRecord, writePrivateFile } from "./privateFs";
 import { logger } from "./logger";
 
 /** One server's stored login: the device token plus display metadata. */
@@ -64,14 +64,21 @@ function isCredentialFile(value: unknown): value is CredentialFile {
  *
  * Returns `null` when the file is missing or unreadable, and warns (then
  * returns `null`) when it is malformed — a corrupt file never crashes the
- * CLI, it just means "no credentials".
+ * CLI, it just means "no credentials". A missing file is the expected
+ * "never logged in" shape and stays silent; any other read failure
+ * (permissions, EBUSY) warns too, so a real problem is never mistaken for
+ * being logged out (#106).
  */
 function readStore(path: string): CredentialFile | null {
     let raw: string;
     try {
         raw = readFileSync(path, "utf8");
-    } catch {
-        // No file yet (or unreadable) — treat as no credentials.
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            logger.warn(
+                `Could not read credentials file: ${errorMessage(err)} — running without stored credentials`,
+            );
+        }
         return null;
     }
     try {

@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { MAX_SESSION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { getSessionFilePath } from "./config";
-import { isRecord, writePrivateFile } from "./privateFs";
+import { isRecord, writePrivateFile, errorMessage } from "./privateFs";
 import { logger } from "./logger";
 
 /** The CLI's current identity — the thread slot to read/write. */
@@ -73,6 +73,22 @@ export function generateSessionId(): string {
 }
 
 /**
+ * Persists `ids` best-effort: a store that cannot be written (e.g. an
+ * unwritable `~/.jarvis`) degrades to an in-memory store with a warning
+ * instead of crashing the CLI — session persistence is an optimization
+ * across restarts, never a requirement to run (#106).
+ */
+function persistBestEffort(ids: SessionIds): void {
+    try {
+        saveSessionIds(ids);
+    } catch (err) {
+        logger.warn(
+            `Could not persist session-id file: ${errorMessage(err)} — thread ids are remembered until the CLI exits`,
+        );
+    }
+}
+
+/**
  * Persistent session-id store, defaulting to `{ guest: <fresh>, users: {} }`.
  *
  * A missing file is created (and persisted) on first load so the guest thread
@@ -86,13 +102,18 @@ export function loadSessionIds(): SessionIds {
     let raw: string;
     try {
         raw = readFileSync(path, "utf8");
-    } catch {
+    } catch (err) {
+        // ENOENT is the expected first-run shape and stays silent; any other
+        // read failure (permissions, EBUSY) is named but never fatal (#106).
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            logger.warn(`Could not read session-id file: ${errorMessage(err)}`);
+        }
         const fresh: SessionIds = {
             version: 1,
             guest: generateSessionId(),
             users: {},
         };
-        saveSessionIds(fresh);
+        persistBestEffort(fresh);
         return fresh;
     }
     let parsed: unknown;
@@ -115,8 +136,9 @@ export function loadSessionIds(): SessionIds {
         next = { version: 1, guest: generateSessionId(), users: {} };
     }
     // Migrate the on-disk format up front so the file always holds the JSON
-    // store (a bare legacy id is preserved as the new guest slot).
-    saveSessionIds(next);
+    // store (a bare legacy id is preserved as the new guest slot). Best-effort:
+    // an unwritable store keeps the migrated shape in memory instead.
+    persistBestEffort(next);
     return next;
 }
 

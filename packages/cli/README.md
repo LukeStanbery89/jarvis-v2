@@ -106,14 +106,20 @@ per logged-in account — in `~/.jarvis/session-id` (override the path with
 prompt, so each identity continues its own conversation thread across CLI
 restarts; login/logout switch between slots and `new` rotates the active one.
 Delete the file (or set `JARVIS_SESSION_FILE` to a fresh path) to reset every
-thread.
+thread. An unwritable session location never crashes the CLI: boot proceeds
+with an in-memory store (a warning says thread ids last until exit), and `new`
+reports a readable error while keeping the current conversation.
 
 Login tokens are kept in `~/.jarvis/credentials.json` (override the path with
 `JARVIS_CREDENTIALS_FILE`), one entry per server origin, written atomically at
 mode `0600`. The file holds real credentials — treat it like a private key.
 
 If the server is unreachable, the CLI prints the error and keeps running — just
-try again once the server is up.
+try again once the server is up. A connect that cannot open within 5 seconds
+fails with a "timed out" error instead of hanging forever, and a frame the
+client cannot parse (or a session/credential file it cannot read) fails the
+prompt with a readable error — the CLI never dies on server input or local
+state problems.
 
 ### Logging
 

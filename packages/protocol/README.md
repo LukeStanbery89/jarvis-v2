@@ -44,6 +44,7 @@ npm install @lukestanbery/jarvis-protocol
 | `MAX_ATTACHMENTS`                   | `4` — longest allowed `attachments` list in a prompt                                                                                            |
 | `MAX_ATTACHMENT_ID_LENGTH`          | `32` — longest allowed single attachment id                                                                                                     |
 | `MAX_LOCATION_LABEL_LENGTH`         | `64` — longest allowed optional place-name `label` in a `location` frame                                                                        |
+| `MALFORMED_SERVER_FRAME`            | User-facing wording thrown by `parseFrame` for unreadable (non-JSON / non-object) payloads; exported so clients reject with it verbatim (#106)  |
 | `parseFrame(raw)`                   | Parses a server frame; throws on malformed/unrecognized payload                                                                                 |
 | `parseClientMessage(raw)`           | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, `ClientCancelFrame`, or `ChatPrompt`           |
 | `parseRequest(raw)`                 | Parses + validates a client request (non-empty strings, ≤128 id)                                                                                |
@@ -105,7 +106,9 @@ client `auth`, `hello`, `location`, and `cancel` frames, which carry a `type` so
 server can tell them apart from prompts. Chunks concatenate verbatim to the
 full response. The error messages thrown by
 `parseFrame`/`parseClientMessage`/`parseRequest` are user-facing on the CLI
-side, so their wording must not drift.
+side, so their wording must not drift. `MALFORMED_SERVER_FRAME` exports the
+wording `parseFrame` throws for unreadable payloads so clients fail with the
+canonical message instead of hand-copying it.
 
 A machine-readable mirror of these frames lives in
 `packages/contracts/spec/asyncapi.yaml` (AsyncAPI 3.1). **Keep this package and

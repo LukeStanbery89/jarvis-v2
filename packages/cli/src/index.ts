@@ -22,6 +22,7 @@ import {
 } from "./credentials";
 import { askLoginDetails, loginRequest, type AskHidden } from "./login";
 import {
+    generateSessionId,
     loadSessionIds,
     rotateActiveSession,
     sessionIdFor,
@@ -55,7 +56,21 @@ const sessionIds = loadSessionIds();
 let identity: SessionIdentity = storedCreds
     ? { kind: "user", username: storedCreds.user }
     : { kind: "guest" };
-let sessionId = sessionIdFor(sessionIds, identity);
+let sessionId: string;
+try {
+    sessionId = sessionIdFor(sessionIds, identity);
+} catch (err) {
+    // An unwritable store must not crash boot (#106): the user's freshly
+    // minted slot is already in the in-memory store (the guest slot never
+    // persists and cannot reach this catch) — run with it for this session.
+    logger.warn(
+        `Could not persist the thread slot: ${errorMessage(err)} — it is remembered for this run only.`,
+    );
+    sessionId =
+        identity.kind === "user"
+            ? (sessionIds.users[identity.username] ?? generateSessionId())
+            : sessionIds.guest;
+}
 const client = new ChatClient(serverUrl, storedCreds?.token, (reason) => {
     try {
         clearCredentials(origin);
@@ -196,6 +211,29 @@ async function handleLogin(usernameArg: string): Promise<void> {
             return;
         }
         const result = await loginRequest(serverUrl, inputs);
+        // Resolve (and persist) the user's thread slot BEFORE storing the
+        // token: an unwritable store then degrades to a run-only slot with a
+        // warning, instead of storing the credential and reporting "Login
+        // failed" after it — the half-applied state that made a re-login
+        // rotate the token (#106).
+        let slot: string;
+        try {
+            slot = sessionIdFor(sessionIds, {
+                kind: "user",
+                username: result.user,
+            });
+        } catch (err) {
+            logger.warn(
+                `Could not persist the thread slot: ${errorMessage(err)} — it is remembered for this run only.`,
+            );
+            // sessionIdFor mutated the in-memory store before the persist
+            // threw, so the fresh id is already there.
+            slot = sessionIds.users[result.user] ?? generateSessionId();
+        }
+        // A failure here lands in the handler's catch as "Login failed" with
+        // no credential applied (at worst an empty thread slot is reserved in
+        // the store — benign, and resumed by the next successful login): the
+        // identity is not switched and the socket is not closed.
         saveCredentials(origin, {
             token: result.token,
             user: result.user,
@@ -207,7 +245,7 @@ async function handleLogin(usernameArg: string): Promise<void> {
         // history from a previous login is picked up where it stopped instead
         // of fragmenting into a fresh, orphaned thread.
         identity = { kind: "user", username: result.user };
-        sessionId = sessionIdFor(sessionIds, identity);
+        sessionId = slot;
         logger.info(
             `Logged in as ${result.user} (device: ${result.device}) — credentials stored.`,
         );
@@ -259,13 +297,32 @@ function handleLogout(): void {
  * Starts a fresh conversation on the *current* identity: the active thread
  * slot is rotated and persisted, so the next prompt claims a new thread.
  * Unlike `login`/`logout`, identity does not change — the socket stays
- * connected and authenticated.
+ * connected and authenticated. An unwritable session store reports a
+ * readable error and keeps the current conversation instead of crashing the
+ * REPL (#106).
  */
 function handleNew(): void {
     if (refuseIfBusy("new")) {
         return;
     }
-    sessionId = rotateActiveSession(sessionIds, identity);
+    try {
+        sessionId = rotateActiveSession(sessionIds, identity);
+    } catch (err) {
+        // Roll the in-memory slot back to the active id so the failure is
+        // atomic — rotateActiveSession mutated the store before the persist
+        // threw, and a later logout would otherwise land on the rotated
+        // (empty) thread mid-run (#106 review).
+        if (identity.kind === "guest") {
+            sessionIds.guest = sessionId;
+        } else {
+            sessionIds.users[identity.username] = sessionId;
+        }
+        logger.error(
+            `Could not start a fresh conversation: ${errorMessage(err)}`,
+        );
+        rl.prompt();
+        return;
+    }
     logger.info(`Fresh conversation session: ${sessionId}`);
     rl.prompt();
 }

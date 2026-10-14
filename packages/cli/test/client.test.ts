@@ -1,12 +1,16 @@
 import type { AddressInfo } from "net";
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ChatClient, type AuthRejection } from "../src/client";
-import { REVOKED_TOKEN_ERROR } from "@lukestanbery/jarvis-protocol";
+import {
+    MALFORMED_SERVER_FRAME,
+    REVOKED_TOKEN_ERROR,
+} from "@lukestanbery/jarvis-protocol";
 import { getServerUrl, getSessionFilePath, serverOrigin } from "../src/config";
 import { loadSessionIds, sessionIdFor } from "../src/session";
 
@@ -431,6 +435,98 @@ describe("ChatClient binary frames (#83)", () => {
             client.close();
         } finally {
             close();
+        }
+    });
+});
+
+describe("ChatClient robustness (#106)", () => {
+    it("fails the prompt with the protocol's wording on a malformed frame, and stays usable", async () => {
+        let script: string[] = ["null"];
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            for (const raw of script) {
+                socket.send(raw);
+            }
+        });
+        try {
+            const client = new ChatClient(url);
+            // A JSON `null` (and any non-object payload) must reject the
+            // prompt with the canonical wording — not escape the event
+            // listener as an uncaughtException that kills the process.
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(MALFORMED_SERVER_FRAME);
+
+            script = ["not json at all"];
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(MALFORMED_SERVER_FRAME);
+
+            // The process survived both malformed frames; a well-formed
+            // exchange still completes on the same client.
+            script = [
+                JSON.stringify({ chunk: "ok" }),
+                JSON.stringify({ done: true }),
+            ];
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).resolves.toBeUndefined();
+        } finally {
+            close();
+        }
+    });
+
+    it("ignores malformed frames during the auth handshake and still authenticates", async () => {
+        let handshook = false;
+        const { url, close } = await withSocketServer((_raw, socket) => {
+            if (!handshook) {
+                handshook = true;
+                socket.send("garbage not json");
+                socket.send(
+                    JSON.stringify({
+                        authResult: { user: "luke", device: "mac" },
+                    }),
+                );
+                return;
+            }
+            socket.send(JSON.stringify({ chunk: "ok" }));
+            socket.send(JSON.stringify({ done: true }));
+        });
+        try {
+            const client = new ChatClient(url, "tok-1");
+            const chunks: string[] = [];
+            await client.prompt("hi", "s", {
+                onChunk: (chunk) => chunks.push(chunk),
+            });
+            expect(chunks.join("")).toBe("ok");
+            // The garbage frame neither cleared the token nor killed the
+            // handshake: the authResult verdict was still honored.
+            expect(client.getIdentity()).toEqual({
+                user: "luke",
+                device: "mac",
+            });
+        } finally {
+            close();
+        }
+    });
+
+    it("times out connecting to a server that never completes the handshake", async () => {
+        // A raw TCP peer that accepts and never answers the WebSocket
+        // upgrade: without the connect timeout, `prompt()` would hang
+        // forever against a routable-but-unreachable host.
+        const server = createTcpServer((socket) => {
+            socket.on("error", () => {}); // ignore late resets
+        });
+        await new Promise<void>((resolve) =>
+            server.listen(0, "127.0.0.1", resolve),
+        );
+        const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        try {
+            const client = new ChatClient(url, undefined, undefined, 5_000, 50);
+            await expect(
+                client.prompt("hi", "s", { onChunk: () => {} }),
+            ).rejects.toThrow(/timed out after 50ms/);
+        } finally {
+            server.close();
         }
     });
 });

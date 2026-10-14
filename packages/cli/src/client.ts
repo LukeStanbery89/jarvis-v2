@@ -19,15 +19,20 @@
  * logged — diagnostics name only the confirmed user and device.
  */
 import {
+    MALFORMED_SERVER_FRAME,
     parseFrame,
     REVOKED_TOKEN_ERROR,
     serializeAuth,
     serializeRequest,
+    type ServerFrame,
 } from "@lukestanbery/jarvis-protocol";
 import { logger } from "./logger";
 
 /** How long a connect waits for the server's auth verdict before assuming guest. */
 export const AUTH_HANDSHAKE_TIMEOUT_MS = 5_000;
+
+/** How long a connect waits for the WebSocket to open before failing the prompt. */
+export const CONNECT_TIMEOUT_MS = 5_000;
 
 /**
  * Why an auth attempt failed and the stored credential should be cleared.
@@ -83,6 +88,7 @@ export class ChatClient {
         authToken?: string,
         private readonly onAuthRejected?: (reason: AuthRejection) => void,
         private readonly authTimeoutMs: number = AUTH_HANDSHAKE_TIMEOUT_MS,
+        private readonly connectTimeoutMs: number = CONNECT_TIMEOUT_MS,
     ) {
         this.token = authToken;
     }
@@ -130,7 +136,18 @@ export class ChatClient {
                     if (typeof event.data !== "string") {
                         return;
                     }
-                    const frame = parseFrame(String(event.data));
+                    let frame: ServerFrame;
+                    try {
+                        frame = parseFrame(String(event.data));
+                    } catch {
+                        // A frame the parser cannot read must not escape the
+                        // event listener: in Node's WebSocket a throw here is
+                        // an uncaughtException that kills the process (#106).
+                        // Fail the prompt with the protocol's wording instead.
+                        teardown();
+                        reject(new Error(MALFORMED_SERVER_FRAME));
+                        return;
+                    }
                     if ("chunk" in frame) {
                         handlers.onChunk(frame.chunk);
                     } else if ("tool" in frame) {
@@ -191,17 +208,42 @@ export class ChatClient {
         return this.active;
     }
 
-    /** Returns the open socket, connecting (and authenticating) first if needed. */
+    /**
+     * Returns the open socket, connecting (and authenticating) first if
+     * needed. The connect gives up after `connectTimeoutMs` with a "timed
+     * out" error instead of hanging on a routable-but-unreachable host.
+     */
     private async ensureConnected(): Promise<WebSocket> {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             return this.socket;
         }
 
+        logger.debug(`Connecting to ${this.url}`);
         const socket = new WebSocket(this.url);
         await new Promise<void>((resolve, reject) => {
-            socket.onopen = (): void => resolve();
-            socket.onerror = (): void =>
+            const teardown = (): void => {
+                clearTimeout(timer);
+                socket.onopen = null;
+                socket.onerror = null;
+            };
+            const timer = setTimeout(() => {
+                teardown();
+                socket.close();
+                reject(
+                    new Error(
+                        `could not connect to ${this.url}: timed out after ${this.connectTimeoutMs}ms`,
+                    ),
+                );
+            }, this.connectTimeoutMs);
+            socket.onopen = (): void => {
+                teardown();
+                resolve();
+            };
+            socket.onerror = (): void => {
+                teardown();
+                socket.close();
                 reject(new Error(`could not connect to ${this.url}`));
+            };
         });
 
         // A fresh connection starts unauthenticated; an authResult may
@@ -231,6 +273,17 @@ export class ChatClient {
         }
         if (socket.readyState === WebSocket.OPEN) {
             this.socket = socket;
+            // Read the handshake's verdict through the declared type: TS
+            // cannot see that `handshake()` mutated `this.identity` after
+            // the `null` reset above narrowed it (a plain annotated const
+            // inherits the initializer's narrowed `null` and the truthy
+            // branch collapses to `never`).
+            const identity = this.identity as AuthIdentity | null;
+            logger.debug(
+                identity
+                    ? `Connected to ${this.url} — authenticated as ${identity.user} (device: ${identity.device})`
+                    : `Connected to ${this.url} — guest`,
+            );
             return socket;
         }
         throw new Error(`connection to ${this.url} was closed during setup`);
@@ -263,7 +316,18 @@ export class ChatClient {
                 if (typeof event.data !== "string") {
                     return;
                 }
-                const frame = parseFrame(String(event.data));
+                let frame: ServerFrame;
+                try {
+                    frame = parseFrame(String(event.data));
+                } catch {
+                    // Neither verdict nor error: ignore the malformed frame
+                    // and keep waiting — the timer still bounds the handshake,
+                    // and one garbage frame must not clear a good token (#106).
+                    logger.debug(
+                        "Ignored a malformed frame during the auth handshake",
+                    );
+                    return;
+                }
                 if ("authResult" in frame) {
                     teardown();
                     this.identity = {
