@@ -136,13 +136,15 @@ export interface VoiceControllerOptions {
      */
     readonly wake?: WakeWordProvider | null;
     /**
-     * The STT engine used for wake-word sessions. Should accept
+     * The STT engine used for wake-word sessions. **Required for wake-word
+     * support**: `enableWake()` no-ops unless both `wake` and `wakeStt` are
+     * present, so omitting it disables wake sessions even with a detector
+     * configured (there is no primary-`stt` fallback). Should accept
      * caller-supplied audio (`feed()`) so the context spoken around the wake
      * phrase ("Hey JARVIS, turn on the lights") is transcribed — a
      * wake-word detector opens a session with its look-back buffer, not a
      * fresh page — and should be the private/local engine (a remote service
-     * would send every wake-eavesdropped second to the cloud). `null`/
-     * omitted makes wake sessions reuse the primary `stt`.
+     * would send every wake-eavesdropped second to the cloud).
      */
     readonly wakeStt?: SttProvider | null;
     /**
@@ -274,6 +276,20 @@ export class VoiceController {
      */
     private finals: string[] = [];
     /**
+     * Whether any speech evidence (a VAD speech-start, a partial, or a
+     * final) has arrived this session. Distinguishes "press with silence"
+     * from "the user spoke" when arming the silence guard after the engine
+     * starts (issue #104, race 1).
+     */
+    private heardSpeech = false;
+    /**
+     * VAD speech-end observed while the engine was still starting (a cold
+     * engine loading its model — #104 race 1): the end-of-speech timer
+     * cannot be armed until capture is live, so the decision is deferred
+     * and the timer armed when `stt.start()` resolves.
+     */
+    private deferredSpeechEnd = false;
+    /**
      * Whether the barge-in watch (#84 P6) currently owns the VAD. The watch
      * is a VAD-only session (no STT, no transcript) that lives exactly as
      * long as J.A.R.V.I.S. is speaking; a normal session's VAD use and the
@@ -293,6 +309,13 @@ export class VoiceController {
      * the watch's late cleanup.
      */
     private bargeStopping: Promise<void> | null = null;
+    /**
+     * Generation token serializing barge-watch start/stop (issue #104,
+     * race 3): bumped by every `stop()` (and `dispose()`), checked after the
+     * `vad.start()` await so a stop arriving mid-arm releases the VAD
+     * instead of orphaning it. Mirrors `openWakeWord.ts`'s `initSeq`.
+     */
+    private bargeSeq = 0;
 
     /**
      * @param options - The engine, the submit seam, the optional VAD, and
@@ -392,6 +415,13 @@ export class VoiceController {
     async enableWake(): Promise<void> {
         this.wakeEnabled = true;
         this.pendingReArm = false;
+        if (this.snapshot.state !== "idle") {
+            // A session owns the microphone; arming the detector now would
+            // open a second one alongside it (#104, race 6). Defer to
+            // `maybeReArm`, which arms the moment the session lands `idle`.
+            this.pendingReArm = true;
+            return;
+        }
         await this.armWake();
     }
 
@@ -432,6 +462,7 @@ export class VoiceController {
         ) {
             return;
         }
+        const seq = ++this.bargeSeq;
         this.bargeChunks = [];
         try {
             await this.vad.start(this.bargeCallbacks());
@@ -441,6 +472,16 @@ export class VoiceController {
             // silent barge-in is exactly the kind of failure a user
             // reports as "barge-in doesn't work" — leave a trace.
             this.log("barge-in watch failed to arm; staying off", err);
+            return;
+        }
+        if (seq !== this.bargeSeq || this.disposed) {
+            // A stop() (or dispose) superseded this start while the VAD was
+            // arming (#104, race 3): release what we just armed, so no one
+            // is left holding a VAD the next session needs. Funnel the
+            // release through `bargeStopping` so a concurrent `begin()`
+            // still waits it out.
+            const stopping = this.releaseBargeVad();
+            await stopping;
             return;
         }
         this.bargeWatchActive = true;
@@ -454,18 +495,35 @@ export class VoiceController {
      * @returns Resolves once the watch is disarmed.
      */
     async stopBargeWatch(): Promise<void> {
+        // Supersede any in-flight `startBargeWatch` (and any other stop), so
+        // a start still awaiting `vad.start()` releases what it armed
+        // instead of marking the watch active (#104, race 3).
+        this.bargeSeq++;
         this.cancelBargeSpeechTimer();
         this.bargeChunks = [];
         if (!this.bargeWatchActive) {
             return;
         }
         this.bargeWatchActive = false;
+        await this.releaseBargeVad();
+    }
+
+    /**
+     * Releases the VAD for an armed barge watch and tracks the release on
+     * `bargeStopping`, so a `begin()` racing the teardown waits it out
+     * rather than letting the late release tear down the session's track.
+     *
+     * @returns Resolves once the VAD has stopped.
+     */
+    private releaseBargeVad(): Promise<void> {
         const stopping = this.stopVad();
         this.bargeStopping = stopping;
-        await stopping;
-        if (this.bargeStopping === stopping) {
-            this.bargeStopping = null;
-        }
+        void stopping.finally(() => {
+            if (this.bargeStopping === stopping) {
+                this.bargeStopping = null;
+            }
+        });
+        return stopping;
     }
 
     /**
@@ -480,6 +538,10 @@ export class VoiceController {
         this.disposed = true;
         this.wakeEnabled = false;
         this.pendingReArm = false;
+        // Supersede a barge start still awaiting `vad.start()` so its late
+        // completion releases the VAD instead of arming a dead controller
+        // (#104, race 3).
+        this.bargeSeq++;
         this.clearTimers();
         await this.stt.cancel();
         await this.stt.dispose?.();
@@ -507,20 +569,22 @@ export class VoiceController {
      * the VAD is free.
      *
      * @param options - `fromWake` opens the session on the wake engine with
-     * wake-phrase stripping; `lookback` (16 kHz mono PCM captured by the
-     * detector) is replayed into it the moment capture is live, so the
-     * command spoken in the same breath as the wake phrase is transcribed.
-     * `feed` plays the same role for a barge-in session (#84 P6): the
-     * watch's pre-trigger audio, at the watch's capture rate, on the
-     * primary engine.
+     * wake-phrase stripping; `lookback`/`lookbackSampleRate` (mono PCM
+     * captured by the detector, defaulting to the 16 kHz convention) are
+     * replayed into it the moment capture is live, so the command spoken in
+     * the same breath as the wake phrase is transcribed. `feed` plays the
+     * same role for a barge-in session (#84 P6): the watch's pre-trigger
+     * audio, at the watch's capture rate, on the primary engine.
      */
     private async begin({
         fromWake,
         lookback,
+        lookbackSampleRate,
         feed,
     }: {
         fromWake?: boolean;
         lookback?: Float32Array;
+        lookbackSampleRate?: number;
         feed?: { pcm: Float32Array; sampleRate: number };
     } = {}): Promise<void> {
         if (this.bargeWatchActive) {
@@ -531,9 +595,21 @@ export class VoiceController {
             // down by the watch's late cleanup.
             await this.bargeStopping;
         }
+        // The reducer ignores `activate` while a session is already
+        // mid-flight (listening/transcribing/submitting). If it did, this
+        // `begin()` is a stale second open — a press in the wake cue's
+        // window, or a barge watch firing into a live session — and opening
+        // another session under the same id would clobber the live one
+        // (#104, race 2). Bail without touching any engine.
+        const beforeActivation = this.snapshot.sessionId;
         this.reduce({ type: "activate" });
+        if (this.snapshot.sessionId === beforeActivation) {
+            return;
+        }
         const sessionId = this.snapshot.sessionId;
         this.finals = [];
+        this.heardSpeech = false;
+        this.deferredSpeechEnd = false;
         this.sessionFromWake = fromWake === true;
         this.sessionStt = this.sessionFromWake
             ? (this.wakeStt ?? this.stt)
@@ -546,7 +622,7 @@ export class VoiceController {
         // match-time snapshot loses ("the lookback misses my first word").
         // A press never replays (a stale ring would inject phantom audio).
         let replayPcm: Float32Array | null = null;
-        let replayRate = 16000;
+        let replayRate = lookbackSampleRate ?? 16000;
         if (feed !== undefined) {
             replayPcm = feed.pcm;
             replayRate = feed.sampleRate;
@@ -575,9 +651,6 @@ export class VoiceController {
             }
         }
         this.vadSession = vadArmed;
-        if (vadArmed) {
-            this.armNoSpeechTimer(sessionId);
-        }
         const stt = this.sessionStt;
         const startOptions: SttStartOptions = {
             ...(vadArmed ? { continuous: true } : {}),
@@ -604,6 +677,23 @@ export class VoiceController {
                         : ""
                 })`,
             );
+            // Arm endpointing only now that the engine is actually
+            // capturing: a cold engine (Vosk loading its ~40 MB model) must
+            // not have its no-speech deadline tick during the load, or the
+            // first-ever press dies mid-download (#104, race 1). If speech
+            // already happened while the engine was starting, honor it
+            // instead of arming a "silence" guard.
+            if (
+                vadArmed &&
+                this.snapshot.sessionId === sessionId &&
+                this.snapshot.state === "listening"
+            ) {
+                if (this.deferredSpeechEnd) {
+                    this.armEndOfSpeechTimer(sessionId);
+                } else if (!this.heardSpeech) {
+                    this.armNoSpeechTimer(sessionId);
+                }
+            }
         } catch (err) {
             this.clearTimers();
             void this.stopVad();
@@ -670,7 +760,13 @@ export class VoiceController {
             // A cue that will not play must not stop the session from
             // opening; the blip is cosmetic.
         }
-        await this.begin({ fromWake: true, lookback: detection.lookback });
+        await this.begin({
+            fromWake: true,
+            lookback: detection.lookback,
+            ...(detection.lookbackSampleRate !== undefined
+                ? { lookbackSampleRate: detection.lookbackSampleRate }
+                : {}),
+        });
         if (this.snapshot.state === "idle") {
             // The session failed to open (its reducer said no); re-arm the
             // pair so the wake word works again without a manual toggle.
@@ -885,13 +981,19 @@ export class VoiceController {
                   })()
                 : undefined;
         try {
-            void this.onBargeIn?.({
-                ...(lookback !== undefined
-                    ? { lookback, lookbackSampleRate: rate }
-                    : {}),
-            });
-        } catch {
+            // The callback may be async; a rejected promise would otherwise
+            // be unhandled and, worse, silently drop the barge-in handoff
+            // (#104, race 5). Log it and let the session open regardless.
+            void Promise.resolve(
+                this.onBargeIn?.({
+                    ...(lookback !== undefined
+                        ? { lookback, lookbackSampleRate: rate }
+                        : {}),
+                }),
+            ).catch((err) => this.log("barge-in callback rejected", err));
+        } catch (err) {
             // A throwing callback must not stop the session from opening.
+            this.log("barge-in callback threw", err);
         }
         void this.begin({
             ...(lookback !== undefined
@@ -938,6 +1040,8 @@ export class VoiceController {
             return;
         }
         this.log(`session ${sessionId}: speech start`);
+        this.heardSpeech = true;
+        this.deferredSpeechEnd = false;
         this.cancelNoSpeechTimer();
         this.cancelEndOfSpeechTimer();
     }
@@ -956,13 +1060,17 @@ export class VoiceController {
         ) {
             return;
         }
-        this.log(
-            `session ${sessionId}: speech end; pausing ${END_OF_SPEECH_MS}ms before sending`,
-        );
-        this.endOfSpeechTimer = this.schedule(() => {
-            this.endOfSpeechTimer = null;
-            this.onEndOfSpeechTimeout(sessionId);
-        }, END_OF_SPEECH_MS);
+        this.heardSpeech = true;
+        if (this.activeStt().state === "starting") {
+            // The engine is still opening (cold model load): an end-of-speech
+            // armed now would expire before the engine can capture the tail
+            // of the utterance. Record the intent and let `begin`'s
+            // post-start block arm the timer once capture is live (#104,
+            // race 1).
+            this.deferredSpeechEnd = true;
+            return;
+        }
+        this.armEndOfSpeechTimer(sessionId);
     }
 
     /**
@@ -995,6 +1103,14 @@ export class VoiceController {
             this.snapshot.sessionId !== sessionId ||
             this.snapshot.state !== "listening"
         ) {
+            return;
+        }
+        if (this.activeStt().state === "starting") {
+            // A timer that predates the engine going live (cold start): defer
+            // the flush to `begin`'s post-start block, which arms the
+            // end-of-speech timer once capture is actually running (#104,
+            // race 1).
+            this.deferredSpeechEnd = true;
             return;
         }
         this.reduce({ type: "endOfSpeech", sessionId });
@@ -1062,6 +1178,10 @@ export class VoiceController {
      * @param text - The interim segment text (already trimmed by the engine).
      */
     private onPartial(sessionId: number, text: string): void {
+        if (this.snapshot.sessionId === sessionId) {
+            this.heardSpeech = true;
+            this.deferredSpeechEnd = false;
+        }
         this.cancelNoSpeechTimer();
         const cleaned = this.sessionFromWake
             ? stripWakePhrase(text, this.wakePhrase)
@@ -1081,6 +1201,10 @@ export class VoiceController {
      * @param text - The final transcript (or final segment).
      */
     private onTranscript(sessionId: number, text: string): void {
+        if (this.snapshot.sessionId === sessionId) {
+            this.heardSpeech = true;
+            this.deferredSpeechEnd = false;
+        }
         if (this.vadSession && this.snapshot.sessionId === sessionId) {
             if (this.snapshot.state === "listening") {
                 if (text !== "") {
@@ -1241,6 +1365,24 @@ export class VoiceController {
             this.unschedule(this.noSpeechTimer);
             this.noSpeechTimer = null;
         }
+    }
+
+    /**
+     * Arms the "pause ⇒ send" timer. No-op while one is already pending.
+     *
+     * @param sessionId - The session being endpointed.
+     */
+    private armEndOfSpeechTimer(sessionId: number): void {
+        if (this.endOfSpeechTimer !== null) {
+            return;
+        }
+        this.log(
+            `session ${sessionId}: speech end; pausing ${END_OF_SPEECH_MS}ms before sending`,
+        );
+        this.endOfSpeechTimer = this.schedule(() => {
+            this.endOfSpeechTimer = null;
+            this.onEndOfSpeechTimeout(sessionId);
+        }, END_OF_SPEECH_MS);
     }
 
     /** Cancels the pending end-of-speech timer, if any. */

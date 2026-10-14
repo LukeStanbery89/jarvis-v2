@@ -75,6 +75,13 @@ class FakeVad implements VadProvider {
     readonly id = "fake-vad";
     startCalls = 0;
     stopCalls = 0;
+    /**
+     * When true, `start()` parks (with callbacks already installed) until
+     * {@link releaseStart} — the in-flight-arm window the watch's start/stop
+     * generation guard must survive (#104).
+     */
+    deferStart = false;
+    private releaseStartFn: (() => void) | null = null;
     /** Rejects start() while a session is live (mirrors the real provider). */
     private callbacks: VadCallbacks | null = null;
 
@@ -84,6 +91,17 @@ class FakeVad implements VadProvider {
         }
         this.startCalls += 1;
         this.callbacks = callbacks;
+        if (this.deferStart) {
+            await new Promise<void>((resolve) => {
+                this.releaseStartFn = resolve;
+            });
+        }
+    }
+
+    /** Completes a deferred {@link start}; no-op when none is pending. */
+    releaseStart(): void {
+        this.releaseStartFn?.();
+        this.releaseStartFn = null;
     }
 
     async stop(): Promise<void> {
@@ -146,6 +164,8 @@ interface BargeControl {
     fires: Array<{ lookback?: Float32Array; lookbackSampleRate?: number }>;
     /** Makes the next callback throw (the client's stop/cancel failing). */
     throwNext: boolean;
+    /** Makes the next callback return a rejected promise instead. */
+    rejectNext: boolean;
 }
 
 interface Harness {
@@ -155,6 +175,8 @@ interface Harness {
     controller: VoiceController;
     snapshots: VoiceSnapshot[];
     barge: BargeControl;
+    /** Errors routed to the injectable log sink. */
+    logged: unknown[];
 }
 
 function makeHarness(): Harness {
@@ -163,16 +185,28 @@ function makeHarness(): Harness {
     const scheduler = makeScheduler();
     const snapshots: VoiceSnapshot[] = [];
     const submitResolvers: Array<() => void> = [];
-    const barge: BargeControl = { fires: [], throwNext: false };
+    const logged: unknown[] = [];
+    const barge: BargeControl = {
+        fires: [],
+        throwNext: false,
+        rejectNext: false,
+    };
     const controller = new VoiceController({
         stt,
         vad,
         onBargeIn: (detection) => {
+            if (barge.rejectNext) {
+                barge.rejectNext = false;
+                return Promise.reject(new Error("client stop failed"));
+            }
             if (barge.throwNext) {
                 barge.throwNext = false;
                 throw new Error("client stop failed");
             }
             barge.fires.push(detection);
+        },
+        log: (_message, error) => {
+            logged.push(error);
         },
         schedule: scheduler.schedule,
         unschedule: scheduler.unschedule,
@@ -182,7 +216,7 @@ function makeHarness(): Harness {
             }),
     });
     controller.subscribe(() => snapshots.push(controller.getSnapshot()));
-    return { stt, vad, scheduler, controller, snapshots, barge };
+    return { stt, vad, scheduler, controller, snapshots, barge, logged };
 }
 
 /**
@@ -373,5 +407,41 @@ describe("barge-in watch (#84 P6)", () => {
         // The playing turn is untouched — no error surfaced over it.
         expect(harness.controller.getSnapshot().state).toBe("speaking");
         expect(harness.controller.getSnapshot().error).toBeNull();
+    });
+
+    it("a rejecting onBargeIn is logged and the session still opens (#104)", async () => {
+        const harness = makeHarness();
+        harness.barge.rejectNext = true;
+        await driveToSpeaking(harness);
+        await harness.controller.startBargeWatch();
+        harness.vad.emitSpeechStart();
+        harness.scheduler.fireByMs(BARGE_IN_SPEECH_MS);
+        await settle();
+        // The rejection did not go unhandled: the sink saw it.
+        expect(harness.logged.some((e) => e instanceof Error)).toBe(true);
+        expect(harness.controller.getSnapshot().state).toBe("listening");
+    });
+
+    it("releases the VAD when a stop supersedes an in-flight arm (#104)", async () => {
+        const harness = makeHarness();
+        await driveToSpeaking(harness);
+        // The session released its own VAD at end-of-speech; the only live
+        // VAD after arming is the watch's.
+        const stopsBefore = harness.vad.stopCalls;
+        harness.vad.deferStart = true;
+        const arming = harness.controller.startBargeWatch();
+        await Promise.resolve();
+        expect(harness.vad.startCalls).toBe(2);
+        // Stop lands while vad.start() is still parked.
+        await harness.controller.stopBargeWatch();
+        harness.vad.releaseStart();
+        await arming;
+        await settle();
+        // The late completion released the VAD it armed instead of holding
+        // it (or marking the watch active).
+        expect(harness.vad.stopCalls).toBe(stopsBefore + 1);
+        harness.vad.emitSpeechStart();
+        harness.scheduler.fireByMs(BARGE_IN_SPEECH_MS);
+        expect(harness.barge.fires).toHaveLength(0);
     });
 });

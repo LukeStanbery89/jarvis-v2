@@ -34,6 +34,9 @@
  */
 import type { VoiceError, WakeCallbacks, WakeWordProvider } from "../types";
 
+/** The detector's capture rate; the ring and reports are mono at this rate. */
+const MIC_SAMPLE_RATE = 16000;
+
 /** One frame's worth of samples at the detector's 16 kHz rate (80 ms). */
 const FRAME_SAMPLES = 1280;
 
@@ -173,7 +176,7 @@ class PcmRingBuffer {
     constructor(lookbackMs: number) {
         const frames = Math.max(
             1,
-            Math.ceil(((lookbackMs / 1000) * 16000) / FRAME_SAMPLES),
+            Math.ceil(((lookbackMs / 1000) * MIC_SAMPLE_RATE) / FRAME_SAMPLES),
         );
         this.capacity = frames * FRAME_SAMPLES;
         this.buffer = new Float32Array(this.capacity);
@@ -464,6 +467,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         this.callbacks?.onWake({
             confidence: event.score,
             lookback: this.ring.snap(),
+            lookbackSampleRate: MIC_SAMPLE_RATE,
         });
     }
 

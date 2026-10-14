@@ -38,6 +38,12 @@ class FakeStt implements SttProvider {
     startError: VoiceError | null = null;
     /** Options of the most recent start() (continuous flag bookkeeping). */
     lastStartOptions: SttStartOptions | undefined = undefined;
+    /**
+     * When true, `start()` parks in `"starting"` until {@link releaseStart}
+     * is called — the cold-model-load window the endpointing guards (#104).
+     */
+    deferStart = false;
+    private releaseStartFn: (() => void) | null = null;
     private callbacks: SttCallbacks | null = null;
 
     async start(
@@ -50,7 +56,19 @@ class FakeStt implements SttProvider {
             throw this.startError;
         }
         this.callbacks = callbacks;
+        if (this.deferStart) {
+            this.state = "starting";
+            await new Promise<void>((resolve) => {
+                this.releaseStartFn = resolve;
+            });
+        }
         this.state = "running";
+    }
+
+    /** Completes a deferred {@link start}; no-op when none is pending. */
+    releaseStart(): void {
+        this.releaseStartFn?.();
+        this.releaseStartFn = null;
     }
 
     async stop(): Promise<void> {
@@ -726,6 +744,60 @@ describe("vad unavailability fallback", () => {
         // And the session announces which endpointing mode it degraded to.
         expect(logged[1]!.message).toMatch(/engine-native endpointing/);
         // Degradation is otherwise unchanged: engine-native session runs.
+        expect(controller.getSnapshot().state).toBe("listening");
+    });
+});
+
+describe("cold-engine endpointing (#104, race 1)", () => {
+    it("arms the no-speech guard only once the engine is live", async () => {
+        // A cold Vosk engine loads a ~40 MB model inside start(); arming the
+        // silence guard at press time would let it expire before capture
+        // begins, killing the first-ever press mid-download.
+        const { stt, scheduler, controller } = makeHarness({
+            vad: new FakeVad(),
+        });
+        stt.deferStart = true;
+        controller.press();
+        await drain();
+        expect(stt.state).toBe("starting");
+        expect(scheduler.pendingMs()).toEqual([]);
+        stt.releaseStart();
+        await drain();
+        expect(stt.state).toBe("running");
+        expect(scheduler.pendingMs()).toEqual([NO_SPEECH_MS]);
+    });
+
+    it("defers an end-of-speech that lands while the engine loads", async () => {
+        const { stt, vad, scheduler, controller } = makeHarness({
+            vad: new FakeVad(),
+        });
+        stt.deferStart = true;
+        controller.press();
+        await drain();
+        // The VAD already sees the user speak and stop while the model loads.
+        vad?.emitSpeechStart();
+        vad?.emitSpeechEnd();
+        expect(scheduler.pendingMs()).toEqual([]);
+        stt.releaseStart();
+        await drain();
+        // The pause timer arms against live capture, not the load window.
+        expect(scheduler.pendingMs()).toEqual([END_OF_SPEECH_MS]);
+        scheduler.fireByMs(END_OF_SPEECH_MS);
+        expect(controller.getSnapshot().state).toBe("transcribing");
+    });
+
+    it("does not arm a silence guard when speech was already heard", async () => {
+        const { stt, vad, scheduler, controller } = makeHarness({
+            vad: new FakeVad(),
+        });
+        stt.deferStart = true;
+        controller.press();
+        await drain();
+        vad?.emitSpeechStart();
+        stt.releaseStart();
+        await drain();
+        // Speech is in progress: neither guard should be pending.
+        expect(scheduler.pendingMs()).toEqual([]);
         expect(controller.getSnapshot().state).toBe("listening");
     });
 });

@@ -342,6 +342,13 @@ export class VoskSttProvider implements SttProvider {
     private modelPromise: Promise<ModelLike> | null = null;
     /** The loaded model, shared across sessions until `dispose()`. */
     private model: ModelLike | null = null;
+    /**
+     * Load generation (issue #104, race 4): bumped by `dispose()` so a model
+     * load already in flight terminates the model it just created instead of
+     * caching it into a disposed engine, and does not clear a newer load's
+     * `modelPromise` on failure.
+     */
+    private loadGeneration = 0;
     private recognizer: RecognizerLike | null = null;
     /**
      * The sample rate the active recognizer was created at (the engine
@@ -655,6 +662,10 @@ export class VoskSttProvider implements SttProvider {
      */
     async dispose(): Promise<void> {
         this.settle();
+        // Supersede any in-flight load before dropping the caches: its
+        // `.then` sees a stale generation and terminates the model instead
+        // of re-caching it into this disposed engine.
+        this.loadGeneration++;
         const model = this.model;
         this.model = null;
         this.modelPromise = null;
@@ -680,6 +691,7 @@ export class VoskSttProvider implements SttProvider {
             return this.model;
         }
         if (this.modelPromise === null) {
+            const generation = this.loadGeneration;
             this.modelPromise = this.loadModule()
                 .then((vosk) =>
                     vosk.createVoskClient({
@@ -690,6 +702,22 @@ export class VoskSttProvider implements SttProvider {
                     }),
                 )
                 .then((model) => {
+                    if (generation !== this.loadGeneration) {
+                        // Disposed while the ~40 MB model was loading: free
+                        // what we just built instead of caching it into a
+                        // dead engine, and reject so the awaiting session
+                        // fails rather than running on a terminated model
+                        // (#104, race 4).
+                        try {
+                            model.terminate();
+                        } catch {
+                            // Already gone; nothing to release.
+                        }
+                        throw this.voiceError(
+                            "engine",
+                            "the engine was disposed during model load",
+                        );
+                    }
                     model.on("error", (message) => {
                         if (message.event !== "error") {
                             return;
@@ -705,7 +733,11 @@ export class VoskSttProvider implements SttProvider {
                     return model;
                 })
                 .catch((err: unknown) => {
-                    this.modelPromise = null;
+                    // Only clear the cache if this is still the current
+                    // load; a stale load must not clobber a newer one.
+                    if (generation === this.loadGeneration) {
+                        this.modelPromise = null;
+                    }
                     throw err;
                 });
         }
