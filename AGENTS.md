@@ -101,7 +101,7 @@ Rules:
 
 ### Known graph health baseline
 
-As extracted on 2026-10-11 (the P6-era tree) the graph holds **2848 nodes, 5563 edges, 161 communities**. `npm run graph:health` reports **0** missing/dangling endpoints, **0** exact duplicate edges, and **0** same-endpoint collapses in both `--directed` and default modes. The graph is a plain `Graph`/`DiGraph`, not a `MultiDiGraph`, so collapse is structurally impossible. (The original full build reported 2 dangling / 107 duplicates / 222 directed + 247 undirected collapses; the AST rebuild cleared all of them.) Eight false-positive self-loops were then pruned from `graph.json` by hand (see below), so the current file holds **5555 edges / 3 self-loops**.
+As extracted on 2026-10-13 (the #107 dedupe tree) the graph holds **3046 nodes, 6336 edges, 224 communities**. `npm run graph:health` reports **0** missing/dangling endpoints, **0** exact duplicate edges, and **0** same-endpoint collapses in both `--directed` and default modes. The graph is a plain `Graph`/`DiGraph`, not a `MultiDiGraph`, so collapse is structurally impossible. (The original full build reported 2 dangling / 107 duplicates / 222 directed + 247 undirected collapses; the AST rebuild cleared all of them.) Ten false-positive self-loops were then pruned from `graph.json` by hand (see below), so the current file holds **6326 edges / 3 self-loops**.
 
 Three self-loops remain, all genuine recursion:
 
@@ -111,7 +111,7 @@ Three self-loops remain, all genuine recursion:
 | `scripts/check-dependencies.mjs` `listSourceFiles()`  | Recursion walking subdirectories.                                           |
 | `packages/voice/test/lifecycle.test.ts` `sessionIn()` | Recursion replaying prior transitions to build a snapshot in a given state. |
 
-Eight further self-loops are false positives from one graphify extractor bug: a member call whose method name matched a local function of the same name resolved to that local function. `this.method()` calls resolve correctly, so the fault is receiver-scoped, and each false edge is a call on a _different_ receiver:
+Ten further self-loops are false positives from one graphify extractor bug: a member call whose method name matched a local function of the same name resolved to that local function. `this.method()` calls resolve correctly, so the fault is receiver-scoped, and each false edge is a call on a _different_ receiver:
 
 | Node (false self-loop)                                   | Actual call site          |
 | -------------------------------------------------------- | ------------------------- |
@@ -123,9 +123,11 @@ Eight further self-loops are false positives from one graphify extractor bug: a 
 | `packages/voice/src/providers/openWakeWord.ts` `stop()`  | `mic.stop()`              |
 | `packages/voice/src/providers/webSpeech.ts` `start()`    | `recognition.start()`     |
 | `packages/voice/src/providers/webSpeech.ts` `stop()`     | `recognition.stop()`      |
+| `packages/voice/src/barge.ts` `start()`                  | `vad.start()`             |
+| `packages/web/src/views/Chat.tsx` `toggleWake()`         | `voiceUi.toggleWake()`    |
 
 Filed upstream as [Graphify-Labs/graphify#4082](https://github.com/Graphify-Labs/graphify/issues/4082).
 
-The post-commit hook (`.husky/post-commit`) rebuilds **incrementally** — only the paths changed in the commit — so a docs-only commit leaves the hand-prune intact, and the eight edges reappear only once one of those source files is next edited. Expect 11 self-loops / 5563 edges again after a `--force` update or a fresh full build, and re-prune by deleting the eight `source == target` edges listed above.
+The post-commit hook (`.husky/post-commit`) rebuilds **incrementally** — only the paths changed in the commit — so a docs-only commit leaves the hand-prune intact, and the ten edges reappear only once one of those source files is next edited. Expect 13 self-loops / 6336 edges again after a `--force` update or a fresh full build, and re-prune by deleting the ten `source == target` edges listed above.
 
-The report's "isolated node" count is mostly noise. By undirected degree, 1159 of 2848 nodes have ≤1 connection: 348 are `package.json` config keys (`name`/`version`/…), 23 are interface method declarations in `packages/auth/src/store.ts`, and 65 carry no `source_file` (re-export and type aliases). Only 19 nodes are genuinely zero-degree — protocol re-export aliases (`parseFrame`, the `serialize*`/`MAX_*` constants) and four untyped stub files (`vite-env.d.ts` ×2, `kokoro-modules.d.ts`, `copy-voice-assets.d.mts`). Real signal: 0 duplicate node keys across 2848 nodes. Do not restructure working code to raise the connectivity score.
+The report's "isolated node" count is mostly noise. By undirected degree, 1224 of 3046 nodes have ≤1 connection: 59 are `package.json` config keys (`name`/`version`/…), 26 are interface method declarations in `packages/auth/src/store.ts`, and 86 carry no `source_file` (re-export and type aliases). Only 74 nodes are genuinely zero-degree — protocol/auth/voice index re-export aliases (`parseFrame`, `ChatMode`, `AuthError`, the `MAX_*` constants), three untyped stub files (`vite-env.d.ts` ×2, `kokoro-modules.d.ts`; `copy-voice-assets.d.mts` now declares its two functions but the extractor does not index declarations), and a handful of lone type refs (`ref_vosk_browser`). Real signal: 0 duplicate node keys across 3046 nodes. Do not restructure working code to raise the connectivity score.
