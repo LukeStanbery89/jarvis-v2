@@ -14,22 +14,22 @@ src/
 ├── session.ts      # per-identity conversation session ids (~/.jarvis/session-id)
 ├── credentials.ts  # per-origin login tokens (~/.jarvis/credentials.json, 0600)
 ├── login.ts        # REST login + interactive credential prompts
-├── privateFs.ts    # local 0700/0600 filesystem helpers (mirror of server fs.ts)
+├── privateFs.ts    # local 0700/0600 filesystem helpers + shared guards (mirror of server fs.ts)
 └── README.md       # this file
 ```
 
 ## File map
 
-| File             | Responsibility                                                                                                                                                                                                             |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`       | Entry point: readline REPL loop; forwards each line to the chat client, delegating stream rendering to `renderHandlers`; owns the `login`/`logout`/`new` commands and the echo-suppressed password prompt                  |
-| `client.ts`      | `ChatClient` — the WebSocket chat client: connects to the server, authenticates on the socket's first frame with a stored token when present, sends prompts, and emits typed events as frames stream in                    |
-| `render.ts`      | `renderHandlers` — the named `PromptHandlers` for a text session: chunks to stdout, tool calls/results as stderr diagnostics                                                                                               |
-| `config.ts`      | `getServerUrl()` → `JARVIS_SERVER_URL`; `getSessionFilePath()` → `JARVIS_SESSION_FILE`; `getCredentialsFilePath()` → `JARVIS_CREDENTIALS_FILE`; `serverOrigin()` → the stable per-server key                               |
-| `session.ts`     | Per-identity session-id store: `loadSessionIds()` → the `{guest, users}` store; `sessionIdFor(ids, identity)` → the id sent as `sessionId` on every prompt (never rotates); `rotateActiveSession()` for the explicit `new` |
-| `credentials.ts` | `load/save/clearCredentials(origin)` — the per-origin device-token store, written atomically at `0600`                                                                                                                     |
-| `login.ts`       | `loginRequest()` — `POST /api/auth/login` over REST with mapped error messages; `askLoginDetails()` — interactive prompts                                                                                                  |
-| `privateFs.ts`   | `ensurePrivateDir()` — tightens dirs this process creates to `0700` (local mirror of the server package's `fs.ts` semantics)                                                                                               |
+| File             | Responsibility                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`       | Entry point: readline REPL loop; forwards each line to the chat client, delegating stream rendering to `renderHandlers`; owns the `login`/`logout`/`new` commands and the echo-suppressed password prompt                                                                                                                                          |
+| `client.ts`      | `ChatClient` — the WebSocket chat client: connects to the server, authenticates on the socket's first frame with a stored token when present, sends prompts, and emits typed events as frames stream in                                                                                                                                            |
+| `render.ts`      | `renderHandlers` — the named `PromptHandlers` for a text session: chunks to stdout, tool calls/results as stderr diagnostics                                                                                                                                                                                                                       |
+| `config.ts`      | `getServerUrl()` → `JARVIS_SERVER_URL`; `getSessionFilePath()` → `JARVIS_SESSION_FILE`; `getCredentialsFilePath()` → `JARVIS_CREDENTIALS_FILE`; `serverOrigin()` → the stable per-server key                                                                                                                                                       |
+| `session.ts`     | Per-identity session-id store: `loadSessionIds()` → the `{guest, users}` store; `sessionIdFor(ids, identity)` → the id sent as `sessionId` on every prompt (never rotates); `rotateActiveSession()` for the explicit `new`                                                                                                                         |
+| `credentials.ts` | `load/save/clearCredentials(origin)` — the per-origin device-token store, written atomically at `0600` through `privateFs.writePrivateFile`                                                                                                                                                                                                        |
+| `login.ts`       | `loginRequest()` — `POST /api/auth/login` over REST with mapped error messages; `askLoginDetails()` — interactive prompts                                                                                                                                                                                                                          |
+| `privateFs.ts`   | `ensurePrivateDir()` — tightens dirs this process creates to `0700` (local mirror of the server package's `fs.ts` semantics); `writePrivateFile()` — the atomic `0600` temp-then-rename write `credentials.ts` and `session.ts` share (#107 P6); `errorMessage()` / `isRecord()` — the shared rejection-message render and structural-object guard |
 
 ## Data flow
 
@@ -90,9 +90,13 @@ index.ts onAuthRejected → clearCredentials(origin) + drop to the guest slot �
   a thread across identities, login/logout **switch slots** (resuming the
   remembered thread) instead of rotating, and a deliberate fresh conversation
   is the `new` command (`rotateActiveSession`).
+- **Commands refuse while streaming.** `login` / `logout` / `new` share one
+  `refuseIfBusy(command)` guard (#107 P6): a response still streaming refuses
+  the command with a wait message instead of racing the stream.
 - **Credentials live locally, keyed per server.** `credentials.ts` stores one
   device token per server origin in a single JSON file written atomically
-  (temp file + rename) at mode `0600`, inside a directory tightened to `0700`
+  (temp file + rename via `privateFs.writePrivateFile`, shared with
+  `session.ts`) at mode `0600`, inside a directory tightened to `0700`
   when this process creates it. A malformed file is ignored (warn + null),
   never fatal. The token is never logged.
 - **Errors are user-facing text only.** Server error frames are surfaced as

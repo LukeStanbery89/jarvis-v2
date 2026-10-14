@@ -28,6 +28,7 @@ import {
     type SessionIdentity,
 } from "./session";
 import { logger } from "./logger";
+import { errorMessage } from "./privateFs";
 import { renderHandlers } from "./render";
 
 const serverUrl = getServerUrl();
@@ -41,9 +42,7 @@ function resolveOrigin(): string {
     try {
         return serverOrigin(serverUrl);
     } catch (err) {
-        logger.error(
-            `${err instanceof Error ? err.message : String(err)} — check JARVIS_SERVER_URL`,
-        );
+        logger.error(`${errorMessage(err)} — check JARVIS_SERVER_URL`);
         process.exit(1);
     }
 }
@@ -62,7 +61,7 @@ const client = new ChatClient(serverUrl, storedCreds?.token, (reason) => {
         clearCredentials(origin);
     } catch (err) {
         logger.warn(
-            `Could not clear stored credentials: ${err instanceof Error ? err.message : String(err)} — run 'logout' after reconnecting.`,
+            `Could not clear stored credentials: ${errorMessage(err)} — run 'logout' after reconnecting.`,
         );
     }
     // The token is gone, so this process is a guest from here on. Drop to the
@@ -151,6 +150,26 @@ let inflight: Promise<void> = Promise.resolve();
 let loginActive = false;
 
 /**
+ * Refuses a REPL command while a response is still streaming: the busy
+ * guard the `login` / `logout` / `new` handlers previously duplicated
+ * (#107 P6).
+ *
+ * @param command - The command name, for the refusal message.
+ * @returns True when the caller must bail (the client is busy; the error
+ *   is logged and the prompt re-issued).
+ */
+function refuseIfBusy(command: string): boolean {
+    if (!client.isBusy()) {
+        return false;
+    }
+    logger.error(
+        `A response is still streaming — wait for it, then run '${command}' again.`,
+    );
+    rl.prompt();
+    return true;
+}
+
+/**
  * Runs the interactive `login` command.
  *
  * Collects credentials (username pre-filled from `usernameArg`, hidden
@@ -162,11 +181,7 @@ let loginActive = false;
  * authenticates on the socket's first frame (see `ChatClient`).
  */
 async function handleLogin(usernameArg: string): Promise<void> {
-    if (client.isBusy()) {
-        logger.error(
-            "A response is still streaming — wait for it, then run 'login' again.",
-        );
-        rl.prompt();
+    if (refuseIfBusy("login")) {
         return;
     }
     loginActive = true;
@@ -198,9 +213,7 @@ async function handleLogin(usernameArg: string): Promise<void> {
         );
         logger.info(`Resumed conversation session: ${sessionId}`);
     } catch (err) {
-        logger.error(
-            `Login failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.error(`Login failed: ${errorMessage(err)}`);
     } finally {
         loginActive = false;
         rl.prompt();
@@ -217,20 +230,14 @@ async function handleLogin(usernameArg: string): Promise<void> {
  * this machine's identity, not the account.
  */
 function handleLogout(): void {
-    if (client.isBusy()) {
-        logger.error(
-            "A response is still streaming — wait for it, then run 'logout' again.",
-        );
-        rl.prompt();
+    if (refuseIfBusy("logout")) {
         return;
     }
     let removed: boolean;
     try {
         removed = clearCredentials(origin);
     } catch (err) {
-        logger.error(
-            `Logout failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.error(`Logout failed: ${errorMessage(err)}`);
         rl.prompt();
         return;
     }
@@ -255,11 +262,7 @@ function handleLogout(): void {
  * connected and authenticated.
  */
 function handleNew(): void {
-    if (client.isBusy()) {
-        logger.error(
-            "A response is still streaming — wait for it, then run 'new' again.",
-        );
-        rl.prompt();
+    if (refuseIfBusy("new")) {
         return;
     }
     sessionId = rotateActiveSession(sessionIds, identity);
@@ -306,8 +309,7 @@ rl.on("line", (line) => {
             await client.prompt(prompt, sessionId, renderHandlers);
             process.stdout.write("\n");
         } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            logger.error(`Error: ${message}`);
+            logger.error(`Error: ${errorMessage(err)}`);
         }
     })();
     void inflight.then(() => rl.prompt());
