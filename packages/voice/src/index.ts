@@ -23,6 +23,9 @@
  *   machine), and `./barge` (`BargeWatch` — the barge-in watch that
  *   interrupts a playing response on sustained speech, #84 P6).
  * - `./wakeText` — transcript hygiene for wake sessions ({@link stripWakePhrase}).
+ * - `./wav` — a dependency-free WAV codec ({@link encodeWav}/{@link decodeWav})
+ *   for the #121 corpus: fixtures and the debug capture path move audio as
+ *   WAV bytes so tests and the replay harness share one representation.
  *
  * Zero mandatory runtime dependencies, CommonJS, browser- and Node-safe (no
  * DOM or `node:` APIs at module scope; the WASM STT engine and the
@@ -81,3 +84,5 @@ export type {
     OpenWakeWordOptions,
 } from "./providers/openWakeWord";
 export { stripWakePhrase } from "./wakeText";
+export { decodeWav, encodeWav } from "./wav";
+export type { WavAudio } from "./wav";

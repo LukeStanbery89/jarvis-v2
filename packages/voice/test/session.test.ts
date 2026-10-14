@@ -86,6 +86,8 @@ interface Harness {
     core: VoiceCore;
     /** Submissions recorded, in order. */
     submitted: string[];
+    /** Raw-vs-submitted traces recorded, in order (#121). */
+    traces: Array<{ raw: string; submitted: string }>;
     /** Reject the next submission when set. */
     rejectNext: { value: boolean };
     snapshot(): VoiceSnapshot;
@@ -114,6 +116,7 @@ function harness(options?: {
 }): Built {
     const stt = new FakeStt();
     const submitted: string[] = [];
+    const traces: Array<{ raw: string; submitted: string }> = [];
     const rejectNext = { value: false };
     let stopVadCalls = 0;
     let snapshot = options?.idle
@@ -137,6 +140,9 @@ function harness(options?: {
             timers.delete(handle as number);
         },
         log: () => {},
+        traceTranscript: (raw, submittedText) => {
+            traces.push({ raw, submitted: submittedText });
+        },
         isDisposed: () => false,
         stopVad: async () => {
             stopVadCalls += 1;
@@ -162,6 +168,7 @@ function harness(options?: {
         stt,
         core,
         submitted,
+        traces,
         rejectNext,
         snapshot: () => snapshot,
         setSnapshot: (next) => {
@@ -289,6 +296,38 @@ describe("VoiceSession engine-native endpointing", () => {
         h.stt.emitResult("hey jarvis good morning");
         await drain();
         expect(h.submitted).toEqual(["good morning"]);
+    });
+
+    it("traces the raw transcript against the stripped submission (#121)", async () => {
+        // Lesson 6: "what was heard" vs "what was sent" must be recoverable
+        // from the seam, so a mangled phrase is diagnosable without a repro.
+        const { h, session } = harness({ fromWake: true });
+        await session.start(null);
+        h.stt.emitResult("hey jarvis how's the weather");
+        await drain();
+        expect(h.traces).toEqual([
+            {
+                raw: "hey jarvis how's the weather",
+                submitted: "how's the weather",
+            },
+        ]);
+    });
+
+    it("traces the accumulated segments in a VAD-owned wake session (#121)", async () => {
+        const { h, session } = harness({ fromWake: true });
+        session.setVadOwned(true);
+        await session.start(null);
+        h.stt.emitResult("Hey JARVIS");
+        h.stt.emitResult("turn on the lights");
+        await session.finish();
+        await drain();
+        expect(h.submitted).toEqual(["turn on the lights"]);
+        expect(h.traces).toEqual([
+            {
+                raw: "Hey JARVIS turn on the lights",
+                submitted: "turn on the lights",
+            },
+        ]);
     });
 
     it("manual finish stops the engine and flushes its final", async () => {

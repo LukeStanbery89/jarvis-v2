@@ -126,6 +126,7 @@ function harness(options?: {
         log: (_message, error) => {
             logged.push(error);
         },
+        traceTranscript: () => {},
         isDisposed: () => disposed.value,
         stopVad: async () => {},
     };

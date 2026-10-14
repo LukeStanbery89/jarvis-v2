@@ -90,6 +90,26 @@ export interface SttStartOptions {
      */
     readonly continuous?: boolean;
     /**
+     * Where this session's audio comes from (issue #121). `"mic"` (the
+     * default) is the engine's own microphone; `"external"` means the engine
+     * must **not** open a microphone and will receive every sample through
+     * {@link SttProvider.feed} — the mode the offline replay harness uses to
+     * run a recorded utterance through the real engine, and the mode the
+     * wake→command redesign uses to feed the detector's own capture.
+     * Engines that cannot take caller audio ignore it (and behave as
+     * `"mic"`); when `"external"` is set the engine rejects if it cannot
+     * honor it.
+     */
+    readonly source?: "mic" | "external";
+    /**
+     * The sample rate external audio arrives at, when
+     * {@link SttStartOptions.source} is `"external"`. The recognizer is
+     * created at this rate so no rate flip ever recreates it mid-session
+     * (a recreation discards recognition state — the "spotty transcription"
+     * failure). Defaults to 16 kHz, the wake detector's convention.
+     */
+    readonly sampleRate?: number;
+    /**
      * Caller audio to recognize before live capture begins: the wake
      * detector's look-back ring (the phrase plus the command's opening) or
      * the barge-in watch's interrupted opening. Riding `start()` — instead

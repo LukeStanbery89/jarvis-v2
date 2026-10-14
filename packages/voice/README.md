@@ -32,6 +32,9 @@ storage:
   its look-back ring. `BargeInDetection` and the `BARGE_IN_*` constants are the
   only public symbols from here.
 - `src/errors.ts` — `toVoiceError`, the shared rejection normalizer.
+- `src/wav.ts` — a dependency-free WAV codec (`encodeWav`/`decodeWav`) used
+  by the #121 corpus: the fixtures, the debug capture path, and the replay
+  harness all move audio as WAV bytes.
 - `src/providers/internal.ts` — shared provider scaffolding (#107): the
   structural `MediaStream`/`MediaDevices` slices, the `globalThis` lookups
   (`findUserMedia`/`findAudioContextCtor`), stream teardown
@@ -58,11 +61,16 @@ npm install @lukestanbery/jarvis-voice
 
 ## Scripts
 
-| Script              | Description                        |
-| ------------------- | ---------------------------------- |
-| `npm run build`     | Compile TypeScript to `dist/`      |
-| `npm run typecheck` | Type-check src and tests (no emit) |
-| `npm test`          | Run the test suite (Vitest)        |
+| Script              | Description                                    |
+| ------------------- | ---------------------------------------------- |
+| `npm run build`     | Compile TypeScript to `dist/`                  |
+| `npm run typecheck` | Type-check src and tests (no emit)             |
+| `npm test`          | Run the test suite (Vitest)                    |
+| `npm run fixtures`  | Regenerate the #121 audio corpus (macOS `say`) |
+
+The `#121` wake→command corpus lives in `test/fixtures/`: synthesized WAVs plus
+`real/` recordings (the same shapes in a real voice, committed for tests), and
+a gitignored `local/` scratch area. See `test/fixtures/README.md`.
 
 ## Lifecycle
 
@@ -243,6 +251,11 @@ secure-context browser). The engine contract maps like this:
   an engine-native session reports `no-speech` instead;
 - `cancel()` discards (mic released, recognizer freed, no callbacks after
   it resolves); stale worker messages are dropped by session id;
+- `start(callbacks, { source: "external", sampleRate })` runs **without a
+  microphone**: the recognizer is created at the caller's rate and every
+  sample arrives through `feed()` (#121 — the offline replay harness and the
+  wake→command capture both use it, so no rate flip ever recreates the
+  recognizer mid-session);
 - the model outlives sessions; the optional `dispose()` seam (phase 3b
   added it to `SttProvider`) terminates the worker and drops the caches
   when the client will never recognize again.
@@ -372,5 +385,9 @@ the 300 ms sustain, not eliminated — hardware AEC is out of scope.
   watch that failed to arm, a failed wake pre-warm, and an engine
   cancelled mid-start. `packages/web` wires it to a `console.debug` sink
   gated by `localStorage.setItem("jarvis.debug", "1")`.
+- The raw-vs-submitted transcript trace is a _separate_ controller option
+  (`traceTranscript`, #121) because it carries real user speech: a client can
+  enable general voice debugging without printing transcripts. `packages/web`
+  wires it to its own opt-in sink (`?voice-trace=1`).
 - The state machine readme diagram mirrors the module doc in
   `src/lifecycle.ts`; keep them in step.

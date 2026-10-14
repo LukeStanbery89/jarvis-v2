@@ -143,6 +143,16 @@ export interface VoiceControllerOptions {
      */
     readonly log?: (message: string, error?: unknown) => void;
     /**
+     * The raw-vs-submitted transcript trace (issue #121, lesson 6). Fires at
+     * submit time for sessions that transform the engine's transcript — today
+     * only wake sessions, whose leading phrase is stripped — with the
+     * engine's raw text and the exact prompt submitted. Kept separate from
+     * {@link VoiceControllerOptions.log} because it carries real user speech:
+     * a client can enable the general debug sink without ever putting a
+     * transcript in its normal log. Default: a no-op.
+     */
+    readonly traceTranscript?: (raw: string, submitted: string) => void;
+    /**
      * The phrase removed from wake-session transcripts — `stripWakePhrase`
      * turns "Hey JARVIS, turn on the lights" into "turn on the lights".
      * Defaults to `"Hey JARVIS"`; it must match what the wake detector
@@ -191,6 +201,12 @@ export class VoiceController {
     /** The injectable debug sink; a no-op unless the caller supplies one. */
     private readonly log: (message: string, error?: unknown) => void;
     /**
+     * The raw-vs-submitted transcript trace (issue #121): a separate channel
+     * from {@link log} because it carries user speech. Notified at submit
+     * time for transcripts the session transformed (wake-phrase stripping).
+     */
+    private readonly traceTranscript: (raw: string, submitted: string) => void;
+    /**
      * The live session (endpointing, transcript accumulation, submission) —
      * created by `begin()`, replaced when a newer session activates, and
      * cleared by `dispose()`. `null` while idle.
@@ -233,6 +249,7 @@ export class VoiceController {
             options.unschedule ??
             ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
         this.log = options.log ?? (() => {});
+        this.traceTranscript = options.traceTranscript ?? (() => {});
         this.core = {
             snapshot: () => this.snapshot,
             reduce: (event) => this.reduce(event),
@@ -240,6 +257,8 @@ export class VoiceController {
             schedule: (callback, ms) => this.schedule(callback, ms),
             unschedule: (handle) => this.unschedule(handle),
             log: (message, error) => this.log(message, error),
+            traceTranscript: (raw, submitted) =>
+                this.traceTranscript(raw, submitted),
             isDisposed: () => this.disposed,
             stopVad: () => this.stopVad(),
         };

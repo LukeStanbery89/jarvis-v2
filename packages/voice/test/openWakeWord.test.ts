@@ -18,6 +18,7 @@ import {
 } from "../src/index";
 import type { OpenWakeWordModuleLike, OpenWakeWordOptions } from "../src/index";
 import type { VoiceError } from "../src/index";
+import { wakeReplay } from "../src/wake";
 
 /** The slice of create options the fake records and honors. */
 interface CreateOptionsRecord {
@@ -307,6 +308,37 @@ describe("OpenWakeWordWakeProvider", () => {
         expect(provider.drainPostMatch?.()).not.toBeNull();
         await provider.stop();
         expect(provider.drainPostMatch?.()).toBeNull();
+    });
+
+    it("reports a drain window that overlaps the match-time look-back", async () => {
+        // The ring is never reset at the match, so drainPostMatch() returns
+        // the whole trailing window — which still contains the audio the
+        // match-time `lookback` already carried. The controller concatenates
+        // the two (`wakeReplay`), so the phrase region is replayed twice.
+        // Pinned here because neither side shows it alone, and it is the
+        // suspected source of the garbled wake transcripts (#121).
+        const { module, provider } = makeHarness({ lookbackMs: 2000 });
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        for (let frame = 0; frame < 30; frame += 1) {
+            module.mics[0].emitFrame(frameWith(frame * 1280));
+        }
+        module.instances[0].fire("hey_jarvis", 0.9);
+        const lookback = record.wakes[0]?.lookback;
+        expect(lookback?.length).toBe(32000);
+        // One more frame: the audio captured while the session's mic opens.
+        module.mics[0].emitFrame(frameWith(30 * 1280));
+        const drained = provider.drainPostMatch?.();
+        expect(drained?.length).toBe(32000);
+        // The drain starts exactly one 80 ms frame into the look-back — the
+        // windows share 31 000 of their 32 000 samples...
+        expect(drained?.[0]).toBe(lookback?.[1280]);
+        // ...so the join the controller performs repeats ~1.9 s of audio,
+        // the wake phrase included.
+        const replay = wakeReplay(lookback, drained ?? null);
+        expect(replay?.length).toBe(64000);
+        expect(replay?.[32000]).toBe(lookback?.[1280]);
+        await provider.stop();
     });
 
     it("drains nothing when no match fired this arm", async () => {

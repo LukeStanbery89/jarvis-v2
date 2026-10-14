@@ -153,3 +153,6 @@ packages/contracts/.docs/
 
 # Graphify knowledge-graph output: regenerable via `graphify update` (see graphify skill).
 graphify-out/
+
+# macOS filesystem metadata
+.DS_Store

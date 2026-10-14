@@ -464,6 +464,10 @@ export class VoiceSession {
         });
         const next = this.core.snapshot();
         if (next.state === "submitting" && next.transcript !== null) {
+            if (this.fromWake) {
+                // #121, lesson 6: what was heard vs what is sent.
+                this.core.traceTranscript(text, next.transcript);
+            }
             this.dispatchTurn(next.transcript);
         }
     }
@@ -484,11 +488,26 @@ export class VoiceSession {
         });
         const next = this.core.snapshot();
         if (next.state === "submitting" && next.transcript !== null) {
+            if (this.fromWake) {
+                // #121, lesson 6: what was heard vs what is sent.
+                this.core.traceTranscript(this.rawText(), next.transcript);
+            }
             this.dispatchTurn(next.transcript);
             return;
         }
         void this.engine.cancel();
         this.core.reduce({ type: "noSpeech", sessionId: this.sessionId });
+    }
+
+    /**
+     * The accumulated final segments as one unmodified transcript text — the
+     * engine's own words, before any wake-phrase stripping. The raw half of
+     * the submit trace (#121, lesson 6).
+     *
+     * @returns The joined text, trimmed; empty when nothing was recognized.
+     */
+    private rawText(): string {
+        return this.finals.join(" ").trim();
     }
 
     /**
@@ -499,7 +518,7 @@ export class VoiceSession {
      * @returns The joined text, trimmed; empty when nothing was recognized.
      */
     private displayText(): string {
-        const text = this.finals.join(" ").trim();
+        const text = this.rawText();
         return this.fromWake ? stripWakePhrase(text, this.wakePhrase) : text;
     }
 

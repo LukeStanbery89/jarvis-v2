@@ -41,6 +41,7 @@ import {
 import voskWorkerUrl from "@lichess-org/vosk-browser/dist/vosk.worker.js?url";
 import voskWasmUrl from "@lichess-org/vosk-browser/dist/vosk.wasm?url";
 import { debugLog } from "../debug";
+import { voiceTrace } from "../voiceTrace";
 
 /** The voice stack's debug sink: `jarvis.debug`-gated console lines. */
 const debugVoice = (message: string, error?: unknown): void =>
@@ -169,6 +170,9 @@ export function useVoiceSession(options: {
             wake,
             wakeStt,
             log: debugVoice,
+            // Raw vs submitted (#121): a separate, opt-in sink because it
+            // prints real speech — see src/voiceTrace.ts.
+            traceTranscript: (raw, submitted) => voiceTrace(raw, submitted),
             submit: (text) => submitRef.current(text),
             onWakeCue: () => onWakeCueRef.current(),
             onBargeIn: () => onBargeInRef.current(),
