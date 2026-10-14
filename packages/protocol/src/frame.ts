@@ -52,17 +52,32 @@ const KNOWN_MODES: ReadonlySet<string> = new Set<string>(CHAT_MODES);
 const MALFORMED_JSON = "malformed request; expected a JSON object";
 
 /**
+ * User-facing wording for a server frame the parser cannot read (not JSON,
+ * or JSON but not an object) — exported so clients can fail with the
+ * canonical message instead of hand-copying it (#106).
+ */
+export const MALFORMED_SERVER_FRAME =
+    "received a malformed message from the server";
+
+/**
  * Parses one raw server frame into a typed {@link ServerFrame}.
  *
- * Throws if the payload is not valid JSON or matches no known frame shape;
- * the thrown message is surfaced to users by `@lukestanbery/jarvis-cli`.
+ * Throws if the payload is not valid JSON, is not an object, or matches no
+ * known frame shape; the first two throw {@link MALFORMED_SERVER_FRAME}'s
+ * wording, which is surfaced to users by `@lukestanbery/jarvis-cli`.
  */
 export function parseFrame(raw: string): ServerFrame {
     let parsed: unknown;
     try {
         parsed = JSON.parse(raw);
     } catch {
-        throw new Error("received a malformed message from the server");
+        throw new Error(MALFORMED_SERVER_FRAME);
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+        // Without this guard a JSON `null` (or a bare number/string) reached
+        // the field checks below and threw a raw TypeError instead of the
+        // user-facing wording (#106).
+        throw new Error(MALFORMED_SERVER_FRAME);
     }
     const frame = parsed as {
         chunk?: unknown;

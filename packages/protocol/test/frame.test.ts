@@ -9,6 +9,7 @@ import {
     MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    MALFORMED_SERVER_FRAME,
     parseClientMessage,
     parseFrame,
     parseRequest,
@@ -67,6 +68,17 @@ describe("parseFrame", () => {
 
     it("throws on non-JSON payloads", () => {
         expect(() => parseFrame("{not json")).toThrow(/malformed/);
+    });
+
+    it("throws the exported malformed wording for non-object payloads (#106)", () => {
+        // JSON `null` used to escape as a raw TypeError from the field
+        // checks (`typeof frame.chunk` on null), which the CLI's event
+        // listener turned into an uncaughtException that killed the process.
+        expect(() => parseFrame("null")).toThrow(MALFORMED_SERVER_FRAME);
+        expect(() => parseFrame("42")).toThrow(MALFORMED_SERVER_FRAME);
+        expect(() => parseFrame('"bare string"')).toThrow(
+            MALFORMED_SERVER_FRAME,
+        );
     });
 
     it("throws on unrecognized shapes", () => {

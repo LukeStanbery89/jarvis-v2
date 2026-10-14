@@ -38,6 +38,20 @@ The chat wire protocol is defined in the shared
 `serializeRequest`); tool and toolResult frames are surfaced to the REPL's
 stderr diagnostics via the `onTool`/`onToolResult` callbacks (`src/client.ts`).
 
+## Robustness (#106)
+
+The CLI never dies on server input or local state problems: an unreadable
+server frame fails the prompt with `MALFORMED_SERVER_FRAME`'s wording (and is
+ignored during the auth handshake, so one garbage frame cannot clear a good
+token); a connect that cannot open within `CONNECT_TIMEOUT_MS` (5 s, `src/client.ts`)
+fails with a "timed out" error; an unwritable session store boots with an
+in-memory store and a warning (`persistBestEffort` in `src/session.ts`), `new`
+reports a readable error, and `login` resolves the user's thread slot _before_
+storing the token so a failed persist can never leave the login half-applied;
+a credentials read that fails for a reason other than ENOENT warns instead of
+silently downgrading to guest. Connect posture is visible via `logger.debug`
+lines (never the token).
+
 ## Login/logout
 
 The REPL's `login [username]` / `logout` commands manage the local device

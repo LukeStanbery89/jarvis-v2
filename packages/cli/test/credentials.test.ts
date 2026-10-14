@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     existsSync,
     mkdirSync,
@@ -18,6 +18,7 @@ import {
     defaultCredentialsFilePath,
     getCredentialsFilePath,
 } from "../src/config";
+import { logger } from "../src/logger";
 
 const ORIGIN_A = "http://localhost:54321";
 const ORIGIN_B = "http://192.168.1.10:54321";
@@ -174,5 +175,37 @@ describe("getCredentialsFilePath", () => {
     it("honours JARVIS_CREDENTIALS_FILE", () => {
         process.env.JARVIS_CREDENTIALS_FILE = "/tmp/jarvis-creds";
         expect(getCredentialsFilePath()).toBe("/tmp/jarvis-creds");
+    });
+});
+
+describe("credential read failures (#106)", () => {
+    it("stays silent when the file is merely missing", () => {
+        useTempCredentialsFile();
+        const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+        try {
+            expect(loadCredentials(ORIGIN_A)).toBeNull();
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it("warns instead of silently downgrading when the file cannot be read", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-credentials-"));
+        // A non-directory parent makes the read fail with ENOTDIR — a real
+        // filesystem problem, not the expected "no file yet" — so a user
+        // who believes they are logged in hears about it.
+        process.env.JARVIS_CREDENTIALS_FILE = join(dir, "file", "creds.json");
+        writeFileSync(join(dir, "file"), "not a directory");
+
+        const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+        try {
+            expect(loadCredentials(ORIGIN_A)).toBeNull();
+            expect(warn).toHaveBeenCalledWith(
+                expect.stringContaining("Could not read credentials file"),
+            );
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

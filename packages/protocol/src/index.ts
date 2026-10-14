@@ -35,6 +35,7 @@ export {
     REVOKED_TOKEN_ERROR,
 } from "./types";
 export {
+    MALFORMED_SERVER_FRAME,
     parseClientMessage,
     parseFrame,
     parseRequest,

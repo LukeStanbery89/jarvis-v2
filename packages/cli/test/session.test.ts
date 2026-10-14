@@ -194,3 +194,31 @@ describe("generateSessionId", () => {
         expect(existsSync(path)).toBe(true);
     });
 });
+
+describe("unwritable store (#106)", () => {
+    it("keeps running with an in-memory store when the store cannot be persisted", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-session-"));
+        // A non-directory parent makes every write to the path fail — the
+        // same trick the saveSessionIds test uses. Reading also fails with
+        // ENOTDIR, so this exercises both the read and persist guards.
+        process.env.JARVIS_SESSION_FILE = join(dir, "file", "session-id");
+        writeFileSync(join(dir, "file"), "not a directory");
+
+        // Booting must not throw: the CLI runs with an in-memory store.
+        const ids = loadSessionIds();
+        expect(ids.version).toBe(1);
+        expect(ids.guest).toBeTruthy();
+        expect(ids.users).toEqual({});
+    });
+
+    it("fails rotateActiveSession with a readable error when the store cannot be written", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-session-"));
+        process.env.JARVIS_SESSION_FILE = join(dir, "file", "session-id");
+        writeFileSync(join(dir, "file"), "not a directory");
+
+        const ids: SessionIds = { version: 1, guest: "guest-1", users: {} };
+        expect(() => rotateActiveSession(ids, guest)).toThrow(
+            /could not write session-id file/,
+        );
+    });
+});
