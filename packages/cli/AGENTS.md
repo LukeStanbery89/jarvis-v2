@@ -45,8 +45,10 @@ server frame fails the prompt with `MALFORMED_SERVER_FRAME`'s wording (and is
 ignored during the auth handshake, so one garbage frame cannot clear a good
 token); a connect that cannot open within `CONNECT_TIMEOUT_MS` (5 s, `src/client.ts`)
 fails with a "timed out" error; an unwritable session store boots with an
-in-memory store and a warning (`persistBestEffort` in `src/session.ts`), `new`
-reports a readable error, and `login` resolves the user's thread slot _before_
+in-memory store and a warning (`persistBestEffort` in `src/session.ts`), the
+boot-time and `login` thread-slot resolutions degrade to a run-only id with a
+warning, `new` reports a readable error and rolls the in-memory slot back
+(atomic failure), and `login` resolves the user's thread slot _before_
 storing the token so a failed persist can never leave the login half-applied;
 a credentials read that fails for a reason other than ENOENT warns instead of
 silently downgrading to guest. Connect posture is visible via `logger.debug`

@@ -208,7 +208,11 @@ export class ChatClient {
         return this.active;
     }
 
-    /** Returns the open socket, connecting (and authenticating) first if needed. */
+    /**
+     * Returns the open socket, connecting (and authenticating) first if
+     * needed. The connect gives up after `connectTimeoutMs` with a "timed
+     * out" error instead of hanging on a routable-but-unreachable host.
+     */
     private async ensureConnected(): Promise<WebSocket> {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             return this.socket;
@@ -319,6 +323,9 @@ export class ChatClient {
                     // Neither verdict nor error: ignore the malformed frame
                     // and keep waiting — the timer still bounds the handshake,
                     // and one garbage frame must not clear a good token (#106).
+                    logger.debug(
+                        "Ignored a malformed frame during the auth handshake",
+                    );
                     return;
                 }
                 if ("authResult" in frame) {

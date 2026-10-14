@@ -56,7 +56,21 @@ const sessionIds = loadSessionIds();
 let identity: SessionIdentity = storedCreds
     ? { kind: "user", username: storedCreds.user }
     : { kind: "guest" };
-let sessionId = sessionIdFor(sessionIds, identity);
+let sessionId: string;
+try {
+    sessionId = sessionIdFor(sessionIds, identity);
+} catch (err) {
+    // An unwritable store must not crash boot (#106): the user's freshly
+    // minted slot is already in the in-memory store (the guest slot never
+    // persists and cannot reach this catch) — run with it for this session.
+    logger.warn(
+        `Could not persist the thread slot: ${errorMessage(err)} — it is remembered for this run only.`,
+    );
+    sessionId =
+        identity.kind === "user"
+            ? (sessionIds.users[identity.username] ?? generateSessionId())
+            : sessionIds.guest;
+}
 const client = new ChatClient(serverUrl, storedCreds?.token, (reason) => {
     try {
         clearCredentials(origin);
@@ -217,8 +231,9 @@ async function handleLogin(usernameArg: string): Promise<void> {
             slot = sessionIds.users[result.user] ?? generateSessionId();
         }
         // A failure here lands in the handler's catch as "Login failed" with
-        // nothing applied: the identity is not switched and the socket is not
-        // closed.
+        // no credential applied (at worst an empty thread slot is reserved in
+        // the store — benign, and resumed by the next successful login): the
+        // identity is not switched and the socket is not closed.
         saveCredentials(origin, {
             token: result.token,
             user: result.user,
@@ -293,6 +308,15 @@ function handleNew(): void {
     try {
         sessionId = rotateActiveSession(sessionIds, identity);
     } catch (err) {
+        // Roll the in-memory slot back to the active id so the failure is
+        // atomic — rotateActiveSession mutated the store before the persist
+        // threw, and a later logout would otherwise land on the rotated
+        // (empty) thread mid-run (#106 review).
+        if (identity.kind === "guest") {
+            sessionIds.guest = sessionId;
+        } else {
+            sessionIds.users[identity.username] = sessionId;
+        }
         logger.error(
             `Could not start a fresh conversation: ${errorMessage(err)}`,
         );
