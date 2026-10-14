@@ -152,6 +152,14 @@ export interface WebSessionLedger {
     deleteWebSession(secretHash: string): void;
     /** Deletes every session for a user (disable / sign-out-everywhere). */
     deleteWebSessionsForUser(userId: number): void;
+    /**
+     * Deletes every expired session row (housekeeping — expired tokens
+     * already fail verification, so this only reclaims the rows). Called by
+     * the provider's `issue` so the table self-cleans without a timer.
+     *
+     * @returns The number of rows removed.
+     */
+    deleteExpiredWebSessions(): number;
 }
 
 /**
@@ -214,13 +222,63 @@ function now(): string {
     return new Date().toISOString();
 }
 
-function mapUser(row: {
+/** A `users` table row as the SELECTs alias it (see {@link mapUser}). */
+interface UserRow {
     id: number;
     username: string;
     role: Role;
     disabled: number;
     createdAt: string;
-}): AppUser {
+}
+
+/** A `devices` table row as the SELECTs alias it (see {@link mapDevice}). */
+interface DeviceRow {
+    id: number;
+    userId: number;
+    name: string;
+    prefix: string;
+    createdAt: string;
+    lastSeenAt: string | null;
+}
+
+/** A `sessions` table row as the SELECTs alias it (see {@link mapSession}). */
+interface SessionRow {
+    id: number;
+    threadId: string;
+    userId: number | null;
+    deviceId: number | null;
+    kind: SessionKind;
+    createdAt: string;
+    lastActiveAt: string;
+}
+
+/** The device⊕user join row `resolveTokenHash` reads (user columns `u_`-aliased). */
+type DeviceIdentityRow = DeviceRow & {
+    u_id: number;
+    u_username: string;
+    u_role: Role;
+    u_disabled: number;
+    u_created_at: string;
+};
+
+/**
+ * Whether a rejected statement is better-sqlite3's UNIQUE-constraint
+ * violation — the one case `createUser` (duplicate username) and
+ * `renameDevice` (duplicate `(user_id, name)`) translate into an
+ * {@link AuthError} (#107 P5: the two hand-rolled checks were identical).
+ *
+ * @param err - The thrown value.
+ * @returns True when the failure is a unique-constraint violation.
+ */
+function isUniqueViolation(err: unknown): boolean {
+    return (
+        typeof err === "object" &&
+        err !== null &&
+        (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
+    );
+}
+
+function mapUser(row: UserRow): AppUser {
     return {
         id: row.id,
         username: row.username,
@@ -230,14 +288,7 @@ function mapUser(row: {
     };
 }
 
-function mapDevice(row: {
-    id: number;
-    userId: number;
-    name: string;
-    prefix: string;
-    createdAt: string;
-    lastSeenAt: string | null;
-}): AppDevice {
+function mapDevice(row: DeviceRow): AppDevice {
     return {
         id: row.id,
         userId: row.userId,
@@ -248,15 +299,7 @@ function mapDevice(row: {
     };
 }
 
-function mapSession(row: {
-    id: number;
-    threadId: string;
-    userId: number | null;
-    deviceId: number | null;
-    kind: SessionKind;
-    createdAt: string;
-    lastActiveAt: string;
-}): AppSession {
+function mapSession(row: SessionRow): AppSession {
     return {
         id: row.id,
         threadId: row.threadId,
@@ -268,6 +311,68 @@ function mapSession(row: {
     };
 }
 
+/** The named `(user_id, name)` index the v2 migration creates on legacy stores. */
+const DEVICE_NAME_INDEX = "idx_devices_user_name";
+
+/**
+ * Whether `devices` already carries a UNIQUE index over exactly
+ * `(user_id, name)` — either the named {@link DEVICE_NAME_INDEX} (v2's
+ * legacy-store migration) or the inline table constraint's automatic index
+ * (every database created from the current SCHEMA). Only indexes whose
+ * columns are exactly that pair count, so unrelated unique indexes never
+ * satisfy the check.
+ */
+function hasDeviceNameUniqueIndex(db: Database.Database): boolean {
+    const indexes = db.pragma("index_list(devices)") as {
+        name: string;
+        unique: number;
+    }[];
+    for (const index of indexes) {
+        if (index.unique !== 1) {
+            continue;
+        }
+        const columns = (
+            db.pragma(`index_info('${index.name}')`) as { name: string }[]
+        ).map((c) => c.name);
+        if (
+            columns.length === 2 &&
+            columns.includes("user_id") &&
+            columns.includes("name")
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Whether `devices` carries a UNIQUE `(user_id, name)` enforcement *other
+ * than* the named {@link DEVICE_NAME_INDEX} — the inline constraint's
+ * automatic index on any current-schema database.
+ */
+function hasInlineDeviceNameUniqueIndex(db: Database.Database): boolean {
+    const indexes = db.pragma("index_list(devices)") as {
+        name: string;
+        unique: number;
+    }[];
+    for (const index of indexes) {
+        if (index.unique !== 1 || index.name === DEVICE_NAME_INDEX) {
+            continue;
+        }
+        const columns = (
+            db.pragma(`index_info('${index.name}')`) as { name: string }[]
+        ).map((c) => c.name);
+        if (
+            columns.length === 2 &&
+            columns.includes("user_id") &&
+            columns.includes("name")
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function migrate(db: Database.Database): void {
     const version = db.pragma("user_version", { simple: true }) as number;
     if (version < 1) {
@@ -276,10 +381,15 @@ function migrate(db: Database.Database): void {
     }
     if (version < 2) {
         // v2: one device row per (user, name) so re-login re-issues rather
-        // than growing the device list endlessly.
-        db.exec(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_user_name ON devices (user_id, name)",
-        );
+        // than growing the device list endlessly. Created only when no
+        // unique (user_id, name) enforcement exists yet (a current-schema
+        // database already has the inline table constraint), so v6's
+        // convergence never re-creates work this step just did.
+        if (!hasDeviceNameUniqueIndex(db)) {
+            db.exec(
+                `CREATE UNIQUE INDEX IF NOT EXISTS ${DEVICE_NAME_INDEX} ON devices (user_id, name)`,
+            );
+        }
         db.pragma("user_version = 2");
     }
     if (version < 3) {
@@ -321,6 +431,18 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id);`);
         // owner stores and fresh databases converge on the same v5 shape.
         db.exec("DROP INDEX IF EXISTS idx_users_single_owner");
         db.pragma("user_version = 5");
+    }
+    if (version < 6) {
+        // v6: converge on exactly ONE unique (user_id, name) enforcement.
+        // Fresh databases carry the inline table constraint (an automatic
+        // index); legacy stores got the named idx_devices_user_name from v2.
+        // Where the inline enforcement exists, the named index is redundant —
+        // drop it. Legacy stores (whose only enforcement is the named index)
+        // keep it, so both shapes end at one unique index.
+        if (hasInlineDeviceNameUniqueIndex(db)) {
+            db.exec(`DROP INDEX IF EXISTS ${DEVICE_NAME_INDEX}`);
+        }
+        db.pragma("user_version = 6");
     }
 }
 
@@ -364,6 +486,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectWebSessionByHash: Database.Statement;
         deleteWebSession: Database.Statement;
         deleteWebSessionsForUser: Database.Statement;
+        deleteExpiredWebSessions: Database.Statement;
         upsertPref: Database.Statement;
         selectPrefs: Database.Statement;
         deletePrefKey: Database.Statement;
@@ -405,7 +528,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE user_id = ? AND name = ?",
             ),
             selectDeviceByHash: db.prepare(
-                "SELECT d.id AS deviceId, d.user_id AS deviceUserId, d.name AS deviceName, d.prefix AS devicePrefix, d.created_at AS deviceCreatedAt, d.last_seen_at AS deviceLastSeenAt, u.id AS userId, u.username AS username, u.role AS role, u.disabled AS userDisabled, u.created_at AS userCreatedAt FROM devices d JOIN users u ON u.id = d.user_id WHERE d.secret_hash = ? AND u.disabled = 0",
+                "SELECT d.id AS id, d.user_id AS userId, d.name AS name, d.prefix AS prefix, d.created_at AS createdAt, d.last_seen_at AS lastSeenAt, u.id AS u_id, u.username AS u_username, u.role AS u_role, u.disabled AS u_disabled, u.created_at AS u_created_at FROM devices d JOIN users u ON u.id = d.user_id WHERE d.secret_hash = ? AND u.disabled = 0",
             ),
             listDevicesByUser: db.prepare(
                 "SELECT id, user_id AS userId, name, prefix, created_at AS createdAt, last_seen_at AS lastSeenAt FROM devices WHERE user_id = ? ORDER BY created_at DESC",
@@ -456,6 +579,9 @@ export class SqliteAppDatabase implements AppDatabase {
             deleteWebSessionsForUser: db.prepare(
                 "DELETE FROM web_sessions WHERE user_id = ?",
             ),
+            deleteExpiredWebSessions: db.prepare(
+                "DELETE FROM web_sessions WHERE expires_at <= ?",
+            ),
             upsertPref: db.prepare(
                 "INSERT INTO prefs (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
             ),
@@ -472,11 +598,7 @@ export class SqliteAppDatabase implements AppDatabase {
         try {
             this.statements.insertUser.run(username, passwordHash, role, now());
         } catch (err: unknown) {
-            if (
-                typeof err === "object" &&
-                err !== null &&
-                (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
-            ) {
+            if (isUniqueViolation(err)) {
                 // The username column (UNIQUE COLLATE NOCASE) is the only
                 // remaining uniqueness constraint on users since v5 dropped
                 // the single-owner index — so a unique violation is a
@@ -488,26 +610,15 @@ export class SqliteAppDatabase implements AppDatabase {
             }
             throw err;
         }
-        const row = this.statements.selectUserByUsername.get(username) as {
-            id: number;
-            username: string;
-            role: Role;
-            disabled: number;
-            createdAt: string;
-        };
+        const row = this.statements.selectUserByUsername.get(
+            username,
+        ) as UserRow;
         return mapUser(row);
     }
 
     getUserByUsername(username: string): AppUser | null {
         const row = this.statements.selectUserByUsername.get(username) as
-            | {
-                  id: number;
-                  username: string;
-                  role: Role;
-                  disabled: number;
-                  createdAt: string;
-              }
-            | undefined;
+            UserRow | undefined;
         return row ? mapUser(row) : null;
     }
 
@@ -525,14 +636,7 @@ export class SqliteAppDatabase implements AppDatabase {
 
     getUserById(id: number): AppUser | null {
         const row = this.statements.selectUserById.get(id) as
-            | {
-                  id: number;
-                  username: string;
-                  role: Role;
-                  disabled: number;
-                  createdAt: string;
-              }
-            | undefined;
+            UserRow | undefined;
         return row ? mapUser(row) : null;
     }
 
@@ -559,15 +663,7 @@ export class SqliteAppDatabase implements AppDatabase {
 
     getDeviceById(id: number): AppDevice | null {
         const row = this.statements.selectDeviceById.get(id) as
-            | {
-                  id: number;
-                  userId: number;
-                  name: string;
-                  prefix: string;
-                  createdAt: string;
-                  lastSeenAt: string | null;
-              }
-            | undefined;
+            DeviceRow | undefined;
         return row ? mapDevice(row) : null;
     }
 
@@ -592,18 +688,12 @@ export class SqliteAppDatabase implements AppDatabase {
             prefix,
             now(),
         );
-        const rows = this.statements.selectDeviceByUserAndName.all(
+        // (user_id, name) is UNIQUE, so the lookup is a `.get()` — exactly
+        // the row this upsert wrote or updated.
+        const row = this.statements.selectDeviceByUserAndName.get(
             userId,
             name,
-        ) as {
-            id: number;
-            userId: number;
-            name: string;
-            prefix: string;
-            createdAt: string;
-            lastSeenAt: string | null;
-        }[];
-        const row = rows[0];
+        ) as DeviceRow | undefined;
         if (!row) {
             throw new AuthError(
                 "NOT_FOUND",
@@ -614,25 +704,14 @@ export class SqliteAppDatabase implements AppDatabase {
     }
 
     listDevicesByUser(userId: number): AppDevice[] {
-        const rows = this.statements.listDevicesByUser.all(userId) as {
-            id: number;
-            userId: number;
-            name: string;
-            prefix: string;
-            createdAt: string;
-            lastSeenAt: string | null;
-        }[];
+        const rows = this.statements.listDevicesByUser.all(
+            userId,
+        ) as DeviceRow[];
         return rows.map(mapDevice);
     }
 
     listUsers(): AppUser[] {
-        const rows = this.statements.listUsers.all() as {
-            id: number;
-            username: string;
-            role: Role;
-            disabled: number;
-            createdAt: string;
-        }[];
+        const rows = this.statements.listUsers.all() as UserRow[];
         return rows.map(mapUser);
     }
 
@@ -651,11 +730,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 throw new AuthError("NOT_FOUND", "device not found");
             }
         } catch (err: unknown) {
-            if (
-                typeof err === "object" &&
-                err !== null &&
-                (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE"
-            ) {
+            if (isUniqueViolation(err)) {
                 throw new AuthError(
                     "BAD_REQUEST",
                     `a device named '${name}' already exists for this user`,
@@ -667,25 +742,32 @@ export class SqliteAppDatabase implements AppDatabase {
     }
 
     setUserRole(id: number, role: Role): void {
-        const target = this.getUserById(id);
-        if (!target) {
-            throw new AuthError("NOT_FOUND", "user not found");
-        }
-        // Demoting an owner must leave at least one other *enabled* owner — a
-        // disabled owner can't administer the server, so it can't be the
-        // remaining one. This keeps a zero-owner lockout unreachable.
-        if (target.role === "owner" && role !== "owner") {
-            const row = this.statements.selectOtherEnabledOwners.get(id) as {
-                n: number;
-            };
-            if (row.n === 0) {
-                throw new AuthError(
-                    "LAST_OWNER",
-                    "cannot demote the last enabled owner; promote another owner first",
-                );
+        // Check-then-act runs in one transaction (issue #107 P5): a demote
+        // racing another owner's demotion can no longer both pass the
+        // enabled-owner guard and strip the last owner.
+        const tx = this.db.transaction((targetId: number, nextRole: Role) => {
+            const target = this.getUserById(targetId);
+            if (!target) {
+                throw new AuthError("NOT_FOUND", "user not found");
             }
-        }
-        this.statements.updateUserRole.run(role, id);
+            // Demoting an owner must leave at least one other *enabled*
+            // owner — a disabled owner can't administer the server, so it
+            // can't be the remaining one. This keeps a zero-owner lockout
+            // unreachable.
+            if (target.role === "owner" && nextRole !== "owner") {
+                const row = this.statements.selectOtherEnabledOwners.get(
+                    targetId,
+                ) as { n: number };
+                if (row.n === 0) {
+                    throw new AuthError(
+                        "LAST_OWNER",
+                        "cannot demote the last enabled owner; promote another owner first",
+                    );
+                }
+            }
+            this.statements.updateUserRole.run(nextRole, targetId);
+        });
+        tx(id, role);
     }
 
     setUserDisabled(id: number, disabled: boolean): void {
@@ -727,6 +809,11 @@ export class SqliteAppDatabase implements AppDatabase {
 
     deleteWebSessionsForUser(userId: number): void {
         this.statements.deleteWebSessionsForUser.run(userId);
+    }
+
+    deleteExpiredWebSessions(): number {
+        const result = this.statements.deleteExpiredWebSessions.run(now());
+        return result.changes;
     }
 
     getPrefs(userId: number): Record<string, unknown> {
@@ -774,39 +861,21 @@ export class SqliteAppDatabase implements AppDatabase {
 
     resolveTokenHash(tokenHash: string): ResolvedIdentity | null {
         const row = this.statements.selectDeviceByHash.get(tokenHash) as
-            | {
-                  deviceId: number;
-                  deviceUserId: number;
-                  deviceName: string;
-                  devicePrefix: string;
-                  deviceCreatedAt: string;
-                  deviceLastSeenAt: string | null;
-                  userId: number;
-                  username: string;
-                  role: Role;
-                  userDisabled: number;
-                  userCreatedAt: string;
-              }
-            | undefined;
+            DeviceIdentityRow | undefined;
         if (!row) {
             return null;
         }
+        // The user and device halves build through the same mappers as every
+        // other read path — the disabled→boolean coercion lives once (#107 P5).
         return {
-            user: {
-                id: row.userId,
-                username: row.username,
-                role: row.role,
-                disabled: row.userDisabled === 1,
-                createdAt: row.userCreatedAt,
-            },
-            device: {
-                id: row.deviceId,
-                userId: row.deviceUserId,
-                name: row.deviceName,
-                prefix: row.devicePrefix,
-                createdAt: row.deviceCreatedAt,
-                lastSeenAt: row.deviceLastSeenAt,
-            },
+            user: mapUser({
+                id: row.u_id,
+                username: row.u_username,
+                role: row.u_role,
+                disabled: row.u_disabled,
+                createdAt: row.u_created_at,
+            }),
+            device: mapDevice(row),
         };
     }
 
@@ -818,13 +887,17 @@ export class SqliteAppDatabase implements AppDatabase {
             kind: SessionKind;
         },
     ): { session: AppSession; created: boolean } {
+        // One stamp for both timestamps (issue #107 P5): the row's created_at
+        // and last_active_at mean the same instant on a fresh claim, and two
+        // separate now() calls could straddle a clock boundary.
+        const stamp = now();
         const result = this.statements.insertSession.run(
             threadId,
             opts.userId,
             opts.deviceId,
             opts.kind,
-            now(),
-            now(),
+            stamp,
+            stamp,
         );
         const session = this.getSessionByThread(threadId)!;
         return { session, created: result.changes > 0 };
@@ -832,16 +905,7 @@ export class SqliteAppDatabase implements AppDatabase {
 
     getSessionByThread(threadId: string): AppSession | null {
         const row = this.statements.selectSessionByThread.get(threadId) as
-            | {
-                  id: number;
-                  threadId: string;
-                  userId: number | null;
-                  deviceId: number | null;
-                  kind: SessionKind;
-                  createdAt: string;
-                  lastActiveAt: string;
-              }
-            | undefined;
+            SessionRow | undefined;
         return row ? mapSession(row) : null;
     }
 
@@ -854,28 +918,14 @@ export class SqliteAppDatabase implements AppDatabase {
     }
 
     listOwnedSessions(userId: number): AppSession[] {
-        const rows = this.statements.listSessionsByUser.all(userId) as {
-            id: number;
-            threadId: string;
-            userId: number | null;
-            deviceId: number | null;
-            kind: SessionKind;
-            createdAt: string;
-            lastActiveAt: string;
-        }[];
+        const rows = this.statements.listSessionsByUser.all(
+            userId,
+        ) as SessionRow[];
         return rows.map(mapSession);
     }
 
     listAllSessions(): AppSession[] {
-        const rows = this.statements.listAllSessions.all() as {
-            id: number;
-            threadId: string;
-            userId: number | null;
-            deviceId: number | null;
-            kind: SessionKind;
-            createdAt: string;
-            lastActiveAt: string;
-        }[];
+        const rows = this.statements.listAllSessions.all() as SessionRow[];
         return rows.map(mapSession);
     }
 

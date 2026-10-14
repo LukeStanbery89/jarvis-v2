@@ -50,6 +50,22 @@ describe("CookieSessionProvider", () => {
         expect(row!.secretHash).not.toBe(session.token);
     });
 
+    it("sweeps expired sessions on issue (table self-cleans without a timer)", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        // A row that expired relative to the fixed clock, written directly
+        // (the provider never issues an already-expired session).
+        store.createWebSession(
+            user.id,
+            "stale-hash",
+            "csrf-stale",
+            new Date(nowMs - 1000).toISOString(),
+        );
+
+        provider.issue(user.id);
+
+        expect(store.getWebSessionByHash("stale-hash")).toBeNull();
+    });
+
     it("issues distinct tokens per call", () => {
         const user = store.createUser("luke", "hash", "owner");
         const a = provider.issue(user.id);

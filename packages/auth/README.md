@@ -93,9 +93,16 @@ router and middleware span all five ledgers and therefore take the full
   (`owner`/`user`), `disabled` (revoke-by-disable: a disabled account's stored
   device tokens stop resolving).
 - `devices` — per-credential rows keyed to a user; `secret_hash` + `prefix`.
+  Device names are unique per user, enforced by exactly one UNIQUE
+  `(user_id, name)` index: fresh databases carry the inline table constraint,
+  legacy stores carry the named `idx_devices_user_name` from the v2
+  migration — the v6 migration drops the named index wherever the inline
+  constraint already exists, so every database converges on one enforcement.
 - `web_sessions` — browser cookie sessions: hash-keyed rows (`secret_hash`
   UNIQUE) with a per-session `csrf_token` and `expires_at`; cascade-deleted
-  with their user. Managed by the `CookieSessionProvider` + `WebSessionLedger`.
+  with their user. Managed by the `CookieSessionProvider` +
+  `WebSessionLedger`; the provider's `issue` sweeps expired rows
+  (`deleteExpiredWebSessions`), so the table self-cleans without a timer.
 - `sessions` — the WS-turn ledger: one row per `thread_id` (unique), owned by
   a user/device or `NULL` (guest), with `kind` (`text`/`voice`) for the
   lifecycle matrix. `claimSession` claims atomically
