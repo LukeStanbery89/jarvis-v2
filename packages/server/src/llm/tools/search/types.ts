@@ -71,8 +71,12 @@ export interface SearchProvider {
 
 /** Why a search failed; drives the tool's user-facing error text. */
 export class SearchError extends Error {
-    constructor(message: string) {
+    /** The underlying error (transport/parse), chained by the shared client. */
+    readonly cause?: unknown;
+
+    constructor(message: string, cause?: unknown) {
         super(message);
         this.name = "SearchError";
+        this.cause = cause;
     }
 }

@@ -64,8 +64,12 @@ export interface HomeAssistantProvider {
 
 /** Why a Home Assistant call failed; drives the tool's model-facing text. */
 export class HomeAssistantError extends Error {
-    constructor(message: string) {
+    /** The underlying error (transport/parse), chained by the shared client. */
+    readonly cause?: unknown;
+
+    constructor(message: string, cause?: unknown) {
         super(message);
         this.name = "HomeAssistantError";
+        this.cause = cause;
     }
 }

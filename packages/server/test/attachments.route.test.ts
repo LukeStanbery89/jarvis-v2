@@ -443,3 +443,48 @@ describe("createVisionModel", () => {
         expect(seenBody!).toContain("image_url");
     });
 });
+
+describe("analyzeImage signal threading (#103)", () => {
+    const OWNER = 7;
+    const ATTACHMENT_ID = "q83hZxLm5sVvT1yKwB9dE2nA";
+
+    it("passes the turn's signal to the vision model", async () => {
+        const controller = new AbortController();
+        const analyze = vi.fn(async () => "a blue square");
+        const tool = createAnalyzeImageTool({
+            attachments: fakeStore(),
+            vision: { analyze },
+            vlLimiter: new VlCallLimiter(10),
+        });
+        await tool.invoke(
+            { attachmentId: ATTACHMENT_ID, query: "q" },
+            { configurable: { userId: OWNER }, signal: controller.signal },
+        );
+        expect(analyze).toHaveBeenCalledWith(
+            expect.any(String),
+            "q",
+            controller.signal,
+        );
+    });
+
+    it("rejects instead of returning generic text when the turn is cancelled", async () => {
+        // throwIfAborted in the vision catch: a cancelled turn must ride the
+        // graph's bare-done path, not hand the model "unavailable" text.
+        const controller = new AbortController();
+        controller.abort();
+        const analyze = vi.fn(async () => {
+            throw new Error("This operation was aborted");
+        });
+        const tool = createAnalyzeImageTool({
+            attachments: fakeStore(),
+            vision: { analyze },
+            vlLimiter: new VlCallLimiter(10),
+        });
+        await expect(
+            tool.invoke(
+                { attachmentId: ATTACHMENT_ID, query: "q" },
+                { configurable: { userId: OWNER }, signal: controller.signal },
+            ),
+        ).rejects.toThrow();
+    });
+});

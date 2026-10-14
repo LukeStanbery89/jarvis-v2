@@ -27,6 +27,7 @@ import {
     type WeatherProvider,
     type WeatherUnits,
 } from "./types";
+import { asNumber, asString, requestJson } from "../http";
 import { logger } from "../../../logger";
 
 /** OpenWeather's 2.5 data root (current weather + forecast share it). */
@@ -38,32 +39,24 @@ export interface OpenWeatherOptions {
     readonly apiKey: string;
     /** Unit system requested from the provider (temperature + wind units). */
     readonly units: WeatherUnits;
-    /** Wall-clock cap applied when the caller supplies no signal. */
+    /** Wall-clock cap per request, combined with any caller signal. */
     readonly timeoutMs: number;
     /** Injectable for tests (defaults to global `fetch`). */
     readonly fetchImpl?: typeof fetch;
-}
-
-/** Defensive field coercion for untrusted provider JSON: a number or NaN. */
-function asNumber(value: unknown): number {
-    return typeof value === "number" && Number.isFinite(value) ? value : NaN;
-}
-
-/** Defensive field coercion for untrusted provider JSON: a string or "". */
-function asString(value: unknown): string {
-    return typeof value === "string" ? value : "";
 }
 
 /**
  * GETs one OpenWeather endpoint and returns the parsed JSON body.
  *
  * Shared transport for both scopes: builds the query (`appid` + `units` plus
- * `q` or `lat`/`lon`), applies the timeout, and maps transport/HTTP/JSON
- * failures onto typed `WeatherError`s. HTTP errors carry the status on the
- * error (the fallback logic keys on it) and, when the provider includes one,
- * its short reason in the message ("404 (city not found)") — that text lands
- * in the server's warn log only; the model-facing text stays generic. The
- * key never appears in any message, and the debug request line omits it.
+ * `q` or `lat`/`lon`) and delegates to `requestJson`, which combines the
+ * caller's signal with the configured timeout (either aborts the request —
+ * see {@link RequestJsonOptions}) and maps transport/HTTP/JSON failures onto
+ * typed `WeatherError`s. HTTP errors carry the status on the error (the
+ * fallback logic keys on it) and, when the provider includes one, its short
+ * reason in the message ("404 (city not found)") — that text lands in the
+ * server's warn log only; the model-facing text stays generic. The key never
+ * appears in any message, and the debug request line omits it.
  */
 async function getJson(
     path: string,
@@ -78,30 +71,16 @@ async function getJson(
             .join(" ")}`,
     );
     const query = new URLSearchParams({ appid, ...visible });
-    const effectiveSignal = signal ?? AbortSignal.timeout(opts.timeoutMs);
-    let response: Response;
-    try {
-        response = await (opts.fetchImpl ?? fetch)(
-            `${OPENWEATHER_BASE}${path}?${query}`,
-            { signal: effectiveSignal },
-        );
-    } catch (err) {
-        // Abort/timeout or transport failure — never the key.
-        throw new WeatherError(
-            `openweather unreachable: ${err instanceof Error ? err.message : "unknown error"}`,
-        );
-    }
-    if (!response.ok) {
-        throw new WeatherError(
-            await httpReason(response, opts.apiKey),
-            response.status,
-        );
-    }
-    try {
-        return await response.json();
-    } catch {
-        throw new WeatherError("openweather returned invalid JSON");
-    }
+    return requestJson({
+        url: `${OPENWEATHER_BASE}${path}?${query}`,
+        label: "openweather",
+        timeoutMs: opts.timeoutMs,
+        signal,
+        fetchImpl: opts.fetchImpl,
+        httpErrorText: (response) => httpReason(response, opts.apiKey),
+        mapFailure: (failure) =>
+            new WeatherError(failure.message, failure.status, failure.cause),
+    });
 }
 
 /**

@@ -29,6 +29,7 @@ import { sniffImageMime } from "../../attachments/store";
 import type { VisionModel } from "../visionModel";
 import type { VlCallLimiter } from "../../attachments/limiters";
 import { logger } from "../../logger";
+import { requireMeteredUser } from "./metering";
 
 /** Everything the tool needs, injected at wiring time. */
 export interface AnalyzeImageDeps {
@@ -64,25 +65,19 @@ export function createAnalyzeImageTool(deps: AnalyzeImageDeps) {
             { attachmentId, query },
             runtime: ToolRuntime,
         ): Promise<string> => {
-            const owner = runtime.configurable?.userId;
-            if (typeof owner !== "number" || !Number.isInteger(owner)) {
-                logger.warn("analyzeImage called without an attachment owner");
-                return "Image analysis requires signing in. Ask the user to authenticate and retry.";
+            const gate = requireMeteredUser(runtime, deps.vlLimiter, {
+                subject: "Image analysis",
+                logName: "analyzeImage",
+            });
+            if (!gate.ok) {
+                return gate.text;
             }
             // The quota is checked before any work: a refused call returns
             // text the model can relay (not an exception), so a rate-limited
             // analysis degrades to a "try again in Ns" answer.
-            const admission = deps.vlLimiter.tryAcquire(owner);
-            if (!admission.ok) {
-                const seconds = Math.max(
-                    1,
-                    Math.ceil(admission.retryAfterMs / 1000),
-                );
-                return `Image analysis is rate limited — try again in about ${seconds}s.`;
-            }
             let bytes: Buffer;
             try {
-                bytes = await deps.attachments.get(owner, attachmentId);
+                bytes = await deps.attachments.get(gate.userId, attachmentId);
             } catch (err) {
                 const code = (err as AttachmentError).code;
                 if (typeof code === "string" && code in FAILURE_TEXT) {
@@ -94,8 +89,15 @@ export function createAnalyzeImageTool(deps: AnalyzeImageDeps) {
             const dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
             let analysis: string;
             try {
-                analysis = await deps.vision.analyze(dataUrl, query);
+                analysis = await deps.vision.analyze(
+                    dataUrl,
+                    query,
+                    runtime.signal,
+                );
             } catch (err) {
+                // A cancelled turn must reject (the graph's bare-done path),
+                // not hand the model "unavailable" text to relay.
+                runtime.signal?.throwIfAborted();
                 // Every other metered tool maps failures to generic
                 // model-facing text; an unguarded throw here would ride
                 // LangGraph's tool-error path straight to the client's tool

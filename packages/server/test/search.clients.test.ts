@@ -211,3 +211,42 @@ describe("serper client", () => {
         });
     });
 });
+
+describe("search client signal threading (#103)", () => {
+    /** A fetch that never settles until its abort signal fires. */
+    const hangingFetch = (async (
+        _input: unknown,
+        init?: RequestInit,
+    ): Promise<Response> =>
+        new Promise((_, reject) => {
+            init?.signal?.addEventListener(
+                "abort",
+                () => reject(init.signal?.reason),
+                { once: true },
+            );
+        })) as unknown as typeof fetch;
+
+    it("tavily aborts a hung request when the caller's signal fires", async () => {
+        const controller = new AbortController();
+        const provider = createTavilyClient({
+            ...opts,
+            timeoutMs: 60_000,
+            fetchImpl: hangingFetch,
+        });
+        const pending = provider.search("q", "general", controller.signal);
+        controller.abort();
+        await expect(pending).rejects.toThrow(/unreachable/);
+    });
+
+    it("serper aborts a hung request when the caller's signal fires", async () => {
+        const controller = new AbortController();
+        const provider = createSerperClient({
+            ...serperOpts,
+            timeoutMs: 60_000,
+            fetchImpl: hangingFetch,
+        });
+        const pending = provider.search("q", "general", controller.signal);
+        controller.abort();
+        await expect(pending).rejects.toThrow(/unreachable/);
+    });
+});

@@ -264,6 +264,29 @@ describe("openweather failures", () => {
         );
     });
 
+    it("aborts a hung request when the caller's signal fires (#103)", async () => {
+        // The turn's signal reaches the fetch combined with the timeout —
+        // cancelling a turn aborts the in-flight provider call instead of
+        // leaving it running to its own timeout.
+        const controller = new AbortController();
+        const impl = (async (_input: unknown, init?: RequestInit) =>
+            new Promise<Response>((_, reject) => {
+                init?.signal?.addEventListener(
+                    "abort",
+                    () => reject(init.signal?.reason),
+                    { once: true },
+                );
+            })) as unknown as typeof fetch;
+        const client = createOpenWeatherClient({
+            ...OPTS,
+            timeoutMs: 60_000,
+            fetchImpl: impl,
+        });
+        const pending = client.current({ query: "X" }, controller.signal);
+        controller.abort();
+        await expect(pending).rejects.toThrow(/unreachable/);
+    });
+
     it("maps invalid JSON to a typed error", async () => {
         const calls: string[] = [];
         const impl = (async (..._args: Parameters<typeof fetch>) => {

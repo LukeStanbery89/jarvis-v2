@@ -6,6 +6,7 @@ import {
 import { SearchError } from "../src/llm/tools/search/types";
 import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 import type {
+    SearchAnswer,
     SearchProvider,
     SearchVertical,
 } from "../src/llm/tools/search/types";
@@ -217,5 +218,64 @@ describe("formatSearchAnswer", () => {
         expect(formatSearchAnswer({ provider: "serper", results: [] })).toBe(
             "No results found.",
         );
+    });
+});
+
+describe("webSearch signal threading (#103)", () => {
+    /** A scripted provider recording the signals it was handed. */
+    function fakeWithSignal(outcome?: SearchAnswer | Error): {
+        provider: SearchProvider;
+        signals: (AbortSignal | undefined)[];
+    } {
+        const signals: (AbortSignal | undefined)[] = [];
+        return {
+            signals,
+            provider: {
+                name: "tavily",
+                async search(_query, _vertical, signal) {
+                    signals.push(signal);
+                    if (outcome instanceof Error) {
+                        throw outcome;
+                    }
+                    return outcome ?? { provider: "tavily", results: [] };
+                },
+            },
+        };
+    }
+
+    it("passes the turn's signal to the provider", async () => {
+        const controller = new AbortController();
+        const fake = fakeWithSignal();
+        const tool = createWebSearchTool({
+            providers: [fake.provider],
+            quota: new FixedWindowQuota(10),
+        });
+        await tool.invoke(
+            { query: "q" },
+            { configurable: { userId: 7 }, signal: controller.signal },
+        );
+        expect(fake.signals).toEqual([controller.signal]);
+    });
+
+    it("rejects instead of falling through to the next provider when cancelled", async () => {
+        // throwIfAborted in the loop's catch: a cancelled turn must ride the
+        // graph's bare-done path, not spend the fallback provider.
+        const controller = new AbortController();
+        controller.abort();
+        const first = fakeWithSignal(
+            new SearchError("tavily unreachable: This operation was aborted"),
+        );
+        const second = fakeWithSignal();
+        const tool = createWebSearchTool({
+            providers: [first.provider, second.provider],
+            quota: new FixedWindowQuota(10),
+        });
+        await expect(
+            tool.invoke(
+                { query: "q" },
+                { configurable: { userId: 7 }, signal: controller.signal },
+            ),
+        ).rejects.toThrow();
+        expect(second.signals).toHaveLength(0);
     });
 });

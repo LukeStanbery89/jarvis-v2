@@ -38,6 +38,7 @@ import {
 } from "./weather/types";
 import { FixedWindowQuota } from "../../rate/fixedWindowQuota";
 import { logger } from "../../logger";
+import { requireMeteredUser } from "./metering";
 import type { DeviceLocation } from "../../agent";
 import { format12Hour } from "./clock";
 
@@ -166,28 +167,18 @@ function failureText(reason: string): string {
 const ASK_FOR_CITY =
     "No location is available for this user. Ask the user which city they want the weather for.";
 
-/** Model-facing text when the socket is a guest; mirrors webSearch. */
-const SIGN_IN_REQUIRED =
-    "Weather lookup requires signing in. Ask the user to authenticate and retry.";
-
 /**
  * Builds the `getWeather` tool over the injected provider, quota, and units.
  */
 export function createGetWeatherTool(deps: WeatherDeps) {
     return tool(
         async ({ location, scope }, runtime: ToolRuntime): Promise<string> => {
-            const owner = runtime.configurable?.userId;
-            if (typeof owner !== "number" || !Number.isInteger(owner)) {
-                logger.warn("getWeather called without a user id");
-                return SIGN_IN_REQUIRED;
-            }
-            const admission = deps.quota.tryAcquire(owner);
-            if (!admission.ok) {
-                const seconds = Math.max(
-                    1,
-                    Math.ceil(admission.retryAfterMs / 1000),
-                );
-                return `Weather lookup is rate limited — try again in about ${seconds}s.`;
+            const gate = requireMeteredUser(runtime, deps.quota, {
+                subject: "Weather lookup",
+                logName: "getWeather",
+            });
+            if (!gate.ok) {
+                return gate.text;
             }
             const target = resolveLocation(
                 location,
@@ -217,18 +208,27 @@ export function createGetWeatherTool(deps: WeatherDeps) {
             const effectiveScope = scope ?? "now";
             try {
                 if (effectiveScope === "forecast") {
-                    const forecast = await deps.provider.forecast(target);
+                    const forecast = await deps.provider.forecast(
+                        target,
+                        runtime.signal,
+                    );
                     logger.debug(
                         `getWeather(forecast) via ${forecast.provider}: ${forecast.days.length} days`,
                     );
                     return formatForecast(forecast, deps.units);
                 }
-                const conditions = await deps.provider.current(target);
+                const conditions = await deps.provider.current(
+                    target,
+                    runtime.signal,
+                );
                 logger.debug(
                     `getWeather(now) via ${conditions.provider}: ${conditions.name}`,
                 );
                 return formatCurrentConditions(conditions, deps.units);
             } catch (err) {
+                // A cancelled turn must reject (the graph's bare-done path),
+                // not hand the model "weather unavailable" text to relay.
+                runtime.signal?.throwIfAborted();
                 return failureText(
                     err instanceof WeatherError
                         ? err.message

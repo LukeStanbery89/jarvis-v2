@@ -119,9 +119,13 @@ export class WeatherError extends Error {
     /** The provider's HTTP status, when the failure was an HTTP response. */
     readonly status?: number;
 
-    constructor(message: string, status?: number) {
+    /** The underlying error (transport/parse), chained by the shared client. */
+    readonly cause?: unknown;
+
+    constructor(message: string, status?: number, cause?: unknown) {
         super(message);
         this.name = "WeatherError";
         this.status = status;
+        this.cause = cause;
     }
 }

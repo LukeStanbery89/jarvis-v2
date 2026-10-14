@@ -50,6 +50,7 @@ import {
 } from "./homeAssistant/types";
 import { FixedWindowQuota } from "../../rate/fixedWindowQuota";
 import { logger } from "../../logger";
+import { requireMeteredUser } from "./metering";
 
 /** Everything the tool needs, injected at wiring time. */
 export interface HomeAssistantDeps {
@@ -111,10 +112,6 @@ const NEEDS_ENTITY: ReadonlySet<string> = new Set([
     "set_brightness",
     "set_temperature",
 ]);
-
-/** Model-facing text when a socket is a guest; mirrors the other metered tools. */
-const SIGN_IN_REQUIRED =
-    "Home Assistant control requires signing in. Ask the user to authenticate and retry.";
 
 /** Model-facing text for a failed call; never leaks internals. */
 function failureText(reason: string): string {
@@ -379,18 +376,12 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
             },
             runtime: ToolRuntime,
         ): Promise<string> => {
-            const owner = runtime.configurable?.userId;
-            if (typeof owner !== "number" || !Number.isInteger(owner)) {
-                logger.warn("homeAssistant called without a user id");
-                return SIGN_IN_REQUIRED;
-            }
-            const admission = deps.quota.tryAcquire(owner);
-            if (!admission.ok) {
-                const seconds = Math.max(
-                    1,
-                    Math.ceil(admission.retryAfterMs / 1000),
-                );
-                return `Home Assistant is rate limited — try again in about ${seconds}s.`;
+            const gate = requireMeteredUser(runtime, deps.quota, {
+                subject: "Home Assistant control",
+                logName: "homeAssistant",
+            });
+            if (!gate.ok) {
+                return gate.text;
             }
             const isWrite = WRITE_ACTIONS.has(action);
             logger.debug(
@@ -400,7 +391,7 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
             );
 
             try {
-                const entities = await deps.provider.entities();
+                const entities = await deps.provider.entities(runtime.signal);
 
                 if (action === "list") {
                     return renderList(entities, query, deps.listLimit);
@@ -460,6 +451,7 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
                     found.entityId,
                     SERVICE_FOR_ACTION[action],
                     value,
+                    runtime.signal,
                 );
                 // The snapshot the validation just used is now stale.
                 deps.provider.invalidate();
@@ -468,6 +460,9 @@ export function createHomeAssistantTool(deps: HomeAssistantDeps) {
                 );
                 return `homeAssistant ${action}: ${pastTense(action)} ${found.friendlyName} [${found.entityId}]${valueNote(action, value, found)}; Home Assistant accepted the request.`;
             } catch (err) {
+                // A cancelled turn must reject (the graph's bare-done path),
+                // not hand the model "unreachable" text to relay.
+                runtime.signal?.throwIfAborted();
                 return failureText(
                     err instanceof HomeAssistantError
                         ? err.message

@@ -38,6 +38,7 @@ import {
 } from "./search/types";
 import { FixedWindowQuota } from "../../rate/fixedWindowQuota";
 import { logger } from "../../logger";
+import { requireMeteredUser } from "./metering";
 
 /** Everything the tool needs, injected at wiring time. */
 export interface WebSearchDeps {
@@ -102,18 +103,12 @@ const VERTICAL_ENUM = [
 export function createWebSearchTool(deps: WebSearchDeps) {
     return tool(
         async ({ query, kind }, runtime: ToolRuntime): Promise<string> => {
-            const owner = runtime.configurable?.userId;
-            if (typeof owner !== "number" || !Number.isInteger(owner)) {
-                logger.warn("webSearch called without a user id");
-                return "Web search requires signing in. Ask the user to authenticate and retry.";
-            }
-            const admission = deps.quota.tryAcquire(owner);
-            if (!admission.ok) {
-                const seconds = Math.max(
-                    1,
-                    Math.ceil(admission.retryAfterMs / 1000),
-                );
-                return `Web search is rate limited — try again in about ${seconds}s.`;
+            const gate = requireMeteredUser(runtime, deps.quota, {
+                subject: "Web search",
+                logName: "webSearch",
+            });
+            if (!gate.ok) {
+                return gate.text;
             }
             const vertical: SearchVertical = kind ?? "general";
             // Prefer Tavily wherever it can serve the vertical; otherwise
@@ -128,12 +123,19 @@ export function createWebSearchTool(deps: WebSearchDeps) {
             const attempts: { provider: string; reason: string }[] = [];
             for (const provider of ordered) {
                 try {
-                    const answer = await provider.search(query, vertical);
+                    const answer = await provider.search(
+                        query,
+                        vertical,
+                        runtime.signal,
+                    );
                     logger.debug(
                         `webSearch(${vertical}) via ${answer.provider}: ${answer.results.length} results`,
                     );
                     return formatSearchAnswer(answer);
                 } catch (err) {
+                    // A cancelled turn must reject (the graph's bare-done
+                    // path), not fall through to the next provider.
+                    runtime.signal?.throwIfAborted();
                     attempts.push({
                         provider: provider.name,
                         reason:

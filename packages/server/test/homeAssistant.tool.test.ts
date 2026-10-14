@@ -103,26 +103,34 @@ function fakeProvider(
 ): {
     provider: HomeAssistantProvider;
     calls: { entityId: string; action: string; value?: number }[];
+    entitySignals: (AbortSignal | undefined)[];
+    writeSignals: (AbortSignal | undefined)[];
     invalidations: number;
 } {
     const calls: { entityId: string; action: string; value?: number }[] = [];
+    const entitySignals: (AbortSignal | undefined)[] = [];
+    const writeSignals: (AbortSignal | undefined)[] = [];
     let invalidations = 0;
     return {
         calls,
+        entitySignals,
+        writeSignals,
         get invalidations() {
             return invalidations;
         },
         provider: {
             name: "home-assistant",
-            async entities() {
+            async entities(signal) {
+                entitySignals.push(signal);
                 const outcome = script.entities ?? HOUSE;
                 if (outcome instanceof Error) {
                     throw outcome;
                 }
                 return outcome;
             },
-            async callService(entityId, action, value) {
+            async callService(entityId, action, value, signal) {
                 calls.push({ entityId, action, value });
+                writeSignals.push(signal);
                 // Home Assistant reports acceptance through its status code, so
                 // the fake resolves unless scripted to fail.
                 if (script.callService) {
@@ -170,7 +178,10 @@ type ToolInput = Parameters<ReturnType<typeof build>["invoke"]>[0];
 async function run(
     args: ToolInput,
     overrides: Parameters<typeof build>[0] = {},
-    runtime: { configurable?: Record<string, unknown> } = OWNER,
+    runtime: {
+        configurable?: Record<string, unknown>;
+        signal?: AbortSignal;
+    } = OWNER,
 ): Promise<string> {
     return (await build(overrides).invoke(args, runtime)) as string;
 }
@@ -773,5 +784,43 @@ describe("homeAssistant light and switch detection", () => {
         expect(renderLights(TYPICAL_HOUSE, tokens, 2)).toMatch(
             /and 1 more not shown/,
         );
+    });
+});
+
+describe("homeAssistant signal threading (#103)", () => {
+    it("passes the turn's signal to snapshot and write calls", async () => {
+        const controller = new AbortController();
+        const fake = fakeProvider();
+        await run(
+            { action: "get", entity_id: "light.kitchen" },
+            { provider: fake.provider },
+            { configurable: { userId: 7 }, signal: controller.signal },
+        );
+        expect(fake.entitySignals).toEqual([controller.signal]);
+        await run(
+            { action: "turn_on", entity_id: "light.kitchen" },
+            { provider: fake.provider },
+            { configurable: { userId: 7 }, signal: controller.signal },
+        );
+        expect(fake.writeSignals).toEqual([controller.signal]);
+    });
+
+    it("rejects instead of returning failure text when the turn is cancelled", async () => {
+        // throwIfAborted in the tool's catch: a cancelled turn must ride the
+        // graph's bare-done path, not hand the model "unreachable" text.
+        const controller = new AbortController();
+        controller.abort();
+        const fake = fakeProvider({
+            entities: new HomeAssistantError(
+                "home assistant unreachable: This operation was aborted",
+            ),
+        });
+        await expect(
+            run(
+                { action: "list" },
+                { provider: fake.provider },
+                { configurable: { userId: 7 }, signal: controller.signal },
+            ),
+        ).rejects.toThrow();
     });
 });
