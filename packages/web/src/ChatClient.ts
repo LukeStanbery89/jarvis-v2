@@ -108,13 +108,14 @@ export class ChatClient {
     private audioSpanStartedAt: number | null = null;
     private awaitingFirstAudioChunk = false;
     /**
-     * The in-flight turn's spoken-audio `generationId` (#84 P6), from its
-     * `audioStart` frame — the id a `cancelTurn` records so late binary
-     * chunks of the cancelled span are dropped instead of played.
+     * Whether the in-flight turn has been cancelled (#114). Set by
+     * {@link cancelTurn}, cleared by the next {@link startTurn}. The single
+     * switch behind dropping a cancelled turn's audio: a cancel can land
+     * before the turn's `audioStart` frame — the "interrupted before it
+     * started speaking" case — when there is no span id to key on yet, while
+     * the cancelled turn's audio is already on the wire.
      */
-    private audioGenerationId: number | null = null;
-    /** Generations cancelled by this client; their audio is never played. */
-    private droppedGenerations = new Set<number>();
+    private cancelledTurn = false;
     /** Reconnect attempt counter (drives backoff; reset on connect). */
     private attempt = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -249,9 +250,8 @@ export class ChatClient {
         this.turnStartedAt = performance.now();
         this.audioSpanStartedAt = null;
         this.awaitingFirstAudioChunk = false;
-        // A new turn is a new generation; drops only ever matter within a
-        // cancelled turn's span.
-        this.droppedGenerations.clear();
+        // A new turn supersedes any cancellation: its own audio is wanted.
+        this.cancelledTurn = false;
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;
             this.rejectPrompt = reject;
@@ -270,17 +270,18 @@ export class ChatClient {
      * Cancels the in-flight turn (#84 P6): barge-in or the stop button.
      * Sends the `cancel` frame when the socket is live (the server aborts
      * the model stream and the spoken audio, and ends the turn with
-     * `done` — the text already streamed stays in history), and marks the
-     * turn's audio generation dropped so chunks still in flight are never
-     * played. Idempotent and safe with no turn in flight.
+     * `done` — the text already streamed stays in history) and latches the
+     * turn so its audio is never played: the chunks may still be in flight,
+     * and a cancel that beats the turn's `audioStart` frame — the
+     * "interrupted before it started speaking" case the barge-in watch now
+     * covers (#114) — has no span to key on yet. Idempotent and safe with no
+     * turn in flight.
      */
     cancelTurn(): void {
         if (!this.streaming) {
             return;
         }
-        if (this.audioGenerationId !== null) {
-            this.droppedGenerations.add(this.audioGenerationId);
-        }
+        this.cancelledTurn = true;
         if (
             this.socket !== null &&
             this.phase === "ready" &&
@@ -332,13 +333,11 @@ export class ChatClient {
      */
     private onMessage(event: WebSocketMessageEvent): void {
         if (event.data instanceof ArrayBuffer) {
-            // Audio of a cancelled generation is dead on arrival (#84 P6):
-            // the span was stopped server-side, but chunks already in
-            // flight must never reach the player.
-            if (
-                this.audioGenerationId !== null &&
-                this.droppedGenerations.has(this.audioGenerationId)
-            ) {
+            // Audio of a cancelled turn is dead on arrival (#84 P6, #114): the
+            // span was stopped server-side, but chunks already in flight —
+            // including a span's whole audio behind its own `done` — must
+            // never reach the player.
+            if (this.cancelledTurn) {
                 return;
             }
             if (this.awaitingFirstAudioChunk) {
@@ -421,7 +420,6 @@ export class ChatClient {
             if ("audioStart" in frame) {
                 this.audioSpanStartedAt = performance.now();
                 this.awaitingFirstAudioChunk = true;
-                this.audioGenerationId = frame.audioStart.generationId;
             }
             this.options.events.onFrame?.(frame);
         }

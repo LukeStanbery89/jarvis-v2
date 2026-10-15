@@ -30,8 +30,10 @@ storage:
   a wake session (so the command arrives on its own microphone), pre-warms the
   wake engine, and restarts the detector once a session lands `idle`.
 - `src/barge.ts` — `BargeWatch` + `BARGE_IN_*`: the VAD-only barge-in watch and
-  its look-back ring. `BargeInDetection` and the `BARGE_IN_*` constants are the
-  only public symbols from here.
+  its look-back ring. `BargeInDetection` and the two window constants
+  (`BARGE_IN_LOOKBACK_MS`, `BARGE_IN_SPEECH_MS`) are the public symbols from
+  here; the arm-retry knobs (`BARGE_IN_RETRY_MS`, `BARGE_IN_ARM_ATTEMPTS`,
+  #114) stay internal.
 - `src/errors.ts` — `toVoiceError`, the shared rejection normalizer.
 - `src/wav.ts` — a dependency-free WAV codec (`encodeWav`/`decodeWav`) used
   by the #121 corpus: the fixtures, the debug capture path, and the replay
@@ -371,11 +373,20 @@ session error.
 
 ## Barge-in watch (#84 P6)
 
-While J.A.R.V.I.S. speaks, `startBargeWatch()` arms a **VAD-only mic
-session** on the same `VadProvider` sessions use for endpointing — no STT,
-no transcript, no user toggle: the watch lives exactly as long as playback.
-The client calls it when the lifecycle enters `speaking` and
-`stopBargeWatch()` when it leaves. While armed, the watch taps the VAD's
+While J.A.R.V.I.S.'s response is streaming or playing, `startBargeWatch()`
+arms a **VAD-only mic session** on the same `VadProvider` sessions use for
+endpointing — no STT, no transcript, no user toggle: the watch lives as long
+as the response. The client arms it when the lifecycle enters `responding`
+(the response's first frame) and holds it until the reply's audio has
+drained. Arming only
+at `speaking` left the window before the first audio frame with no
+microphone listener at all, and on a tool turn that window is the whole tool
+round trip — the server announces the call before running it — so an
+utterance said into that silence was never heard (#114). Disarming at the
+turn's end is wrong for the same reason at the other end: the audio outlives
+the turn's `done` frame, so the tail of every answer used to be unwatched
+(#114). While armed, the
+watch taps the VAD's
 optional raw-audio callback (`VadCallbacks.onAudio` — the energy VAD
 delivers its analysis frames as a copy per tick) into a ring buffer capped
 at `BARGE_IN_LOOKBACK_MS` (2000), and arms a sustained-speech deadline of
@@ -395,12 +406,20 @@ When the deadline fires, the controller:
 
 The replaced turn's events are stale by session id the moment the new
 session opens — the lifecycle's race discipline. The watch is
-**opportunistic**: with no VAD, a busy VAD (a recognition session owns it),
-a throwing `onBargeIn`, or a dying mic track it stays off or disarms
+**opportunistic**: with no VAD, a busy VAD (a recognition session owns it —
+re-attempted `BARGE_IN_ARM_ATTEMPTS` times, `BARGE_IN_RETRY_MS` apart,
+before that turn is left unwatched rather than silently dead for its whole
+length, #114), a throwing `onBargeIn`, or a dying mic track it stays off or
+disarms
 quietly — a turn that plays fine is never disturbed by a failed
 interruption. Caveat: detection rides on the browser's echo cancellation
 (`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by
 the 300 ms sustain, not eliminated — hardware AEC is out of scope.
+
+Arming, disarming, the trigger, and an arm failure are all logged through the
+controller's `log` sink, so a client with debug on can see _when_ the watch
+came up relative to playback — the question #114 turned on (the `log` seam is
+described under "Notes for maintainers").
 
 **Traceability:** P0–P6 implementation history consolidated.
 

@@ -24,6 +24,7 @@ import {
     type SttProvider,
     type VadProvider,
     type VoiceSnapshot,
+    type VoiceState,
     type WakeWordProvider,
 } from "@lukestanbery/jarvis-voice";
 import {
@@ -99,12 +100,49 @@ export function voiceStatusText(snapshot: VoiceSnapshot): string | null {
 }
 
 /**
+ * Whether the barge-in watch covers a voice lifecycle state (#114).
+ *
+ * `responding` onward, **not just `speaking`**. `speaking` is entered by the
+ * `audioStart` frame, so keying the watch on it left everything before the
+ * first audio frame with no microphone listener at all. A tool turn reaches
+ * `responding` when the model *requests* the tool — the server announces
+ * `tool` while streaming the call, before it runs — so for a weather answer
+ * the whole tool round trip plus the first segment's synthesis was a dead
+ * zone: a "Hey JARVIS" said into that silence did nothing, and playback then
+ * started and ran on. Arming from the response's first frame closes it.
+ *
+ * `playbackActive` extends the window the other way, past the turn: the
+ * lifecycle leaves `speaking` when the turn's `done` frame arrives
+ * (`responseEnded`), while the player still has seconds of speech scheduled.
+ * Without it the watch disarms mid-answer and talking over the tail of a
+ * reply does nothing — the behaviour that made barge-in work "sometimes"
+ * depending on where in the answer the user spoke.
+ *
+ * Deliberately a boolean rather than the state itself: the caller keys its
+ * effect on this value, so the watch is armed once per window instead of
+ * being torn down and re-armed on the `responding` → `speaking` step (which
+ * would reopen the microphone mid-turn).
+ *
+ * @param state - The voice lifecycle state to test.
+ * @param playbackActive - Whether the player still has scheduled audio.
+ * @returns Whether the barge-in watch should be armed.
+ */
+export function watchBargeIn(
+    state: VoiceState,
+    playbackActive = false,
+): boolean {
+    return playbackActive || state === "responding" || state === "speaking";
+}
+
+/**
  * Owns the voice stack for the chat view.
  *
  * @param options.submit - Submits a final transcript (a stable wrapper over the
  *   chat view's latest turn runner).
  * @param options.onWakeCue - A cue to play when the wake phrase matches.
  * @param options.onBargeIn - The barge-in trigger (stop playback + cancel).
+ * @param options.playbackActive - Whether the player still has scheduled audio
+ *   (keeps the barge watch armed through the reply's audio tail, #114).
  * @param options.engineAssets - The WASM engine's worker/WASM URLs.
  * @returns The controller, snapshot, derived view state, and the toggles.
  */
@@ -112,6 +150,15 @@ export function useVoiceSession(options: {
     submit(text: string): Promise<void>;
     onWakeCue(): void;
     onBargeIn(): void;
+    /**
+     * Whether the player still has scheduled, audible audio for the last
+     * reply (#114). The reply's audio outlives its `done` frame, so the barge
+     * watch stays armed on this even once the lifecycle is back to `idle`.
+     * The player reports `false` while its context cannot play (a suspended
+     * or interrupted `AudioContext` never lets its sources end), so this
+     * cannot latch true and hold the watch open indefinitely.
+     */
+    playbackActive?: boolean;
     engineAssets?: { workerUrl: string; wasmUrl: string };
 }): UseVoiceSessionResult {
     const { workerUrl = voskWorkerUrl, wasmUrl = voskWasmUrl } =
@@ -227,20 +274,29 @@ export function useVoiceSession(options: {
         }
     }, [controller, wakeAvailable, wakeOn]);
 
-    // Barge-in watch (#84 P6): while J.A.R.V.I.S. is speaking, a VAD-only mic
-    // session listens for the user talking over the reply — sustained speech
-    // stops local playback, cancels the in-flight turn, and opens a listening
-    // session seeded with the interrupted opening. The watch lives exactly as
-    // long as playback; arming failures are silent by design.
+    // Barge-in watch (#84 P6, covering the whole reply since #114): while a
+    // voice answer streams and plays, a VAD-only mic session listens for the
+    // user talking over it — sustained speech stops local playback, cancels the
+    // in-flight turn, and opens a listening session seeded with the interrupted
+    // opening. Armed from the response's first frame, and held through the
+    // audio tail after the turn's `done` (`playbackActive`), so a long tool turn
+    // and a reply that outlives its frames are both covered (see `watchBargeIn`);
+    // keyed on the boolean so the microphone opens once per window. Arming
+    // failures are silent by design — the controller's log carries what it can
+    // (see `BargeWatch`).
+    const bargeWindow = watchBargeIn(
+        snapshot.state,
+        options.playbackActive === true,
+    );
     useEffect(() => {
-        if (controller === null || snapshot.state !== "speaking") {
+        if (controller === null || !bargeWindow) {
             return;
         }
         void controller.startBargeWatch();
         return () => {
             void controller.stopBargeWatch();
         };
-    }, [controller, snapshot.state]);
+    }, [controller, bargeWindow]);
 
     const press = useCallback((): void => {
         controllerRef.current?.press();

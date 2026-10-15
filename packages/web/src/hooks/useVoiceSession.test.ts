@@ -1,9 +1,10 @@
 /**
- * Unit tests for the voice status-line text derivation.
+ * Unit tests for the voice status-line text derivation and the barge-in
+ * watch's arming window (#114).
  */
 import { describe, expect, it } from "vitest";
-import type { VoiceSnapshot } from "@lukestanbery/jarvis-voice";
-import { voiceStatusText } from "./useVoiceSession";
+import type { VoiceSnapshot, VoiceState } from "@lukestanbery/jarvis-voice";
+import { voiceStatusText, watchBargeIn } from "./useVoiceSession";
 
 /** A voice snapshot with idle defaults; override the state under test. */
 function snap(over: Partial<VoiceSnapshot>): VoiceSnapshot {
@@ -43,5 +44,43 @@ describe("voiceStatusText", () => {
         expect(voiceStatusText(snap({ state: "responding" }))).toBeNull();
         expect(voiceStatusText(snap({ state: "speaking" }))).toBeNull();
         expect(voiceStatusText(snap({ state: "idle" }))).toBeNull();
+    });
+});
+
+describe("watchBargeIn", () => {
+    it("arms from the response's first frame, before any audio (#114)", () => {
+        // `responding` arrives at the first response frame — the tool *request*
+        // of a tool turn — while `audioStart` (what used to arm the watch) can
+        // be seconds later. The whole gap used to have no mic listener.
+        expect(watchBargeIn("responding")).toBe(true);
+        expect(watchBargeIn("speaking")).toBe(true);
+    });
+
+    it("stays off outside a response", () => {
+        const off: VoiceState[] = [
+            "idle",
+            "listening",
+            "transcribing",
+            "submitting",
+            "waiting",
+        ];
+        for (const state of off) {
+            expect(watchBargeIn(state)).toBe(false);
+        }
+    });
+
+    it("does not change across the responding → speaking step", () => {
+        // The client keys its arming effect on this value, so equal values mean
+        // one microphone open per window rather than a re-arm mid-turn.
+        expect(watchBargeIn("responding")).toBe(watchBargeIn("speaking"));
+    });
+
+    it("stays armed through the reply's audio tail (#114)", () => {
+        // `responseEnded` fires on the turn's `done` frame; the player is
+        // still speaking for seconds afterwards.
+        expect(watchBargeIn("idle", true)).toBe(true);
+        expect(watchBargeIn("idle", false)).toBe(false);
+        // …and the tail alone arms it, with no response state involved.
+        expect(watchBargeIn("listening", true)).toBe(true);
     });
 });

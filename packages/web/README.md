@@ -234,15 +234,30 @@ same request the built client makes. The mic worklet stays relative:
 
 ### Barge-in (#84 P6)
 
-You can talk over J.A.R.V.I.S. while the reply is playing. While the
-lifecycle is `speaking`, the view arms the voice controller's barge-in
+You can talk over J.A.R.V.I.S. while the reply is streaming or playing.
+While a voice response is in flight (`responding` onward, so a tool turn is
+covered from the tool call rather than only from its first audio frame,
+#114) or the player still has audio scheduled, the view arms the voice
+controller's barge-in
 watch — a VAD-only mic session (echo-cancelled track, the browser's AEC
 keeps JARVIS's own voice out) with a 2-second look-back ring. Sustained
 speech (~300 ms) triggers once: local playback stops immediately, the
 `cancel` frame drops the in-flight turn (the server ends it with `done` —
 text already streamed stays in history), and a listening session opens
 seeded with the look-back, so the interruption's opening words are
-transcribed whole. The composer's send button becomes a **stop button**
+transcribed whole. A **wake match** pre-empts the same way: the detector can
+only fire once the previous turn has settled — for a spoken reply that is
+_after_ its `done` frame, while the audio is still playing — so the cue also
+stops playback and cancels the turn, otherwise the old answer talks over the
+new command and the new answer's audio queues behind it (#114). Note the
+ordering when both listeners are live — the reply's tail with wake armed:
+the energy VAD sustains (120 ms onset + 300 ms) well before the detector
+finishes a phrase, so an interruption that _is_ the wake phrase is routed
+through the barge path (look-back replay, no phrase stripping) rather than
+opening a wake session. Both stop playback and open a session; only the
+routing differs, and stripping the phrase on the barge path too would be the
+way to converge them. The
+composer's send button becomes a **stop button**
 while a turn streams — the same cancel path, for typed turns too. Every
 step is opportunistic: without VAD support (no Web Audio) the watch stays
 off and the stop button still works.

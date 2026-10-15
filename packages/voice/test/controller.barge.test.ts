@@ -227,7 +227,9 @@ function makeHarness(): Harness {
 async function driveToSpeaking(harness: Harness): Promise<void> {
     const { controller, stt, vad, scheduler } = harness;
     controller.press();
-    await Promise.resolve();
+    // Drain the press's async start chain (several microtasks deep) rather
+    // than counting ticks: the session must be live before any event lands.
+    await settle();
     vad.emitSpeechStart();
     vad.emitSpeechEnd();
     scheduler.fireByMs(END_OF_SPEECH_MS);

@@ -97,6 +97,8 @@ interface Harness {
     core: VoiceCore;
     /** Submissions recorded, in order. */
     submitted: string[];
+    /** Debug log messages emitted, in order. */
+    logs: string[];
     /** Raw-vs-submitted traces recorded, in order (#121). */
     traces: Array<{ raw: string; submitted: string }>;
     /** Reject the next submission when set. */
@@ -128,6 +130,7 @@ function harness(options?: {
 }): Built {
     const stt = new FakeStt();
     const submitted: string[] = [];
+    const logs: string[] = [];
     const traces: Array<{ raw: string; submitted: string }> = [];
     const rejectNext = { value: false };
     let stopVadCalls = 0;
@@ -151,7 +154,9 @@ function harness(options?: {
         unschedule: (handle) => {
             timers.delete(handle as number);
         },
-        log: () => {},
+        log: (message) => {
+            logs.push(message);
+        },
         traceTranscript: (raw, submittedText) => {
             traces.push({ raw, submitted: submittedText });
         },
@@ -183,6 +188,7 @@ function harness(options?: {
         stt,
         core,
         submitted,
+        logs,
         traces,
         rejectNext,
         snapshot: () => snapshot,
@@ -298,6 +304,9 @@ describe("VoiceSession VAD-owned endpointing", () => {
         expect(h.snapshot().state).toBe("idle");
         expect(h.snapshot().error).toBeNull();
         expect(h.stt.cancelCalls).toBe(1);
+        // A dropped utterance is otherwise invisible: no status, no error
+        // banner, and (after a barge-in) no other trace (#114).
+        expect(h.logs.some((m) => m.includes("nothing recognized"))).toBe(true);
     });
 });
 

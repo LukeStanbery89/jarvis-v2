@@ -51,11 +51,18 @@ export class AudioPlayer {
     }
 
     /**
-     * The external-store snapshot: whether scheduled audio remains.
-     * Stable between changes, as `useSyncExternalStore` requires.
+     * The external-store snapshot: whether audio is scheduled *and* the
+     * context can actually play it.
+     *
+     * The state half is not cosmetic. A suspended (or Safari-interrupted)
+     * context freezes its clock, so a scheduled source never reaches its end
+     * and `onended` never fires — the "scheduled" flag alone would then latch
+     * true forever. The chat view keys the barge-in watch on this value
+     * (#114), so a stuck `true` would leave the watch armed indefinitely and
+     * let ambient speech open a session.
      */
     getSnapshot(): boolean {
-        return this.speaking;
+        return this.speaking && this.ctx?.state === "running";
     }
 
     /**
@@ -78,7 +85,10 @@ export class AudioPlayer {
     unlock(): void {
         const ctx = this.ensureContext();
         if (ctx !== null && ctx.state === "suspended") {
-            void ctx.resume();
+            // The snapshot flips as soon as the context runs; announce it, so
+            // a store keyed on it (the barge-in watch's window, #114) sees the
+            // audio it was told about.
+            void ctx.resume().then(() => this.notify());
         }
     }
 
@@ -187,9 +197,14 @@ export class AudioPlayer {
     private setSpeaking(next: boolean): void {
         if (this.speaking !== next) {
             this.speaking = next;
-            for (const listener of this.listeners) {
-                listener();
-            }
+            this.notify();
+        }
+    }
+
+    /** Notifies every store subscriber of a snapshot change. */
+    private notify(): void {
+        for (const listener of this.listeners) {
+            listener();
         }
     }
 }

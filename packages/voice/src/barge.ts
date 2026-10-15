@@ -1,7 +1,7 @@
 /**
  * Barge-in watch (issue #84, phase 6; extracted in #110).
  *
- * A VAD-only session that listens while J.A.R.V.I.S. speaks and, on
+ * A VAD-only session that listens while the reply can be heard and, on
  * sustained speech, hands the client a look-back window and asks the
  * controller to open a recognition session seeded with it:
  *
@@ -50,6 +50,23 @@ export const BARGE_IN_SPEECH_MS = 300;
  */
 export const BARGE_IN_LOOKBACK_MS = 2000;
 
+/**
+ * Delay before re-attempting an arm the VAD refused (#114). A refused arm
+ * used to leave the watch off for the rest of the turn — silently, so a
+ * single busy moment disabled barge-in for the whole answer. The refusal is
+ * normally a recognition session still releasing the VAD, so one short retry
+ * window is enough; the attempt count is bounded by
+ * {@link BARGE_IN_ARM_ATTEMPTS}.
+ */
+export const BARGE_IN_RETRY_MS = 250;
+
+/**
+ * Arm attempts (the first call plus its retries) before the watch gives up
+ * for that turn (#114). Bounded so a VAD that is permanently unusable cannot
+ * schedule work for the whole response; the failure is logged either way.
+ */
+export const BARGE_IN_ARM_ATTEMPTS = 4;
+
 /** Construction options for {@link BargeWatch}. */
 export interface BargeWatchOptions {
     /**
@@ -73,6 +90,11 @@ export interface BargeWatchOptions {
  * Owns the barge-in watch: its VAD sampling, its look-back ring, its
  * sustained-speech timer, and the start/stop interlock the recognition
  * session's `begin()` waits on.
+ *
+ * Arms and disarms are logged through `core.log` (with the lifecycle state at
+ * arm time), so a client can see *when* the watch came up relative to playback
+ * — the question behind #114, where the watch used to arm only once audio had
+ * started and an utterance said into the silence before it was never heard.
  */
 export class BargeWatch {
     private watchActive = false;
@@ -95,6 +117,14 @@ export class BargeWatch {
      * 3). Mirrors `openWakeWord.ts`'s `initSeq`.
      */
     private seq = 0;
+    /**
+     * Arm attempts made for the current watch session, against
+     * {@link BARGE_IN_ARM_ATTEMPTS} (#114). Reset by a successful arm and by
+     * `stop()`/`dispose()`.
+     */
+    private armAttempts = 0;
+    /** The pending re-attempt after a refused arm, if any (#114). */
+    private retryTimer: unknown = null;
 
     /**
      * @param core - The shared context (vad, scheduler, log, stopVad).
@@ -140,14 +170,30 @@ export class BargeWatch {
         }
         const seq = ++this.seq;
         this.chunks = [];
+        this.armAttempts += 1;
         try {
             await this.core.vad.start(this.callbacks());
         } catch (err) {
-            // VAD busy with a session, or the runtime lost the mic: the
-            // watch stays off; playback and the turn are unaffected. A
-            // silent barge-in is exactly the kind of failure a user
-            // reports as "barge-in doesn't work" — leave a trace.
-            this.core.log("barge-in watch failed to arm; staying off", err);
+            // A stop() (or dispose) that landed while the VAD was arming
+            // supersedes this attempt: report nothing and schedule nothing
+            // (#114) — otherwise the log claims a retry that will never run.
+            if (seq !== this.seq || this.core.isDisposed()) {
+                return;
+            }
+            // VAD busy with a session, or the runtime lost the mic. A silent
+            // barge-in is exactly the kind of failure a user reports as
+            // "barge-in doesn't work" — leave a trace, and re-attempt rather
+            // than leaving the watch off for the rest of the turn (#114).
+            const willRetry = this.armAttempts < BARGE_IN_ARM_ATTEMPTS;
+            this.core.log(
+                willRetry
+                    ? "barge-in watch failed to arm; retrying"
+                    : "barge-in watch failed to arm; giving up",
+                err,
+            );
+            if (willRetry) {
+                this.scheduleRetry(seq);
+            }
             return;
         }
         if (seq !== this.seq || this.core.isDisposed()) {
@@ -159,7 +205,11 @@ export class BargeWatch {
             await this.releaseVad();
             return;
         }
+        this.armAttempts = 0;
         this.watchActive = true;
+        this.core.log(
+            `barge-in watch armed (state=${this.core.snapshot().state})`,
+        );
     }
 
     /**
@@ -175,11 +225,14 @@ export class BargeWatch {
         // marking the watch active (#104, race 3).
         this.seq++;
         this.cancelSpeechTimer();
+        this.cancelRetry();
+        this.armAttempts = 0;
         this.chunks = [];
         if (!this.watchActive) {
             return;
         }
         this.watchActive = false;
+        this.core.log("barge-in watch disarmed");
         await this.releaseVad();
     }
 
@@ -191,9 +244,37 @@ export class BargeWatch {
     dispose(): void {
         this.seq++;
         this.cancelSpeechTimer();
+        this.cancelRetry();
+        this.armAttempts = 0;
         this.chunks = [];
         this.watchActive = false;
         this.stoppingPromise = null;
+    }
+
+    /**
+     * Schedules one re-attempt after a refused arm (#114). The generation
+     * check keeps a `stop()` (or `dispose()`) arriving in the meantime from
+     * being overridden by a stale retry.
+     *
+     * @param seq - The generation of the attempt that was refused.
+     */
+    private scheduleRetry(seq: number): void {
+        this.cancelRetry();
+        this.retryTimer = this.core.schedule(() => {
+            this.retryTimer = null;
+            if (seq !== this.seq || this.core.isDisposed()) {
+                return;
+            }
+            void this.start();
+        }, BARGE_IN_RETRY_MS);
+    }
+
+    /** Cancels a pending arm re-attempt, if any (#114). */
+    private cancelRetry(): void {
+        if (this.retryTimer !== null) {
+            this.core.unschedule(this.retryTimer);
+            this.retryTimer = null;
+        }
     }
 
     /**

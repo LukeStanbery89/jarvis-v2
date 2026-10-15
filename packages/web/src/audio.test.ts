@@ -27,9 +27,13 @@ function makeFakeContext() {
             return currentTime;
         },
         state: "running",
+        dest: {},
         destination: {},
         resume: async () => {
             resumed += 1;
+            // A real resume moves the context to `running`; the player's
+            // snapshot reads that (#114).
+            (ctx as { state: string }).state = "running";
         },
         close: async () => {
             closed += 1;
@@ -111,6 +115,25 @@ describe("AudioPlayer", () => {
         expect(player.getSnapshot()).toBe(true);
         fake.sources[1]?.onended?.();
         expect(player.getSnapshot()).toBe(false);
+    });
+
+    it("reports not-speaking while the context cannot play (#114)", () => {
+        const fake = makeFakeContext();
+        const player = new AudioPlayer({ createContext: () => fake.ctx });
+        // A suspended context freezes its clock, so the scheduled source never
+        // ends and `onended` never fires — without the state check the flag
+        // would latch true forever and keep the barge watch armed.
+        (fake.ctx as { state: string }).state = "suspended";
+        player.play(new Float32Array(24_000));
+        expect(player.getSnapshot()).toBe(false);
+        // Resuming announces the flip: the audio it warned about is now real.
+        const seen: boolean[] = [];
+        player.subscribe(() => seen.push(player.getSnapshot()));
+        player.unlock();
+        return Promise.resolve().then(() => {
+            expect(seen).toEqual([true]);
+            expect(player.getSnapshot()).toBe(true);
+        });
     });
 
     it("stop() drops the queue immediately", () => {

@@ -535,6 +535,86 @@ describe("turn cancellation (#84 P6)", () => {
         await expect(next).resolves.toBeUndefined();
     });
 
+    it("drops a cancelled turn's audio even when the cancel beat its audioStart (#114)", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => audioChunks.push(pcm),
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("hi", "s1");
+        // The barge fires while the turn is still text-only: the server has
+        // sent no `audioStart` yet, so there is no generation to drop. This is
+        // the "interrupted before it started speaking" window, and the turn's
+        // audio is already on the wire.
+        harness.client.cancelTurn();
+        socket.receive({
+            audioStart: {
+                generationId: 7,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        deliverBinary(socket, [0.5, -0.5]);
+        deliverBinary(socket, [0.25, -0.25]);
+        expect(audioChunks).toHaveLength(0);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+    });
+
+    it("drops the cancelled turn's audio that arrives behind its done (#114)", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => audioChunks.push(pcm),
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("hi", "s1");
+        harness.client.cancelTurn();
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+
+        // The span and its chunks were already in flight behind the terminal
+        // frame, so the (streaming-gated) `audioStart` is never recorded —
+        // only the latched turn can drop what follows.
+        socket.receive({
+            audioStart: {
+                generationId: 9,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        deliverBinary(socket, [0.5, -0.5]);
+        expect(audioChunks).toHaveLength(0);
+    });
+
+    it("plays the next turn's audio after a cancel that beat its audioStart (#114)", async () => {
+        const audioChunks: Float32Array[] = [];
+        const harness = makeClient("tok", {
+            onAudio: (pcm) => audioChunks.push(pcm),
+        });
+        const socket = connected(harness);
+        const cancelled = harness.client.prompt("hi", "s1");
+        harness.client.cancelTurn();
+        socket.receive({ done: true });
+        await expect(cancelled).resolves.toBeUndefined();
+
+        // The latch is per turn: the replacement turn's span plays normally.
+        const next = harness.client.prompt("and now?", "s1");
+        socket.receive({
+            audioStart: {
+                generationId: 8,
+                format: "pcm_s16le",
+                sampleRate: 24000,
+                channels: 1,
+            },
+        });
+        deliverBinary(socket, [0.5, -0.5]);
+        expect(audioChunks).toHaveLength(1);
+        socket.receive({ done: true });
+        await expect(next).resolves.toBeUndefined();
+    });
+
     it("cancelTurn with no turn in flight sends nothing", () => {
         const harness = makeClient("tok");
         connected(harness);

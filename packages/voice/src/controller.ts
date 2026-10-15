@@ -59,12 +59,13 @@
  * have the wake phrase stripped (`stripWakePhrase`) as a safety net before
  * display or submission.
  *
- * Barge-in (phase 6) — `startBargeWatch()` arms a VAD-only watch while
- * J.A.R.V.I.S. speaks; sustained speech triggers {@link VoiceControllerOptions.onBargeIn}
+ * Barge-in (phase 6) — `startBargeWatch()` arms a VAD-only watch for the
+ * reply (from its first response frame through its audio tail, #114);
+ * sustained speech triggers {@link VoiceControllerOptions.onBargeIn}
  * once and opens a recognition session seeded with the ringed look-back:
  *
  * ```text
- * speaking ──► bargeWatch.start ──► vad.start (watch callbacks + audio tap)
+ * responding ──► bargeWatch.start ──► vad.start (watch callbacks + audio tap)
  *     user talks ──► ring pre-trigger audio (BARGE_IN_LOOKBACK_MS)
  *     sustained speech (BARGE_IN_SPEECH_MS) ──► BargeWatch trigger
  *         ──► onBargeIn (client stops playback, cancels the turn)
@@ -181,7 +182,7 @@ export interface VoiceControllerOptions {
     readonly onWakeCue?: () => void | Promise<void>;
     /**
      * The barge-in trigger (#84 P6): fires once, when the barge watch hears
-     * sustained speech while J.A.R.V.I.S. speaks. The client stops local
+     * sustained speech while the reply can be heard. The client stops local
      * playback and cancels the in-flight turn (the server ends it with
      * `done`); the controller then opens a recognition session seeded with
      * the look-back window. A thrown/rejected callback does not stop the
@@ -234,9 +235,9 @@ export class VoiceController {
      */
     private readonly core: VoiceCore;
     /**
-     * The barge-in watch (#84 P6) — a VAD-only session that lives exactly as
-     * long as J.A.R.V.I.S. is speaking; its VAD use and a recognition
-     * session's are mutually exclusive.
+     * The barge-in watch (#84 P6) — a VAD-only session armed for as long as
+     * the reply can be heard (from `responding` through its audio tail,
+     * #114); its VAD use and a recognition session's are mutually exclusive.
      */
     private readonly bargeWatch: BargeWatch;
     /**
@@ -414,11 +415,15 @@ export class VoiceController {
 
     /**
      * Arms the barge-in watch (#84 P6): a VAD-only session that listens
-     * while J.A.R.V.I.S. speaks and triggers {@link VoiceControllerOptions.onBargeIn}
+     * while J.A.R.V.I.S.'s response streams and plays, and triggers
+     * {@link VoiceControllerOptions.onBargeIn}
      * once it hears sustained speech (`BARGE_IN_SPEECH_MS`). The watch
      * owns the VAD while armed, so a recognition session cannot start under
-     * it — arm it only for the span of playback, and disarm after (the chat
-     * view keys both on its `speaking` state).
+     * it — arm it for the whole response and hold it until the reply's audio
+     * has drained, since that audio outlives the turn's `done` frame (the chat
+     * view keys it on the response being in flight — `responding` onward — or
+     * on the player still speaking, so a tool turn is covered before its first
+     * audio frame exists and the tail after the turn is covered too — #114).
      *
      * Silent no-op when there is no VAD, the controller is disposed, or the
      * watch is already armed; when the VAD is busy (a recognition session is
@@ -495,16 +500,17 @@ export class VoiceController {
         fromWake?: boolean;
         feed?: { pcm: Float32Array; sampleRate: number };
     } = {}): Promise<void> {
-        if (this.bargeWatch.active) {
-            await this.bargeWatch.stop();
-        } else {
-            const stopping = this.bargeWatch.stopping();
-            if (stopping !== null) {
-                // The watch's VAD release is still settling (a barge just
-                // fired): wait it out so the session's track is never torn
-                // down by the watch's late cleanup.
-                await stopping;
-            }
+        // Always stop the watch: an *active* one must release the VAD, and an
+        // armed-never watch may still have a pending re-attempt (#114) that
+        // would otherwise keep firing at a VAD this session now owns. `stop()`
+        // is idempotent and cancels that timer too.
+        await this.bargeWatch.stop();
+        const stopping = this.bargeWatch.stopping();
+        if (stopping !== null) {
+            // The watch's VAD release is still settling (a barge just fired):
+            // wait it out so the session's track is never torn down by the
+            // watch's late cleanup.
+            await stopping;
         }
         // The reducer ignores `activate` while a session is already
         // mid-flight (listening/transcribing/submitting). If it did, this
