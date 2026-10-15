@@ -7,14 +7,27 @@
  * pin that order, not either engine's internals.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createOpenWakeWord } from "@lukestanbery/jarvis-voice";
 import {
     createStt,
     createWakeStt,
+    createWakeWord,
     probeWakeSupport,
     readWakePref,
     wakeAssetBaseUrl,
+    wakeWasmPath,
     writeWakePref,
 } from "./voice";
+
+// The detector's *options* are unreachable in this node environment
+// (createOpenWakeWord returns null before it uses them), so the seam is
+// mocked to observe what `createWakeWord` actually passes — the call site is
+// what #123 broke. Everything else stays real.
+vi.mock("@lukestanbery/jarvis-voice", async (importOriginal) => {
+    const actual =
+        await importOriginal<typeof import("@lukestanbery/jarvis-voice")>();
+    return { ...actual, createOpenWakeWord: vi.fn(() => null) };
+});
 
 /** A constructor double sufficient for the Web Speech availability gate. */
 class FakeRecognition {}
@@ -22,8 +35,15 @@ class FakeRecognition {}
 /** A constructor double sufficient for the WASM engine's AudioContext gate. */
 class FakeAudioContext {}
 
+// The dev server serves the staged assets from the page's own origin (Vite
+// serves `publicDir` under `base`), which is the case #123 fixes. The `/web/`
+// path matches production; the unit tests below pass an explicit base, so the
+// origin's own path never matters.
+const DEV_ORIGIN = "http://localhost:5173/web/";
+
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.clearAllMocks();
 });
 
 /** Raw Node is a support vacuum: gate both engines off. */
@@ -108,6 +128,61 @@ describe("wakeAssetBaseUrl", () => {
         expect(wakeAssetBaseUrl("https://jarvis.local/web/")).toBe(
             "https://jarvis.local/web/ort/",
         );
+    });
+});
+
+describe("wakeWasmPath", () => {
+    it("resolves the staged directory against the page origin", () => {
+        expect(wakeWasmPath("/web/ort/", DEV_ORIGIN)).toBe(
+            "http://localhost:5173/web/ort/",
+        );
+    });
+
+    it("never returns a document-relative path", () => {
+        // The load-bearing property. Vite's dev server rewrites ORT's
+        // non-analyzable `import(<url>)` to append `?import`, but its
+        // `__vite__injectQuery` helper returns any specifier that does not
+        // start with "." or "/" untouched; a relative directory would be
+        // queried and then refused as a public/ asset (#123).
+        expect(wakeWasmPath("/web/ort/", DEV_ORIGIN).startsWith("/")).toBe(
+            false,
+        );
+    });
+
+    it("resolves a root-relative base against the origin, not its path", () => {
+        expect(wakeWasmPath("/web/ort/", "http://localhost:5173/other/")).toBe(
+            "http://localhost:5173/web/ort/",
+        );
+    });
+
+    it("leaves an already-absolute directory alone", () => {
+        expect(wakeWasmPath("https://jarvis.local/web/ort/", DEV_ORIGIN)).toBe(
+            "https://jarvis.local/web/ort/",
+        );
+    });
+});
+
+describe("createWakeWord", () => {
+    it("hands ORT an absolute directory and the worklet a relative one", () => {
+        // The wiring #123 broke: `wasmPath` must be origin-absolute, while the
+        // worklet URL stays document-relative, because
+        // `audioWorklet.addModule` is the one load the dev server never
+        // rewrites.
+        vi.stubGlobal("location", { href: DEV_ORIGIN });
+
+        createWakeWord();
+
+        const options = vi.mocked(createOpenWakeWord).mock.lastCall?.[0];
+        // Origin-absolute: that is the whole point — the dev server appends its
+        // `?import` query only to specifiers beginning with "." or "/". The
+        // expected value is built from `wakeAssetBaseUrl()`, which derives from
+        // Vite's `BASE_URL` — `/web/` under `vite.config.ts`, but `/` here,
+        // since `vitest.config.ts` sets no `base` for this node-env suite.
+        expect(options?.wasmPath).toBe(
+            `http://localhost:5173${wakeAssetBaseUrl()}`,
+        );
+        expect(options?.wasmPath?.startsWith("/")).toBe(false);
+        expect(options?.workletUrl?.startsWith("/")).toBe(true);
     });
 });
 

@@ -310,8 +310,8 @@ textarea::placeholder {
 }
 
 .attachment-thumb {
-    width: 2.2rem;
-    height: 2.2rem;
+    width: 10.2rem;
+    height: 10.2rem;
     object-fit: cover;
     border-radius: 4px;
     display: block;

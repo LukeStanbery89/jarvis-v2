@@ -115,6 +115,14 @@ export interface OpenWakeWordOptions {
      * its wasm relative to its bundle URL, which a `/web`-mounted SPA cannot
      * satisfy. Defaults to ORT's own resolution when omitted (works only
      * when the SPA can reach it).
+     *
+     * Pass an **origin-absolute** URL when the client is served by Vite's
+     * dev server: ORT loads the glue with a runtime `import(<url>)`, and
+     * `vite:import-analysis` appends `?import` to any such import whose
+     * specifier starts with `.` or `/`, after which the dev server refuses
+     * it — a `public/` file may not enter the module/transform pipeline
+     * (#123). Specifiers that start with neither are left untouched, so an
+     * absolute directory is served verbatim, as in a production build.
      */
     readonly wasmPath?: string;
     /** ORT worker threads. Defaults to 1 (openwakeword-web's recommendation). */
