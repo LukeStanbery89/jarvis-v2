@@ -371,11 +371,16 @@ session error.
 
 ## Barge-in watch (#84 P6)
 
-While J.A.R.V.I.S. speaks, `startBargeWatch()` arms a **VAD-only mic
-session** on the same `VadProvider` sessions use for endpointing — no STT,
-no transcript, no user toggle: the watch lives exactly as long as playback.
-The client calls it when the lifecycle enters `speaking` and
-`stopBargeWatch()` when it leaves. While armed, the watch taps the VAD's
+While J.A.R.V.I.S.'s response is streaming or playing, `startBargeWatch()`
+arms a **VAD-only mic session** on the same `VadProvider` sessions use for
+endpointing — no STT, no transcript, no user toggle: the watch lives as long
+as the response. The client arms it when the lifecycle enters `responding`
+(the response's first frame) and disarms it when the turn ends. Arming only
+at `speaking` left the window before the first audio frame with no
+microphone listener at all, and on a tool turn that window is the whole tool
+round trip — the server announces the call before running it — so an
+utterance said into that silence was never heard (#114). While armed, the
+watch taps the VAD's
 optional raw-audio callback (`VadCallbacks.onAudio` — the energy VAD
 delivers its analysis frames as a copy per tick) into a ring buffer capped
 at `BARGE_IN_LOOKBACK_MS` (2000), and arms a sustained-speech deadline of
@@ -401,6 +406,11 @@ quietly — a turn that plays fine is never disturbed by a failed
 interruption. Caveat: detection rides on the browser's echo cancellation
 (`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by
 the 300 ms sustain, not eliminated — hardware AEC is out of scope.
+
+**Traceability:** arming, disarming, the trigger, and an arm failure are all
+logged through the controller's `log` sink, so a client with debug on can see
+_when_ the watch came up relative to playback — the question #114 turned on
+(the `log` seam is described under "Notes for maintainers").
 
 **Traceability:** P0–P6 implementation history consolidated.
 

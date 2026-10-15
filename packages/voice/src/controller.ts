@@ -414,11 +414,13 @@ export class VoiceController {
 
     /**
      * Arms the barge-in watch (#84 P6): a VAD-only session that listens
-     * while J.A.R.V.I.S. speaks and triggers {@link VoiceControllerOptions.onBargeIn}
+     * while J.A.R.V.I.S.'s response streams and plays, and triggers
+     * {@link VoiceControllerOptions.onBargeIn}
      * once it hears sustained speech (`BARGE_IN_SPEECH_MS`). The watch
      * owns the VAD while armed, so a recognition session cannot start under
-     * it — arm it only for the span of playback, and disarm after (the chat
-     * view keys both on its `speaking` state).
+     * it — arm it for the whole response and disarm when the turn ends (the
+     * chat view keys it on the response being in flight, `responding` onward,
+     * so a tool turn is covered before its first audio frame exists — #114).
      *
      * Silent no-op when there is no VAD, the controller is disposed, or the
      * watch is already armed; when the VAD is busy (a recognition session is

@@ -110,6 +110,8 @@ interface Harness {
     fires: BargeInDetection[];
     feeds: Array<{ pcm: Float32Array; sampleRate: number } | undefined>;
     logged: unknown[];
+    /** The message half of every `core.log` call, in order. */
+    messages: string[];
     setDisposed(value: boolean): void;
 }
 
@@ -123,6 +125,7 @@ function makeHarness(options?: {
     const feeds: Array<{ pcm: Float32Array; sampleRate: number } | undefined> =
         [];
     const logged: unknown[] = [];
+    const messages: string[] = [];
     const disposed = { value: false };
     const core: VoiceCore = {
         snapshot: () => initialVoiceSnapshot,
@@ -130,7 +133,8 @@ function makeHarness(options?: {
         vad,
         schedule: scheduler.schedule,
         unschedule: scheduler.unschedule,
-        log: (_message, error) => {
+        log: (message, error) => {
+            messages.push(message);
             logged.push(error);
         },
         traceTranscript: () => {},
@@ -146,6 +150,7 @@ function makeHarness(options?: {
         fires,
         feeds,
         logged,
+        messages,
         setDisposed: (value) => {
             disposed.value = value;
         },
@@ -262,6 +267,18 @@ describe("BargeWatch", () => {
         await watch.start();
         expect(harness.vad.startCalls).toBe(0);
         expect(watch.active).toBe(false);
+    });
+
+    it("logs when it arms and when it disarms (#114)", async () => {
+        const harness = makeHarness();
+        const watch = makeWatch(harness, () => {});
+        await watch.start();
+        // The state travels with the arm log: #114's question is whether the
+        // watch came up before playback (responding) or only at audioStart
+        // (speaking).
+        expect(harness.messages).toContain("barge-in watch armed (state=idle)");
+        await watch.stop();
+        expect(harness.messages).toContain("barge-in watch disarmed");
     });
 
     it("logs and stays off when the VAD is busy", async () => {

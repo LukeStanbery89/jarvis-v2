@@ -73,6 +73,11 @@ export interface BargeWatchOptions {
  * Owns the barge-in watch: its VAD sampling, its look-back ring, its
  * sustained-speech timer, and the start/stop interlock the recognition
  * session's `begin()` waits on.
+ *
+ * Arms and disarms are logged through `core.log` (with the lifecycle state at
+ * arm time), so a client can see *when* the watch came up relative to playback
+ * — the question behind #114, where the watch used to arm only once audio had
+ * started and an utterance said into the silence before it was never heard.
  */
 export class BargeWatch {
     private watchActive = false;
@@ -160,6 +165,9 @@ export class BargeWatch {
             return;
         }
         this.watchActive = true;
+        this.core.log(
+            `barge-in watch armed (state=${this.core.snapshot().state})`,
+        );
     }
 
     /**
@@ -180,6 +188,7 @@ export class BargeWatch {
             return;
         }
         this.watchActive = false;
+        this.core.log("barge-in watch disarmed");
         await this.releaseVad();
     }
 

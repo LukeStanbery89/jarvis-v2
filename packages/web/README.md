@@ -234,8 +234,10 @@ same request the built client makes. The mic worklet stays relative:
 
 ### Barge-in (#84 P6)
 
-You can talk over J.A.R.V.I.S. while the reply is playing. While the
-lifecycle is `speaking`, the view arms the voice controller's barge-in
+You can talk over J.A.R.V.I.S. while the reply is streaming or playing.
+While a voice response is in flight (`responding` onward, so a tool turn is
+covered from the tool call rather than only from its first audio frame,
+#114), the view arms the voice controller's barge-in
 watch — a VAD-only mic session (echo-cancelled track, the browser's AEC
 keeps JARVIS's own voice out) with a 2-second look-back ring. Sustained
 speech (~300 ms) triggers once: local playback stops immediately, the
