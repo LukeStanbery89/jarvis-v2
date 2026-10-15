@@ -249,7 +249,15 @@ transcribed whole. A **wake match** pre-empts the same way: the detector can
 only fire once the previous turn has settled — for a spoken reply that is
 _after_ its `done` frame, while the audio is still playing — so the cue also
 stops playback and cancels the turn, otherwise the old answer talks over the
-new command and the new answer's audio queues behind it (#114). The composer's send button becomes a **stop button**
+new command and the new answer's audio queues behind it (#114). Note the
+ordering when both listeners are live — the reply's tail with wake armed:
+the energy VAD sustains (120 ms onset + 300 ms) well before the detector
+finishes a phrase, so an interruption that _is_ the wake phrase is routed
+through the barge path (look-back replay, no phrase stripping) rather than
+opening a wake session. Both stop playback and open a session; only the
+routing differs, and stripping the phrase on the barge path too would be the
+way to converge them. The
+composer's send button becomes a **stop button**
 while a turn streams — the same cancel path, for typed turns too. Every
 step is opportunistic: without VAD support (no Web Audio) the watch stays
 off and the stop button still works.

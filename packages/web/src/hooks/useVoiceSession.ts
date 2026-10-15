@@ -151,9 +151,12 @@ export function useVoiceSession(options: {
     onWakeCue(): void;
     onBargeIn(): void;
     /**
-     * Whether the player still has scheduled audio for the last reply
-     * (#114). The reply's audio outlives its `done` frame, so the barge
+     * Whether the player still has scheduled, audible audio for the last
+     * reply (#114). The reply's audio outlives its `done` frame, so the barge
      * watch stays armed on this even once the lifecycle is back to `idle`.
+     * The player reports `false` while its context cannot play (a suspended
+     * or interrupted `AudioContext` never lets its sources end), so this
+     * cannot latch true and hold the watch open indefinitely.
      */
     playbackActive?: boolean;
     engineAssets?: { workerUrl: string; wasmUrl: string };

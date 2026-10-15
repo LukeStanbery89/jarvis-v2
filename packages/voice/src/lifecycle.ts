@@ -56,7 +56,9 @@ import type { VoiceError } from "./types";
  *   to (or is in the process of) sending it as a prompt.
  * - `waiting` — the prompt was accepted; no response frames yet.
  * - `responding` — response frames are streaming (text, and audio if any).
- * - `speaking` — TTS audio is playing; barge-in is watched from here.
+ * - `speaking` — TTS audio is playing. The barge-in watch is armed from
+ *   `responding` through the reply's audio tail (#114), so it does not key
+ *   on this state alone.
  */
 export const VOICE_STATES = [
     "idle",

@@ -385,7 +385,7 @@ describe("engine failures", () => {
             submit: async () => {},
         });
         controller.press();
-        await Promise.resolve();
+        await drain();
         expect(controller.getSnapshot().state).toBe("idle");
         expect(controller.getSnapshot().error).toEqual({
             code: "permission-denied",

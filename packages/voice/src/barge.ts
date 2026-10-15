@@ -1,7 +1,7 @@
 /**
  * Barge-in watch (issue #84, phase 6; extracted in #110).
  *
- * A VAD-only session that listens while J.A.R.V.I.S. speaks and, on
+ * A VAD-only session that listens while the reply can be heard and, on
  * sustained speech, hands the client a look-back window and asks the
  * controller to open a recognition session seeded with it:
  *
@@ -174,6 +174,12 @@ export class BargeWatch {
         try {
             await this.core.vad.start(this.callbacks());
         } catch (err) {
+            // A stop() (or dispose) that landed while the VAD was arming
+            // supersedes this attempt: report nothing and schedule nothing
+            // (#114) — otherwise the log claims a retry that will never run.
+            if (seq !== this.seq || this.core.isDisposed()) {
+                return;
+            }
             // VAD busy with a session, or the runtime lost the mic. A silent
             // barge-in is exactly the kind of failure a user reports as
             // "barge-in doesn't work" — leave a trace, and re-attempt rather

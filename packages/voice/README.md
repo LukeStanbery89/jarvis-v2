@@ -30,8 +30,10 @@ storage:
   a wake session (so the command arrives on its own microphone), pre-warms the
   wake engine, and restarts the detector once a session lands `idle`.
 - `src/barge.ts` — `BargeWatch` + `BARGE_IN_*`: the VAD-only barge-in watch and
-  its look-back ring. `BargeInDetection` and the `BARGE_IN_*` constants are the
-  only public symbols from here.
+  its look-back ring. `BargeInDetection` and the two window constants
+  (`BARGE_IN_LOOKBACK_MS`, `BARGE_IN_SPEECH_MS`) are the public symbols from
+  here; the arm-retry knobs (`BARGE_IN_RETRY_MS`, `BARGE_IN_ARM_ATTEMPTS`,
+  #114) stay internal.
 - `src/errors.ts` — `toVoiceError`, the shared rejection normalizer.
 - `src/wav.ts` — a dependency-free WAV codec (`encodeWav`/`decodeWav`) used
   by the #121 corpus: the fixtures, the debug capture path, and the replay
@@ -414,10 +416,10 @@ interruption. Caveat: detection rides on the browser's echo cancellation
 (`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by
 the 300 ms sustain, not eliminated — hardware AEC is out of scope.
 
-**Traceability:** arming, disarming, the trigger, and an arm failure are all
-logged through the controller's `log` sink, so a client with debug on can see
-_when_ the watch came up relative to playback — the question #114 turned on
-(the `log` seam is described under "Notes for maintainers").
+Arming, disarming, the trigger, and an arm failure are all logged through the
+controller's `log` sink, so a client with debug on can see _when_ the watch
+came up relative to playback — the question #114 turned on (the `log` seam is
+described under "Notes for maintainers").
 
 **Traceability:** P0–P6 implementation history consolidated.
 
