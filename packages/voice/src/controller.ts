@@ -33,23 +33,31 @@
  * public snapshot, the mic-ownership seams, and the session's lifetime.
  *
  * Wake word (phase 4) — `enableWake()` arms the detector; a phrase match
- * with the session idle opens a wake session:
+ * with the session idle opens a wake session whose command arrives on the
+ * detector's own microphone (#121):
  *
  * ```text
  * enableWake ─ armed (snapshot.wakeArmed); wake engine's model pre-warmed
  *   "Hey JARVIS, …" ──► WakeManager.onMatch ──► begin({fromWake:true})
- *       onWakeCue ─► (beep)          ─► wakeStt.start({continuous})
- *                                     ─► wakeStt.feed(post-match audio)  (#121)
- *                                     ─► normal VAD session; transcripts stripped
- *   session lands idle ──► WakeManager.maybeReArm ──► detector re-armed
+ *       onWakeCue ─► (beep)   ─► wakeStt.start({source:"external"})
+ *                             ─► wakeStt.feed(<live detector frames>)
+ *                             ─► engine endpoints on silence; transcripts stripped
+ *   session lands idle ──► WakeManager.maybeReArm ──► detector restarted
  * ```
  *
- * The detector is disarmed for every session (it would otherwise keep a
- * second microphone live and could fire on the phrase mid-turn) and re-armed
- * when the session lands `idle`. Wake sessions transcribe through the
- * separate `wakeStt` engine — the local one, since it receives the entire
- * wake-during context — and their transcripts have the wake phrase stripped
- * (`stripWakePhrase`) before display or submission.
+ * A wake session is the one session that does **not** take over the
+ * microphone: the detector keeps capturing after the match, and every frame
+ * from then on is the command — never the phrase — fed straight into the wake
+ * engine running `{ source: "external" }` (no microphone of its own). That is
+ * what makes the session's audio phrase-free and contiguous by construction,
+ * and why a one-breath "Hey JARVIS what time is it" is captured whole: there
+ * is no second microphone opening late and nothing to splice. Press and
+ * barge sessions still disarm the detector for their duration.
+ *
+ * Wake sessions transcribe through the separate `wakeStt` engine — the local
+ * one, since the command is the user's live speech — and their transcripts
+ * have the wake phrase stripped (`stripWakePhrase`) as a safety net before
+ * display or submission.
  *
  * Barge-in (phase 6) — `startBargeWatch()` arms a VAD-only watch while
  * J.A.R.V.I.S. speaks; sustained speech triggers {@link VoiceControllerOptions.onBargeIn}
@@ -93,14 +101,14 @@ import type { BargeInDetection } from "./barge";
 import type { VoiceCore } from "./core";
 import { initialVoiceSnapshot, reduceVoice } from "./lifecycle";
 import type { VoiceSnapshot } from "./lifecycle";
-import { VoiceSession } from "./session";
+import { MAX_PENDING_COMMAND_SAMPLES, VoiceSession } from "./session";
 import { DEFAULT_WAKE_PHRASE, WakeManager } from "./wake";
 import type { SttProvider, VadProvider, WakeWordProvider } from "./types";
 
 /**
- * The rate the wake detector's buffer is captured at (the openWakeWord worklet
- * convention). A wake session's seed is mono audio at this rate; the engine
- * resamples it internally if its own capture runs at another rate.
+ * The wake detector's capture rate (the openWakeWord worklet convention). A
+ * wake session's engine runs microphone-free at this rate and consumes the
+ * detector's frames through `feed()` (issue #121).
  */
 const DETECTOR_SAMPLE_RATE = 16000;
 
@@ -238,6 +246,23 @@ export class VoiceController {
      * session on a match.
      */
     private readonly wakeManager: WakeManager;
+    /**
+     * Detector frames captured from a match until its wake session exists
+     * (#121), in order. The wake cue plays (and `begin()` awaits) between the
+     * two, so without this the command's opening would be dropped; bounded by
+     * {@link MAX_PENDING_COMMAND_SAMPLES}.
+     */
+    private pendingCommandAudio: Array<{
+        pcm: Float32Array;
+        sampleRate: number;
+    }> = [];
+    /** Sample count in {@link pendingCommandAudio}, for the bound. */
+    private pendingCommandSamples = 0;
+    /**
+     * Whether a wake session is between its match and its creation — the
+     * window in which detector frames must be held rather than dropped.
+     */
+    private wakeCommandOpen = false;
 
     /**
      * @param options - The engine, the submit seam, the optional VAD, and
@@ -279,6 +304,9 @@ export class VoiceController {
             wake: options.wake ?? null,
             wakeStt: options.wakeStt ?? null,
             onMatch: async () => {
+                // From here until the session exists, detector frames are the
+                // command's opening and must be held (#121).
+                this.wakeCommandOpen = true;
                 try {
                     await this.onWakeCue?.();
                 } catch {
@@ -287,6 +315,8 @@ export class VoiceController {
                 }
                 await this.begin({ fromWake: true });
             },
+            onCommandAudio: (pcm, sampleRate) =>
+                this.onCommandAudio(pcm, sampleRate),
         });
     }
 
@@ -425,6 +455,7 @@ export class VoiceController {
         this.bargeWatch.dispose();
         this.session?.dispose();
         this.session = null;
+        this.clearPendingCommandAudio();
         await this.stt.cancel();
         await this.stt.dispose?.();
         const wakeStt = this.wakeStt;
@@ -438,18 +469,20 @@ export class VoiceController {
     }
 
     /**
-     * Starts a session: opens it in the reducer, arms the VAD (its success
-     * decides whether this session runs continuous capture under the
-     * controller's endpointing), then arms the engine with callbacks tagged
-     * to the (captured) session id, so late deliveries after a
-     * re-activation are stale by construction. An armed wake detector is
-     * disarmed first, so the session owns the microphone and the wake phrase
-     * can't fire mid-listen — and an armed barge watch is stopped first, so
-     * the VAD is free.
+     * Starts a session: opens it in the reducer, arms the VAD for press/barge
+     * sessions (its success decides whether the session runs continuous
+     * capture under the controller's endpointing), then arms the engine with
+     * callbacks tagged to the (captured) session id, so late deliveries after
+     * a re-activation are stale by construction. An armed wake detector is
+     * disarmed first for press/barge sessions — so the session owns the
+     * microphone and the wake phrase can't fire mid-listen — and an armed
+     * barge watch is stopped first, so the VAD is free. A **wake** session is
+     * the exception: the detector keeps capturing and its frames become the
+     * session's audio (#121).
      *
-     * @param options - `fromWake` opens the session on the wake engine with
-     * wake-phrase stripping and seeds it from the detector's post-match audio
-     * (#121 — the command's opening, never the phrase). `feed` plays the same
+     * @param options - `fromWake` opens the session on the wake engine, in
+     * external-audio mode over the detector's live command frames, with
+     * wake-phrase stripping as a safety net (#121). `feed` plays the same
      * role for a barge-in session (#84 P6): the watch's pre-trigger audio, at
      * the watch's capture rate, on the primary engine.
      */
@@ -480,36 +513,45 @@ export class VoiceController {
         const beforeActivation = this.snapshot.sessionId;
         this.reduce({ type: "activate" });
         if (this.snapshot.sessionId === beforeActivation) {
+            if (fromWake === true) {
+                // The wake session never opened; stop holding the detector's
+                // frames for it (#121).
+                this.clearPendingCommandAudio();
+            }
             return;
         }
         const sessionId = this.snapshot.sessionId;
         const fromWakeSession = fromWake === true;
         const engine = fromWakeSession ? (this.wakeStt ?? this.stt) : this.stt;
-        // The seed for the session's engine, in recognition order. Explicit
-        // `feed` (the barge-in handoff) wins; a wake session drains the
-        // detector's post-match buffer — BEFORE `stop()` discards it — which
-        // holds the command's opening captured while this session was still
-        // starting. The buffer is emptied at the match, so the seed never
-        // contains the wake phrase (#121). A press never seeds (a stale buffer
-        // would inject phantom audio).
+        // The seed for the session's engine, in recognition order: the
+        // barge-in watch's ring (#84 P6) rides `start()` so it can never
+        // interleave with live audio. A wake session takes its audio live
+        // from the detector instead — held frames first, then every frame
+        // that follows (#121) — so it never seeds here.
         let replayPcm: Float32Array | null = null;
         let replayRate = DETECTOR_SAMPLE_RATE;
         if (feed !== undefined) {
             replayPcm = feed.pcm;
             replayRate = feed.sampleRate;
-        } else if (fromWakeSession) {
-            replayPcm = this.wakeManager.drainPostMatch();
         }
-        this.wakeManager.disarmForSession();
+        if (fromWakeSession) {
+            // Keep the detector capturing: its frames are the command (#121).
+            this.wakeManager.beginCommand();
+        } else {
+            this.wakeManager.disarmForSession();
+        }
         const session = new VoiceSession(this.core, {
             sessionId,
             engine,
             fromWake: fromWakeSession,
             wakePhrase: this.wakePhrase,
             submit: this.submit,
+            ...(fromWakeSession
+                ? { external: { sampleRate: DETECTOR_SAMPLE_RATE } }
+                : {}),
         });
         let vadArmed = false;
-        if (this.vad !== null) {
+        if (!fromWakeSession && this.vad !== null) {
             try {
                 await this.vad.start(session.vadCallbacks());
                 vadArmed = true;
@@ -526,13 +568,66 @@ export class VoiceController {
         }
         session.setVadOwned(vadArmed);
         // Assigned before the awaited start so a press arriving the instant
-        // the engine opens can route its flush through this session.
+        // the engine opens can route its flush through this session — and so
+        // the detector's frames landing from now on go straight to it.
         this.session = session;
+        // Hand over the frames the detector produced while this session was
+        // being created (the wake cue and `begin()`'s own awaits): the
+        // command's opening (#121). The session holds whatever arrives before
+        // its engine is up.
+        const held = this.pendingCommandAudio;
+        this.pendingCommandAudio = [];
+        this.pendingCommandSamples = 0;
+        this.wakeCommandOpen = false;
+        for (const chunk of held) {
+            session.pushCommandAudio(chunk.pcm, chunk.sampleRate);
+        }
         await session.start(
             replayPcm !== null
                 ? { pcm: replayPcm, sampleRate: replayRate }
                 : null,
         );
+    }
+
+    /**
+     * The detector's live post-match audio (#121). While a wake session is
+     * listening, frames go straight to it (the session holds any that arrive
+     * before its engine is up). In the window between the match and the
+     * session's creation — the wake cue, and `begin()`'s own awaits — there is
+     * no session yet, so the frames are held (bounded) here for it to start
+     * with; with no wake session opening, they are dropped, so a finished
+     * turn's tail can never become the next command's opening.
+     *
+     * @param pcm - Mono PCM samples normalized to `[-1, 1]`.
+     * @param sampleRate - The rate the detector captured `pcm` at.
+     */
+    private onCommandAudio(pcm: Float32Array, sampleRate: number): void {
+        const session = this.session;
+        if (session !== null && session.acceptsCommandAudio()) {
+            session.pushCommandAudio(pcm, sampleRate);
+            return;
+        }
+        if (!this.wakeCommandOpen) {
+            return;
+        }
+        this.pendingCommandAudio.push({ pcm, sampleRate });
+        this.pendingCommandSamples += pcm.length;
+        while (
+            this.pendingCommandSamples > MAX_PENDING_COMMAND_SAMPLES &&
+            this.pendingCommandAudio.length > 0
+        ) {
+            const dropped = this.pendingCommandAudio.shift();
+            if (dropped !== undefined) {
+                this.pendingCommandSamples -= dropped.pcm.length;
+            }
+        }
+    }
+
+    /** Drops any detector frames held for a wake session that never opened. */
+    private clearPendingCommandAudio(): void {
+        this.pendingCommandAudio = [];
+        this.pendingCommandSamples = 0;
+        this.wakeCommandOpen = false;
     }
 
     /**

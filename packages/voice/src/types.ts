@@ -110,14 +110,15 @@ export interface SttStartOptions {
      */
     readonly sampleRate?: number;
     /**
-     * Caller audio to recognize before live capture begins: the wake
-     * detector's post-match buffer (the command's opening, never the phrase,
-     * #121) or the barge-in watch's interrupted opening. Riding `start()` — instead
-     * of a post-start `feed()` call — guarantees the order: the engine's
-     * own microphone is not delivering until `start()` resolves, so the
-     * replay can never interleave out of order with already-live chunks
-     * (out-of-order audio garbles a streaming decoder). Engines that
-     * cannot take caller audio ignore it and start at the live mic.
+     * Caller audio to recognize before live capture begins: the barge-in
+     * watch's interrupted opening (#84 P6). Riding `start()` — instead of a
+     * post-start `feed()` call — guarantees the order: the engine's own
+     * microphone is not delivering until `start()` resolves, so the replay can
+     * never interleave out of order with already-live chunks (out-of-order
+     * audio garbles a streaming decoder). Engines that cannot take caller
+     * audio ignore it and start at the live mic. Wake sessions do **not** use
+     * this: their command audio arrives frame by frame through `feed()` from
+     * the detector's own microphone (#121).
      */
     readonly feed?: {
         readonly pcm: Float32Array;
@@ -148,13 +149,13 @@ export interface SttStartOptions {
  *   a wake word opens without the download/load stall. It never rejects the
  *   caller — a failure surfaces at the next `start()` instead.
  * - An optional `feed(pcm, sampleRate)` hands the engine raw mono PCM audio
- *   *without* opening the microphone (wake-word providers do exactly that).
- *   Implementations that capture from their own held mic reject or ignore
- *   it; those that take caller-supplied audio (the WASM engine backing wake
- *   sessions) accept it while `running`. It is the seam that replays the
- *   post-match buffer captured by a wake-word detector ("Hey JARVIS, turn on
- *   the lights") into a session that opened just after the phrase — the
- *   command's opening, never the phrase itself (issue #121).
+ *   *without* its own microphone: a wake session streams the detector's live
+ *   post-match frames through it (`source: "external"`, #121), and a barge-in
+ *   session replays its look-back ring. Implementations that capture from
+ *   their own held mic reject or ignore it; those that take caller-supplied
+ *   audio (the WASM engine backing wake sessions) accept it while `running`.
+ *   It is what lets "Hey JARVIS, turn on the lights" reach the recognizer with
+ *   the wake phrase excluded by construction — the audio starts at the match.
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
@@ -214,9 +215,9 @@ export interface SttProvider {
 
 /**
  * What a wake-word detector saw. The audio that *followed* the match — the
- * command's opening — is not carried here: it is taken from the detector at
- * session open (a wake session drains it before the detector stops), so the
- * detection itself stays a plain notification (#121).
+ * command — is not carried here: it streams through
+ * {@link WakeCallbacks.onCommandAudio} on the detector's own microphone, so
+ * the detection itself stays a plain notification (#121).
  */
 export interface WakeDetection {
     /** Engine-reported match strength, when the engine provides one. */
@@ -227,6 +228,24 @@ export interface WakeDetection {
 export interface WakeCallbacks {
     /** The wake phrase matched; the client should begin a voice session. */
     readonly onWake: (detection: WakeDetection) => void;
+    /**
+     * The detector's audio **from the match onward** — the command, streamed
+     * frame by frame on the same microphone that heard the phrase, until the
+     * detector is stopped (#121). Because nothing before the match is ever
+     * delivered and the frames are contiguous, the wake session's engine runs
+     * microphone-free over exactly this stream: the phrase cannot reach it and
+     * there is no handoff to a second microphone to splice or clip.
+     *
+     * Deliveries start with the first frame **after** the one that crossed
+     * the threshold (that frame is only predicted, never emitted) and continue
+     * until `stop()` — a detector that has fired stops predicting, so the
+     * stream is the command alone however long it takes the session to open.
+     * `sampleRate` is the detector's capture rate (16 kHz for openWakeWord).
+     *
+     * Optional: a detector with no streaming capture omits it, in which case a
+     * wake session falls back to its engine's own microphone and behavior.
+     */
+    readonly onCommandAudio?: (pcm: Float32Array, sampleRate: number) => void;
     /** The detector failed (e.g. unsupported on this hardware). */
     readonly onError?: (error: VoiceError) => void;
 }
@@ -245,23 +264,13 @@ export interface WakeWordProvider {
     /**
      * Arms detection.
      *
-     * @param callbacks - Where matches are delivered.
+     * @param callbacks - Where matches (and, when supported, the live
+     * command audio) are delivered.
      * @returns Resolves once the engine is listening for the wake phrase.
      */
     start(callbacks: WakeCallbacks): Promise<void>;
     /** Disarms detection; no callback fires after the returned promise resolves. */
     stop(): Promise<void>;
-    /**
-     * Hands back the audio captured **since the match** — 16 kHz mono float
-     * PCM, ending now — for the wake session to seed its engine with while it
-     * starts (#121). It never contains the wake phrase: an implementation
-     * empties its buffer the instant a match fires, so what remains is the
-     * command. Callers drain BEFORE `stop()`, which discards the buffer.
-     *
-     * Optional: detectors without a buffer (or with nothing captured) omit it
-     * or return `null`. The 16 kHz rate is the detector convention.
-     */
-    drainPostMatch?(): Float32Array | null;
 }
 
 /** Per-listener callbacks handed to {@link VadProvider.start}. */

@@ -1,15 +1,11 @@
 /**
- * Wake→command corpus baseline (issue #121, phase 1).
+ * Wake→command corpus baseline (issue #121).
  *
  * Drives the *real* controller over the committed fixtures and records what
- * the current design does with them — the executable form of the failure
- * report. Two facts it pins, both of which the redesign (#121 phase 2)
- * deliberately changes:
- *
- * 1. the wake session's engine is fed the **pre-match** audio as well as the
- *    command — the phrase rides into the recognizer, and
- * 2. the phrase stripper cannot repair a mangled phrase that arrives with an
- *    inserted token, so the junk reaches the prompt.
+ * the design does with them. The property it pins is the fix for #121: a wake
+ * session's engine is fed the detector's live post-match frames and **only**
+ * those — the wake phrase never arrives, and the audio is contiguous, so
+ * nothing is doubled and nothing is spliced.
  *
  * The fixtures are the same ones the browser harness replays through the real
  * engine; here a scripted transcript stands in for the ASR, because Node has
@@ -36,7 +32,6 @@ import {
     loadFixture,
     loadRealFixture,
     loadWav,
-    sliceMs,
     windowRms,
 } from "./support/corpus";
 
@@ -46,6 +41,8 @@ class FakeStt implements SttProvider {
     state: SttState = "idle";
     startCalls = 0;
     lastStartOptions: SttStartOptions | undefined;
+    /** Every `feed()` chunk the engine received, in order (#121 routing). */
+    fed: Array<{ pcm: Float32Array; sampleRate: number }> = [];
     private callbacks: SttCallbacks | null = null;
 
     constructor(id = "fake") {
@@ -75,6 +72,10 @@ class FakeStt implements SttProvider {
         return Promise.resolve();
     }
 
+    feed(pcm: Float32Array, sampleRate: number): void {
+        this.fed.push({ pcm, sampleRate });
+    }
+
     emitResult(text: string): void {
         this.callbacks?.onResult?.(text);
     }
@@ -84,12 +85,10 @@ class FakeStt implements SttProvider {
     }
 }
 
-/** Scripted wake detector; the test fires matches and supplies the ring. */
+/** Scripted wake detector; the test fires matches and streams frames. */
 class FakeWake implements WakeWordProvider {
     readonly id = "fake-wake";
     startCalls = 0;
-    /** The post-match ring `drainPostMatch()` returns (today's contract). */
-    drained: Float32Array | null = null;
     private callbacks: WakeCallbacks | null = null;
 
     async start(callbacks: WakeCallbacks): Promise<void> {
@@ -101,12 +100,13 @@ class FakeWake implements WakeWordProvider {
         this.callbacks = null;
     }
 
-    drainPostMatch(): Float32Array | null {
-        return this.drained;
-    }
-
     emitWake(detection: WakeDetection): void {
         this.callbacks?.onWake(detection);
+    }
+
+    /** One live post-match command frame, as the real detector streams it. */
+    emitCommandAudio(pcm: Float32Array, sampleRate = 16000): void {
+        this.callbacks?.onCommandAudio?.(pcm, sampleRate);
     }
 }
 
@@ -120,8 +120,8 @@ interface Harness {
 }
 
 /**
- * Builds a controller in engine-native mode (no VAD, so a final submits
- * immediately) and arms the (fake) wake detector.
+ * Builds a controller in engine-native mode (no VAD) and arms the (fake) wake
+ * detector.
  *
  * @returns The harness.
  */
@@ -155,13 +155,28 @@ async function drain(): Promise<void> {
     }
 }
 
+/** The engine's feed chunks as one contiguous buffer, in arrival order. */
+function fedAudio(stt: FakeStt): Float32Array {
+    const total = stt.fed.reduce((sum, chunk) => sum + chunk.pcm.length, 0);
+    const out = new Float32Array(total);
+    let offset = 0;
+    for (const chunk of stt.fed) {
+        out.set(chunk.pcm, offset);
+        offset += chunk.pcm.length;
+    }
+    return out;
+}
+
+/** One 1280-sample detector frame (80 ms at 16 kHz). */
+const FRAME_SAMPLES = 1280;
+
 /**
- * Opens a wake session from a fixture the way the provider now behaves: the
- * detection carries no audio, and the buffer drained at session open holds
- * only what followed the match (#121).
+ * Opens a wake session from a fixture the way the provider behaves: a match
+ * fires, then the detector streams the audio that follows — and only that —
+ * frame by frame (#121).
  *
  * @param h - The harness.
- * @param audio - The decoded fixture to replay.
+ * @param audio - The decoded fixture.
  * @param matchMs - The time the wake phrase was detected.
  */
 async function openFromCorpus(
@@ -169,9 +184,19 @@ async function openFromCorpus(
     audio: WavAudio,
     matchMs: number,
 ): Promise<void> {
-    const totalMs = (audio.pcm.length / audio.sampleRate) * 1000;
-    h.wake.drained = sliceMs(audio, matchMs, totalMs);
+    const from = Math.round((matchMs / 1000) * audio.sampleRate);
+    const tail = audio.pcm.slice(from);
     h.wake.emitWake({ confidence: 0.9 });
+    for (let i = 0; i < tail.length; i += FRAME_SAMPLES) {
+        h.wake.emitCommandAudio(
+            tail.subarray(i, i + FRAME_SAMPLES),
+            audio.sampleRate,
+        );
+        if (i === 0) {
+            // Let the session open so the remaining frames take the live path.
+            await drain();
+        }
+    }
     await drain();
 }
 
@@ -185,21 +210,25 @@ describe("wake corpus fixtures", () => {
     });
 });
 
-describe("wake corpus — the seed is post-match audio (#121)", () => {
+describe("wake corpus — the engine hears post-match audio only (#121)", () => {
     it("never feeds the phrase to the wake engine", async () => {
         const h = await makeHarness();
         const audio = loadFixture("pause-then-command");
         const matchMs = 900;
         await openFromCorpus(h, audio, matchMs);
-        const feed = h.wakeStt.lastStartOptions?.feed;
-        expect(feed?.sampleRate).toBe(16000);
-        // The seed starts at the match, so the phrase (0..900 ms) is behind
-        // it and the audio that reaches the engine is the pause plus the
-        // command — never "Hey Jarvis", and never anything twice.
+        // The engine runs microphone-free over the detector's frames, at the
+        // detector's 16 kHz convention.
+        expect(h.wakeStt.lastStartOptions).toEqual({
+            source: "external",
+            sampleRate: 16000,
+        });
+        // Everything fed is post-match and contiguous: the phrase (0..900 ms)
+        // is behind the first frame, and no sample is repeated or spliced.
         const matchSample = Math.round((matchMs / 1000) * audio.sampleRate);
-        expect(feed?.pcm.length).toBe(audio.pcm.length - matchSample);
-        expect(feed?.pcm[0]).toBe(audio.pcm[matchSample]);
-        expect(rmsOf(feed!.pcm, 0, 400)).toBeLessThan(0.01);
+        const fed = fedAudio(h.wakeStt);
+        expect(fed.length).toBe(audio.pcm.length - matchSample);
+        expect(fed[0]).toBe(audio.pcm[matchSample]);
+        expect(rmsOf(fed, 0, 400)).toBeLessThan(0.01);
     });
 
     it("shows why the strip is a net and not the fix", async () => {
@@ -289,24 +318,22 @@ describe("real corpus (#121) — the maintainer's recordings", () => {
         expect(findPause(loadRealFixture("command-only"))).toBeNull();
     });
 
-    it("keeps the phrase out of the replay on real audio", async () => {
+    it("keeps the phrase out of the command frames on real audio", async () => {
         // The defect this guards, measured on a real recording: the phrase is
-        // loud speech, so replaying the pre-match window hands the engine a
-        // phrase it must then be stripped out of the transcript. The seed now
-        // starts at the match, where the recording is still silent.
+        // loud speech, so any pre-match audio handed to the engine is a phrase
+        // it must then be stripped out of the transcript. The frames start at
+        // the match, where the recording is still silent.
         const h = await makeHarness();
         const audio = loadRealFixture("pause-then-command");
         const pause = findPause(audio);
         expect(pause).not.toBeNull();
         await openFromCorpus(h, audio, pause!.startMs);
-        const feed = h.wakeStt.lastStartOptions?.feed;
-        expect(feed?.sampleRate).toBe(16000);
-        // The phrase (everything before the pause) is not in the seed: its
-        // first frames are the pause's silence, not the phrase's speech.
-        // `findPause` guarantees the window at that boundary is below the
-        // speech floor, so the seed's whole first window is quiet.
-        expect(rmsOf(feed!.pcm, 0, 1600)).toBeLessThan(0.01);
-        expect(feed!.pcm.length).toBe(
+        const fed = fedAudio(h.wakeStt);
+        expect(h.wakeStt.lastStartOptions?.sampleRate).toBe(16000);
+        // The phrase (everything before the pause) is not in the frames: the
+        // first window is the pause's silence, not the phrase's speech.
+        expect(rmsOf(fed, 0, 1600)).toBeLessThan(0.01);
+        expect(fed.length).toBe(
             audio.pcm.length -
                 Math.round((pause!.startMs / 1000) * audio.sampleRate),
         );
@@ -329,27 +356,24 @@ describe("real corpus (#121) — the maintainer's recordings", () => {
         expect(rmsOf(slice, before, slice.length)).toBeGreaterThan(0.01);
     });
 
-    it("seeds the wake engine with post-match audio only, on real audio", async () => {
-        // The confirmed production defect (#121): joining the match-time
-        // window with the buffer drained at session open fed the phrase
-        // twice. The buffer is now emptied at the match, so the seed is the
-        // pause plus the command — phrase-free and contiguous.
+    it("streams post-match audio only, on real audio", async () => {
+        // The confirmed production defect (#121): the session's audio used to
+        // include the pre-match window (or be joined to it), so the phrase
+        // reached the engine — twice. The frames now start at the match, so
+        // the phrase is behind them and nothing is repeated.
         const h = await makeHarness();
         const audio = loadRealFixture("pause-then-command");
         const pause = findPause(audio);
         expect(pause).not.toBeNull();
         const matchMs = pause!.startMs;
-        const gapMs = 200;
-        const drained = sliceMs(audio, matchMs, matchMs + gapMs);
-        h.wake.drained = drained;
-        h.wake.emitWake({ confidence: 0.9 });
-        await drain();
-        const fed = h.wakeStt.lastStartOptions?.feed;
-        expect(fed?.pcm.length).toBe(drained.length);
-        expect(fed!.pcm[0]).toBe(drained[0]);
-        // The seed holds no speech at all here: the 200 ms after the match is
-        // the pause, so nothing the phrase left behind can reach the engine.
-        expect(rmsOf(fed!.pcm, 0, fed!.pcm.length)).toBeLessThan(0.01);
+        const matchSample = Math.round((matchMs / 1000) * audio.sampleRate);
+        await openFromCorpus(h, audio, matchMs);
+        const fed = fedAudio(h.wakeStt);
+        expect(fed.length).toBe(audio.pcm.length - matchSample);
+        expect(fed[0]).toBe(audio.pcm[matchSample]);
+        // The opening of the stream is the pause, not the phrase: nothing the
+        // phrase left behind can reach the engine.
+        expect(rmsOf(fed, 0, 1600)).toBeLessThan(0.01);
     });
 });
 

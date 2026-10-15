@@ -1,27 +1,37 @@
 /**
- * Wake-word manager (issue #84, phase 4; extracted in #110).
+ * Wake-word manager (issue #84, phase 4; extracted in #110; single-mic
+ * capture in #121).
  *
  * Owns the detector-armed state machine: arming the wake detector (and
- * pre-warming the wake engine's model alongside it), disarming it while a
- * session owns the microphone, and re-arming it once that session lands
- * `idle`:
+ * pre-warming the wake engine's model alongside it), keeping it live through a
+ * wake session so the command arrives on the detector's own microphone, and
+ * restarting it once that session lands `idle`:
  *
  * ```text
  * enable ──► armed (snapshot.wakeArmed); wake engine's model pre-warmed
  *   detector match ──► onMatch(detection)  (controller: cue + begin)
- *   session begins ──► disarmForSession ──► disarmed
- *   session lands idle ──► maybeReArm ──► armed again
+ *   session begins ──► beginCommand ──► disarmed, detector STILL capturing
+ *                       │   (the command streams to the session through
+ *                       │    onCommandAudio — same mic, no handoff, #121)
+ *   session lands idle ──► maybeReArm ──► stop + arm again
  * ```
  *
- * The detector (and its warm model) stays armed across sessions; it is only
- * disarmed while a session owns the mic. The user's on/off intent
- * (`wakeEnabled`) and the `pendingReArm`/`wakeBusy` interlocks are privates
- * here, so the controller just forwards toggle calls and pings
- * {@link WakeManager.maybeReArm} whenever a session reaches `idle`.
+ * A wake session deliberately does **not** stop the detector (that is
+ * {@link WakeManager.beginCommand} versus {@link WakeManager.disarmForSession},
+ * which press and barge sessions use): the frames that follow the match *are*
+ * the command, and the session's engine runs microphone-free over them. Only
+ * when the session is over is the microphone released, so the detector is
+ * restarted — not merely re-armed — by {@link WakeManager.maybeReArm}.
+ *
+ * The user's on/off intent (`wakeEnabled`) and the
+ * `pendingReArm`/`wakeBusy` interlocks are privates here, so the controller
+ * just forwards toggle calls and pings {@link WakeManager.maybeReArm} whenever
+ * a session reaches `idle`.
  *
  * The controller callback {@link WakeManagerOptions.onMatch} plays the cue
- * and opens the session; this manager never reaches back into the
- * controller's `begin()` itself.
+ * and opens the session, and {@link WakeManagerOptions.onCommandAudio} forwards
+ * the detector's live command frames to it; this manager never reaches back
+ * into the controller's `begin()` itself.
  */
 import type { VoiceCore } from "./core";
 import { toVoiceError } from "./errors";
@@ -46,6 +56,14 @@ export interface WakeManagerOptions {
      * back to `idle`.
      */
     readonly onMatch: (detection: WakeDetection) => void | Promise<void>;
+    /**
+     * The detector's live post-match audio (#121): every 16 kHz frame from the
+     * match onward, forwarded straight through so the wake session's engine
+     * hears the command on the detector's own microphone. The controller
+     * decides what to do with a frame that arrives before the session exists.
+     * Default: dropped.
+     */
+    readonly onCommandAudio?: (pcm: Float32Array, sampleRate: number) => void;
 }
 
 /**
@@ -58,11 +76,13 @@ export class WakeManager {
     private readonly onMatch: (
         detection: WakeDetection,
     ) => void | Promise<void>;
+    private readonly onCommandAudio:
+        ((pcm: Float32Array, sampleRate: number) => void) | undefined;
     /** Whether the user wants wake detection on (persisted by the client). */
     private wakeEnabled = false;
     /**
-     * Set when the detector was disarmed for a session (or a wake just
-     * opened one) and a successful return to `idle` should re-arm it. The
+     * Set when the detector was paused for a session (or a wake just
+     * opened one) and a successful return to `idle` should restart it. The
      * only trigger for {@link maybeReArm}; cleared by toggling.
      */
     private pendingReArm = false;
@@ -71,13 +91,15 @@ export class WakeManager {
 
     /**
      * @param core - The shared context the extracted machines compose over.
-     * @param options - The detector, the wake engine, and the match callback.
+     * @param options - The detector, the wake engine, and the match/audio
+     * callbacks.
      */
     constructor(core: VoiceCore, options: WakeManagerOptions) {
         this.core = core;
         this.wake = options.wake;
         this.wakeStt = options.wakeStt;
         this.onMatch = options.onMatch;
+        this.onCommandAudio = options.onCommandAudio;
     }
 
     /**
@@ -114,10 +136,10 @@ export class WakeManager {
     }
 
     /**
-     * Disarms an armed detector because a session is about to own the mic.
-     * Runs from `begin()` for every session (wake or press), and re-arms
-     * when that turn lands `idle` — so wake detection pauses while the
-     * microphone is live and resumes automatically once it is free.
+     * Pauses the detector because a **press or barge** session is about to own
+     * the microphone: it is stopped — one mic owner at a time — and re-armed
+     * when that turn lands `idle`. Runs from `begin()` for every non-wake
+     * session.
      */
     disarmForSession(): void {
         if (this.wake === null || !this.core.snapshot().wakeArmed) {
@@ -131,11 +153,31 @@ export class WakeManager {
     }
 
     /**
-     * Re-arms the detector after a session that interrupted it, when the
-     * user still wants wake detection. Fired whenever a session lands
-     * `idle`; the `pendingReArm` flag (set by {@link disarmForSession} or a
-     * failed wake open) makes it idempotent and stops it racing a manual
-     * toggle.
+     * Marks the start of a **wake** session (#121). The detector is *not*
+     * stopped: it keeps capturing on its own microphone so the whole command —
+     * not just the sliver captured before the session's engine was ready —
+     * reaches the session through {@link WakeManagerOptions.onCommandAudio}.
+     * Prediction is already paused (the detector fires once per arm), so the
+     * snapshot flips to disarmed while the microphone stays open; the
+     * microphone is released at the turn's end, when {@link maybeReArm}
+     * restarts the detector.
+     */
+    beginCommand(): void {
+        if (this.wake === null) {
+            return;
+        }
+        this.pendingReArm = this.wakeEnabled;
+        if (this.core.snapshot().wakeArmed) {
+            this.core.reduce({ type: "wakeDisarmed" });
+        }
+    }
+
+    /**
+     * Restarts the detector after a session that interrupted or paused it,
+     * when the user still wants wake detection. Fired whenever a session lands
+     * `idle`; the `pendingReArm` flag (set by {@link disarmForSession},
+     * {@link beginCommand}, or a failed wake open) makes it idempotent and
+     * stops it racing a manual toggle.
      */
     maybeReArm(): void {
         if (
@@ -153,19 +195,7 @@ export class WakeManager {
         ) {
             return;
         }
-        void this.arm();
-    }
-
-    /**
-     * Drains the audio the detector captured since the match (16 kHz mono
-     * float PCM), to seed the opening session — the command's beginning,
-     * never the phrase (#121). Callers must drain BEFORE the detector is
-     * stopped, which discards the buffer.
-     *
-     * @returns The post-match audio, or `null` when unsupported or empty.
-     */
-    drainPostMatch(): Float32Array | null {
-        return this.wake?.drainPostMatch?.() ?? null;
+        void this.restart();
     }
 
     /**
@@ -177,6 +207,29 @@ export class WakeManager {
         this.wakeEnabled = false;
         this.pendingReArm = false;
         await this.disarm();
+    }
+
+    /**
+     * Stops the detector and arms it again. A wake session leaves the detector
+     * capturing for the whole command (#121), so at this point it is usually
+     * still live — calling `start()` directly would reject as "already
+     * active". The stop also releases the microphone the finished session no
+     * longer needs.
+     */
+    private async restart(): Promise<void> {
+        const wake = this.wake;
+        if (wake === null || this.wakeBusy) {
+            return;
+        }
+        this.wakeBusy = true;
+        try {
+            await wake.stop().catch(() => {
+                // A detector that failed to stop is already dead.
+            });
+        } finally {
+            this.wakeBusy = false;
+        }
+        await this.arm();
     }
 
     /**
@@ -198,6 +251,8 @@ export class WakeManager {
         try {
             await this.wake.start({
                 onWake: (detection) => void this.handleMatch(detection),
+                onCommandAudio: (pcm, sampleRate) =>
+                    this.onCommandAudio?.(pcm, sampleRate),
                 onError: (error) =>
                     this.core.reduce({ type: "wakeFailed", error }),
             });
@@ -240,13 +295,13 @@ export class WakeManager {
     /**
      * A detector match. Ignored unless idle — a wake that lands mid-turn is
      * dropped; the detector stays armed until the turn settles, then
-     * re-arms. Hands the match to {@link WakeManagerOptions.onMatch} and, if
-     * that returned without the session opening, re-arms the pair so the
+     * restarts. Hands the match to {@link WakeManagerOptions.onMatch} and, if
+     * that returned without the session opening, restarts the pair so the
      * wake word works again without a manual toggle.
      *
      * @param detection - The detector's match, carrying the phrase's
-     * confidence; the session's seed comes from
-     * {@link WakeManager.drainPostMatch}.
+     * confidence; the command audio that follows arrives through
+     * {@link WakeManagerOptions.onCommandAudio}.
      */
     private async handleMatch(detection: WakeDetection): Promise<void> {
         if (

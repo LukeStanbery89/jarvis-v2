@@ -4,9 +4,10 @@
  * on-device through `openwakeword-web` (a faithful browser port of David
  * Scripka's openWakeWord). This is the "Hey JARVIS" wake word: `start()`
  * arms a 16 kHz monitor that fires once per phrase, and — because that same
- * microphone keeps running — the provider retains the audio that *follows*
- * the match, so the client can seed the recognition session with the command
- * without ever replaying the phrase (#121).
+ * microphone keeps running — the provider hands every frame **after** the
+ * match to `WakeCallbacks.onCommandAudio`, so the wake session's engine
+ * recognizes the command on the detector's own capture, with nothing spliced
+ * and the phrase never replayed (#121).
  *
  * The audio pipeline is openwakeword-web's: a same-origin AudioWorklet
  * (`mic-worklet.js`, copied into the web client's own `public/` because the
@@ -29,19 +30,15 @@
  *
  * Detection posture: prediction runs serialized (busy-drop — a frame that
  * arrives while a predict is in flight is skipped), the detector fires at
- * most once per `start()` (the `onWake` callback opens a session, which
- * stops the detector), and the retained buffer is 16 kHz mono float PCM
- * sized to `commandBufferMs` and emptied at every match — so it is strictly
- * post-match audio.
+ * most once per `start()` (the `onWake` callback opens a session, which then
+ * keeps the detector alive for the command), and after the match every frame
+ * flows straight out as command audio — the provider retains nothing.
  */
 import type { VoiceError, WakeCallbacks, WakeWordProvider } from "../types";
 import { micError, voiceError } from "./internal";
 
-/** The detector's capture rate; the retained buffer is mono at this rate. */
+/** The detector's capture rate; the command stream is mono at this rate. */
 const MIC_SAMPLE_RATE = 16000;
-
-/** One frame's worth of samples at the detector's 16 kHz rate (80 ms). */
-const FRAME_SAMPLES = 1280;
 
 /** Configuration for {@link createOpenWakeWord}. */
 export interface OpenWakeWordOptions {
@@ -61,16 +58,6 @@ export interface OpenWakeWordOptions {
      * convention.
      */
     readonly threshold?: number;
-    /**
-     * How much audio to retain **after** the match, to seed the session that
-     * opens a moment later. The detector keeps capturing while the wake cue
-     * plays and the engine starts, so the reading taken at session open covers
-     * the phrase's tail and whatever the user said in the gap — but never the
-     * audio *before* the match (the wake phrase itself), because the buffer is
-     * emptied the instant a match fires. Defaults to 2000 ms; the retained
-     * window snaps to whole 1280-sample frames.
-     */
-    readonly commandBufferMs?: number;
     /**
      * Base URL ORT fetches its wasm pair (`ort-wasm-simd-threaded.jsep.mjs`
      * + `.wasm`) from — a directory prefix ending in `/`, not a file URL.
@@ -164,67 +151,6 @@ const DEFAULT_WAKE_WORD = "hey_jarvis";
 /** The default detection threshold (the openWakeWord convention). */
 const DEFAULT_THRESHOLD = 0.5;
 
-/** The default post-match capture window; snapped to whole 1280 frames. */
-const DEFAULT_COMMAND_BUFFER_MS = 2000;
-
-/**
- * A fixed-capacity circular buffer of the detector's mono PCM at 16 kHz,
- * always holding the most recent `capacity` samples in chronological order.
- * The capacity is a whole number of 1280-sample frames, so a frame write
- * never straddles the ring's end. Emptied at every match, so what it holds
- * afterwards is strictly post-match audio (#121).
- */
-class PcmRingBuffer {
-    private readonly buffer: Float32Array;
-    private readonly capacity: number;
-    private writeHead = 0;
-    private filled = 0;
-
-    constructor(capacityMs: number) {
-        const frames = Math.max(
-            1,
-            Math.ceil(((capacityMs / 1000) * MIC_SAMPLE_RATE) / FRAME_SAMPLES),
-        );
-        this.capacity = frames * FRAME_SAMPLES;
-        this.buffer = new Float32Array(this.capacity);
-    }
-
-    /**
-     * Appends a frame of samples, evicting the oldest.
-     *
-     * @param samples - The frame's float PCM samples.
-     */
-    push(samples: Float32Array): void {
-        this.buffer.set(samples, this.writeHead);
-        this.writeHead = (this.writeHead + samples.length) % this.capacity;
-        this.filled = Math.min(this.filled + samples.length, this.capacity);
-    }
-
-    /**
-     * The retained audio in chronological order (a fresh copy).
-     *
-     * @returns The most recent samples, oldest first; shorter than
-     * `capacity` until the ring has filled.
-     */
-    snap(): Float32Array {
-        const out = new Float32Array(this.filled);
-        const start = this.writeHead - this.filled;
-        if (start < 0) {
-            out.set(this.buffer.subarray(this.capacity + start));
-            out.set(this.buffer.subarray(0, this.writeHead), -start);
-        } else {
-            out.set(this.buffer.subarray(start, this.writeHead));
-        }
-        return out;
-    }
-
-    /** Empties the buffer (a fresh `start()`, or a match). */
-    clear(): void {
-        this.writeHead = 0;
-        this.filled = 0;
-    }
-}
-
 /**
  * Whether the current runtime offers everything openwakeword-web needs:
  * a secure context (mic + AudioWorklet), Web Audio, and an audio worklet.
@@ -251,10 +177,10 @@ export function isWakeSupported(): boolean {
 /**
  * The on-device openWakeWord {@link WakeWordProvider}. One instance arms a
  * single detector; `start()` may be called again after `stop()` (a fresh
- * post-match buffer and detection pass). Detection results arrive through
- * {@link WakeCallbacks.onWake} carrying the match confidence and the
- * the match's timing; the session seed is taken from
- * {@link OpenWakeWordWakeProvider.drainPostMatch}.
+ * detection pass). A match arrives through {@link WakeCallbacks.onWake}
+ * carrying its confidence, and the command that follows streams through
+ * {@link WakeCallbacks.onCommandAudio} until the detector is stopped — the
+ * session's audio is taken live from the detector, never buffered here (#121).
  */
 export class OpenWakeWordWakeProvider implements WakeWordProvider {
     readonly id = "oww-browser";
@@ -266,7 +192,6 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
     private readonly numThreads: number;
     private readonly workletUrl: string | undefined;
     private readonly loadModule: OpenWakeWordLoader;
-    private readonly ring: PcmRingBuffer;
     /** Callbacks for the armed pass; dropped when detection stops. */
     private callbacks: WakeCallbacks | null = null;
     private instance: OpenWakeWordInstanceLike | null = null;
@@ -281,7 +206,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
     private initSeq = 0;
 
     /**
-     * @param options - Model URLs, threshold, and buffer tuning (see
+     * @param options - Model URLs and detector tuning (see
      * {@link OpenWakeWordOptions}).
      * @param loadModule - Module loader override for tests.
      */
@@ -296,9 +221,6 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         this.numThreads = options.numThreads ?? 1;
         this.workletUrl = options.workletUrl;
         this.loadModule = loadModule ?? defaultLoadModule;
-        this.ring = new PcmRingBuffer(
-            options.commandBufferMs ?? DEFAULT_COMMAND_BUFFER_MS,
-        );
     }
 
     /**
@@ -306,7 +228,8 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
      * (fetched from `baseUrl`), opens the 16 kHz worklet microphone, and
      * lets frames flow into the feature pipeline.
      *
-     * @param callbacks - Where matches are delivered.
+     * @param callbacks - Where matches — and, from the match onward, the
+     * live command audio — are delivered.
      * @returns Resolves once the detector is listening for the wake phrase.
      */
     async start(callbacks: WakeCallbacks): Promise<void> {
@@ -316,7 +239,6 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         this.callbacks = callbacks;
         this.fired = false;
         this.predicting = false;
-        this.ring.clear();
         const seq = ++this.initSeq;
         let instance: OpenWakeWordInstanceLike | null = null;
         let mic: MicrophoneLike | null = null;
@@ -368,8 +290,8 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
 
     /**
      * Disarms detection: the worklet mic is released, the models are
-     * reset, the post-match buffer is emptied, and no callback fires after
-     * the returned promise resolves.
+     * reset, the command stream ends, and no callback fires after the
+     * returned promise resolves.
      *
      * @returns Resolves once the detector has fully stopped.
      */
@@ -391,42 +313,32 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         } catch {
             // Models that will not reset are already gone.
         }
-        this.ring.clear();
         this.fired = false;
         this.predicting = false;
     }
 
     /**
-     * The post-match buffer's current contents, ending **now**. The buffer is
-     * emptied at the match (see {@link OpenWakeWordWakeProvider.onDetection}),
-     * so this is strictly the audio that followed the phrase — the command's
-     * opening, captured while the wake cue played and the recognition engine
-     * was still starting. Drained by the controller just before `stop()` and
-     * fed to the session's engine, which then continues from its own live
-     * input.
-     *
-     * @returns The post-match audio (16 kHz mono), or `null` when no match
-     *   fired this arm or nothing was captured after it.
-     */
-    drainPostMatch(): Float32Array | null {
-        if (!this.fired) {
-            return null;
-        }
-        const drained = this.ring.snap();
-        return drained.length > 0 ? drained : null;
-    }
-
-    /**
-     * One 16 kHz 16-bit PCM frame from the worklet: retained in the ring
-     * unconditionally, then driven through the detection pass — busy-dropped
-     * if a predict is already running, so a slow pass can never stack behind
-     * the live microphone.
+     * One 16 kHz 16-bit PCM frame from the worklet. After a match every frame
+     * is the command and is handed straight out through
+     * `WakeCallbacks.onCommandAudio` — the same microphone, nothing retained
+     * (#121). Before a match the frame is driven through the detection pass,
+     * busy-dropped if a predict is already running so a slow pass can never
+     * stack behind the live microphone.
      *
      * @param frame - The frame's int16 PCM samples.
      */
     private onFrame(frame: Int16Array): void {
-        this.ring.push(pcmFromInt16(frame));
-        if (!this.armed || this.fired || this.predicting) {
+        if (this.fired) {
+            // Post-match: the command, streamed live. The frame that crossed
+            // the threshold was predicted, never emitted, so not one sample of
+            // the phrase is in this stream.
+            this.callbacks?.onCommandAudio?.(
+                pcmFromInt16(frame),
+                MIC_SAMPLE_RATE,
+            );
+            return;
+        }
+        if (!this.armed || this.predicting) {
             return;
         }
         const instance = this.instance;
@@ -453,11 +365,11 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
 
     /**
      * The threshold was crossed mid-predict (fires synchronously inside
-     * {@link OpenWakeWordInstanceLike.predict}): record the match, **empty
-     * the buffer**, and deliver the detection to the armed callbacks. Emptying
-     * here is what makes the wake session's audio phrase-free by construction
-     * (#121): everything the buffer accumulates from now until the session
-     * opens is post-match audio — the command, never the phrase. Fires at most
+     * {@link OpenWakeWordInstanceLike.predict}): record the match and deliver
+     * the detection to the armed callbacks. No prediction runs from here on,
+     * so the frames that follow — the command — are streamed out rather than
+     * analyzed; because none of the phrase was ever emitted, the wake
+     * session's audio is phrase-free by construction (#121). Fires at most
      * once per start.
      *
      * @param event - The label and score that crossed the threshold.
@@ -467,14 +379,13 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             return;
         }
         this.fired = true;
-        this.ring.clear();
         this.callbacks?.onWake({ confidence: event.score });
     }
 
     /**
-     * Delivers a failure to the armed callbacks and stops the detector
-     * (subsequent frames keep filling the ring but never fire). Idempotent:
-     * the first failure wins.
+     * Delivers a failure to the armed callbacks and stops the detector (no
+     * callback — match or command audio — fires afterwards). Idempotent: the
+     * first failure wins.
      *
      * @param error - The failure to deliver.
      */
@@ -491,7 +402,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
 /**
  * Creates the on-device openWakeWord wake-word provider.
  *
- * @param options - Model URLs, threshold, and ring tuning (see
+ * @param options - Model URLs and detector tuning (see
  * {@link OpenWakeWordOptions}).
  * @param loadModule - Module loader override for tests.
  * @returns An `OpenWakeWordWakeProvider`, or `null` when the runtime lacks a
@@ -510,8 +421,7 @@ export function createOpenWakeWord(
 
 /**
  * Converts a 16-bit PCM frame to float PCM normalized to `[-1, 1]` — the
- * convention {@link OpenWakeWordOptions.commandBufferMs} capture and the STT
- * `feed()` seam share.
+ * convention the detector's command stream and the STT `feed()` seam share.
  *
  * @param int16 - The int16 PCM samples.
  * @returns The normalized float samples.

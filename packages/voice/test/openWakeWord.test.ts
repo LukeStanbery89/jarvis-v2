@@ -5,10 +5,11 @@
  * instance whose `fire()` the test uses to simulate the library detecting a
  * phrase mid-`predict`, and a fake `Microphone` whose frames the test pushes
  * by hand) — no network, no WASM, no AudioWorklet. Assertions cover the
- * post-match buffer (emptied at the match, so the phrase never reaches the
- * recognition engine — #121), busy-drop prediction serialization,
- * firing-at-most-once, clean start/stop cycles, and the injected-loader path
- * the browser client (and any future client) relies on.
+ * command stream (frames after the match, and only after it, are delivered —
+ * the phrase never reaches the recognition engine, #121), busy-drop
+ * prediction serialization, firing-at-most-once, clean start/stop cycles, and
+ * the injected-loader path the browser client (and any future client) relies
+ * on.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -163,6 +164,7 @@ function makeHarness(options: OpenWakeWordOptions = {}): Harness {
 /** A recording of the wake deliveries and errors on the armed pass. */
 interface WakeRecord {
     wakes: Array<{ confidence: number }>;
+    commandAudio: Array<{ pcm: Float32Array; sampleRate: number }>;
     errors: VoiceError[];
     callbacks: Parameters<OpenWakeWordWakeProvider["start"]>[0];
 }
@@ -170,14 +172,27 @@ interface WakeRecord {
 function makeRecord(): WakeRecord {
     const record: WakeRecord = {
         wakes: [],
+        commandAudio: [],
         errors: [],
         callbacks: {
             onWake: (detection) =>
                 record.wakes.push({ confidence: detection.confidence ?? 0 }),
+            onCommandAudio: (pcm, sampleRate) =>
+                record.commandAudio.push({ pcm, sampleRate }),
             onError: (error) => record.errors.push(error),
         },
     };
     return record;
+}
+
+/** The microphone the most recent `start()` opened. */
+function lastMic(module: FakeModule): FakeMicrophone {
+    return module.mics[module.mics.length - 1]!;
+}
+
+/** The instance the most recent `start()` created. */
+function lastInstance(module: FakeModule): FakeOww {
+    return module.instances[module.instances.length - 1]!;
 }
 
 /** A recognizable frame: content starts at `offset` (mod 32767). */
@@ -228,19 +243,36 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("reports the match, and empties the buffer with it", async () => {
-        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
+    it("reports the match and streams the command that follows", async () => {
+        const { module, provider } = makeHarness();
         const record = makeRecord();
         await provider.start(record.callbacks);
-        module.mics[0].emitFrame(frameWith(1));
-        module.mics[0].emitFrame(frameWith(2));
-        module.instances[0].fire("hey_jarvis", 0.92);
+        // Pre-match frames are the phrase: predicted, never emitted.
+        lastMic(module).emitFrame(frameWith(1));
+        lastMic(module).emitFrame(frameWith(2));
+        expect(record.commandAudio).toEqual([]);
+        // The frame that crosses the threshold is only predicted too, so it
+        // is not part of the stream.
+        lastMic(module).emitFrame(frameWith(3));
+        lastInstance(module).fire("hey_jarvis", 0.92);
         expect(record.errors).toEqual([]);
         expect(record.wakes).toHaveLength(1);
         expect(record.wakes[0].confidence).toBe(0.92);
-        // The two pre-match frames went with the match: the phrase is not
-        // retained anywhere, so nothing is left to seed a session with.
-        expect(provider.drainPostMatch?.()).toBeNull();
+        expect(record.commandAudio).toEqual([]);
+        // Everything after is the command, frame by frame, at 16 kHz.
+        lastMic(module).emitFrame(frameWith(7));
+        lastMic(module).emitFrame(frameWith(9));
+        expect(record.commandAudio).toHaveLength(2);
+        expect(record.commandAudio[0]!.sampleRate).toBe(16000);
+        expect(record.commandAudio[0]!.pcm.length).toBe(1280);
+        expect(Array.from(record.commandAudio[0]!.pcm.slice(0, 3))).toEqual([
+            7 / 32768,
+            8 / 32768,
+            9 / 32768,
+        ]);
+        expect(Array.from(record.commandAudio[1]!.pcm.slice(0, 1))).toEqual([
+            9 / 32768,
+        ]);
         await provider.stop();
     });
 
@@ -268,58 +300,34 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("drains only the audio captured after the match", async () => {
-        // The buffer is emptied at the match, so everything the phrase left
-        // behind is gone: the drain holds just what the detector heard while
-        // the session was starting — the command's opening (#121).
-        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
-        const record = makeRecord();
-        await provider.start(record.callbacks);
-        module.mics[0].emitFrame(frameWith(1));
-        module.instances[0].fire("hey_jarvis", 0.9);
-        expect(record.wakes).toHaveLength(1);
-        // Post-match frames keep flowing (the worklet mic is still alive).
-        module.mics[0].emitFrame(frameWith(7));
-        const drained = provider.drainPostMatch?.();
-        expect(drained?.length).toBe(1280);
-        expect(Array.from(drained ?? []).slice(0, 3)).toEqual([
-            7 / 32768,
-            8 / 32768,
-            9 / 32768,
-        ]);
-        // One drain does not empty the buffer (stop() does).
-        expect(provider.drainPostMatch?.()).not.toBeNull();
-        await provider.stop();
-        expect(provider.drainPostMatch?.()).toBeNull();
-    });
-
-    it("empties even a full buffer at the match, so no phrase survives", async () => {
-        // The defect this guards (#121): the buffer used to keep the
-        // pre-match window, so the session seed replayed the wake phrase. The
-        // match now clears it wherever the write head sits.
-        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
-        const record = makeRecord();
-        await provider.start(record.callbacks);
-        for (let frame = 0; frame < 30; frame += 1) {
-            module.mics[0].emitFrame(frameWith(frame * 1280));
-        }
-        module.instances[0].fire("hey_jarvis", 0.9);
-        // Three frames captured while the session's mic opens.
-        for (let frame = 30; frame < 33; frame += 1) {
-            module.mics[0].emitFrame(frameWith(frame * 1280));
-        }
-        const drained = provider.drainPostMatch?.();
-        expect(drained?.length).toBe(3 * 1280);
-        expect(drained?.[0]).toBe(((30 * 1280) % 32767) / 32768);
-        expect(drained?.[1280]).toBe(((31 * 1280) % 32767) / 32768);
-        await provider.stop();
-    });
-
-    it("drains nothing when no match fired this arm", async () => {
+    it("keeps streaming every post-match frame until stop()", async () => {
+        // The whole command reaches the session, however long it takes to
+        // open — the reason a one-breath utterance is captured whole (#121).
         const { module, provider } = makeHarness();
-        await provider.start(makeRecord().callbacks);
-        module.mics[0].emitFrame(frameWith(1));
-        expect(provider.drainPostMatch?.()).toBeNull();
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        lastMic(module).emitFrame(frameWith(1));
+        lastInstance(module).fire("hey_jarvis", 0.9);
+        for (let frame = 0; frame < 30; frame += 1) {
+            lastMic(module).emitFrame(frameWith(frame * 1280));
+        }
+        expect(record.commandAudio).toHaveLength(30);
+        expect(record.commandAudio[29]!.pcm[0]).toBe(
+            ((29 * 1280) % 32767) / 32768,
+        );
+        // stop() ends the stream: no delivery for a frame pushed after it.
+        await provider.stop();
+        lastMic(module).emitFrame(frameWith(1));
+        expect(record.commandAudio).toHaveLength(30);
+    });
+
+    it("streams nothing before a match", async () => {
+        const { module, provider } = makeHarness();
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        lastMic(module).emitFrame(frameWith(1));
+        lastMic(module).emitFrame(frameWith(2));
+        expect(record.commandAudio).toEqual([]);
         await provider.stop();
     });
 
@@ -357,21 +365,25 @@ describe("OpenWakeWordWakeProvider", () => {
         expect(record.wakes).toHaveLength(0);
     });
 
-    it("re-arms cleanly after a stop, with a fresh buffer", async () => {
-        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
+    it("re-arms cleanly after a stop, with a fresh stream", async () => {
+        const { module, provider } = makeHarness();
         const record = makeRecord();
         await provider.start(record.callbacks);
-        module.mics[0].emitFrame(frameWith(1));
-        module.instances[0].fire("hey_jarvis", 0.8);
-        expect(record.wakes[0].confidence).toBe(0.8);
-        // Nothing followed the first match.
-        expect(provider.drainPostMatch?.()).toBeNull();
+        lastMic(module).emitFrame(frameWith(1));
+        lastInstance(module).fire("hey_jarvis", 0.8);
+        expect(record.wakes[0]!.confidence).toBe(0.8);
+        lastMic(module).emitFrame(frameWith(7));
+        expect(record.commandAudio).toHaveLength(1);
         await provider.stop();
+        // A second arm starts from scratch: nothing streams until it fires.
         await provider.start(record.callbacks);
-        module.mics[0].emitFrame(frameWith(2));
-        module.instances[0].fire("hey_jarvis", 0.81);
+        lastMic(module).emitFrame(frameWith(2));
+        expect(record.commandAudio).toHaveLength(1);
+        lastInstance(module).fire("hey_jarvis", 0.81);
         expect(record.wakes).toHaveLength(2);
-        expect(record.wakes[1].confidence).toBe(0.81);
+        expect(record.wakes[1]!.confidence).toBe(0.81);
+        lastMic(module).emitFrame(frameWith(3));
+        expect(record.commandAudio).toHaveLength(2);
         await provider.stop();
     });
 });

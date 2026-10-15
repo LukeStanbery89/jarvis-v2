@@ -1,16 +1,19 @@
 /**
- * Voice-controller wake-word tests (issue #84, phase 4).
+ * Voice-controller wake-word tests (issue #84, phase 4; single-mic wake
+ * sessions in #121).
  *
  * The controller is driven with a scripted fake wake detector, fake STT
  * engines (one primary, one for wake sessions), a fake VAD, and a fake
  * scheduler — asserting on the observable `VoiceSnapshot` after each step:
- * arming/disarming, the wake session opening on its own engine, the
- * post-match seed fed into that engine (#121), phrase stripping, and
- * automatic re-arming once a wake-opened turn settles. Timer expiry is fired by hand, never by real
+ * arming/disarming, the wake session opening in **external-audio mode** on its
+ * own engine, the detector's live command frames fed into that engine (held
+ * across the opening window, dropped afterwards), the VAD being left alone,
+ * phrase stripping as a safety net, and the detector restarting once a
+ * wake-opened turn settles. Timer expiry is fired by hand, never by real
  * clocks.
  */
 import { describe, expect, it } from "vitest";
-import { END_OF_SPEECH_MS, VoiceController } from "../src/index";
+import { MAX_COMMAND_MS, NO_SPEECH_MS, VoiceController } from "../src/index";
 import type {
     SttCallbacks,
     SttProvider,
@@ -35,6 +38,8 @@ class FakeStt implements SttProvider {
     prepareCalls = 0;
     /** Rejects the next start() when set. */
     startError: VoiceError | null = null;
+    /** Delivered as a final result when `stop()` flushes (engine vendors do). */
+    resultOnStop: string | null = null;
     lastStartOptions: SttStartOptions | undefined = undefined;
     fed: Array<{ pcm: Float32Array; sampleRate: number }> = [];
     private callbacks: SttCallbacks | null = null;
@@ -58,6 +63,9 @@ class FakeStt implements SttProvider {
 
     async stop(): Promise<void> {
         this.stopCalls += 1;
+        if (this.resultOnStop !== null) {
+            this.callbacks?.onResult?.(this.resultOnStop);
+        }
         this.state = "idle";
     }
 
@@ -114,13 +122,11 @@ class FakeVad implements VadProvider {
     }
 }
 
-/** Scripted wake detector; the test fires matches and errors by hand. */
+/** Scripted wake detector; the test fires matches and frames by hand. */
 class FakeWake implements WakeWordProvider {
     readonly id = "fake-wake";
     startCalls = 0;
     stopCalls = 0;
-    /** Optional drain the controller reads before disarming (the seam). */
-    drained: Float32Array | null = null;
     private callbacks: WakeCallbacks | null = null;
 
     async start(callbacks: WakeCallbacks): Promise<void> {
@@ -133,12 +139,13 @@ class FakeWake implements WakeWordProvider {
         this.callbacks = null;
     }
 
-    drainPostMatch(): Float32Array | null {
-        return this.drained;
-    }
-
     emitWake(detection: WakeDetection): void {
         this.callbacks?.onWake(detection);
+    }
+
+    /** One live post-match command frame, as the real detector streams it. */
+    emitCommandAudio(pcm: Float32Array, sampleRate = 16000): void {
+        this.callbacks?.onCommandAudio?.(pcm, sampleRate);
     }
 
     emitError(error: VoiceError): void {
@@ -151,6 +158,7 @@ interface FakeScheduler {
     schedule(callback: () => void, ms: number): unknown;
     unschedule(handle: unknown): void;
     fireByMs(ms: number): void;
+    pendingCount(): number;
 }
 
 function makeScheduler(): FakeScheduler {
@@ -174,6 +182,7 @@ function makeScheduler(): FakeScheduler {
                 }
             }
         },
+        pendingCount: () => tasks.size,
     };
 }
 
@@ -187,6 +196,7 @@ interface Harness {
     controller: VoiceController;
     snapshots: VoiceSnapshot[];
     submits: string[];
+    traces: Array<{ raw: string; submitted: string }>;
     settleSubmit(): void;
 }
 
@@ -198,6 +208,7 @@ function makeHarness(vad = true): Harness {
     const scheduler = makeScheduler();
     const snapshots: VoiceSnapshot[] = [];
     const submits: string[] = [];
+    const traces: Array<{ raw: string; submitted: string }> = [];
     const submitResolvers: Array<() => void> = [];
     const controller = new VoiceController({
         stt,
@@ -207,6 +218,9 @@ function makeHarness(vad = true): Harness {
         wakePhrase: "Hey JARVIS",
         schedule: scheduler.schedule,
         unschedule: scheduler.unschedule,
+        traceTranscript: (raw, submitted) => {
+            traces.push({ raw, submitted });
+        },
         submit: (text) => {
             submits.push(text);
             return new Promise<void>((resolve) => {
@@ -224,6 +238,7 @@ function makeHarness(vad = true): Harness {
         controller,
         snapshots,
         submits,
+        traces,
         settleSubmit: () => {
             submitResolvers.shift()?.();
         },
@@ -235,6 +250,11 @@ async function drain(): Promise<void> {
     for (let i = 0; i < 5; i += 1) {
         await Promise.resolve();
     }
+}
+
+/** The frame's samples as a plain array (float PCM comparisons read better). */
+function samples(pcm: Float32Array): number[] {
+    return Array.from(pcm);
 }
 
 describe("wake arming", () => {
@@ -280,52 +300,65 @@ describe("wake arming", () => {
     });
 });
 
-describe("wake sessions", () => {
-    it("a match opens a session seeded with the detector's post-match audio", async () => {
+describe("wake sessions (single-mic, #121)", () => {
+    it("opens an external wake session and feeds it the detector's frames", async () => {
         const harness = makeHarness();
-        const { stt, wakeStt, wake, controller } = harness;
-        // The detector kept capturing after the match; the controller drains
-        // it before disarming, so the session's engine starts with the
-        // command's opening — through the ordered start() feed, which reaches
-        // the decoder before any live chunk.
-        const postMatch = Float32Array.from([90, 91, 92, 93]);
-        wake.drained = postMatch;
+        const { stt, wakeStt, vad, wake, controller } = harness;
         await controller.enableWake();
         await drain();
         expect(controller.getSnapshot().wakeArmed).toBe(true);
         expect(controller.getSnapshot().state).toBe("idle");
 
         wake.emitWake({ confidence: 0.91 });
+        // The match fires synchronously; the session is still opening (the
+        // cue and `begin()`'s awaits). The detector keeps capturing, so these
+        // frames — the command's opening — must be held, not dropped.
+        const opening = Float32Array.from([0.11, 0.12]);
+        wake.emitCommandAudio(opening);
         await drain();
 
         expect(controller.getSnapshot().wakeArmed).toBe(false);
         expect(controller.getSnapshot().state).toBe("listening");
         expect(stt.startCalls).toBe(0);
         expect(wakeStt.startCalls).toBe(1);
-        expect(wakeStt.lastStartOptions?.continuous).toBe(true);
-        expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(16000);
-        expect(Array.from(wakeStt.lastStartOptions?.feed?.pcm ?? [])).toEqual([
-            ...postMatch,
+        // External audio, at the detector's 16 kHz convention — no microphone
+        // of its own and no continuous (VAD-owned) capture.
+        expect(wakeStt.lastStartOptions).toEqual({
+            source: "external",
+            sampleRate: 16000,
+        });
+        // The VAD is for press and barge sessions; a wake session's command
+        // endpointing is the engine's own silence detection.
+        expect(vad?.startCalls).toBe(0);
+        // The detector is NOT stopped: it is the wake session's microphone.
+        expect(wake.stopCalls).toBe(0);
+
+        const live = Float32Array.from([0.21]);
+        wake.emitCommandAudio(live);
+        expect(wakeStt.fed.map((chunk) => samples(chunk.pcm))).toEqual([
+            samples(opening),
+            samples(live),
+        ]);
+        expect(wakeStt.fed.map((chunk) => chunk.sampleRate)).toEqual([
+            16000, 16000,
         ]);
     });
 
-    it("seeds nothing when the detector captured nothing after the match", async () => {
-        const harness = makeHarness();
+    it("submits nothing before any frame arrives", async () => {
+        const harness = makeHarness(false);
         const { wakeStt, wake, controller } = harness;
-        wake.drained = null;
         await controller.enableWake();
         await drain();
         wake.emitWake({ confidence: 0.9 });
         await drain();
         expect(wakeStt.startCalls).toBe(1);
-        expect(wakeStt.lastStartOptions?.feed).toBeUndefined();
+        expect(wakeStt.fed).toEqual([]);
+        expect(harness.submits).toEqual([]);
     });
 
     it("phrase stripping turns the transcript into the command", async () => {
-        // No VAD: the wake session is engine-native, so the final is the
-        // whole transcript and strips to the command before it is submitted.
         const harness = makeHarness(false);
-        const { wakeStt, wake, controller, submits } = harness;
+        const { wakeStt, wake, controller, submits, traces } = harness;
         await controller.enableWake();
         wake.emitWake({ confidence: 0.9 });
         await drain();
@@ -335,30 +368,100 @@ describe("wake sessions", () => {
         expect(controller.getSnapshot().transcript).toBe(
             "turn on the living room light",
         );
+        // The raw-vs-submitted trace still fires (#121 lesson 6).
+        expect(traces).toEqual([
+            {
+                raw: "Hey JARVIS, turn on the living room light",
+                submitted: "turn on the living room light",
+            },
+        ]);
     });
 
-    it("VAD-owned wake sessions strip accumulated segments for display and submit", async () => {
-        const harness = makeHarness();
-        const { wakeStt, wake, scheduler, controller, submits } = harness;
-        const vad = harness.vad as FakeVad;
-        await controller.enableWake();
+    it("ignores the VAD it was handed", async () => {
+        // A wake session never arms the VAD (the detector already owns the
+        // microphone), even though the controller has one configured.
+        const harness = makeHarness(true);
+        const { wakeStt, vad, wake } = harness;
+        await harness.controller.enableWake();
         wake.emitWake({ confidence: 0.85 });
         await drain();
-        // VAD armed the continuous mode; segments (incl. the phrase, heard
-        // in the flushed look-back) accumulate and are stripped on display.
-        expect(wakeStt.lastStartOptions).toEqual({ continuous: true });
-        wakeStt.emitResult("Hey JARVIS");
-        wakeStt.emitResult("turn on the lights");
-        expect(controller.getSnapshot().state).toBe("listening");
-        expect(controller.getSnapshot().partial).toBe("turn on the lights");
-        vad.emitSpeechEnd();
-        scheduler.fireByMs(END_OF_SPEECH_MS);
+        wakeStt.emitResult("what time is it");
         await drain();
-        // The flush settles without delivering a final (the fake engine
-        // never does) — the controller submits the accumulated segments the
-        // moment the flush resolves, instead of parking the user on the
-        // flush deadline for NO_SPEECH_MS.
-        expect(submits).toEqual(["turn on the lights"]);
+        expect(vad?.startCalls).toBe(0);
+        expect(wakeStt.lastStartOptions?.continuous).toBeUndefined();
+        expect(harness.submits).toEqual(["what time is it"]);
+    });
+
+    it("ends quietly when the phrase fires but no command arrives", async () => {
+        const harness = makeHarness(false);
+        const { wakeStt, wake, controller, scheduler, submits } = harness;
+        await controller.enableWake();
+        wake.emitWake({ confidence: 0.9 });
+        await drain();
+        expect(scheduler.pendingCount()).toBeGreaterThan(1);
+        scheduler.fireByMs(NO_SPEECH_MS);
+        await drain();
+        expect(controller.getSnapshot().state).toBe("idle");
+        expect(controller.getSnapshot().error).toBeNull();
+        expect(wakeStt.cancelCalls).toBe(1);
+        expect(submits).toEqual([]);
+    });
+
+    it("flushes what was heard when the command window elapses", async () => {
+        const harness = makeHarness(false);
+        const { wakeStt, wake, controller, scheduler, submits } = harness;
+        await controller.enableWake();
+        wake.emitWake({ confidence: 0.9 });
+        await drain();
+        wake.emitCommandAudio(Float32Array.from([0.3]));
+        // A command that never pauses: the engine keeps decoding partials, so
+        // the silence guard is cancelled and only the command bound is left.
+        wakeStt.emitPartial("tell me about abraham lincoln");
+        wakeStt.resultOnStop = "tell me about abraham lincoln";
+        scheduler.fireByMs(MAX_COMMAND_MS);
+        await drain();
+        expect(wakeStt.stopCalls).toBe(1);
+        expect(submits).toEqual(["tell me about abraham lincoln"]);
+        expect(controller.getSnapshot().state).toBe("waiting");
+    });
+
+    it("hands the flush final through the trace when the window elapses", async () => {
+        const harness = makeHarness(false);
+        const { wakeStt, wake, controller, scheduler, submits, traces } =
+            harness;
+        await controller.enableWake();
+        wake.emitWake({ confidence: 0.9 });
+        await drain();
+        wakeStt.resultOnStop = "hey jarvis what time is it";
+        scheduler.fireByMs(MAX_COMMAND_MS);
+        await drain();
+        expect(submits).toEqual(["what time is it"]);
+        expect(traces).toEqual([
+            { raw: "hey jarvis what time is it", submitted: "what time is it" },
+        ]);
+    });
+
+    it("drops frames once the session is past listening", async () => {
+        const harness = makeHarness(false);
+        const { wakeStt, wake, controller, settleSubmit } = harness;
+        await controller.enableWake();
+        wake.emitWake({ confidence: 0.9 });
+        await drain();
+        wake.emitCommandAudio(Float32Array.from([0.4]));
+        expect(wakeStt.fed).toHaveLength(1);
+        wakeStt.emitResult("what time is it");
+        await drain();
+        expect(controller.getSnapshot().state).toBe("waiting");
+        // The detector may still be capturing until the turn lands idle; its
+        // frames must not become the next command's opening.
+        wake.emitCommandAudio(Float32Array.from([9, 9, 9]));
+        settleSubmit();
+        await drain();
+        expect(controller.getSnapshot().state).toBe("idle");
+        wake.emitWake({ confidence: 0.9 });
+        await drain();
+        // The second session was fed only what the new match produced: nothing.
+        expect(wakeStt.fed).toHaveLength(1);
     });
 
     it("a wake during a live turn is ignored (barge-in comes later)", async () => {
@@ -375,7 +478,7 @@ describe("wake sessions", () => {
         expect(controller.getSnapshot().state).toBe("listening");
     });
 
-    it("a session that fails to open re-arms the detector", async () => {
+    it("a session that fails to open restarts the detector", async () => {
         const harness = makeHarness();
         const { wakeStt, wake, controller } = harness;
         await controller.enableWake();
@@ -384,15 +487,14 @@ describe("wake sessions", () => {
         await drain();
         expect(controller.getSnapshot().state).toBe("idle");
         // Back to idle is armed again, ready for the next phrase; a
-        // successful re-arm also clears the failure error.
+        // successful restart also clears the failure error.
         expect(wake.startCalls).toBe(2);
         expect(controller.getSnapshot().wakeArmed).toBe(true);
     });
 });
 
 describe("re-arming after turns", () => {
-    it("a wake-opened turn that settles re-arms the detector", async () => {
-        // Engine-native wake session: the final submits straight away.
+    it("a wake-opened turn that settles restarts the detector", async () => {
         const harness = makeHarness(false);
         const { wake, wakeStt, controller, settleSubmit } = harness;
         await controller.enableWake();
@@ -405,10 +507,13 @@ describe("re-arming after turns", () => {
         await drain();
         expect(controller.getSnapshot().state).toBe("idle");
         expect(controller.getSnapshot().wakeArmed).toBe(true);
+        // The detector was still capturing for the command, so the restart
+        // stops it before arming again.
+        expect(wake.stopCalls).toBe(1);
         expect(wake.startCalls).toBe(2);
     });
 
-    it("a press-to-talk turn that settles re-arms a disabled-for-the-session detector", async () => {
+    it("a press-to-talk turn that settles re-arms a detector disarmed for the session", async () => {
         const harness = makeHarness(false);
         const { stt, wake, controller, settleSubmit } = harness;
         await controller.enableWake();
@@ -450,7 +555,8 @@ describe("wake race fixes (#104)", () => {
         // Race 2: handleWake blocks on the cue; the user presses in that
         // window and opens a primary session. When the cue releases, the
         // wake session's begin() must find the reducer already past idle
-        // and bail instead of opening a second session over the live one.
+        // and bail instead of opening a second session over the live one —
+        // and must not leave the detector's held frames behind (#121).
         const stt = new FakeStt("primary");
         const wakeStt = new FakeStt("wake");
         const wake = new FakeWake();
@@ -469,7 +575,9 @@ describe("wake race fixes (#104)", () => {
         await controller.enableWake();
         wake.emitWake({ confidence: 0.9 });
         await Promise.resolve();
-        // The cue is still playing: the user presses the mic button.
+        // The detector is streaming the command while the cue still plays.
+        wake.emitCommandAudio(Float32Array.from([1, 2, 3]));
+        // The user presses the mic button.
         controller.press();
         await drain();
         expect(controller.getSnapshot().state).toBe("listening");
@@ -480,6 +588,8 @@ describe("wake race fixes (#104)", () => {
         expect(wakeStt.startCalls).toBe(0);
         expect(stt.startCalls).toBe(1);
         expect(controller.getSnapshot().state).toBe("listening");
+        // The press session is not seeded with the held wake frames.
+        expect(stt.fed).toEqual([]);
         await controller.dispose();
     });
 
@@ -503,19 +613,6 @@ describe("wake race fixes (#104)", () => {
         expect(controller.getSnapshot().state).toBe("idle");
         expect(wake.startCalls).toBe(1);
         expect(controller.getSnapshot().wakeArmed).toBe(true);
-    });
-
-    it("seeds a wake session at the detector's 16 kHz convention", async () => {
-        const harness = makeHarness();
-        const { wakeStt, wake, controller } = harness;
-        wake.drained = Float32Array.from([1, 2, 3]);
-        await controller.enableWake();
-        await drain();
-        wake.emitWake({ confidence: 0.9 });
-        await drain();
-        // The detector's convention is 16 kHz; a wake session's seed always
-        // carries it, whatever the detection reports (#121).
-        expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(16000);
     });
 });
 

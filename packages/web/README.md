@@ -195,14 +195,17 @@ An optional "Hey JARVIS" wake word lives beside the click-to-talk mic: a
 sidebar toggle (waveform icon, next to the location pin) arms an
 on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
 openwakeword-web running under the WASM STT engine's runtime). While armed,
-the detector holds a second 16 kHz mic open continuously; a match plays a
-short blip (`AudioPlayer.blip()`, the cue the toggle's user gesture
-unlocked), opens a wake session through the same `VoiceController`, seeds
-`wakeStt` with the detector's post-match audio — the command's opening, never
-the phrase, because the detector empties its buffer the instant the phrase
-fires (#121) — strips any stray "Hey JARVIS" as a safety net, and submits it
-as an ordinary voice turn. `wakeStt` is a second, always-local Vosk instance
-(never Web Speech, so wake-eavesdropped audio never leaves the device). The
+the detector holds a 16 kHz mic open continuously; a match plays a short blip
+(`AudioPlayer.blip()`, the cue the toggle's user gesture unlocked), opens a
+wake session through the same `VoiceController`, and then **streams the
+command straight off the detector's own microphone** into `wakeStt` — every
+frame from the match onward, so the phrase is excluded by construction and a
+one-breath "Hey JARVIS what time is it" is captured whole, with no second mic
+opening late and nothing spliced (#121). `wakeStt` is a second, always-local
+Vosk instance running microphone-free (`{ source: "external" }`; never Web
+Speech, so the command never leaves the device); it endpoints on its own
+silence detection, and any stray "Hey JARVIS" is stripped as a safety net
+before the prompt is submitted as an ordinary voice turn. The
 toggle is **off by default** (a persistent extra
 mic), persisted in localStorage, rendered only when the runtime supports
 wake (secure context + audio worklet), a local STT engine exists, and the

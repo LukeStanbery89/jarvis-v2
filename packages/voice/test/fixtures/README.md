@@ -42,7 +42,6 @@ not produce, so only a real recording can reproduce the class the redesign
 exists to eliminate. The recordings are the maintainer's own speech, published
 in a public repository by the maintainer's decision; a contributor who does
 not want to publish a recording uses `local/` instead.
-
 `real/pause-then-command.wav` carries a genuine ~1.2 s quiet gap between the
 phrase and the command (asserted from the audio by `findPause` in the corpus
 test) — the failure's exact shape.
@@ -69,15 +68,48 @@ detector's buffer was never emptied at the match, so the controller joined the
 match-time window with the buffer drained at session open and fed the phrase
 to the engine **twice** (verified in production: `raw="hey jarvis hey jarvis
 what's the weather"`, `submitted="hey jarvis what's the weather"` — see #121).
-The buffer is now emptied the instant a match fires, so a wake session's seed
-is strictly post-match audio: contiguous, phrase-free, and nothing repeated
-(asserted by `test/wakeCorpus.test.ts` and `test/openWakeWord.test.ts`).
+Phase 2 stage A emptied the buffer at the match (asserted by
+`test/wakeCorpus.test.ts` and `test/openWakeWord.test.ts`); the section below
+is what the production re-test of that change showed.
 
 Two harness-side lessons remain, both recorded in
 `packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the
 worker decodes silently truncates the utterance's tail at flush time, and the
 provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a
 lump of replayed audio).
+
+## What the corpus has shown (#121 phase 2)
+
+Stage A — the buffer emptied at the match, the session seeded with post-match
+audio only — removed the reported defect on **real production audio**: six wake
+turns, no doubled phrase, no stray "Hey JARVIS" in any prompt, and the
+pause-then-command shape clean (`raw="what's the weather"`, `submitted`
+identical).
+
+The same run exposed a second, previously-masked failure on the **one-breath**
+shape ("Hey JARVIS what time is it", no pause). The command's continuation was
+supposed to come from the session's _own_ microphone, which opens a few hundred
+milliseconds after the match and the cue — by which time the user has finished
+speaking. Two turns produced nothing at all (`session N: no speech detected`)
+and one lost the command's opening (`raw="richard is outside please"` for "tell
+me what temperature it is outside please"). The duplicated phrase had been
+drowning it out.
+
+The resolution is the single-mic design: the detector keeps capturing after the
+match and **every frame from then on is the command**, fed live into the wake
+engine running `{ source: "external" }` (no microphone of its own). The
+engine's own silence detection ends the utterance — an empty final is ignored,
+so the pause between the phrase and the command cannot end it early — bounded
+by `NO_SPEECH_MS` ("woke up and said nothing") and `MAX_COMMAND_MS` (a command
+that never pauses). Nothing is buffered, drained, or spliced, so a one-breath
+utterance is captured whole by construction.
+
+`test/wakeCorpus.test.ts` asserts that routing on the committed fixtures
+(synthetic and real): the frames the engine receives start at the match, are
+contiguous, hold no pre-match speech, and repeat nothing.
+`test/openWakeWord.test.ts` pins the stream itself (frames after the match, and
+only after it). The browser harness remains the way to check _transcription
+quality_ through the real Vosk engine (`?voice-harness=1`).
 
 ## `local/` (not committed)
 

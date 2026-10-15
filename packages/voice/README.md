@@ -21,13 +21,14 @@ shared `src/core.ts` (`VoiceCore`) context and each owning its own
 interlocks, so the controller is their composition root rather than their
 storage:
 
-- `src/session.ts` — `VoiceSession` + `END_OF_SPEECH_MS`/`NO_SPEECH_MS`: owns
-  one recognition session's endpointing (VAD-owned or engine-native),
-  transcript accumulation, wake-phrase stripping, and submission. The
-  controller creates one per `begin()` and delegates every engine/VAD
-  callback to it.
-- `src/wake.ts` — `WakeManager`: arms/disarms the detector, pre-warms the
-  wake engine, and re-arms once a session lands `idle`.
+- `src/session.ts` — `VoiceSession` + `END_OF_SPEECH_MS`/`NO_SPEECH_MS`/
+  `MAX_COMMAND_MS`: owns one recognition session's endpointing (VAD-owned,
+  detector-fed, or engine-native), transcript accumulation, wake-phrase
+  stripping, and submission. The controller creates one per `begin()` and
+  delegates every engine/VAD callback to it.
+- `src/wake.ts` — `WakeManager`: arms the detector, keeps it capturing through
+  a wake session (so the command arrives on its own microphone), pre-warms the
+  wake engine, and restarts the detector once a session lands `idle`.
 - `src/barge.ts` — `BargeWatch` + `BARGE_IN_*`: the VAD-only barge-in watch and
   its look-back ring. `BargeInDetection` and the `BARGE_IN_*` constants are the
   only public symbols from here.
@@ -128,6 +129,14 @@ phase 3's deterministic answer:
   `NO_SPEECH_MS` (4 s — deliberately under the browser engines' own ≈8 s
   no-speech error) via `stt.cancel()` (no callbacks fire) and the reducer's
   `noSpeech` event: back to `idle` with no error banner.
+- **A wake session** (`{ source: "external" }`, #121) has no VAD and no
+  microphone of its own: its audio is the detector's live post-match frames,
+  pushed in through `VoiceSession.pushCommandAudio` (held across the engine's
+  open, so the command's opening survives a cold start). The engine endpoints
+  on its own silence detection — an empty final is ignored, so a long pause
+  between "Hey JARVIS" and the command cannot end it — bounded by the same
+  `NO_SPEECH_MS` silence guard ("woke up and said nothing") and by
+  `MAX_COMMAND_MS` (15 s), which flushes a command that never pauses.
 - **Without a `vad`** (unsupported runtime), behavior is the engine's own:
   it finalizes on its silence detection, a second press stops-and-flushes,
   and no timer is ever armed — identical to phase 2.
@@ -253,9 +262,11 @@ secure-context browser). The engine contract maps like this:
   it resolves); stale worker messages are dropped by session id;
 - `start(callbacks, { source: "external", sampleRate })` runs **without a
   microphone**: the recognizer is created at the caller's rate and every
-  sample arrives through `feed()` (#121 — the offline replay harness and the
-  wake→command capture both use it, so no rate flip ever recreates the
-  recognizer mid-session);
+  sample arrives through `feed()` (#121 — the wake→command session and the
+  offline replay harness both use it, so no rate flip ever recreates the
+  recognizer mid-session). An external session is not continuous: the engine's
+  own silence detection ends the utterance, and an empty final is ignored, so
+  the pause between "Hey JARVIS" and the command cannot end it early;
 - the model outlives sessions; the optional `dispose()` seam (phase 3b
   added it to `SttProvider`) terminates the worker and drops the caches
   when the client will never recognize again.
@@ -295,23 +306,23 @@ the ONNX models it is registered for from `baseUrl` (default
 feature pipeline. A phrase label passing threshold fires `onDetection`
 (`{ pause: true }` keeps the one-shot).
 
-Two things make this provider slot into the controller's wake flow (#84 P4):
+Two properties make this provider slot into the controller's wake flow
+(#84 P4, single-mic in #121):
 
-- **Post-match buffer** — because the detector's microphone keeps running
-  after a phrase fires, the provider retains up to `commandBufferMs`
-  (default 2000) of 16 kHz float PCM (`PcmRingBuffer`, whole 1280-sample
-  frames). The buffer is **emptied the instant a match fires**, so a
-  detection carries no audio and what the controller drains at session open
-  is strictly post-match: the command's opening, captured while the wake cue
-  played and the engine was still starting. The wake phrase is never in it —
-  hygiene by construction, not by stripping a transcript (#121).
-- **Quiet disarm** — `stop()` is idempotent and resolves, then ALWAYS
-  leaves the gun un-armed regardless of how it ran: `onDetection` with
-  `{ armed: false }` only when the phrase fired within the same armed
-  span (so newly-mined spoken words are read back on the next match),
-  otherwise `armed: true` because the detector re-arms on subsequent
-  `start()` calls. The armed flag is what the `VoiceController` reads to
-  decide whether to tread lightly.
+- **Live command stream** — because the detector's microphone keeps running
+  after a phrase fires, every frame **after** the match is handed straight to
+  `WakeCallbacks.onCommandAudio` (16 kHz mono float PCM). The frame that
+  crossed the threshold was only predicted, so the wake phrase is never part
+  of the stream, and the frames are contiguous — so the controller runs the
+  wake session's engine microphone-free over them (`{ source: "external" }`).
+  Nothing is retained here, nothing is drained, nothing is spliced: a
+  one-breath "Hey JARVIS what time is it" arrives whole.
+- **Fire once, capture on** — `onDetection` fires at most once per `start()`,
+  so prediction stops at the match while the microphone stays open for the
+  command. The controller holds the detector open for the whole session
+  (`WakeManager.beginCommand`) and restarts it when the turn lands `idle`
+  (`maybeReArm` → stop + arm). `stop()` is idempotent, and no callback —
+  match or command audio — fires after it resolves.
 
 `stripWakePhrase()` (in `src/wakeText.ts`) removes a leading wake phrase
 from a wake-session transcript ("Hey JARVIS" by default, ragged whitespace
