@@ -416,7 +416,7 @@ again in Ns") rather than erroring the turn. The generic machinery is
 | `webSearch` (#9)                 | `searchQuota`  | `JARVIS_SEARCH_CALLS_PER_MIN` (20/min per user)        |
 | `getWeather` (#31)               | `weatherQuota` | `JARVIS_WEATHER_CALLS_PER_MIN` (10/min per user)       |
 | `homeAssistant` (#15)            | `haQuota`      | `JARVIS_HA_CALLS_PER_MIN` (10/min per user)            |
-| `wikipedia` (#8)                 | `userQuota`    | `JARVIS_WIKIPEDIA_CALLS_PER_MIN` (20/min per user)     |
+| `wikipedia` (#8)                 | `quota`        | `JARVIS_WIKIPEDIA_CALLS_PER_MIN` (20/min per user)     |
 
 The first four are **per-user only**: they refuse a guest outright (a guest has
 no verified `userId` to charge). `wikipedia` is the exception — it needs no
@@ -575,9 +575,10 @@ untrusted-input handling live in the `packages/server/src/README.md` file map
 ## Wikipedia
 
 The agent looks up encyclopedic topics through one `wikipedia` tool (#8) over
-the public MediaWiki Action API — one request per call, no dependency, no API
-key. Because there is no credential to gate on, this is the one optional tool
-that is **enabled by default**; `JARVIS_WIKIPEDIA=off` removes it.
+the public MediaWiki Action API — one request on the common path, no
+dependency, no API key. Because there is no credential to gate on, this is the
+one optional tool that is **enabled by default**; `JARVIS_WIKIPEDIA=off`
+removes it.
 
 - **One request on the common path.** A `generator=search` query resolves the
   best title _and_ fetches its extract in the same response. A second

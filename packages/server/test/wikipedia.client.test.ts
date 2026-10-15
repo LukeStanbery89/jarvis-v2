@@ -318,6 +318,90 @@ describe("createWikipediaClient", () => {
         });
     });
 
+    it("truncates a summary that exceeds the backstop ceiling and reports it", async () => {
+        const long = "x".repeat(4005);
+        const { fetch } = mockFetch([
+            {
+                body: {
+                    query: {
+                        pages: [
+                            {
+                                pageid: 123,
+                                ns: 0,
+                                title: "Ada Lovelace",
+                                extract: long,
+                            },
+                        ],
+                    },
+                },
+            },
+        ]);
+        const client = createWikipediaClient({ ...OPTS, fetchImpl: fetch });
+        const res = await client.lookup("Ada Lovelace", "summary");
+        expect(res.kind).toBe("article");
+        if (res.kind === "article") {
+            expect(res.truncated).toBe(true);
+            expect(res.omittedChars).toBe(5);
+            expect(res.extract).toHaveLength(4000);
+        }
+    });
+
+    it("throws a WikipediaError when the API returns a 200 with an error envelope", async () => {
+        const { fetch } = mockFetch([
+            {
+                body: {
+                    error: {
+                        code: "badvalue",
+                        info: "Parameter 'srsearch' is not valid",
+                    },
+                    servedby: "mw-api",
+                },
+            },
+        ]);
+        const client = createWikipediaClient({ ...OPTS, fetchImpl: fetch });
+        await expect(
+            client.lookup("bad query", "summary"),
+        ).rejects.toBeInstanceOf(WikipediaError);
+    });
+
+    it("derives the candidate article URL when the title contains a slash", async () => {
+        const { fetch } = mockFetch([
+            {
+                body: {
+                    query: {
+                        pages: [
+                            {
+                                pageid: 123,
+                                ns: 0,
+                                title: "Alice in Wonderland",
+                                pageprops: { disambiguation: "" },
+                                extract: "",
+                            },
+                        ],
+                    },
+                },
+            },
+            {
+                body: {
+                    query: {
+                        search: [{ title: "Category:Alice/Works", pageid: 1 }],
+                    },
+                },
+            },
+        ]);
+        const client = createWikipediaClient({ ...OPTS, fetchImpl: fetch });
+        const result = await client.lookup("alice", "summary");
+        expect(result).toMatchObject({
+            kind: "candidates",
+            candidates: [
+                {
+                    title: "Category:Alice/Works",
+                    url: "https://en.wikipedia.org/wiki/Category%3AAlice/Works",
+                },
+            ],
+        });
+    });
+
     it("returns no-match when the API reports no results (no query key)", async () => {
         const { fetch, calls } = mockFetch([{ body: { batchcomplete: true } }]);
         const client = createWikipediaClient({ ...OPTS, fetchImpl: fetch });

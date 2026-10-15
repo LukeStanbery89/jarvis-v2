@@ -39,9 +39,10 @@ export interface WikipediaDeps {
     /**
      * Guest budgets (#8), both enforced: a strict per-session bucket and an
      * aggregate per-address bucket, so rotating sessions cannot reset the
-     * allowance.
+     * allowance. When omitted, guests are refused rather than admitted
+     * unmetered.
      */
-    guest: {
+    guest?: {
         session: FixedWindowQuota<string>;
         address: FixedWindowQuota<string>;
     };
@@ -74,7 +75,12 @@ export function formatWikipediaLookup(
     }
     if (result.kind === "candidates") {
         if (result.candidates.length === 0) {
-            return `No Wikipedia article matched "${query}".`;
+            // The ambiguous page itself is dropped from the candidate list, so
+            // an empty list right after reaching a disambiguation page still
+            // has context worth stating rather than a bare "no match".
+            return result.page
+                ? `"${result.page.title}" is a disambiguation page and no single article matched "${query}". Ask the user to be more specific.`
+                : `No Wikipedia article matched "${query}".`;
         }
         const header = result.page
             ? `"${result.page.title}" is a disambiguation page, so it does not answer the question. Closest articles:`
