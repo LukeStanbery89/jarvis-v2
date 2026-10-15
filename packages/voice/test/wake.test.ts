@@ -5,14 +5,15 @@
  * wake detector, a wake STT engine that counts pre-warms, and a real
  * `reduceVoice`-backed reducer — so its own contract is pinned independently
  * of the controller: arming (and pre-warming), the defer-while-busy interlock
- * (#104 race 6), session disarm + re-arm, match delivery (including the
- * failed-open re-arm), drain, and the failure/dispose paths.
+ * (#104 race 6), the press/wake session interlocks (stop for a press, keep
+ * capturing for a wake, #121), command-audio forwarding, match delivery
+ * (including the failed-open restart), and the failure/dispose paths.
  */
 import { describe, expect, it } from "vitest";
 import type { VoiceCore } from "../src/core";
 import { initialVoiceSnapshot, reduceVoice } from "../src/lifecycle";
 import type { VoiceSnapshot } from "../src/lifecycle";
-import { DEFAULT_WAKE_PHRASE, WakeManager, wakeReplay } from "../src/wake";
+import { DEFAULT_WAKE_PHRASE, WakeManager } from "../src/wake";
 import type {
     SttCallbacks,
     SttProvider,
@@ -29,7 +30,6 @@ class FakeWake implements WakeWordProvider {
     readonly id = "fake-wake";
     startCalls = 0;
     stopCalls = 0;
-    drained: Float32Array | null = null;
     /** Rejects the next `start()` when set. */
     startError: VoiceError | null = null;
     private callbacks: WakeCallbacks | null = null;
@@ -47,12 +47,13 @@ class FakeWake implements WakeWordProvider {
         this.callbacks = null;
     }
 
-    drainPostMatch(): Float32Array | null {
-        return this.drained;
-    }
-
     emitWake(detection: WakeDetection): void {
         this.callbacks?.onWake(detection);
+    }
+
+    /** One live post-match command frame, as the real detector streams it. */
+    emitCommandAudio(pcm: Float32Array, sampleRate = 16000): void {
+        this.callbacks?.onCommandAudio?.(pcm, sampleRate);
     }
 
     emitError(error: VoiceError): void {
@@ -97,6 +98,8 @@ interface Harness {
     wakeStt: FakeStt;
     core: VoiceCore;
     matches: WakeDetection[];
+    /** Command frames the manager forwarded, in order (#121). */
+    commandAudio: Array<{ pcm: Float32Array; sampleRate: number }>;
     logged: unknown[];
     snapshot(): VoiceSnapshot;
     setSnapshot(next: VoiceSnapshot): void;
@@ -112,6 +115,7 @@ function harness(options?: {
     const wakeStt =
         options?.wakeStt === undefined ? new FakeStt() : options.wakeStt;
     const matches: WakeDetection[] = [];
+    const commandAudio: Array<{ pcm: Float32Array; sampleRate: number }> = [];
     const logged: unknown[] = [];
     let snapshot = initialVoiceSnapshot;
     const disposed = { value: false };
@@ -126,6 +130,7 @@ function harness(options?: {
         log: (_message, error) => {
             logged.push(error);
         },
+        traceTranscript: () => {},
         isDisposed: () => disposed.value,
         stopVad: async () => {},
     };
@@ -137,12 +142,16 @@ function harness(options?: {
             ((detection) => {
                 matches.push(detection);
             }),
+        onCommandAudio: (pcm, sampleRate) => {
+            commandAudio.push({ pcm, sampleRate });
+        },
     });
     const h: Harness = {
         wake: wake as FakeWake,
         wakeStt: wakeStt as FakeStt,
         core,
         matches,
+        commandAudio,
         logged,
         snapshot: () => snapshot,
         setSnapshot: (next) => {
@@ -226,24 +235,25 @@ describe("WakeManager arming", () => {
 });
 
 describe("WakeManager session interlock", () => {
-    it("disarmForSession disarms and maybeReArm brings it back once idle", async () => {
+    it("disarmForSession stops the detector and maybeReArm restarts it once idle", async () => {
         const { h, manager } = harness();
         await manager.enable();
         await drain();
         expect(h.snapshot().wakeArmed).toBe(true);
-        // A session begins: the manager disarms for it.
+        // A press session begins: the manager stops the detector for it.
         manager.disarmForSession();
         expect(h.wake.stopCalls).toBe(1);
         expect(h.snapshot().wakeArmed).toBe(false);
-        // While not idle, re-arm stays put.
+        // While not idle, the restart stays put.
         h.setSnapshot(reduceVoice(h.snapshot(), { type: "activate" }));
         manager.maybeReArm();
         await drain();
         expect(h.wake.startCalls).toBe(1);
-        // Session lands idle: the detector comes back.
+        // Session lands idle: the detector comes back (stop + arm).
         h.setSnapshot(reduceVoice(h.snapshot(), { type: "cancel" }));
         manager.maybeReArm();
         await drain();
+        expect(h.wake.stopCalls).toBe(2);
         expect(h.wake.startCalls).toBe(2);
         expect(h.snapshot().wakeArmed).toBe(true);
     });
@@ -252,6 +262,71 @@ describe("WakeManager session interlock", () => {
         const { h, manager } = harness();
         manager.disarmForSession();
         expect(h.wake.stopCalls).toBe(0);
+    });
+
+    it("beginCommand keeps the detector capturing but marks it disarmed (#121)", async () => {
+        const { h, manager } = harness();
+        await manager.enable();
+        await drain();
+        manager.beginCommand();
+        // The microphone stays open — the frames that follow are the command.
+        expect(h.wake.stopCalls).toBe(0);
+        expect(h.snapshot().wakeArmed).toBe(false);
+        // Once the turn lands idle the detector is restarted, not just
+        // re-armed: it is still live, so start() alone would reject.
+        h.setSnapshot(reduceVoice(h.snapshot(), { type: "activate" }));
+        manager.beginCommand();
+        h.setSnapshot(reduceVoice(h.snapshot(), { type: "cancel" }));
+        manager.maybeReArm();
+        await drain();
+        expect(h.wake.stopCalls).toBe(1);
+        expect(h.wake.startCalls).toBe(2);
+        expect(h.snapshot().wakeArmed).toBe(true);
+    });
+});
+
+describe("WakeManager command audio", () => {
+    it("forwards the detector's post-match frames in order", async () => {
+        const { h, manager } = harness();
+        await manager.enable();
+        await drain();
+        const first = Float32Array.from([0.1, 0.2]);
+        const second = Float32Array.from([0.3]);
+        h.wake.emitCommandAudio(first);
+        h.wake.emitCommandAudio(second, 48000);
+        expect(h.commandAudio).toEqual([
+            { pcm: first, sampleRate: 16000 },
+            { pcm: second, sampleRate: 48000 },
+        ]);
+    });
+
+    it("drops frames when no callback is wired", async () => {
+        const wake = new FakeWake();
+        const wakeStt = new FakeStt();
+        let snapshot = initialVoiceSnapshot;
+        const core: VoiceCore = {
+            snapshot: () => snapshot,
+            reduce: (event) => {
+                snapshot = reduceVoice(snapshot, event);
+            },
+            vad: null,
+            schedule: () => 0,
+            unschedule: () => {},
+            log: () => {},
+            traceTranscript: () => {},
+            isDisposed: () => false,
+            stopVad: async () => {},
+        };
+        const manager = new WakeManager(core, {
+            wake,
+            wakeStt,
+            onMatch: () => {},
+        });
+        await manager.enable();
+        await drain();
+        expect(() =>
+            wake.emitCommandAudio(Float32Array.from([0.5])),
+        ).not.toThrow();
     });
 });
 
@@ -276,10 +351,10 @@ describe("WakeManager matches", () => {
         expect(h.matches).toHaveLength(0);
     });
 
-    it("a match whose session fails to open re-arms the detector", async () => {
-        // Mirror the controller's failed open: `begin()` disarms the
-        // detector for the session, fails, and lands back on `idle`. The
-        // manager then treats it as a failed open and re-arms.
+    it("a match whose session fails to open restarts the detector", async () => {
+        // Mirror the controller's failed open: `begin()` pauses the detector
+        // for the session, fails, and lands back on `idle`. The manager then
+        // treats it as a failed open and restarts the pair.
         const ref: { core?: VoiceCore } = {};
         const { h, manager } = harness({
             onMatch: () => {
@@ -297,21 +372,7 @@ describe("WakeManager matches", () => {
     });
 });
 
-describe("WakeManager drain + dispose", () => {
-    it("drainPostMatch reads the detector's ring", async () => {
-        const { h, manager } = harness();
-        const ring = Float32Array.from([1, 2, 3]);
-        h.wake.drained = ring;
-        expect(manager.drainPostMatch()).toBe(ring);
-    });
-
-    it("drainPostMatch is null without a ring or detector", async () => {
-        const none = harness({ wake: null });
-        expect(none.manager.drainPostMatch()).toBeNull();
-        const empty = harness();
-        expect(empty.manager.drainPostMatch()).toBeNull();
-    });
-
+describe("WakeManager dispose", () => {
     it("dispose disarms and is idempotent", async () => {
         const { h, manager } = harness();
         await manager.enable();
@@ -320,29 +381,6 @@ describe("WakeManager drain + dispose", () => {
         expect(h.snapshot().wakeArmed).toBe(false);
         await manager.dispose();
         expect(h.snapshot().wakeArmed).toBe(false);
-    });
-});
-
-describe("wakeReplay", () => {
-    it("joins look-back and drained audio in order", () => {
-        const joined = wakeReplay(
-            Float32Array.from([1, 2]),
-            Float32Array.from([3, 4]),
-        );
-        expect(Array.from(joined ?? [])).toEqual([1, 2, 3, 4]);
-    });
-
-    it("returns the single present side", () => {
-        expect(
-            Array.from(wakeReplay(Float32Array.from([1]), null) ?? []),
-        ).toEqual([1]);
-        expect(
-            Array.from(wakeReplay(undefined, Float32Array.from([2])) ?? []),
-        ).toEqual([2]);
-    });
-
-    it("returns null when both are absent", () => {
-        expect(wakeReplay(undefined, null)).toBeNull();
     });
 });
 

@@ -84,8 +84,8 @@ describe("createStt engine selection", () => {
 
 describe("createWakeStt", () => {
     it("always uses the local WASM engine, never Web Speech", () => {
-        // Wake sessions get the on-device engine so the detector's look-back
-        // audio never leaves the browser (#84 P4).
+        // Wake sessions get the on-device engine so the detector's audio never
+        // leaves the browser (#84 P4).
         stripAll();
         grantVosk();
         expect(createWakeStt()?.id).toBe("vosk-wasm");

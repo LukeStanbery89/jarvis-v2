@@ -952,3 +952,75 @@ describe("resampleLinear", () => {
         expect(out2[1]).toBeCloseTo(-3, 5);
     });
 });
+
+describe("external audio mode (#121)", () => {
+    it("runs without a microphone at the caller's rate", async () => {
+        const fakes = installFakes();
+        const provider = makeProvider(fakes);
+        const recorder = makeRecorder();
+        await provider.start(recorder.callbacks, {
+            source: "external",
+            sampleRate: 16000,
+        });
+        // No mic: the model loaded and the recognizer was created at the
+        // caller's rate; no capture graph was built.
+        expect(fakes.getUserMedia).not.toHaveBeenCalled();
+        expect(fakes.recognizer.sampleRate).toBe(16000);
+        expect(provider.state).toBe("running");
+        // Feeding at that same rate is identity — the worker never sees a
+        // rate flip, so it never recreates the recognizer.
+        const pcm = Float32Array.from([0.1, -0.2, 0.3]);
+        provider.feed(pcm, 16000);
+        expect(fakes.recognizer.chunks).toHaveLength(1);
+        expect(fakes.recognizer.chunks[0]!.sampleRate).toBe(16000);
+        expect(fakes.recognizer.chunks[0]!.data).toBe(pcm);
+        // The flush surfaces the forced final as the transcript.
+        const stopped = provider.stop();
+        fakes.recognizer.emit("result", {
+            event: "result",
+            result: { text: "turn on the lights" },
+        });
+        vi.advanceTimersByTime(200);
+        await stopped;
+        expect(recorder.results).toEqual(["turn on the lights"]);
+        expect(provider.state).toBe("idle");
+    });
+
+    it("needs no media APIs at all", async () => {
+        const fakes = installFakes();
+        // A runtime with no mic and no Web Audio — the harness's case.
+        vi.stubGlobal("navigator", {});
+        vi.stubGlobal("AudioContext", undefined);
+        const provider = makeProvider(fakes);
+        await provider.start(makeRecorder().callbacks, {
+            source: "external",
+            sampleRate: 16000,
+        });
+        expect(provider.state).toBe("running");
+        const cancelled = provider.cancel();
+        await cancelled;
+        expect(provider.state).toBe("idle");
+    });
+
+    it("still requires a microphone for the default source", async () => {
+        const fakes = installFakes();
+        vi.stubGlobal("navigator", {});
+        vi.stubGlobal("AudioContext", undefined);
+        const provider = makeProvider(fakes);
+        await expect(
+            provider.start(makeRecorder().callbacks),
+        ).rejects.toMatchObject({ code: "unsupported" });
+    });
+
+    it("rejects an invalid external sample rate", async () => {
+        const fakes = installFakes();
+        const provider = makeProvider(fakes);
+        await expect(
+            provider.start(makeRecorder().callbacks, {
+                source: "external",
+                sampleRate: 0,
+            }),
+        ).rejects.toMatchObject({ code: "engine" });
+        expect(fakes.getUserMedia).not.toHaveBeenCalled();
+    });
+});

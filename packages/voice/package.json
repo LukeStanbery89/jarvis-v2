@@ -11,6 +11,8 @@
         "build": "tsc",
         "typecheck": "tsc --noEmit -p tsconfig.test.json",
         "test": "vitest run",
+        "fixtures": "node scripts/make-fixtures.mjs",
+        "probe:wake": "node scripts/probe-wake-latency.mjs",
         "prepublishOnly": "npm run build"
     },
     "repository": {

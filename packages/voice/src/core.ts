@@ -31,6 +31,16 @@ export interface VoiceCore {
     unschedule(handle: unknown): void;
     /** The controller's debug sink (a no-op unless the caller supplied one). */
     log(message: string, error?: unknown): void;
+    /**
+     * The submit-time trace for a session whose transcript was transformed
+     * (wake sessions strip the phrase): the recognition engine's raw text and
+     * the exact prompt submitted. A deliberate second channel beside `log` so
+     * a client can keep ordinary debug lines free of transcript text — real
+     * user speech — while still making "what was heard" vs "what was sent"
+     * diagnosable (issue #121, lesson 6). A no-op unless the caller supplied
+     * one.
+     */
+    traceTranscript(raw: string, submitted: string): void;
     /** Whether the controller has been disposed. */
     isDisposed(): boolean;
     /** Stops the shared VAD; safe when none is configured or already stopped. */

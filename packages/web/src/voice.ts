@@ -133,12 +133,18 @@ export function wakeAssetBaseUrl(
  * cannot reach. The `wasmPath` is the directory ORT fetches its
  * `ort-wasm-simd-threaded.jsep.*` pair from (a prefix, not a file URL).
  *
+ * @param options.log - Debug sink (the detector reports how much of the
+ *   command a match had to recover from its prediction queue — the #121
+ *   backlog signal).
  * @returns The provider, or `null` when unsupported.
  */
-export function createWakeWord(): WakeWordProvider | null {
+export function createWakeWord(
+    options: { log?: (message: string, error?: unknown) => void } = {},
+): WakeWordProvider | null {
     return createOpenWakeWord({
         wasmPath: wakeAssetBaseUrl(),
         workletUrl: `${wakeAssetBaseUrl()}mic-worklet.js`,
+        log: options.log,
     });
 }
 

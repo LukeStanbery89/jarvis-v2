@@ -1,0 +1,163 @@
+# Wake→command corpus (issue #121)
+
+Audio fixtures the wake→command path is verified against. The redesign's
+acceptance gate is "replayed recordings of real utterances transcribe clean"
+(#121, lesson 3) — these files are that gate's data.
+
+## Layout
+
+| Path     | Provenance                               | Committed           |
+| -------- | ---------------------------------------- | ------------------- |
+| `*.wav`  | Synthetic, macOS `say`                   | yes                 |
+| `real/`  | Real recordings (the maintainer's voice) | yes                 |
+| `local/` | Anything private — a scratch area        | **no** (gitignored) |
+
+The Tier A corpus test (`test/wakeCorpus.test.ts`) decodes all of it with the
+package's dependency-free WAV codec, so everything committed is **16 kHz mono
+16-bit PCM WAV**. The browser harness (`/web/?voice-harness=1`) decodes
+anything the browser supports — an iPhone voice memo's `.m4a` can be replayed
+as-is, without conversion.
+
+## Synthetic fixtures (`*.wav`)
+
+Generated from text with macOS `say` (a _synthetic_ speaker — no personal
+data). Regenerate with `npm run fixtures` from this package; see
+`scripts/make-fixtures.mjs` for the exact text and provenance.
+
+| File                     | Shape                                                | Why it exists                                                                                                                             |
+| ------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `one-breath.wav`         | "Hey Jarvis, turn on the living room light"          | Phrase + command in one breath — the case the look-back ring was added to protect, and the one where clipping the first word is the risk. |
+| `pause-then-command.wav` | "Hey Jarvis" + 900 ms silence + "what's the weather" | The 2026-10-14 failure shape: the pause the ASR hallucinated over ("he during a journalist …").                                           |
+| `phrase-only.wav`        | "Hey Jarvis"                                         | Waking and saying nothing must submit no prompt.                                                                                          |
+| `command-only.wav`       | "what's the weather"                                 | Drives the STT directly, with no detector match, for transcription-quality checks.                                                        |
+| `silence.wav`            | 1.5 s of silence                                     | Pure silence before/without speech must submit no prompt.                                                                                 |
+
+## Real recordings (`real/`)
+
+The same five shapes recorded in the maintainer's voice on an iPhone (48 kHz
+AAC), converted to 16 kHz mono WAV so the Node corpus test can decode them.
+They are committed **deliberately**: the 2026-10-14 failure is an ASR mangling
+of real acoustics (a token inserted over the pause) that synthetic speech does
+not produce, so only a real recording can reproduce the class the redesign
+exists to eliminate. The recordings are the maintainer's own speech, published
+in a public repository by the maintainer's decision; a contributor who does
+not want to publish a recording uses `local/` instead.
+`real/pause-then-command.wav` carries a genuine ~1.2 s quiet gap between the
+phrase and the command (asserted from the audio by `findPause` in the corpus
+test) — the failure's exact shape.
+
+## What the corpus has shown (#121 phase 1)
+
+Replayed through the real local Vosk engine (`?voice-harness=1`), the
+**synthetic** set transcribes cleanly in _both_ columns, including today's
+"full" one:
+
+| fixture              | full (phrase + pause)                                                             | post-match              |
+| -------------------- | --------------------------------------------------------------------------------- | ----------------------- |
+| `pause-then-command` | `"they jarvis what's the weather"` → `"what's the weather"`                       | `"what's the weather"`  |
+| `one-breath`         | `"they jarvis turn on the living room light"` → `"turn on the living room light"` | same                    |
+| `phrase-only`        | `"they jarvis"` → `""` (no prompt)                                                | (shorter than the skip) |
+
+Synthetic audio mangles the phrase into a **clean one-token** form (`"they
+jarvis"`), which the fuzzy stripper handles — which is why the real set
+exists.
+
+The real recordings then exposed the actual defect, which no `full`-clip run
+could show because it lives in the **splice**, not in the transcription: the
+detector's buffer was never emptied at the match, so the controller joined the
+match-time window with the buffer drained at session open and fed the phrase
+to the engine **twice** (verified in production: `raw="hey jarvis hey jarvis
+what's the weather"`, `submitted="hey jarvis what's the weather"` — see #121).
+Phase 2 stage A emptied the buffer at the match (asserted by
+`test/wakeCorpus.test.ts` and `test/openWakeWord.test.ts`); the section below
+is what the production re-test of that change showed.
+
+Two harness-side lessons remain, both recorded in
+`packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the
+worker decodes silently truncates the utterance's tail at flush time, and the
+provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a
+lump of replayed audio).
+
+### The A/B baseline ("informs the design, is not the fix")
+
+The pre-redesign path is recorded in-repo rather than by rebuilding a
+historical branch: at `b420d18` (phase 1 — corpus and harness first) this same
+corpus was driven through that architecture, and `test/wakeCorpus.test.ts`
+asserted what it did. All 16 tests were green, and three of them pin the
+defects the redesign removes:
+
+| baseline assertion                                             | pinned behavior                                                                                                                    |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `pins the phrase into the wake engine's stream`                | the **first sample** the engine receives is the recording's first sample — the phrase                                              |
+| `the production splice replays the phrase twice on real audio` | on `real/pause-then-command.wav`, `fed.pcm[lookback.length]` equals the ring's first sample, and the phrase's RMS is in the stream |
+| `pins the mangled-phrase class reaching the prompt`            | `"he during a journalist what's the weather"` submits verbatim — a positional matcher cannot repair an inserted token              |
+
+The 10-13 commits (#104/#107/#110) were refactors of this same path, and phase
+1's production run on the then-current build reproduced the same class (the
+`raw`/`submitted` table in #121), so the baseline stands for "what the path did
+before the redesign" without a separate historical build. This file's current
+assertions are the inverse on the same fixtures — the stream starts at the
+match, `fed[0] === audio.pcm[matchSample]`, nothing is repeated — which is the
+acceptance ("cannot reach the prompt by construction") in executable form.
+
+## What the corpus has shown (#121)
+
+Stage A (the buffer emptied at the match; the session seeded with post-match
+audio only) removed the reported defect on **real production audio**: six wake
+turns, no doubled phrase, no stray "Hey JARVIS" in any prompt, and the
+pause-then-command shape clean (`raw="what's the weather"`, `submitted`
+identical).
+
+Stage B (the detector streamed into the session's engine) then exposed the
+real shape of the one-breath problem, and a Node probe of the detector over
+these fixtures pinned it down. `npm run probe:wake <fixture.wav>` replays one
+through the same pipeline the browser uses and prints, per 80 ms frame, the
+audio RMS, the detector's score, and where the session's stream starts. On the
+real pair:
+
+| fixture              | phrase speech ends | score crosses 0.5 | stream starts | command speech starts |
+| -------------------- | ------------------ | ----------------- | ------------- | --------------------- |
+| `one-breath`         | ~640 ms            | 800 ms            | **640 ms**    | 960 ms                |
+| `pause-then-command` | ~640 ms            | 880 ms            | **720 ms**    | 2000 ms               |
+
+Three facts fall out of that, and together they are the design:
+
+1. The detector is **not** late relative to the phrase. The score ramps up over
+   the phrase's final frames and plateaus for ~500 ms; the 0.5 crossing is
+   ~1–3 frames into that plateau, i.e. **at or after the phrase's end**. Cutting
+   at the _ramp's onset_ — the last frame still at the noise floor, plus one —
+   is what the provider does, and it lands exactly at the phrase's speech end.
+2. The plateau exists because the feature pipeline reaches the phrase only
+   after ingesting the audio that _followed_ it. So by the time the match
+   fires, the frames after the phrase are already captured. Cutting at the
+   crossing (as stage B did) throws the plateau's first frames away, and with
+   them the first word of a command spoken in the same breath — the production
+   symptom was `raw="time is it"` for "what time is it". Cutting at the onset
+   keeps them.
+3. The score is **level-independent**: scaling the input by 0.25
+   (`… one-breath.wav 0.5 0.25`) moves the crossing by less than a frame and
+   leaves the ramp where it is, so the floor is a stable constant rather than a
+   tuned threshold. A _run_ of quiet frames (`CUT_RUN_FRAMES`) is required, so
+   the odd mid-command dip cannot be mistaken for the boundary.
+
+A fourth check comes from splicing the pause out of `one-breath.wav` (the
+phrase's tail running straight into the command — the fast-speech shape, built
+from the same recording): the cut still lands on the command's first frame
+(640 ms, the splice point), so a gapless utterance loses nothing either.
+
+The frames themselves are never dropped — scoring runs over a FIFO, because
+the feature extractor is streaming and a skipped frame shifts every later score
+— so the buffer that holds the backlog is also the buffer the match cuts from.
+It keeps only the cut's search window plus the unscored backlog, and reports
+itself behind only when that backlog exceeds ten seconds.
+`test/openWakeWord.test.ts` pins the queue, the onset cut, the run requirement,
+the fallback, the backlog warning, and the live stream; `test/wakeCorpus.test.ts`
+pins the routing into the engine (frames start at the match, contiguous,
+phrase-free, nothing repeated).
+
+## `local/` (not committed)
+
+A gitignored scratch area for recordings that should stay private: raw phone
+originals (`local/source/*.m4a`), someone else's voice, or a work-in-progress
+take. The harness reads `local/` files like any other; nothing here is
+committed.

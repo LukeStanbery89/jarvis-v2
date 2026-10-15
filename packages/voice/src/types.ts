@@ -90,14 +90,36 @@ export interface SttStartOptions {
      */
     readonly continuous?: boolean;
     /**
-     * Caller audio to recognize before live capture begins: the wake
-     * detector's look-back ring (the phrase plus the command's opening) or
-     * the barge-in watch's interrupted opening. Riding `start()` — instead
-     * of a post-start `feed()` call — guarantees the order: the engine's
-     * own microphone is not delivering until `start()` resolves, so the
-     * replay can never interleave out of order with already-live chunks
-     * (out-of-order audio garbles a streaming decoder). Engines that
-     * cannot take caller audio ignore it and start at the live mic.
+     * Where this session's audio comes from (issue #121). `"mic"` (the
+     * default) is the engine's own microphone; `"external"` means the engine
+     * must **not** open a microphone and will receive every sample through
+     * {@link SttProvider.feed} — the mode the offline replay harness uses to
+     * run a recorded utterance through the real engine, and the mode the
+     * wake→command redesign uses to feed the detector's own capture.
+     * Engines that take no caller audio at all ignore the option and keep
+     * their own microphone (Web Speech). An engine that *can* take it honors
+     * the flag or rejects the `start()` — the WASM engine rejects an unusable
+     * sample rate rather than silently falling back to its own microphone.
+     */
+    readonly source?: "mic" | "external";
+    /**
+     * The sample rate external audio arrives at, when
+     * {@link SttStartOptions.source} is `"external"`. The recognizer is
+     * created at this rate so no rate flip ever recreates it mid-session
+     * (a recreation discards recognition state — the "spotty transcription"
+     * failure). Defaults to 16 kHz, the wake detector's convention.
+     */
+    readonly sampleRate?: number;
+    /**
+     * Caller audio to recognize before live capture begins: the barge-in
+     * watch's interrupted opening (#84 P6). Riding `start()` — instead of a
+     * post-start `feed()` call — guarantees the order: the engine's own
+     * microphone is not delivering until `start()` resolves, so the replay can
+     * never interleave out of order with already-live chunks (out-of-order
+     * audio garbles a streaming decoder). Engines that cannot take caller
+     * audio ignore it and start at the live mic. Wake sessions do **not** use
+     * this: their command audio arrives frame by frame through `feed()` from
+     * the detector's own microphone (#121).
      */
     readonly feed?: {
         readonly pcm: Float32Array;
@@ -128,13 +150,14 @@ export interface SttStartOptions {
  *   a wake word opens without the download/load stall. It never rejects the
  *   caller — a failure surfaces at the next `start()` instead.
  * - An optional `feed(pcm, sampleRate)` hands the engine raw mono PCM audio
- *   *without* opening the microphone (wake-word providers do exactly that).
- *   Implementations that capture from their own held mic reject or ignore
- *   it; those that take caller-supplied audio (the WASM engine backing wake
- *   sessions) accept it while `running`. It is the seam that replays the
- *   look-back buffer captured by a wake-word detector ("Hey JARVIS, turn on
- *   the lights") into a session that opened without hearing the phrase
- *   itself (issue #84, phase 4).
+ *   *without* its own microphone: a wake session streams the detector's live
+ *   command frames through it (`source: "external"`, #121) — the stream starts
+ *   at the phrase's end, never at the match — and a barge-in session replays
+ *   its look-back ring. Implementations that capture from their own held mic
+ *   reject or ignore it; those that take caller-supplied audio (the WASM
+ *   engine backing wake sessions) accept it while `running`. It is what lets
+ *   "Hey JARVIS, turn on the lights" reach the recognizer with the wake phrase
+ *   excluded — the audio starts where the phrase ends.
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
@@ -181,9 +204,8 @@ export interface SttProvider {
      * Feeds caller-supplied mono PCM audio into an active session, instead of
      * opening the microphone. Optional, and only meaningful while `running`:
      * the WASM engine backing wake-word sessions implements it so a wake
-     * session can begin by replaying the detector's look-back buffer (the
-     * command spoken in the same breath as the wake phrase), then continue
-     * on live mic frames. Engines that owe their own mic (Web Speech) omit it.
+     * session's command audio arrives frame by frame from the detector's own
+     * microphone (#121). Engines that owe their own mic (Web Speech) omit it.
      *
      * @param pcm - Interleaved mono PCM samples, normalized to `[-1, 1]`.
      * @param sampleRate - The sample rate the PCM was captured at.
@@ -193,36 +215,42 @@ export interface SttProvider {
 }
 
 /**
- * What a wake-word detector saw. The look-back buffer that retains audio
- * spoken in the same breath as the wake phrase ("Hey JARVIS, turn on the
- * lights") is carried here so a wake session can replay it into the STT
- * engine via {@link SttProvider.feed}; a detector that cannot retain audio
- * simply omits it. When present it is mono PCM normalized to `[-1, 1]`
- * (the openWakeWord mic's framing convention is 16 kHz, issue #84, phase 4).
+ * What a wake-word detector saw. The audio that *followed* the match — the
+ * command — is not carried here: it streams through
+ * {@link WakeCallbacks.onCommandAudio} on the detector's own microphone, so
+ * the detection itself stays a plain notification (#121).
  */
 export interface WakeDetection {
     /** Engine-reported match strength, when the engine provides one. */
     readonly confidence?: number;
-    /**
-     * The mono audio that preceded the wake phrase, for replay into the STT
-     * engine that opens the session. Optional; engines that cannot retain it
-     * omit it, and the session simply starts at the wake phrase. Paired with
-     * {@link WakeDetection.lookbackSampleRate}, which defaults to 16 kHz.
-     */
-    readonly lookback?: Float32Array;
-    /**
-     * The sample rate {@link WakeDetection.lookback} was captured at. Omit
-     * to assume the 16 kHz openWakeWord convention; a detector that captures
-     * at another rate must report it so the replay is not resampled wrongly
-     * (#104).
-     */
-    readonly lookbackSampleRate?: number;
 }
 
 /** Per-listener callbacks handed to {@link WakeWordProvider.start}. */
 export interface WakeCallbacks {
     /** The wake phrase matched; the client should begin a voice session. */
     readonly onWake: (detection: WakeDetection) => void;
+    /**
+     * The detector's audio **from the phrase's end onward** — the command,
+     * streamed frame by frame on the same microphone that heard the phrase,
+     * until the detector is stopped (#121). Because nothing before that cut is
+     * ever delivered and the frames are contiguous, the wake session's engine
+     * runs microphone-free over exactly this stream: the phrase's audio has no
+     * path to it, and there is no handoff to a second microphone to splice or
+     * clip.
+     *
+     * Deliveries start at the score's **onset** — the last frame still at the
+     * noise floor, plus one, which the model's ramp puts at the phrase's end —
+     * so they include the command's opening rather than starting a frame or
+     * two into it. When no quiet frame is in the search window the crossing
+     * frame itself is the cut, and it is emitted. Deliveries continue until
+     * `stop()`: a detector that has fired stops predicting, so the stream is
+     * the command alone however long it takes the session to open.
+     * `sampleRate` is the detector's capture rate (16 kHz for openWakeWord).
+     *
+     * Optional: a detector with no streaming capture omits it, in which case a
+     * wake session falls back to its engine's own microphone and behavior.
+     */
+    readonly onCommandAudio?: (pcm: Float32Array, sampleRate: number) => void;
     /** The detector failed (e.g. unsupported on this hardware). */
     readonly onError?: (error: VoiceError) => void;
 }
@@ -241,25 +269,13 @@ export interface WakeWordProvider {
     /**
      * Arms detection.
      *
-     * @param callbacks - Where matches are delivered.
+     * @param callbacks - Where matches (and, when supported, the live
+     * command audio) are delivered.
      * @returns Resolves once the engine is listening for the wake phrase.
      */
     start(callbacks: WakeCallbacks): Promise<void>;
     /** Disarms detection; no callback fires after the returned promise resolves. */
     stop(): Promise<void>;
-    /**
-     * Hands back the detector's current look-back ring — the last ~2 seconds
-     * of 16 kHz mono float PCM, ending **now**, not at match time (the ring
-     * keeps capturing until `stop()`, so the window includes whatever the
-     * user said after the phrase while the session's own microphone was
-     * still opening). A wake session replays this through
-     * {@link SttStartOptions.feed} so the opening words survive the handoff.
-     * Callers drain BEFORE `stop()`, which discards the ring.
-     *
-     * Optional: detectors without a ring (or with nothing recorded) omit it
-     * or return `null`. The 16 kHz rate is the look-back convention.
-     */
-    drainPostMatch?(): Float32Array | null;
 }
 
 /** Per-listener callbacks handed to {@link VadProvider.start}. */

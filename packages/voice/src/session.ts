@@ -16,7 +16,15 @@
  *   `onSpeechEnd` arms {@link END_OF_SPEECH_MS}, and the expiry flushes the
  *   engine and submits the accumulated transcript. A manual press routes
  *   through the same pipeline.
- * - Without a VAD the engine's own endpointing is used: the final is the
+ * - In a **wake** session (`external`, #121) the engine runs without a
+ *   microphone over the detector's live command frames
+ *   ({@link VoiceSession.pushCommandAudio}) and endpoints on its own silence
+ *   detection: the first non-empty final is the whole command. A leading
+ *   pause is harmless — an empty final is ignored — but because there is no
+ *   VAD to bound the wait, the session also arms {@link NO_SPEECH_MS} (woke
+ *   up and said nothing ⇒ quiet idle) and {@link MAX_COMMAND_MS} (a command
+ *   that never pauses ⇒ flush what was heard).
+ * - Otherwise the engine's own endpointing is used: the final is the
  *   whole transcript, a second press stops-and-flushes, and no timer is
  *   armed. Silence is quiet — {@link NO_SPEECH_MS} ends the session with
  *   `cancel()` and the reducer's `noSpeech`, no error banner.
@@ -47,6 +55,27 @@ export const END_OF_SPEECH_MS = 800;
  */
 export const NO_SPEECH_MS = 4000;
 
+/**
+ * Hard bound on a wake session's command (#121). A wake session has no VAD,
+ * so it relies on the engine's own silence detection to end the utterance;
+ * this caps a command that never pauses (a monologue, or noise the engine
+ * keeps decoding) by flushing whatever was heard. Comfortably longer than a
+ * spoken command, so the normal path is always the engine's final.
+ */
+export const MAX_COMMAND_MS = 15000;
+
+/**
+ * How much command audio a wake session holds before its engine takes it
+ * (#121). Bounded at ten seconds — the same order as the detector's own
+ * backlog cap (`MAX_BACKLOG_FRAMES` in the openWakeWord provider, which can
+ * hand over that much plus the cut's search window in one match), so the
+ * bound never truncates an opening the detector recovered; in practice the
+ * engine is up in milliseconds and only a frame or two is ever held. The
+ * oldest frames are dropped past the cap. Exported so the controller's
+ * pre-session buffer (the wake cue window) uses the same bound.
+ */
+export const MAX_PENDING_COMMAND_SAMPLES = 10 * 16000;
+
 /** Construction options for {@link VoiceSession}. */
 export interface VoiceSessionOptions {
     /** The reducer session id every event is tagged with. */
@@ -59,6 +88,14 @@ export interface VoiceSessionOptions {
     readonly wakePhrase: string;
     /** Submits the final transcript as a chat turn. */
     readonly submit: VoiceSubmit;
+    /**
+     * Set for a **wake** session (#121): the engine runs microphone-free
+     * (`source: "external"`) over the detector's live command frames, fed
+     * through {@link VoiceSession.pushCommandAudio} at this sample rate.
+     * Endpointing is the engine's own silence detection, guarded by
+     * {@link NO_SPEECH_MS} and {@link MAX_COMMAND_MS}.
+     */
+    readonly external?: { readonly sampleRate: number };
 }
 
 /**
@@ -72,8 +109,23 @@ export class VoiceSession {
     private readonly sessionId: number;
     private readonly fromWake: boolean;
     private readonly wakePhrase: string;
+    /**
+     * The wake-session external-audio mode (#121), or `null` for every other
+     * session. Non-null means the engine has no microphone and every sample
+     * arrives through {@link VoiceSession.pushCommandAudio}.
+     */
+    private readonly external: { readonly sampleRate: number } | null;
     /** Whether the controller owns endpointing (the VAD armed for it). */
     private vadOwned = false;
+    /**
+     * Command frames that arrived while the engine was still opening (a wake
+     * session, #121), in order. Poured into the engine the moment capture goes
+     * live, so the command's opening is never lost; bounded by
+     * {@link MAX_PENDING_COMMAND_SAMPLES}.
+     */
+    private pendingAudio: Array<{ pcm: Float32Array; sampleRate: number }> = [];
+    /** Sample count in {@link pendingAudio}, for the bound. */
+    private pendingAudioSamples = 0;
     /**
      * Final segments accumulated during a continuous (VAD-owned) session.
      * In continuous capture the engine may deliver a final per spoken
@@ -102,10 +154,13 @@ export class VoiceSession {
     private noSpeechTimer: unknown = null;
     /** Pending end-of-speech timer; `null` when not pending. */
     private endOfSpeechTimer: unknown = null;
+    /** Pending wake-command bound (#121); `null` when not pending. */
+    private commandTimer: unknown = null;
 
     /**
      * @param core - The shared context (reducer, timers, VAD, log).
-     * @param options - The session id, engine, wake flag, and submit seam.
+     * @param options - The session id, engine, wake flag, external-audio
+     * mode, and submit seam.
      */
     constructor(core: VoiceCore, options: VoiceSessionOptions) {
         this.core = core;
@@ -114,6 +169,7 @@ export class VoiceSession {
         this.sessionId = options.sessionId;
         this.fromWake = options.fromWake;
         this.wakePhrase = options.wakePhrase;
+        this.external = options.external ?? null;
     }
 
     /** The reducer session id this session owns. */
@@ -127,12 +183,60 @@ export class VoiceSession {
     }
 
     /**
+     * Whether this session is a live wake session that consumes the detector's
+     * command frames (#121). The controller routes frames with it: push while
+     * true, hold while the session is still opening, drop otherwise.
+     *
+     * @returns True when this is the live listening external session.
+     */
+    acceptsCommandAudio(): boolean {
+        return (
+            this.external !== null &&
+            this.core.snapshot().sessionId === this.sessionId &&
+            this.core.snapshot().state === "listening"
+        );
+    }
+
+    /**
+     * Feeds one frame of the detector's post-match command audio (#121). While
+     * the engine is still opening the frame is held (bounded) and poured in
+     * order once capture is live, so the command's opening survives the model
+     * load; after that it goes straight to the engine. Frames arriving once
+     * the session stopped listening are dropped, so a finished turn's tail can
+     * never leak into the next command.
+     *
+     * @param pcm - Mono PCM samples normalized to `[-1, 1]`.
+     * @param sampleRate - The rate the detector captured `pcm` at.
+     */
+    pushCommandAudio(pcm: Float32Array, sampleRate: number): void {
+        if (!this.acceptsCommandAudio()) {
+            return;
+        }
+        if (this.engine.state === "running") {
+            this.engine.feed?.(pcm, sampleRate);
+            return;
+        }
+        this.pendingAudio.push({ pcm, sampleRate });
+        this.pendingAudioSamples += pcm.length;
+        while (
+            this.pendingAudioSamples > MAX_PENDING_COMMAND_SAMPLES &&
+            this.pendingAudio.length > 0
+        ) {
+            const dropped = this.pendingAudio.shift();
+            if (dropped !== undefined) {
+                this.pendingAudioSamples -= dropped.pcm.length;
+            }
+        }
+    }
+
+    /**
      * Starts the engine and, now that capture is live, arms the endpointing
      * decision (issue #104, race 1 — a cold engine must not have its
      * deadlines tick during the model load).
      *
-     * @param replay - Pre-session audio to feed the engine (a wake
-     * detector's look-back or a barge-in watch's ring), or `null`.
+     * @param replay - Pre-session audio to feed the engine (a barge-in watch's
+     * ring), or `null`. Wake sessions feed their audio live through
+     * {@link VoiceSession.pushCommandAudio} instead.
      * @returns Resolves once the engine is capturing (or failed).
      */
     async start(
@@ -140,21 +244,41 @@ export class VoiceSession {
     ): Promise<void> {
         const startOptions: SttStartOptions = {
             ...(this.vadOwned ? { continuous: true } : {}),
+            ...(this.external !== null
+                ? {
+                      source: "external" as const,
+                      sampleRate: this.external.sampleRate,
+                  }
+                : {}),
             ...(replay !== null ? { feed: replay } : {}),
         };
+        const needsOptions =
+            startOptions.continuous === true ||
+            startOptions.feed !== undefined ||
+            startOptions.source !== undefined;
         try {
             await this.engine.start(
                 this.engineCallbacks(),
-                startOptions.continuous === true ||
-                    startOptions.feed !== undefined
-                    ? startOptions
-                    : undefined,
+                needsOptions ? startOptions : undefined,
             );
+            // Pour the command frames held while the engine opened (#121), in
+            // order and before any later frame.
+            if (this.external !== null && this.pendingAudio.length > 0) {
+                const held = this.pendingAudio;
+                this.pendingAudio = [];
+                this.pendingAudioSamples = 0;
+                for (const chunk of held) {
+                    this.engine.feed?.(chunk.pcm, chunk.sampleRate);
+                }
+            }
+            const mode = this.vadOwned
+                ? "vad-owned endpointing"
+                : this.external !== null
+                  ? "detector-fed command audio"
+                  : "engine-native endpointing";
             this.core.log(
-                `session ${this.sessionId}: listening (${this.vadOwned ? "vad-owned endpointing" : "engine-native endpointing"}${
-                    startOptions.feed !== undefined
-                        ? ", replayed look-back"
-                        : ""
+                `session ${this.sessionId}: listening (${mode}${
+                    replay !== null ? ", replayed look-back" : ""
                 })`,
             );
             // Arm endpointing only now that the engine is actually
@@ -164,14 +288,21 @@ export class VoiceSession {
             // already happened while the engine was starting, honor it
             // instead of arming a "silence" guard.
             if (
-                this.vadOwned &&
                 this.core.snapshot().sessionId === this.sessionId &&
                 this.core.snapshot().state === "listening"
             ) {
-                if (this.deferredSpeechEnd) {
-                    this.armEndOfSpeechTimer();
-                } else if (!this.heardSpeech) {
+                if (this.vadOwned) {
+                    if (this.deferredSpeechEnd) {
+                        this.armEndOfSpeechTimer();
+                    } else if (!this.heardSpeech) {
+                        this.armNoSpeechTimer();
+                    }
+                } else if (this.external !== null) {
+                    // A wake session has no VAD to bound either wait: the
+                    // silence guard covers "woke up and said nothing", the
+                    // command bound a command that never pauses (#121).
                     this.armNoSpeechTimer();
+                    this.armCommandTimer();
                 }
             }
         } catch (err) {
@@ -191,10 +322,11 @@ export class VoiceSession {
      * engine-native stop-and-flush, whose final transcript (if any) arrives
      * through the callbacks.
      *
+     * @param reason - Log label for why capture ended.
      * @returns Resolves once the stop/flush has settled.
      */
-    async finish(): Promise<void> {
-        this.core.log(`session ${this.sessionId}: manual stop requested`);
+    async finish(reason = "manual stop requested"): Promise<void> {
+        this.core.log(`session ${this.sessionId}: ${reason}`);
         if (this.vadOwned && this.core.snapshot().state === "listening") {
             await this.onEndOfSpeechTimeout();
             return;
@@ -208,9 +340,11 @@ export class VoiceSession {
         }
     }
 
-    /** Cancels the session's pending timers (teardown). */
+    /** Cancels the session's pending timers and held audio (teardown). */
     dispose(): void {
         this.clearTimers();
+        this.pendingAudio = [];
+        this.pendingAudioSamples = 0;
     }
 
     /**
@@ -464,6 +598,13 @@ export class VoiceSession {
         });
         const next = this.core.snapshot();
         if (next.state === "submitting" && next.transcript !== null) {
+            // A usable final ends the session's endpointing (an ignored empty
+            // one leaves the guards armed).
+            this.clearTimers();
+            if (this.fromWake) {
+                // #121, lesson 6: what was heard vs what is sent.
+                this.core.traceTranscript(text, next.transcript);
+            }
             this.dispatchTurn(next.transcript);
         }
     }
@@ -484,11 +625,26 @@ export class VoiceSession {
         });
         const next = this.core.snapshot();
         if (next.state === "submitting" && next.transcript !== null) {
+            if (this.fromWake) {
+                // #121, lesson 6: what was heard vs what is sent.
+                this.core.traceTranscript(this.rawText(), next.transcript);
+            }
             this.dispatchTurn(next.transcript);
             return;
         }
         void this.engine.cancel();
         this.core.reduce({ type: "noSpeech", sessionId: this.sessionId });
+    }
+
+    /**
+     * The accumulated final segments as one unmodified transcript text — the
+     * engine's own words, before any wake-phrase stripping. The raw half of
+     * the submit trace (#121, lesson 6).
+     *
+     * @returns The joined text, trimmed; empty when nothing was recognized.
+     */
+    private rawText(): string {
+        return this.finals.join(" ").trim();
     }
 
     /**
@@ -499,7 +655,7 @@ export class VoiceSession {
      * @returns The joined text, trimmed; empty when nothing was recognized.
      */
     private displayText(): string {
-        const text = this.finals.join(" ").trim();
+        const text = this.rawText();
         return this.fromWake ? stripWakePhrase(text, this.wakePhrase) : text;
     }
 
@@ -612,9 +768,45 @@ export class VoiceSession {
         }
     }
 
-    /** Cancels both pending timers (session decision made). */
+    /**
+     * Arms the wake-command bound (#121). No-op while one is already pending.
+     */
+    private armCommandTimer(): void {
+        if (this.commandTimer !== null) {
+            return;
+        }
+        this.commandTimer = this.core.schedule(() => {
+            this.commandTimer = null;
+            void this.onCommandTimeout();
+        }, MAX_COMMAND_MS);
+    }
+
+    /**
+     * The command bound fired (#121): the session has been listening for
+     * {@link MAX_COMMAND_MS} without the engine ending the utterance. Stop
+     * capture and flush — the engine's final (if any) submits through
+     * {@link VoiceSession.onTranscript}; a flush with nothing left ends the
+     * session through the engine's own no-speech path.
+     */
+    private async onCommandTimeout(): Promise<void> {
+        if (!this.acceptsCommandAudio()) {
+            return;
+        }
+        await this.finish("command window elapsed; flushing engine");
+    }
+
+    /** Cancels the pending command bound, if any. */
+    private cancelCommandTimer(): void {
+        if (this.commandTimer !== null) {
+            this.core.unschedule(this.commandTimer);
+            this.commandTimer = null;
+        }
+    }
+
+    /** Cancels all pending timers (session decision made). */
     private clearTimers(): void {
         this.cancelNoSpeechTimer();
         this.cancelEndOfSpeechTimer();
+        this.cancelCommandTimer();
     }
 }

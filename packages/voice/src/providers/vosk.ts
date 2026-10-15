@@ -153,8 +153,8 @@ interface AudioContextLike extends AudioNodeLike {
  * rate differs from the recognizer's.
  *
  * The recognizer is created at the engine `AudioContext`'s sample rate
- * (typically 48 kHz), while replayed audio — the wake look-back ring, the
- * barge-in look-back — is 16 kHz. Feeding a different rate makes the vosk
+ * (typically 48 kHz), while replayed audio — the wake detector's post-match
+ * buffer, the barge-in look-back — is 16 kHz. Feeding a different rate makes the vosk
  * worker *recreate the recognizer*, discarding every bit of recognition
  * state (including the replayed audio itself) and re-flipping on the next
  * live chunk — the "spotty transcription" failure. Resampling here keeps
@@ -358,14 +358,18 @@ export class VoskSttProvider implements SttProvider {
     /**
      * Starts one recognition session: loads the model (cached across
      * sessions), opens the echo-cancelled mic, and feeds the recognizer
-     * through the Web Audio graph.
+     * through the Web Audio graph. With `{ source: "external" }` the
+     * microphone is skipped entirely and the recognizer is created at the
+     * caller's rate — every sample then arrives through
+     * {@link VoskSttProvider.feed} (the #121 caller-audio mode).
      *
      * @param callbacks - Deliveries for this session only.
      * @param options - Per-session capture options. `{ continuous: true }`
      * keeps every recognized segment streaming to `onResult` while capture
      * continues (the VAD-owning controller accumulates and endpoints);
      * without it the first final is the whole transcript and the session
-     * settles after delivering it.
+     * settles after delivering it. `{ source: "external", sampleRate }` runs
+     * without a microphone over `feed()`-supplied audio.
      * @returns Resolves once the engine is capturing.
      */
     async start(
@@ -375,9 +379,10 @@ export class VoskSttProvider implements SttProvider {
         if (this.engineState !== "idle") {
             throw voiceError("engine", "recognition is already active");
         }
+        const external = options?.source === "external";
         const getUserMedia = findUserMedia();
         const contextCtor = findAudioContextCtor<AudioContextLike>();
-        if (getUserMedia === null || contextCtor === null) {
+        if (!external && (getUserMedia === null || contextCtor === null)) {
             throw voiceError(
                 "unsupported",
                 "speech recognition is unavailable in this browser",
@@ -398,6 +403,30 @@ export class VoskSttProvider implements SttProvider {
                 this.debugLog("vosk session cancelled while the model loaded");
                 return;
             }
+            if (external) {
+                // Caller-audio session (#121): no microphone, no
+                // AudioContext — every sample arrives through `feed()`. The
+                // recognizer is created at the caller's rate so a feed at
+                // that rate never flips the worker's recognizer (a flip
+                // discards recognition state, including the replay).
+                const rate = options?.sampleRate ?? 16000;
+                if (!Number.isFinite(rate) || rate <= 0) {
+                    throw voiceError(
+                        "engine",
+                        "external audio needs a positive sample rate",
+                    );
+                }
+                this.recognizer = this.wireRecognizer(model, session, rate);
+                this.sessionSampleRate = rate;
+                this.engineState = "running";
+                return;
+            }
+            if (getUserMedia === null || contextCtor === null) {
+                throw voiceError(
+                    "unsupported",
+                    "speech recognition is unavailable in this browser",
+                );
+            }
             const capture = await openMicContext(
                 getUserMedia,
                 contextCtor,
@@ -410,7 +439,11 @@ export class VoskSttProvider implements SttProvider {
                 this.debugLog("vosk session cancelled while the mic opened");
                 return; // Cancelled while the mic opened.
             }
-            const recognizer = new model.KaldiRecognizer(context.sampleRate);
+            const recognizer = this.wireRecognizer(
+                model,
+                session,
+                context.sampleRate,
+            );
             this.sessionSampleRate = context.sampleRate;
             const source = context.createMediaStreamSource(stream);
             const processor = context.createScriptProcessor(4096, 1, 1);
@@ -425,15 +458,6 @@ export class VoskSttProvider implements SttProvider {
             processor.onaudioprocess = (event) => {
                 this.onAudio(session, event.inputBuffer);
             };
-            recognizer.on("partialresult", (message) => {
-                this.onPartialResult(session, message);
-            });
-            recognizer.on("result", (message) => {
-                this.onFinalResult(session, message);
-            });
-            recognizer.on("error", (message) => {
-                this.onRecognizerError(session, message);
-            });
             wireTrackEnded(stream, () => {
                 this.fail(voiceError("engine", "the microphone track ended"));
             });
@@ -443,7 +467,7 @@ export class VoskSttProvider implements SttProvider {
             this.processor = processor;
             this.gain = gain;
             this.recognizer = recognizer;
-            // Ordered replay (see SttStartOptions.feed): the look-back must
+            // Ordered replay (see SttStartOptions.feed): the seed must
             // reach the recognizer before any live chunk. The processor is
             // wired but the context is still suspended — nothing live has
             // been delivered — so feeding here keeps the decoder's feature
@@ -560,9 +584,9 @@ export class VoskSttProvider implements SttProvider {
     /**
      * Feeds caller-supplied mono PCM into the active recognizer, reopening
      * the session's audio source — the seam a wake session uses to replay
-     * the detector's look-back buffer (16 kHz float PCM, "Hey JARVIS, turn
-     * on the lights") before live mic frames continue. Vosk resamples
-     * internally, so the look-back's 16 kHz is accepted as-is.
+     * the detector's post-match buffer (16 kHz float PCM — the command's
+     * opening, never the phrase, #121) before live mic frames continue. Vosk
+     * resamples internally, so the 16 kHz seed is accepted as-is.
      *
      * Silently ignored while no session is running; the session's own
      * live audio keeps flowing regardless.
@@ -576,7 +600,7 @@ export class VoskSttProvider implements SttProvider {
             return;
         }
         // Resample to the recognizer's rate: the worker recreates the
-        // recognizer on any rate flip (the wake/barge look-back replay is
+        // recognizer on any rate flip (the wake/barge seed is
         // 16 kHz; the recognizer runs at the context rate, typically
         // 48 kHz), and a recreation drops every accumulated result — the
         // replayed opening of the utterance included.
@@ -677,6 +701,34 @@ export class VoskSttProvider implements SttProvider {
                 });
         }
         return this.modelPromise;
+    }
+
+    /**
+     * Creates a recognizer at the given rate and wires its per-session
+     * listeners (all tagged to `session`, so a stale delivery is dropped).
+     * Shared by the microphone path and the caller-audio path (#121).
+     *
+     * @param model - The loaded model.
+     * @param session - The session the recognizer belongs to.
+     * @param sampleRate - The rate the recognizer is created at.
+     * @returns The wired recognizer.
+     */
+    private wireRecognizer(
+        model: ModelLike,
+        session: number,
+        sampleRate: number,
+    ): RecognizerLike {
+        const recognizer = new model.KaldiRecognizer(sampleRate);
+        recognizer.on("partialresult", (message) => {
+            this.onPartialResult(session, message);
+        });
+        recognizer.on("result", (message) => {
+            this.onFinalResult(session, message);
+        });
+        recognizer.on("error", (message) => {
+            this.onRecognizerError(session, message);
+        });
+        return recognizer;
     }
 
     /**

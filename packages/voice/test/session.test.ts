@@ -12,7 +12,12 @@ import { describe, expect, it } from "vitest";
 import type { VoiceCore } from "../src/core";
 import { initialVoiceSnapshot, reduceVoice } from "../src/lifecycle";
 import type { VoiceSnapshot } from "../src/lifecycle";
-import { END_OF_SPEECH_MS, NO_SPEECH_MS, VoiceSession } from "../src/session";
+import {
+    END_OF_SPEECH_MS,
+    MAX_COMMAND_MS,
+    NO_SPEECH_MS,
+    VoiceSession,
+} from "../src/session";
 import type {
     SttCallbacks,
     SttProvider,
@@ -29,6 +34,8 @@ class FakeStt implements SttProvider {
     stopCalls = 0;
     cancelCalls = 0;
     lastOptions: SttStartOptions | undefined;
+    /** Every `feed()` chunk, in order (#121). */
+    fed: Array<{ pcm: Float32Array; sampleRate: number }> = [];
     /** Rejects the next `start()` when set. */
     startError: VoiceError | null = null;
     /** Delivered as a final result when `stop()` flushes (engine vendors do). */
@@ -68,6 +75,10 @@ class FakeStt implements SttProvider {
         this.callbacks = null;
     }
 
+    feed(pcm: Float32Array, sampleRate: number): void {
+        this.fed.push({ pcm, sampleRate });
+    }
+
     emitPartial(text: string): void {
         this.callbacks?.onPartial?.(text);
     }
@@ -86,6 +97,8 @@ interface Harness {
     core: VoiceCore;
     /** Submissions recorded, in order. */
     submitted: string[];
+    /** Raw-vs-submitted traces recorded, in order (#121). */
+    traces: Array<{ raw: string; submitted: string }>;
     /** Reject the next submission when set. */
     rejectNext: { value: boolean };
     snapshot(): VoiceSnapshot;
@@ -111,9 +124,11 @@ function harness(options?: {
     vadOwned?: boolean;
     submit?: (text: string) => Promise<void>;
     idle?: boolean;
+    external?: { sampleRate: number };
 }): Built {
     const stt = new FakeStt();
     const submitted: string[] = [];
+    const traces: Array<{ raw: string; submitted: string }> = [];
     const rejectNext = { value: false };
     let stopVadCalls = 0;
     let snapshot = options?.idle
@@ -137,6 +152,9 @@ function harness(options?: {
             timers.delete(handle as number);
         },
         log: () => {},
+        traceTranscript: (raw, submittedText) => {
+            traces.push({ raw, submitted: submittedText });
+        },
         isDisposed: () => false,
         stopVad: async () => {
             stopVadCalls += 1;
@@ -157,11 +175,15 @@ function harness(options?: {
         fromWake: options?.fromWake ?? false,
         wakePhrase: options?.wakePhrase ?? "Hey JARVIS",
         submit,
+        ...(options?.external !== undefined
+            ? { external: options.external }
+            : {}),
     });
     const h: Harness = {
         stt,
         core,
         submitted,
+        traces,
         rejectNext,
         snapshot: () => snapshot,
         setSnapshot: (next) => {
@@ -188,6 +210,11 @@ async function drain(): Promise<void> {
     for (let i = 0; i < 8; i += 1) {
         await Promise.resolve();
     }
+}
+
+/** Rounds a sample to the precision `Float32Array` round-trips readably at. */
+function round3(value: number): number {
+    return Number(value.toFixed(3));
 }
 
 describe("VoiceSession VAD-owned endpointing", () => {
@@ -291,6 +318,38 @@ describe("VoiceSession engine-native endpointing", () => {
         expect(h.submitted).toEqual(["good morning"]);
     });
 
+    it("traces the raw transcript against the stripped submission (#121)", async () => {
+        // Lesson 6: "what was heard" vs "what was sent" must be recoverable
+        // from the seam, so a mangled phrase is diagnosable without a repro.
+        const { h, session } = harness({ fromWake: true });
+        await session.start(null);
+        h.stt.emitResult("hey jarvis how's the weather");
+        await drain();
+        expect(h.traces).toEqual([
+            {
+                raw: "hey jarvis how's the weather",
+                submitted: "how's the weather",
+            },
+        ]);
+    });
+
+    it("traces the accumulated segments in a VAD-owned wake session (#121)", async () => {
+        const { h, session } = harness({ fromWake: true });
+        session.setVadOwned(true);
+        await session.start(null);
+        h.stt.emitResult("Hey JARVIS");
+        h.stt.emitResult("turn on the lights");
+        await session.finish();
+        await drain();
+        expect(h.submitted).toEqual(["turn on the lights"]);
+        expect(h.traces).toEqual([
+            {
+                raw: "Hey JARVIS turn on the lights",
+                submitted: "turn on the lights",
+            },
+        ]);
+    });
+
     it("manual finish stops the engine and flushes its final", async () => {
         const { h, session } = harness();
         await session.start(null);
@@ -306,6 +365,111 @@ describe("VoiceSession engine-native endpointing", () => {
         await drain();
         expect(h.snapshot().state).toBe("idle");
         expect(h.snapshot().error).toMatchObject({ code: "rejected" });
+    });
+});
+
+describe("VoiceSession external (wake) capture (#121)", () => {
+    it("opens microphone-free at the detector's rate", async () => {
+        const { h, session } = harness({ external: { sampleRate: 16000 } });
+        await session.start(null);
+        expect(h.stt.lastOptions).toEqual({
+            source: "external",
+            sampleRate: 16000,
+        });
+    });
+
+    it("holds command frames until the engine is running, in order", async () => {
+        const { h, session } = harness({ external: { sampleRate: 16000 } });
+        // The engine is mid-open (cold model load) when the detector's first
+        // frames land: they must survive, because the command's opening is in
+        // them (#121).
+        h.stt.state = "starting";
+        session.pushCommandAudio(Float32Array.from([0.1]), 16000);
+        session.pushCommandAudio(Float32Array.from([0.2]), 16000);
+        session.pushCommandAudio(Float32Array.from([0.3]), 16000);
+        expect(h.stt.fed).toEqual([]);
+        h.stt.state = "idle";
+        await session.start(null);
+        expect(
+            h.stt.fed.map((chunk) => Array.from(chunk.pcm).map(round3)),
+        ).toEqual([[0.1], [0.2], [0.3]]);
+    });
+
+    it("feeds frames straight through once running", async () => {
+        const { h, session } = harness({ external: { sampleRate: 16000 } });
+        await session.start(null);
+        session.pushCommandAudio(Float32Array.from([0.4]), 16000);
+        expect(
+            h.stt.fed.map((chunk) => Array.from(chunk.pcm).map(round3)),
+        ).toEqual([[0.4]]);
+    });
+
+    it("drops frames once the session is no longer listening", async () => {
+        const { h, session } = harness({
+            external: { sampleRate: 16000 },
+            fromWake: true,
+        });
+        await session.start(null);
+        session.pushCommandAudio(Float32Array.from([0.5]), 16000);
+        h.stt.emitResult("what time is it");
+        await drain();
+        session.pushCommandAudio(Float32Array.from([0.6]), 16000);
+        expect(h.stt.fed).toHaveLength(1);
+    });
+
+    it("ignores a frame on a non-external session", async () => {
+        const { h, session } = harness();
+        await session.start(null);
+        session.pushCommandAudio(Float32Array.from([0.7]), 16000);
+        expect(h.stt.fed).toEqual([]);
+    });
+
+    it("submits the engine's final on its own silence detection", async () => {
+        const { h, session } = harness({
+            external: { sampleRate: 16000 },
+            fromWake: true,
+        });
+        await session.start(null);
+        // Two guards are armed: the silence guard and the command bound.
+        expect(h.pendingTimerCount()).toBe(2);
+        h.stt.emitResult("hey jarvis what time is it");
+        await drain();
+        expect(h.submitted).toEqual(["what time is it"]);
+        expect(h.pendingTimerCount()).toBe(0);
+    });
+
+    it("ignores an empty final, so a leading pause cannot end the command", async () => {
+        const { h, session } = harness({ external: { sampleRate: 16000 } });
+        await session.start(null);
+        h.stt.emitResult("");
+        await drain();
+        expect(h.snapshot().state).toBe("listening");
+        expect(h.submitted).toEqual([]);
+        expect(h.stt.cancelCalls).toBe(0);
+        // The guards are still armed: the command may yet follow the pause.
+        expect(h.pendingTimerCount()).toBe(2);
+    });
+
+    it("ends quietly when the phrase heard nothing", async () => {
+        const { h, session } = harness({ external: { sampleRate: 16000 } });
+        await session.start(null);
+        h.fireTimer(NO_SPEECH_MS);
+        await drain();
+        expect(h.snapshot().state).toBe("idle");
+        expect(h.snapshot().error).toBeNull();
+        expect(h.stt.cancelCalls).toBe(1);
+        expect(h.submitted).toEqual([]);
+    });
+
+    it("flushes what was heard when the command bound elapses", async () => {
+        const { h, session } = harness({ external: { sampleRate: 16000 } });
+        await session.start(null);
+        h.stt.emitPartial("tell me about abraham lincoln");
+        h.stt.resultOnStop = "tell me about abraham lincoln";
+        h.fireTimer(MAX_COMMAND_MS);
+        await drain();
+        expect(h.stt.stopCalls).toBe(1);
+        expect(h.submitted).toEqual(["tell me about abraham lincoln"]);
     });
 });
 

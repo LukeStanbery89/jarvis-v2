@@ -195,13 +195,18 @@ An optional "Hey JARVIS" wake word lives beside the click-to-talk mic: a
 sidebar toggle (waveform icon, next to the location pin) arms an
 on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
 openwakeword-web running under the WASM STT engine's runtime). While armed,
-the detector holds a second 16 kHz mic open continuously; a match plays a
-short blip (`AudioPlayer.blip()`, the cue the toggle's user gesture
-unlocked), opens a wake session through the same `VoiceController`, replays
-the phrase's look-back audio into `wakeStt` (a second, always-local Vosk
-instance — never Web Speech, so wake-eavesdropped audio never leaves the
-device), strips "Hey JARVIS" from the transcript, and submits it as an
-ordinary voice turn. The toggle is **off by default** (a persistent extra
+the detector holds a 16 kHz mic open continuously; a match plays a short blip
+(`AudioPlayer.blip()`, the cue the toggle's user gesture unlocked), opens a
+wake session through the same `VoiceController`, and then **streams the
+command straight off the detector's own microphone** into `wakeStt` — every
+frame from the match onward, so the phrase is excluded by construction and a
+one-breath "Hey JARVIS what time is it" is captured whole, with no second mic
+opening late and nothing spliced (#121). `wakeStt` is a second, always-local
+Vosk instance running microphone-free (`{ source: "external" }`; never Web
+Speech, so the command never leaves the device); it endpoints on its own
+silence detection, and any stray "Hey JARVIS" is stripped as a safety net
+before the prompt is submitted as an ordinary voice turn. The
+toggle is **off by default** (a persistent extra
 mic), persisted in localStorage, rendered only when the runtime supports
 wake (secure context + audio worklet), a local STT engine exists, and the
 server answers the `HEAD /api/wake/model/melspectrogram.onnx` probe
@@ -232,6 +237,30 @@ while a turn streams — the same cancel path, for typed turns too. Every
 step is opportunistic: without VAD support (no Web Audio) the watch stays
 off and the stop button still works.
 
+### Replay harness and transcript tracing (#121)
+
+Two dev-only surfaces support the wake→command work:
+
+- **`/web/?voice-harness=1`** renders an offline replay harness
+  (`src/dev/VoiceHarness.tsx`, lazily imported so it is code-split out of a
+  normal page load). Load an audio file — a committed fixture under
+  `packages/voice/test/fixtures/`, or your own recording in any format the
+  browser decodes (a 48 kHz iPhone voice memo's `.m4a` works as-is) — and it
+  runs the clip through the **real local Vosk engine with no microphone**
+  (`{ source: "external" }`), feeding it in real time, and prints the raw
+  transcript for both the whole clip (today's behavior) and the post-match
+  slice, next to the current wake-phrase strip. That pair is the A/B the
+  redesign is judged on, and "Copy report" puts it on the clipboard for the
+  issue record. _The dev server
+  pre-bundles `@lukestanbery/jarvis-voice`; after rebuilding that package,
+  restart the dev server (or start it with `--force`) or the harness sees a
+  stale copy with no new exports._
+- **`/web/?voice-trace=1`** logs each wake session's raw recognizer transcript
+  and the prompt actually submitted (`[jarvis:voice:trace] raw="…"
+submitted="…"`). It is deliberately a _separate_ switch from
+  `?debug=1`/`jarvis.debug` (`src/voiceTrace.ts`): it prints real user speech,
+  so ordinary voice debugging must never start dumping transcripts.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -253,6 +282,9 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b) and the wake-word helpers (`createWakeWord`, `createWakeStt`, `probeWakeSupport`, wake pref — #84 P4); the controller lives in `packages/voice`.
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83) + wake cue (`blip`, #84 P4).
+- `src/debug.ts` — the `jarvis.debug`-gated console sink (scopes: voice, ws).
+- `src/voiceTrace.ts` — the opt-in raw-vs-submitted transcript trace (#121), a separate switch from `debug.ts` because it prints real speech.
+- `src/dev/VoiceHarness.tsx` — the offline replay harness (#121, `?voice-harness=1`), lazily imported.
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens. `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
