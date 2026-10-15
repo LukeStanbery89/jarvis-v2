@@ -18,12 +18,12 @@ client ([#12](https://github.com/LukeStanbery89/jarvis-v2/issues/12)),
 server-side TTS
 ([#83](https://github.com/LukeStanbery89/jarvis-v2/issues/83)), and
 client-side voice input — local STT, "Hey JARVIS" wake word, and barge-in
-([#84](https://github.com/LukeStanbery89/jarvis-v2/issues/84)). The
+([#84](https://github.com/LukeStanbery89/jarvis-v2/issues/84)), and the
 contract-first OpenAPI/AsyncAPI tooling
-([#35](https://github.com/LukeStanbery89/jarvis-v2/issues/35)) exists —
-specs, generated types, and lint/bundle/validate run under
-`packages/contracts` — but the research issue that scoped it is still open
-and stays the source of truth for contract follow-ups.
+([#35](https://github.com/LukeStanbery89/jarvis-v2/issues/35)) covering both
+API surfaces — specs, generated types, and lint/bundle/validate under
+`packages/contracts`, its conformance gates riding the root `npm run check`.
+Contract follow-ups get their own issues rather than a standing roll-up.
 
 ## Near term
 
