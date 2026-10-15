@@ -43,6 +43,11 @@ interface MicKnobs {
 class FakeOww {
     predictCalls = 0;
     resetCalls = 0;
+    /**
+     * Score returned by the next `predict` calls, in order (default 0 — "no
+     * phrase here"), so tests can lay out a score ramp like the real model's.
+     */
+    scores: number[] = [];
     private readonly onDetection:
         ((event: { label: string; score: number }) => void) | null;
 
@@ -53,8 +58,9 @@ class FakeOww {
     }
 
     async predict(): Promise<Record<string, number>> {
+        const score = this.scores[this.predictCalls] ?? 0;
         this.predictCalls += 1;
-        return {};
+        return { hey_jarvis: score };
     }
 
     /** Simulates the library detecting a phrase from within `predict`. */
@@ -251,40 +257,78 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("recovers the frames captured while the phrase was being scored", async () => {
+    it("streams the command live from the match onward", async () => {
         const { module, provider } = makeHarness();
         const record = makeRecord();
         await provider.start(record.callbacks);
-        // Pre-match frames are the phrase: predicted, never emitted.
         lastMic(module).emitFrame(frameWith(1));
-        lastMic(module).emitFrame(frameWith(2));
-        lastMic(module).emitFrame(frameWith(3));
-        expect(record.commandAudio).toEqual([]);
-        // The pipeline reaches the phrase only after ingesting what followed
-        // it, so frames 2 and 3 were already captured when the crossing frame
-        // (1) was scored. They are the command's opening, and they are handed
-        // over with the match (#121) — this recovery is the fix for a
-        // one-breath command losing its start.
+        await drain(); // scored at the floor: the phrase, not the command
         lastInstance(module).fire("hey_jarvis", 0.92);
         expect(record.errors).toEqual([]);
         expect(record.wakes).toHaveLength(1);
         expect(record.wakes[0]!.confidence).toBe(0.92);
-        expect(record.commandAudio.map((chunk) => chunk.pcm[0])).toEqual([
-            2 / 32768,
-            3 / 32768,
-        ]);
+        expect(record.commandAudio).toEqual([]);
+        // Everything from here is live, frame by frame, at 16 kHz.
+        lastMic(module).emitFrame(frameWith(7));
+        lastMic(module).emitFrame(frameWith(9));
         expect(record.commandAudio.map((chunk) => chunk.sampleRate)).toEqual([
             16000, 16000,
         ]);
-        // Everything from here is live, frame by frame, at 16 kHz.
-        lastMic(module).emitFrame(frameWith(7));
-        expect(record.commandAudio).toHaveLength(3);
-        expect(record.commandAudio[2]!.pcm.length).toBe(1280);
-        expect(Array.from(record.commandAudio[2]!.pcm.slice(0, 3))).toEqual([
+        expect(record.commandAudio[0]!.pcm.length).toBe(1280);
+        expect(Array.from(record.commandAudio[0]!.pcm.slice(0, 3))).toEqual([
             7 / 32768,
             8 / 32768,
             9 / 32768,
         ]);
+        expect(Array.from(record.commandAudio[1]!.pcm.slice(0, 1))).toEqual([
+            9 / 32768,
+        ]);
+        await provider.stop();
+    });
+
+    it("cuts at the score's onset, not at the threshold crossing", async () => {
+        // The real score ramps over the phrase's last frames and then
+        // plateaus, so the crossing (0.5) lands a frame or two *after* the
+        // phrase — and inside the command when it is spoken in one breath.
+        // Cutting at the ramp's onset is what keeps the command's first word
+        // (#121); cutting at the crossing drops it.
+        const { module, provider } = makeHarness();
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        const instance = lastInstance(module);
+        instance.scores = [0, 0, 0, 0.04, 0.5];
+        for (const frame of [1, 2, 3, 4, 5]) {
+            lastMic(module).emitFrame(frameWith(frame));
+            await drain();
+        }
+        expect(record.commandAudio).toEqual([]);
+        instance.fire("hey_jarvis", 0.5);
+        // Frames 1-3 are silent-scored (the phrase); frames 4 and 5 are the
+        // ramp and the crossing — the command's opening.
+        expect(record.commandAudio.map((chunk) => chunk.pcm[0])).toEqual([
+            4 / 32768,
+            5 / 32768,
+        ]);
+        await provider.stop();
+    });
+
+    it("starts after the crossing frame when no quiet frame is in reach", async () => {
+        // An unusually wide ramp — the score never returns to the floor inside
+        // the search window — so nothing can be recovered and the stream
+        // starts after the crossing frame rather than reaching back for audio
+        // that might be the phrase.
+        const { module, provider } = makeHarness();
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        const instance = lastInstance(module);
+        instance.scores = Array.from({ length: 20 }, () => 0.2);
+        for (let frame = 0; frame < 20; frame += 1) {
+            lastMic(module).emitFrame(frameWith(frame));
+            await drain();
+        }
+        expect(record.commandAudio).toEqual([]);
+        instance.fire("hey_jarvis", 0.6);
+        expect(record.commandAudio).toEqual([]);
         await provider.stop();
     });
 
@@ -316,19 +360,21 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("logs how much of the command the match recovered from the queue", async () => {
+    it("logs how much of the command the match recovered from the buffer", async () => {
         const messages: string[] = [];
         const { module, provider } = makeHarness({
             log: (message) => messages.push(message),
         });
         const record = makeRecord();
         await provider.start(record.callbacks);
-        lastMic(module).emitFrame(frameWith(1));
-        lastMic(module).emitFrame(frameWith(2));
-        lastMic(module).emitFrame(frameWith(3));
+        lastInstance(module).scores = [0, 0, 0, 0.04, 0.5];
+        for (const frame of [1, 2, 3, 4, 5]) {
+            lastMic(module).emitFrame(frameWith(frame));
+            await drain();
+        }
         lastInstance(module).fire("hey_jarvis", 0.9);
         expect(messages).toEqual([
-            "wake match: recovered 2 queued frame(s) (160 ms) captured after the phrase",
+            "wake match: recovered 2 buffered frame(s) (160 ms) captured after the phrase",
         ]);
         await provider.stop();
     });
@@ -340,6 +386,7 @@ describe("OpenWakeWordWakeProvider", () => {
         const record = makeRecord();
         await provider.start(record.callbacks);
         lastMic(module).emitFrame(frameWith(1));
+        await drain();
         lastInstance(module).fire("hey_jarvis", 0.9);
         for (let frame = 0; frame < 30; frame += 1) {
             lastMic(module).emitFrame(frameWith(frame * 1280));
@@ -403,9 +450,10 @@ describe("OpenWakeWordWakeProvider", () => {
         const record = makeRecord();
         await provider.start(record.callbacks);
         lastMic(module).emitFrame(frameWith(1));
+        await drain();
         lastInstance(module).fire("hey_jarvis", 0.8);
         expect(record.wakes[0]!.confidence).toBe(0.8);
-        // Nothing was captured after the crossing frame.
+        // Nothing was buffered after the phrase.
         expect(record.commandAudio).toEqual([]);
         lastMic(module).emitFrame(frameWith(7));
         expect(record.commandAudio).toHaveLength(1);
@@ -413,6 +461,7 @@ describe("OpenWakeWordWakeProvider", () => {
         // A second arm starts from scratch: nothing streams until it fires.
         await provider.start(record.callbacks);
         lastMic(module).emitFrame(frameWith(2));
+        await drain();
         expect(record.commandAudio).toHaveLength(1);
         lastInstance(module).fire("hey_jarvis", 0.81);
         expect(record.wakes).toHaveLength(2);

@@ -29,7 +29,12 @@
  *
  * Usage (from `packages/voice`):
  *
- *     npm run build && node scripts/probe-wake-latency.mjs <fixture.wav> [threshold]
+ *     npm run build && node scripts/probe-wake-latency.mjs <fixture.wav> [threshold] [gain]
+ *
+ * `gain` scales the samples before they reach the detector, which is how the
+ * score's dependence on input level is checked: the mel features are built
+ * from unnormalized int16 magnitudes, so a quieter microphone shifts the
+ * threshold crossing but not where the score starts to rise.
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -51,14 +56,18 @@ const MIC_SAMPLE_RATE = 16000;
 
 const file = process.argv[2];
 const threshold = Number(process.argv[3] ?? 0.5);
+const gain = Number(process.argv[4] ?? 1);
 if (file === undefined) {
     console.error(
-        "usage: node scripts/probe-wake-latency.mjs <fixture.wav> [threshold]",
+        "usage: node scripts/probe-wake-latency.mjs <fixture.wav> [threshold] [gain]",
     );
     process.exit(2);
 }
 
 const require = createRequire(import.meta.url);
+const { CUT_SCAN_FRAMES, SCORE_FLOOR } = require(
+    path.join(PACKAGE_ROOT, "dist", "providers", "openWakeWord.js"),
+);
 const { decodeWav } = require(path.join(PACKAGE_ROOT, "dist", "wav.js"));
 
 const audio = decodeWav(readFileSync(file));
@@ -69,7 +78,7 @@ if (audio.sampleRate !== MIC_SAMPLE_RATE) {
 }
 
 const pcm = Int16Array.from(audio.pcm, (sample) =>
-    Math.max(-32768, Math.min(32767, Math.round(sample * 32768))),
+    Math.max(-32768, Math.min(32767, Math.round(sample * 32768 * gain))),
 );
 const frames = Math.floor(pcm.length / FRAME_SAMPLES);
 
@@ -106,19 +115,46 @@ for (let i = 0; i < frames; i += 1) {
 }
 
 const ms = (i) => ((i * FRAME_SAMPLES) / MIC_SAMPLE_RATE) * 1000;
+
+/**
+ * The provider's cut, mirrored (#121): at the crossing, walk back to the most
+ * recent frame still at the noise floor; the command starts one frame later.
+ * Falls back to the crossing frame when the window holds no quiet frame.
+ *
+ * @param crossing - Index of the frame whose score crossed the threshold.
+ * @returns The index the command stream starts at.
+ */
+function cutIndex(crossing) {
+    const from = Math.max(0, crossing - CUT_SCAN_FRAMES);
+    for (let i = crossing - 1; i >= from; i -= 1) {
+        if (scores[i] < SCORE_FLOOR) {
+            return i + 1;
+        }
+    }
+    return crossing;
+}
+
+const cut = firedAt === null ? null : cutIndex(firedAt);
+
 console.log(
-    `${path.basename(file)}  ${((audio.pcm.length / MIC_SAMPLE_RATE) * 1000).toFixed(0)} ms  ${frames} frames  threshold ${threshold}`,
+    `${path.basename(file)}  ${((audio.pcm.length / MIC_SAMPLE_RATE) * 1000).toFixed(0)} ms  ${frames} frames  threshold ${threshold}  gain ${gain}`,
 );
 console.log("frame  start_ms     rms   score");
 for (let i = 0; i < frames; i += 1) {
+    const marks = [
+        i === firedAt ? "<-- fired" : "",
+        i === cut ? "<== stream starts here" : "",
+    ]
+        .filter(Boolean)
+        .join("  ");
     console.log(
         `f${String(i).padStart(3)}  ${ms(i).toFixed(0).padStart(7)}  ${rms[i].toFixed(4)}  ${scores[i].toFixed(3)}${
-            i === firedAt ? "   <-- fired" : ""
+            marks === "" ? "" : `   ${marks}`
         }`,
     );
 }
 console.log(
     firedAt === null
         ? "no detection"
-        : `fired at frame ${firedAt} (${ms(firedAt).toFixed(0)} ms of audio), score ${firedScore.toFixed(3)}`,
+        : `fired at frame ${firedAt} (${ms(firedAt).toFixed(0)} ms), score ${firedScore.toFixed(3)}; stream starts at frame ${cut} (${ms(cut).toFixed(0)} ms)`,
 );

@@ -88,33 +88,41 @@ identical).
 
 Stage B (the detector streamed into the session's engine) then exposed the
 real shape of the one-breath problem, and a Node probe of the detector over
-these fixtures pinned it down. Feeding `real/one-breath.wav` frame by frame
-(80 ms) through the same pipeline the browser uses:
+these fixtures pinned it down. `npm run probe:wake <fixture.wav>` replays one
+through the same pipeline the browser uses and prints, per 80 ms frame, the
+audio RMS, the detector's score, and where the session's stream starts. On the
+real pair:
 
-| fixture              | phrase ends | score crosses 0.5 | score peak | command starts |
-| -------------------- | ----------- | ----------------- | ---------- | -------------- |
-| `one-breath`         | ~560 ms     | **800 ms**        | 1120 ms    | **960 ms**     |
-| `pause-then-command` | ~560 ms     | **880 ms**        | 1040 ms    | **2000 ms**    |
+| fixture              | phrase speech ends | score crosses 0.5 | stream starts | command speech starts |
+| -------------------- | ------------------ | ----------------- | ------------- | --------------------- |
+| `one-breath`         | ~640 ms            | 800 ms            | **640 ms**    | 960 ms                |
+| `pause-then-command` | ~640 ms            | 880 ms            | **720 ms**    | 2000 ms               |
 
-Two facts fall out of that:
+Three facts fall out of that, and together they are the design:
 
-1. The detector is **not** late relative to the phrase — the crossing lands
-   ~240–320 ms after the phrase ends, comfortably before the command starts.
-2. The score stays high for ~500 ms afterwards, because the feature pipeline
-   only reaches the phrase after ingesting the audio that _followed_ it. So by
-   the time the match fires, the command's opening has already been captured —
-   and in production it had already been **busy-dropped** (frames arriving
-   while a `predict` was in flight were discarded), which is why a one-breath
-   command lost its start, or all of it when the command was short enough that
-   the drop window covered it. The pause cases were immune: the pause absorbed
-   the whole window.
+1. The detector is **not** late relative to the phrase. The score ramps up over
+   the phrase's final frames and plateaus for ~500 ms; the 0.5 crossing is
+   ~1–3 frames into that plateau, i.e. **at or after the phrase's end**. Cutting
+   at the _ramp's onset_ — the last frame still at the noise floor, plus one —
+   is what the provider does, and it lands exactly at the phrase's speech end.
+2. The plateau exists because the feature pipeline reaches the phrase only
+   after ingesting the audio that _followed_ it. So by the time the match
+   fires, the frames after the phrase are already captured. Cutting at the
+   crossing (as stage B did) throws the plateau's first frames away, and with
+   them the first word of a command spoken in the same breath — the production
+   symptom was `raw="time is it"` for "what time is it". Cutting at the onset
+   keeps them.
+3. The score is **level-independent**: scaling the input by 0.25
+   (`… one-breath.wav 0.5 0.25`) moves the crossing by less than a frame and
+   leaves the ramp where it is, so the floor is a stable constant rather than a
+   tuned threshold.
 
-The fix is to queue captured frames instead of dropping them, and to have the
-match emit the frames still in that queue — the command's opening, by
-construction, with the phrase behind it. `test/openWakeWord.test.ts` pins the
-queue and the recovery; `test/wakeCorpus.test.ts` pins the routing into the
-engine (frames start at the match, contiguous, phrase-free, nothing repeated).
-The pause-shape and one-breath-shape assertions on the real set remain.
+The frames themselves are never dropped — prediction runs over a FIFO, because
+the feature extractor is streaming and a skipped frame shifts every later score
+— so the buffer that holds the backlog is also the buffer the match cuts from.
+`test/openWakeWord.test.ts` pins the queue, the onset cut, the fallback, and
+the live stream; `test/wakeCorpus.test.ts` pins the routing into the engine
+(frames start at the match, contiguous, phrase-free, nothing repeated).
 
 Two harness-side lessons remain, both recorded in
 `packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the
