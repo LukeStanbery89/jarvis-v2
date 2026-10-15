@@ -47,22 +47,22 @@ const MIC_SAMPLE_RATE = 16000;
 const FRAME_SAMPLES = 1280;
 
 /**
- * The buffered-frame cap (#121): captured frames awaiting a `predict()`, plus
- * the scored history the cut searches. Ten seconds of audio — a stalled main
- * thread recovers from far less. Past this the oldest frames are shed so
- * memory stays bounded, at the cost of the pipeline's contiguity (logged; see
- * {@link OpenWakeWordWakeProvider.onFrame}).
+ * How far the detector may fall behind real time before the oldest unpredicted
+ * frame is shed (#121) — 10 seconds of audio. Normal operation sits at zero
+ * frames behind, so this is a last resort: shedding breaks the contiguity the
+ * feature extractor needs, and is logged.
  */
-const MAX_CAPTURED_FRAMES = (10 * MIC_SAMPLE_RATE) / FRAME_SAMPLES;
+const MAX_BACKLOG_FRAMES = (10 * MIC_SAMPLE_RATE) / FRAME_SAMPLES;
 
 /**
  * The score below which a frame is considered to be *before* the wake phrase
- * (#121). The score is at the noise floor (≈0) on silence and ramps up over
- * the phrase's last frames before plateauing — and the ramp's start, unlike
- * the detection threshold's crossing, sits at the phrase's end. Measured
- * level-independent: scaling the input by 0.25 moves the crossing by less than
- * a frame but leaves the ramp where it is, so a plain small floor is stable.
- * Exported so `scripts/probe-wake-latency.mjs` reproduces the cut exactly.
+ * (#121). The score is at the noise floor (≈0) on silence and on audio the
+ * model has not reached yet, then ramps up over the phrase's final frames
+ * before plateauing — and the ramp's start, unlike the detection threshold's
+ * crossing, sits at the phrase's end. Measured level-independent: scaling the
+ * input by 0.25 moves the crossing by less than a frame but leaves the ramp
+ * where it is, so a plain small floor is stable. Exported so
+ * `scripts/probe-wake-latency.mjs` reproduces the cut exactly.
  */
 export const SCORE_FLOOR = 0.01;
 
@@ -74,6 +74,15 @@ export const SCORE_FLOOR = 0.01;
  * {@link SCORE_FLOOR} for the probe.
  */
 export const CUT_SCAN_FRAMES = 12;
+
+/**
+ * How many consecutive frames must sit at the noise floor for the cut to treat
+ * them as the phrase's end (#121). The score dips below the floor for the odd
+ * frame mid-command, and an isolated dip must not be mistaken for the
+ * boundary; a real boundary is preceded by the phrase and its lead-in, so it
+ * is always a run. Exported alongside {@link SCORE_FLOOR} for the probe.
+ */
+export const CUT_RUN_FRAMES = 2;
 
 /** One captured frame and the detector's score for it (null until scored). */
 interface CapturedFrame {
@@ -254,8 +263,9 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
      * gave it — the feature pipeline's input must be contiguous, so a frame is
      * never skipped; and because the pipeline reaches the phrase only after
      * ingesting the audio that followed it, this buffer is also what holds
-     * (and later recovers) the command's opening. Bounded by
-     * {@link MAX_CAPTURED_FRAMES}.
+     * (and later recovers) the command's opening. Scored frames older than the
+     * cut's search window are dropped as they are scored, so what remains is
+     * the unpredicted backlog, bounded by {@link MAX_BACKLOG_FRAMES}.
      */
     private captured: CapturedFrame[] = [];
     /** Index of the next frame to predict; everything before it is scored. */
@@ -404,12 +414,19 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             return;
         }
         this.captured.push({ pcm: frame, score: null });
-        if (this.captured.length > MAX_CAPTURED_FRAMES) {
-            // The pipeline is ten seconds behind: shed the oldest audio so
-            // memory stays bounded. This breaks the contiguity the feature
-            // extractor needs, so it is a last resort — logged once per arm.
-            this.captured.shift();
-            this.cursor = Math.max(0, this.cursor - 1);
+        // Drop scored frames the cut can no longer look at, so the buffer
+        // measures the *unpredicted backlog* rather than time since arming.
+        const keep = Math.max(0, this.cursor - CUT_SCAN_FRAMES);
+        if (keep > 0) {
+            this.captured.splice(0, keep);
+            this.cursor -= keep;
+        }
+        if (this.captured.length - this.cursor > MAX_BACKLOG_FRAMES) {
+            // The pipeline is ten seconds behind real time: shed the oldest
+            // unscored frame so it can catch up. This breaks the contiguity
+            // the feature extractor needs, so it is a last resort — logged
+            // once per arm.
+            this.captured.splice(this.cursor, 1);
             if (!this.backlogWarned) {
                 this.backlogWarned = true;
                 this.log(
@@ -503,8 +520,8 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
     }
 
     /**
-     * The index of the first frame after the wake phrase: the most recent
-     * frame whose score was still at the noise floor, plus one.
+     * The index of the first frame after the wake phrase: the last frame of
+     * the quiet run that precedes the score's ramp, plus one.
      *
      * The score ramps up over the phrase's final frames and then plateaus for
      * several hundred milliseconds, so the *crossing* is a couple of frames
@@ -512,16 +529,29 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
      * inside the command. The ramp's onset is at the phrase's end, which is
      * where the stream must start: any later clips the command, any earlier
      * includes the phrase. Searching back from the crossing (bounded by
-     * {@link CUT_SCAN_FRAMES}) stops at the plateau's start; when no quiet
-     * frame is in the window, the crossing frame itself is the cut.
+     * {@link CUT_SCAN_FRAMES}) stops at a *run* of quiet frames
+     * ({@link CUT_RUN_FRAMES}), so a single below-floor dip mid-command cannot
+     * be mistaken for the boundary; when no run is in the window, the crossing
+     * frame itself is the cut.
      *
      * @returns The index to start emitting from.
      */
     private commandStartIndex(): number {
         const from = Math.max(0, this.cursor - CUT_SCAN_FRAMES);
-        for (let i = this.cursor - 1; i >= from; i -= 1) {
-            const score = this.captured[i]?.score;
-            if (score !== null && score !== undefined && score < SCORE_FLOOR) {
+        for (let i = this.cursor - 1; i > from; i -= 1) {
+            let quiet = true;
+            for (let back = 0; back < CUT_RUN_FRAMES; back += 1) {
+                const score = this.captured[i - back]?.score;
+                if (
+                    score === null ||
+                    score === undefined ||
+                    score >= SCORE_FLOOR
+                ) {
+                    quiet = false;
+                    break;
+                }
+            }
+            if (quiet) {
                 return i + 1;
             }
         }

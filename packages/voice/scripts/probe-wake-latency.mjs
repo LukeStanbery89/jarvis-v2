@@ -65,7 +65,7 @@ if (file === undefined) {
 }
 
 const require = createRequire(import.meta.url);
-const { CUT_SCAN_FRAMES, SCORE_FLOOR } = require(
+const { CUT_RUN_FRAMES, CUT_SCAN_FRAMES, SCORE_FLOOR } = require(
     path.join(PACKAGE_ROOT, "dist", "providers", "openWakeWord.js"),
 );
 const { decodeWav } = require(path.join(PACKAGE_ROOT, "dist", "wav.js"));
@@ -117,17 +117,24 @@ for (let i = 0; i < frames; i += 1) {
 const ms = (i) => ((i * FRAME_SAMPLES) / MIC_SAMPLE_RATE) * 1000;
 
 /**
- * The provider's cut, mirrored (#121): at the crossing, walk back to the most
- * recent frame still at the noise floor; the command starts one frame later.
- * Falls back to the crossing frame when the window holds no quiet frame.
+ * The provider's cut, mirrored (#121): at the crossing, walk back to a run of
+ * frames still at the noise floor; the command starts one frame after it.
+ * Falls back to the crossing frame when the window holds no quiet run.
  *
  * @param crossing - Index of the frame whose score crossed the threshold.
  * @returns The index the command stream starts at.
  */
 function cutIndex(crossing) {
     const from = Math.max(0, crossing - CUT_SCAN_FRAMES);
-    for (let i = crossing - 1; i >= from; i -= 1) {
-        if (scores[i] < SCORE_FLOOR) {
+    for (let i = crossing - 1; i > from; i -= 1) {
+        let quiet = true;
+        for (let back = 0; back < CUT_RUN_FRAMES; back += 1) {
+            if (scores[i - back] >= SCORE_FLOOR) {
+                quiet = false;
+                break;
+            }
+        }
+        if (quiet) {
             return i + 1;
         }
     }

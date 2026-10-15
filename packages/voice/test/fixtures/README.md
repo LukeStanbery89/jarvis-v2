@@ -115,14 +115,23 @@ Three facts fall out of that, and together they are the design:
 3. The score is **level-independent**: scaling the input by 0.25
    (`… one-breath.wav 0.5 0.25`) moves the crossing by less than a frame and
    leaves the ramp where it is, so the floor is a stable constant rather than a
-   tuned threshold.
+   tuned threshold. A _run_ of quiet frames (`CUT_RUN_FRAMES`) is required, so
+   the odd mid-command dip cannot be mistaken for the boundary.
 
-The frames themselves are never dropped — prediction runs over a FIFO, because
+A fourth check comes from splicing the pause out of `one-breath.wav` (the
+phrase's tail running straight into the command — the fast-speech shape, built
+from the same recording): the cut still lands on the command's first frame
+(640 ms, the splice point), so a gapless utterance loses nothing either.
+
+The frames themselves are never dropped — scoring runs over a FIFO, because
 the feature extractor is streaming and a skipped frame shifts every later score
 — so the buffer that holds the backlog is also the buffer the match cuts from.
-`test/openWakeWord.test.ts` pins the queue, the onset cut, the fallback, and
-the live stream; `test/wakeCorpus.test.ts` pins the routing into the engine
-(frames start at the match, contiguous, phrase-free, nothing repeated).
+It keeps only the cut's search window plus the unscored backlog, and reports
+itself behind only when that backlog exceeds ten seconds.
+`test/openWakeWord.test.ts` pins the queue, the onset cut, the run requirement,
+the fallback, the backlog warning, and the live stream; `test/wakeCorpus.test.ts`
+pins the routing into the engine (frames start at the match, contiguous,
+phrase-free, nothing repeated).
 
 Two harness-side lessons remain, both recorded in
 `packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the

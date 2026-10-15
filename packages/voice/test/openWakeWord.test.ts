@@ -48,6 +48,9 @@ class FakeOww {
      * phrase here"), so tests can lay out a score ramp like the real model's.
      */
     scores: number[] = [];
+    /** A parked `predict` (see {@link FakeOww.hold}), when set. */
+    private gate: Promise<void> | null = null;
+    private openGate: (() => void) | null = null;
     private readonly onDetection:
         ((event: { label: string; score: number }) => void) | null;
 
@@ -58,9 +61,27 @@ class FakeOww {
     }
 
     async predict(): Promise<Record<string, number>> {
+        const gate = this.gate;
+        if (gate !== null) {
+            await gate;
+        }
         const score = this.scores[this.predictCalls] ?? 0;
         this.predictCalls += 1;
         return { hey_jarvis: score };
+    }
+
+    /** Parks every later `predict`, simulating a stalled main thread. */
+    hold(): void {
+        this.gate = new Promise((resolve) => {
+            this.openGate = resolve;
+        });
+    }
+
+    /** Releases a {@link FakeOww.hold}. */
+    release(): void {
+        this.gate = null;
+        this.openGate?.();
+        this.openGate = null;
     }
 
     /** Simulates the library detecting a phrase from within `predict`. */
@@ -344,6 +365,86 @@ describe("OpenWakeWordWakeProvider", () => {
         expect(lastInstance(module).predictCalls).toBe(1); // one in flight
         await drain();
         expect(lastInstance(module).predictCalls).toBe(3); // the rest followed
+        await provider.stop();
+    });
+
+    it("does not report itself behind while it is keeping up", async () => {
+        // The buffer measures the *unpredicted* backlog, not time since
+        // arming: a long-lived detector that scores every frame must never
+        // warn (an earlier version shed — and warned — ten seconds after
+        // arming, whether or not the pipeline was behind).
+        const messages: string[] = [];
+        const { module, provider } = makeHarness({
+            log: (message) => messages.push(message),
+        });
+        await provider.start(makeRecord().callbacks);
+        for (let frame = 0; frame < 140; frame += 1) {
+            lastMic(module).emitFrame(frameWith(frame % 1000));
+            await drain();
+        }
+        expect(messages).toEqual([]);
+        await provider.stop();
+    });
+
+    it("sheds, and warns, only when the pipeline is genuinely behind", async () => {
+        const messages: string[] = [];
+        const { module, provider } = makeHarness({
+            log: (message) => messages.push(message),
+        });
+        await provider.start(makeRecord().callbacks);
+        const instance = lastInstance(module);
+        // A stalled predict parks the whole pipeline; frames pile up behind it.
+        instance.hold();
+        for (let frame = 0; frame < 140; frame += 1) {
+            lastMic(module).emitFrame(frameWith(frame % 1000));
+        }
+        expect(messages).toEqual([
+            "wake detector is falling behind; shedding the oldest audio",
+        ]);
+        instance.release();
+        await drain();
+        await provider.stop();
+    });
+
+    it("keeps enough scored history for the cut after trimming", async () => {
+        // Frames older than the search window are dropped as they are scored,
+        // so a long-lived detector's buffer stays bounded without losing the
+        // boundary the cut needs.
+        const { module, provider } = makeHarness();
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        const instance = lastInstance(module);
+        instance.scores = [...Array.from({ length: 30 }, () => 0), 0.04, 0.6];
+        for (let frame = 0; frame < 32; frame += 1) {
+            lastMic(module).emitFrame(frameWith(frame));
+            await drain();
+        }
+        instance.fire("hey_jarvis", 0.6);
+        expect(record.commandAudio.map((chunk) => chunk.pcm[0])).toEqual([
+            30 / 32768,
+            31 / 32768,
+        ]);
+        await provider.stop();
+    });
+
+    it("ignores an isolated score dip when finding the cut", async () => {
+        // A single below-floor frame mid-command is noise, not the phrase's
+        // end: the cut needs a *run* of quiet frames.
+        const { module, provider } = makeHarness();
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        const instance = lastInstance(module);
+        instance.scores = [0, 0, 0, 0.5, 0.005, 0.5];
+        for (const frame of [1, 2, 3, 4, 5, 6]) {
+            lastMic(module).emitFrame(frameWith(frame));
+            await drain();
+        }
+        instance.fire("hey_jarvis", 0.5);
+        expect(record.commandAudio.map((chunk) => chunk.pcm[0])).toEqual([
+            4 / 32768,
+            5 / 32768,
+            6 / 32768,
+        ]);
         await provider.stop();
     });
 

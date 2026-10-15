@@ -319,18 +319,22 @@ Two properties make this provider slot into the controller's wake flow
   wake session's engine runs microphone-free over them (`{ source:
 "external" }`): the phrase is never part of the stream, and there is no
   splice — a one-breath "Hey JARVIS what time is it" arrives whole.
-- **Queue, don't drop** — captured frames are _queued_ and predicted one at a
+- **Queue, don't drop** — captured frames are _queued_ and scored one at a
   time (never busy-dropped: the feature extractor is streaming, so a skipped
-  frame shifts every later score). The pipeline reaches the phrase only after
-  ingesting the audio that followed it, which is why the match **recovers the
-  frames still in that queue** as the command's opening. A short one-breath
-  command lives almost entirely in that recovery — dropping them (as the
-  busy-drop did) is what clipped the start of the command and, for the
-  shortest utterances, lost it altogether. `onDetection` fires at most once
-  per `start()`, and the controller holds the detector open for the whole
-  session (`WakeManager.beginCommand`), restarting it once the turn lands
-  `idle`. `stop()` is idempotent, and no callback — match or command audio —
-  fires after it resolves.
+  frame shifts every later score), each keeping its score. The pipeline reaches
+  the phrase only after ingesting the audio that followed it, which is why a
+  match emits **every buffered frame from the score's onset upward** — the last
+  frame of the quiet run before the ramp, plus one. The onset sits at the
+  phrase's end; the 0.5 crossing sits 1–3 frames _after_ it, and for a command
+  spoken in one breath that is already inside the command. A buffer that always
+  keeps the search window and never drops audio is what keeps the phrase out of
+  the engine while the command stays whole
+  (`SCORE_FLOOR`/`CUT_SCAN_FRAMES`/`CUT_RUN_FRAMES`, reproduced by
+  `npm run probe:wake`). `onDetection` fires at most once per `start()`, and the
+  controller holds the detector open for the whole session
+  (`WakeManager.beginCommand`), restarting it once the turn lands `idle`.
+  `stop()` is idempotent, and no callback — match or command audio — fires
+  after it resolves.
 
 `stripWakePhrase()` (in `src/wakeText.ts`) removes a leading wake phrase
 from a wake-session transcript ("Hey JARVIS" by default, ragged whitespace
