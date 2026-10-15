@@ -199,6 +199,12 @@ export default function VoiceHarness() {
                 onPartial: (text) => partials.push(text),
                 onError: (voiceError) => failures.push(voiceError.message),
             },
+            // `continuous` is the *harness's* choice, not production's config:
+            // a bounded clip has to yield finals without an utterance end,
+            // whereas a live wake session relies on the engine's own
+            // endpointing (`{ source: "external" }` alone — #121). It changes
+            // when finals are emitted, not how the audio is recognized, so the
+            // transcript columns stay comparable to the live path.
             { continuous: true, source: "external", sampleRate },
         );
         const chunk = Math.max(
