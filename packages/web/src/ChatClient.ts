@@ -115,6 +115,15 @@ export class ChatClient {
     private audioGenerationId: number | null = null;
     /** Generations cancelled by this client; their audio is never played. */
     private droppedGenerations = new Set<number>();
+    /**
+     * Whether the in-flight turn has been cancelled (#114). Set by
+     * {@link cancelTurn}, cleared by the next {@link startTurn}. Separate
+     * from `droppedGenerations` because a cancel can land *before* the turn's
+     * `audioStart` frame — the "interrupted before it started speaking" case —
+     * when there is no generation id to drop yet, while the cancelled turn's
+     * audio is already on the wire.
+     */
+    private cancelledTurn = false;
     /** Reconnect attempt counter (drives backoff; reset on connect). */
     private attempt = 0;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -252,6 +261,7 @@ export class ChatClient {
         // A new turn is a new generation; drops only ever matter within a
         // cancelled turn's span.
         this.droppedGenerations.clear();
+        this.cancelledTurn = false;
         return new Promise<void>((resolve, reject) => {
             this.resolvePrompt = resolve;
             this.rejectPrompt = reject;
@@ -270,14 +280,22 @@ export class ChatClient {
      * Cancels the in-flight turn (#84 P6): barge-in or the stop button.
      * Sends the `cancel` frame when the socket is live (the server aborts
      * the model stream and the spoken audio, and ends the turn with
-     * `done` — the text already streamed stays in history), and marks the
+     * `done` — the text already streamed stays in history), marks the
      * turn's audio generation dropped so chunks still in flight are never
-     * played. Idempotent and safe with no turn in flight.
+     * played, and latches the turn itself: a cancel that beats the turn's
+     * `audioStart` frame has no generation to drop yet, and in that window
+     * — the "interrupted before it started speaking" case the barge-in
+     * watch now covers (#114) — the cancelled turn's audio is still on the
+     * wire. Idempotent and safe with no turn in flight.
      */
     cancelTurn(): void {
         if (!this.streaming) {
             return;
         }
+        // Latch the turn itself, not just its generation: a cancel that beats
+        // the turn's `audioStart` frame has no id to drop yet, and its audio
+        // may still be in flight (#114).
+        this.cancelledTurn = true;
         if (this.audioGenerationId !== null) {
             this.droppedGenerations.add(this.audioGenerationId);
         }
@@ -333,11 +351,13 @@ export class ChatClient {
     private onMessage(event: WebSocketMessageEvent): void {
         if (event.data instanceof ArrayBuffer) {
             // Audio of a cancelled generation is dead on arrival (#84 P6):
-            // the span was stopped server-side, but chunks already in
-            // flight must never reach the player.
+            // the span was stopped server-side, but chunks already in flight
+            // must never reach the player. The `cancelledTurn` latch covers
+            // the window before the span's `audioStart` has landed (#114).
             if (
-                this.audioGenerationId !== null &&
-                this.droppedGenerations.has(this.audioGenerationId)
+                this.cancelledTurn ||
+                (this.audioGenerationId !== null &&
+                    this.droppedGenerations.has(this.audioGenerationId))
             ) {
                 return;
             }
