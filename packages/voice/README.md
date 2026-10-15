@@ -314,11 +314,12 @@ Two properties make this provider slot into the controller's wake flow
 (#84 P4, single-mic in #121):
 
 - **Live command stream** — the detector's microphone keeps running after a
-  phrase fires, and every frame **after** the frame that crossed the threshold
-  is handed to `WakeCallbacks.onCommandAudio` (16 kHz mono float PCM). So the
-  wake session's engine runs microphone-free over them (`{ source:
-"external" }`): the phrase is never part of the stream, and there is no
-  splice — a one-breath "Hey JARVIS what time is it" arrives whole.
+  phrase fires, and every frame **from the phrase's end onward** is handed to
+  `WakeCallbacks.onCommandAudio` (16 kHz mono float PCM; the cut is the score
+  onset, see the next bullet). So the wake session's engine runs
+  microphone-free over them (`{ source: "external" }`): the phrase is never
+  part of the stream, and there is no splice — a one-breath "Hey JARVIS what
+  time is it" arrives whole.
 - **Queue, don't drop** — captured frames are _queued_ and scored one at a
   time (never busy-dropped: the feature extractor is streaming, so a skipped
   frame shifts every later score), each keeping its score. The pipeline reaches

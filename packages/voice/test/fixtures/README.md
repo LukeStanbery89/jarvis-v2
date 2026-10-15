@@ -78,6 +78,28 @@ worker decodes silently truncates the utterance's tail at flush time, and the
 provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a
 lump of replayed audio).
 
+### The A/B baseline ("informs the design, is not the fix")
+
+The pre-redesign path is recorded in-repo rather than by rebuilding a
+historical branch: at `b420d18` (phase 1 — corpus and harness first) this same
+corpus was driven through that architecture, and `test/wakeCorpus.test.ts`
+asserted what it did. All 16 tests were green, and three of them pin the
+defects the redesign removes:
+
+| baseline assertion                                             | pinned behavior                                                                                                                    |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `pins the phrase into the wake engine's stream`                | the **first sample** the engine receives is the recording's first sample — the phrase                                              |
+| `the production splice replays the phrase twice on real audio` | on `real/pause-then-command.wav`, `fed.pcm[lookback.length]` equals the ring's first sample, and the phrase's RMS is in the stream |
+| `pins the mangled-phrase class reaching the prompt`            | `"he during a journalist what's the weather"` submits verbatim — a positional matcher cannot repair an inserted token              |
+
+The 10-13 commits (#104/#107/#110) were refactors of this same path, and phase
+1's production run on the then-current build reproduced the same class (the
+`raw`/`submitted` table in #121), so the baseline stands for "what the path did
+before the redesign" without a separate historical build. This file's current
+assertions are the inverse on the same fixtures — the stream starts at the
+match, `fed[0] === audio.pcm[matchSample]`, nothing is repeated — which is the
+acceptance ("cannot reach the prompt by construction") in executable form.
+
 ## What the corpus has shown (#121)
 
 Stage A (the buffer emptied at the match; the session seeded with post-match
@@ -132,14 +154,6 @@ itself behind only when that backlog exceeds ten seconds.
 the fallback, the backlog warning, and the live stream; `test/wakeCorpus.test.ts`
 pins the routing into the engine (frames start at the match, contiguous,
 phrase-free, nothing repeated).
-
-Two harness-side lessons remain, both recorded in
-`packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the
-worker decodes silently truncates the utterance's tail at flush time, and the
-provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a
-lump of replayed audio).
-
-## `local/` (not committed)
 
 ## `local/` (not committed)
 
