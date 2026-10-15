@@ -400,8 +400,11 @@ When the deadline fires, the controller:
 
 The replaced turn's events are stale by session id the moment the new
 session opens — the lifecycle's race discipline. The watch is
-**opportunistic**: with no VAD, a busy VAD (a recognition session owns it),
-a throwing `onBargeIn`, or a dying mic track it stays off or disarms
+**opportunistic**: with no VAD, a busy VAD (a recognition session owns it —
+re-attempted `BARGE_IN_ARM_ATTEMPTS` times, `BARGE_IN_RETRY_MS` apart,
+before that turn is left unwatched rather than silently dead for its whole
+length, #114), a throwing `onBargeIn`, or a dying mic track it stays off or
+disarms
 quietly — a turn that plays fine is never disturbed by a failed
 interruption. Caveat: detection rides on the browser's echo cancellation
 (`echoCancellation: true`); imperfect AEC on speaker setups is mitigated by

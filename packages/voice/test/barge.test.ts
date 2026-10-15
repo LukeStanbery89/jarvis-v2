@@ -11,7 +11,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    BARGE_IN_ARM_ATTEMPTS,
     BARGE_IN_LOOKBACK_MS,
+    BARGE_IN_RETRY_MS,
     BARGE_IN_SPEECH_MS,
     BargeWatch,
 } from "../src/barge";
@@ -27,6 +29,8 @@ class FakeVad implements VadProvider {
     stopCalls = 0;
     /** Parks `start()` (callbacks installed) until `releaseStart()`. */
     deferStart = false;
+    /** Refuses this many upcoming `start()` calls (a busy VAD, #114). */
+    refuseStart = 0;
     private releaseStartFn: (() => void) | null = null;
     private callbacks: VadCallbacks | null = null;
 
@@ -35,6 +39,10 @@ class FakeVad implements VadProvider {
             throw { code: "engine", message: "already active" };
         }
         this.startCalls += 1;
+        if (this.refuseStart > 0) {
+            this.refuseStart -= 1;
+            throw { code: "engine", message: "busy" };
+        }
         this.callbacks = callbacks;
         if (this.deferStart) {
             await new Promise<void>((resolve) => {
@@ -281,7 +289,7 @@ describe("BargeWatch", () => {
         expect(harness.messages).toContain("barge-in watch disarmed");
     });
 
-    it("logs and stays off when the VAD is busy", async () => {
+    it("logs a busy VAD and retries rather than staying off for the turn (#114)", async () => {
         const harness = makeHarness();
         // Occupy the VAD (a recognition session owns it).
         await harness.vad.start({
@@ -294,6 +302,61 @@ describe("BargeWatch", () => {
         await watch.start();
         expect(watch.active).toBe(false);
         expect(harness.logged).toHaveLength(1);
+        expect(harness.messages[0]).toContain("failed to arm; retrying");
+        // The watch still wants the VAD: the re-attempt is armed.
+        expect(harness.scheduler.pendingMs()).toContain(BARGE_IN_RETRY_MS);
+    });
+
+    it("arms on the re-attempt once the VAD frees up (#114)", async () => {
+        const vad = new FakeVad();
+        vad.refuseStart = 1;
+        const harness = makeHarness({ vad });
+        const watch = makeWatch(harness, () => {});
+
+        await watch.start();
+        expect(watch.active).toBe(false);
+        expect(vad.startCalls).toBe(1);
+
+        harness.scheduler.fireByMs(BARGE_IN_RETRY_MS);
+        await settle();
+
+        expect(watch.active).toBe(true);
+        expect(vad.startCalls).toBe(2);
+    });
+
+    it("a stop cancels a pending re-attempt (#114)", async () => {
+        const vad = new FakeVad();
+        vad.refuseStart = 9;
+        const harness = makeHarness({ vad });
+        const watch = makeWatch(harness, () => {});
+
+        await watch.start();
+        await watch.stop();
+        expect(harness.scheduler.pendingMs()).not.toContain(BARGE_IN_RETRY_MS);
+
+        harness.scheduler.fireByMs(BARGE_IN_RETRY_MS);
+        await settle();
+        expect(vad.startCalls).toBe(1);
+        expect(watch.active).toBe(false);
+    });
+
+    it("gives up after the bounded number of attempts (#114)", async () => {
+        const vad = new FakeVad();
+        vad.refuseStart = 99;
+        const harness = makeHarness({ vad });
+        const watch = makeWatch(harness, () => {});
+
+        await watch.start();
+        for (let i = 0; i < BARGE_IN_ARM_ATTEMPTS + 2; i += 1) {
+            harness.scheduler.fireByMs(BARGE_IN_RETRY_MS);
+            await settle();
+        }
+
+        expect(vad.startCalls).toBe(BARGE_IN_ARM_ATTEMPTS);
+        expect(watch.active).toBe(false);
+        expect(harness.messages.some((m) => m.includes("giving up"))).toBe(
+            true,
+        );
     });
 
     it("a dead VAD disarms quietly", async () => {
