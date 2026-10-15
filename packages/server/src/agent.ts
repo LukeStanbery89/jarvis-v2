@@ -74,6 +74,14 @@ export interface RunAgentOptions {
      */
     location?: DeviceLocation;
     /**
+     * The connecting socket's peer address (`ws.ts`): the client half of a
+     * guest's metering key (#8). A guest has no account to charge a tool
+     * call to, so the `wikipedia` tool budgets them per session *and* per
+     * address — the address bucket is what makes the limit survive a guest
+     * reconnecting for a fresh session. Absent for non-socket callers.
+     */
+    clientIp?: string;
+    /**
      * Cooperative cancellation (#84 P6): aborting it stops the turn — the
      * model's in-flight calls reject, the stream ends, and the generator
      * finishes early. Threaded into the graph's runnable config so a stalled
@@ -182,6 +190,31 @@ const HOME_CALL_RULE =
     "before acting.";
 
 /**
+ * Tools-over-memory hygiene appended to every conditioned system prompt (#8).
+ *
+ * Small local models answer confidently from their training data, which is
+ * stale and, for anything that changed after training, simply wrong. The
+ * per-tool paragraphs already say this for their own tool (the weather and
+ * home rules especially); this one states the general disposition, so a
+ * model that is offered `wikipedia` or `webSearch` reaches for the tool on
+ * the class of questions those tools exist for rather than reciting a
+ * remembered fact. Deliberately general and tool-agnostic: it names the
+ * kinds of tools, not one deployment's registry, and it is appended
+ * unconditionally for the same reason the Home rule is — a model that
+ * cannot see such a tool is never misled by instruction it cannot follow.
+ * The specific tool's own description does the choosing between them.
+ */
+const RESEARCH_RULE =
+    "Prefer your tools over your own memory for facts about the world. When " +
+    "a lookup tool (such as Wikipedia search or web search) is available and " +
+    "the question turns on a fact — a person, place, thing, event, figure, " +
+    "definition, or piece of history — or on anything that is likely to have " +
+    "changed since you were trained (news, prices, schedules, releases, " +
+    "current officeholders, scores), call the tool and answer from what it " +
+    "returns rather than reciting from memory. If no tool can settle the " +
+    "question, say what you are unsure of instead of stating a guess as fact.";
+
+/**
  * Spoken-word formatting directive appended for voice-mode turns (#83).
  *
  * A voice prompt's effective capabilities are empty, which yields plain
@@ -210,12 +243,13 @@ const VOICE_FORMAT_RULE =
  * Pure (and exported) so the conditioning rules are unit-testable without a
  * model. The fixed hygiene paragraphs — tool-call discipline
  * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
- * lookups ({@link IMAGE_ANALYSIS_RULE}), and Home Assistant calls
- * ({@link HOME_CALL_RULE}) — are always appended: all are server concerns,
+ * lookups ({@link IMAGE_ANALYSIS_RULE}), Home Assistant calls
+ * ({@link HOME_CALL_RULE}), and tools-over-memory for research
+ * ({@link RESEARCH_RULE}) — are always appended: all are server concerns,
  * independent of the client's rendering capabilities and of any
- * `LLM_SYSTEM_PROMPT` override. (The Home rule is unconditional even though
- * the tool is optional: a model that cannot see a tool is never misled by
- * instruction it cannot follow.) Capability
+ * `LLM_SYSTEM_PROMPT` override. (The Home and research rules are
+ * unconditional even though their tools are optional: a model that cannot
+ * see a tool is never misled by instruction it cannot follow.) Capability
  * notes are appended as one paragraph only when the client actually declared
  * the token. Under `mode: "voice"` (#83) the spoken-word directive
  * ({@link VOICE_FORMAT_RULE}) is appended instead: the reply is shaped for
@@ -252,7 +286,7 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}${rendering}${spoken}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;
@@ -317,8 +351,9 @@ function getAgentGraph(): AgentGraph {
  * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
  * `analyzeImage` tool reads ids from), `options.userId` is exposed to
  * tool runtime callbacks so user-scoped tools can enforce ownership and
- * quotas, and `options.location` rides along (#31) for location-aware
- * tools.
+ * quotas, `options.location` rides along (#31) for location-aware
+ * tools, and `sessionId` plus `options.clientIp` are exposed for the tools
+ * that meter guests by session and address (#8).
  */
 /**
  * Appends the attachment marker to a prompt (#10).
@@ -353,19 +388,22 @@ export async function* runAgent(
         JSON.stringify({ prompt: markedPrompt, sessionId }),
     );
     const { systemPrompt, agentMaxTurns } = getLlmConfig();
-    // Absent when neither seam is populated, so guest, location-less turns
-    // keep the pre-#31 wire shape (`configurable: undefined`).
-    const configurable =
-        options.userId !== undefined || options.location !== undefined
-            ? {
-                  ...(options.userId !== undefined
-                      ? { userId: options.userId }
-                      : {}),
-                  ...(options.location !== undefined
-                      ? { location: options.location }
-                      : {}),
-              }
-            : undefined;
+    // `sessionId` and `clientIp` are always stamped: they are what a guest
+    // turn has instead of a `userId`, and tools that admit guests (#8) key
+    // their budgets on them. Neither is new information — `sessionId` is
+    // already the graph's `thread_id`, and `clientIp` is the socket's own
+    // peer address. `userId` and `location` stay conditional so an
+    // authenticated, location-less turn keeps the pre-#31 shape.
+    const configurable = {
+        sessionId,
+        ...(options.userId !== undefined ? { userId: options.userId } : {}),
+        ...(options.location !== undefined
+            ? { location: options.location }
+            : {}),
+        ...(options.clientIp !== undefined
+            ? { clientIp: options.clientIp }
+            : {}),
+    };
     yield* streamAgentTurn(getAgentGraph(), markedPrompt, sessionId, {
         systemPrompt: systemPromptForCapabilities(
             systemPrompt,

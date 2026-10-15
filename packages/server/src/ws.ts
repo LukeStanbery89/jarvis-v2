@@ -109,6 +109,17 @@ interface ConnectionState {
      * (the latest frame wins for subsequent turns).
      */
     location?: DeviceLocation;
+    /**
+     * The connecting socket's peer address (`request.socket.remoteAddress`),
+     * captured at handshake — the client half of a guest's metering key (#8).
+     *
+     * Undefined when the transport exposes no remote address (some tests and
+     * non-TCP transports). Behind a reverse proxy this is the *proxy's*
+     * address, so the per-address guest bucket collapses toward one global
+     * bucket; honouring `X-Forwarded-For` needs the trusted-CIDR check and is
+     * tracked with #63/#65.
+     */
+    clientIp?: string;
     /** Resolved identity: the account + presenting device, or guest. */
     ctx: AuthContext;
     /** Token hash of the authenticating device (for per-prompt revocation checks). */
@@ -193,7 +204,7 @@ export function attachChatServer(
         logger.warn(`WebSocket server error: ${err.message}`);
     });
 
-    wss.on("connection", (socket) => {
+    wss.on("connection", (socket, request) => {
         logger.info("New WebSocket connection");
         // Same footgun one level down: per-connection errors are re-emitted
         // on the socket itself. Registered first, before any other listener
@@ -233,6 +244,11 @@ export function attachChatServer(
             authed: false,
             promptSeen: false,
             capabilities: [],
+            // The socket's peer address (#8): captured once at handshake, the
+            // client half of a guest's metering key. `undefined` when the
+            // transport exposes none — `requireMeteredCaller` then refuses the
+            // guest rather than admitting an unkeyed caller.
+            clientIp: request.socket.remoteAddress,
             ctx: GUEST_CONTEXT,
             guestThreads: new Set(),
             turnCounter: 0,
@@ -504,6 +520,7 @@ async function handlePrompt(
                             ? conn.ctx.user.id
                             : undefined,
                     location: conn.location,
+                    clientIp: conn.clientIp,
                     tts: options.tts,
                     ttsSegment: options.ttsSegment,
                     signal: controller.signal,
@@ -631,8 +648,12 @@ async function handleAuth(
  * (rich formatting is text-mode-only). The prompt's chat `mode` rides along
  * so the agent can apply that directive. The device's latest reported
  * location (#31) rides along
- * for location-aware tools; a guest turn carries no `userId`, so metered
- * tools refuse guests regardless of any location.
+ * for location-aware tools. A guest turn carries no `userId`, so the tools
+ * that require an account (`getWeather`, `webSearch`, `homeAssistant`,
+ * `analyzeImage`) refuse it regardless of any location; the tools that admit
+ * guests (`wikipedia`, #8) instead meter the turn by its `sessionId` and this
+ * socket's peer address, so the address bucket survives a guest reconnecting
+ * for a fresh session.
  *
  * The turn's `token` events are assembled as they stream, so two things can be
  * done once the stream ends: the whole response is logged in one
@@ -691,6 +712,8 @@ interface StreamEventsOptions {
     userId: number | undefined;
     /** The socket's latest device-location report, if any. */
     location: DeviceLocation | undefined;
+    /** The socket's peer address (#8), for guest metering; may be undefined. */
+    clientIp: string | undefined;
     /** The configured TTS engine, if any (from `ChatServerOptions`). */
     tts: TtsProvider | undefined;
     /** Segmenter granularity for spoken turns (from `ChatServerOptions`). */
@@ -809,6 +832,7 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
         attachmentIds,
         userId,
         location,
+        clientIp,
         signal,
         generationId,
     } = opts;
@@ -864,6 +888,7 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
             attachmentIds,
             userId,
             location,
+            clientIp,
             signal,
         });
         try {

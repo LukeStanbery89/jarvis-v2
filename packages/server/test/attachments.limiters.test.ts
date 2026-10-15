@@ -4,6 +4,7 @@ import {
     InFlightLimiter,
     VlCallLimiter,
 } from "../src/attachments/limiters";
+import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 
 describe("VlCallLimiter", () => {
     it("admits calls up to the per-window budget", () => {
@@ -51,6 +52,17 @@ describe("VlCallLimiter", () => {
         expect(limiter.tryAcquire(1, 10_501).ok).toBe(false);
         // 11001 > 1000 + 10000: the second hit lapses too, freeing a slot.
         expect(limiter.tryAcquire(1, 11_001).ok).toBe(true);
+    });
+
+    it("keys on the generic key type — string keys for guest budgets (#8)", () => {
+        // `FixedWindowQuota` was numeric-only; the `wikipedia` tool keys its
+        // guest buckets on namespaced strings ("session:<id>" /
+        // "address:<ip>"), so the parameter is generic over the key.
+        const quota = new FixedWindowQuota<string>(1, 60_000);
+        expect(quota.tryAcquire("session:a", 1000).ok).toBe(true);
+        // A different key is a different budget.
+        expect(quota.tryAcquire("session:b", 1000).ok).toBe(true);
+        expect(quota.tryAcquire("session:a", 1000).ok).toBe(false);
     });
 });
 
