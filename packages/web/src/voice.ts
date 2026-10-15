@@ -120,6 +120,45 @@ export function wakeAssetBaseUrl(
 }
 
 /**
+ * The staged asset directory as an **origin-absolute** URL — the value ORT
+ * gets as its `wasmPath`.
+ *
+ * ORT fetches its `ort-wasm-simd-threaded.jsep.mjs` glue with a runtime
+ * `import(<url>)`: a dynamic import Vite cannot analyze, and therefore one
+ * `vite:import-analysis` rewrites to `import(__vite__injectQuery(url,
+ * 'import'))`, appending `?import`. The dev server then refuses the request —
+ * a `public/` file may not enter the module/transform pipeline — so the wake
+ * engine never arms in dev (#123); `vite build` escapes it because the
+ * bundle's own `import()` is a plain browser import.
+ *
+ * Vite's injected helper leaves any specifier that does not begin with `.`
+ * or `/` untouched, so an absolute directory is served verbatim — the exact
+ * request the built client makes. An absolute base is the only change
+ * needed: ORT concatenates a root-relative prefix to the same effect, which
+ * is why the built client worked.
+ *
+ * The mic worklet deliberately stays relative ({@link wakeAssetBaseUrl}): it
+ * loads through `audioWorklet.addModule()`, which no transform rewrites.
+ *
+ * @param base - The staged asset directory (defaults to
+ *   {@link wakeAssetBaseUrl}).
+ * @param origin - The page URL the directory resolves against (defaults to
+ *   the current `location`, so this assumes a browser document — the SPA is
+ *   only ever served over http[s]; a caller in a context without one gets a
+ *   loud `ReferenceError` rather than a plausible URL that cannot work).
+ * @returns The directory as an absolute URL, e.g.
+ *   `http://localhost:5173/web/ort/`. The base's trailing `/`, which ORT
+ *   needs, is preserved rather than added — {@link wakeAssetBaseUrl} always
+ *   supplies one.
+ */
+export function wakeWasmPath(
+    base: string = wakeAssetBaseUrl(),
+    origin: string = location.href,
+): string {
+    return new URL(base, origin).href;
+}
+
+/**
  * Creates the on-device openWakeWord wake detector for this browser.
  *
  * `null` when the runtime cannot host it (no secure context / Web Audio /
@@ -131,7 +170,8 @@ export function wakeAssetBaseUrl(
  * The ORT wasm and mic worklet resolve against {@link wakeAssetBaseUrl};
  * openwakeword-web's own defaults point into its bundle, a `.`-mounted SPA
  * cannot reach. The `wasmPath` is the directory ORT fetches its
- * `ort-wasm-simd-threaded.jsep.*` pair from (a prefix, not a file URL).
+ * `ort-wasm-simd-threaded.jsep.*` pair from (a prefix, not a file URL) — see
+ * {@link wakeWasmPath} for why it is handed over absolute.
  *
  * @param options.log - Debug sink (the detector reports how much of the
  *   command a match had to recover from its prediction queue — the #121
@@ -142,7 +182,7 @@ export function createWakeWord(
     options: { log?: (message: string, error?: unknown) => void } = {},
 ): WakeWordProvider | null {
     return createOpenWakeWord({
-        wasmPath: wakeAssetBaseUrl(),
+        wasmPath: wakeWasmPath(),
         workletUrl: `${wakeAssetBaseUrl()}mic-worklet.js`,
         log: options.log,
     });

@@ -222,6 +222,16 @@ ESM-only `openwakeword-web` and `onnxruntime-web`'s "extern wasm" entry
 through config aliases/conditions, so no 28 MB wasm is duplicated into the
 bundle — it is fetched only at arm time from the staged directory.
 
+`createWakeWord()` hands ORT that directory as an **origin-absolute** URL
+(`wakeWasmPath()`), never a root-relative one. ORT loads the wasm glue with
+a runtime `import(<url>)`, and Vite's dev server appends `?import` to any
+dynamic import whose specifier starts with `.` or `/`; it then refuses the
+request, because a `public/` file may not enter the module/transform
+pipeline — so in dev the detector failed to arm and Vite logged an internal
+error (#123). An absolute URL is left untouched by that rewrite, and is the
+same request the built client makes. The mic worklet stays relative:
+`audioWorklet.addModule` is never rewritten.
+
 ### Barge-in (#84 P6)
 
 You can talk over J.A.R.V.I.S. while the reply is playing. While the
