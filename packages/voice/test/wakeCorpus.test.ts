@@ -371,6 +371,12 @@ describe("real corpus (#121) — the maintainer's recordings", () => {
         const fed = fedAudio(h.wakeStt);
         expect(fed.length).toBe(audio.pcm.length - matchSample);
         expect(fed[0]).toBe(audio.pcm[matchSample]);
+        // Full-sample equality, not just a length and an opening window:
+        // nothing is reordered, spliced, or repeated — the fed stream *is* the
+        // fixture from the match on.
+        expect(Array.from(fed)).toEqual(
+            Array.from(audio.pcm.slice(matchSample)),
+        );
         // The opening of the stream is the pause, not the phrase: nothing the
         // phrase left behind can reach the engine.
         expect(rmsOf(fed, 0, 1600)).toBeLessThan(0.01);

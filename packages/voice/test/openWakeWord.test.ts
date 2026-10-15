@@ -48,6 +48,12 @@ class FakeOww {
      * phrase here"), so tests can lay out a score ramp like the real model's.
      */
     scores: number[] = [];
+    /**
+     * Fires a detection from inside the given `predict` call — the library's
+     * own timing, where the crossing frame is still in flight (the provider's
+     * cursor has not advanced past it yet).
+     */
+    fireOnCall: { call: number; label: string; score: number } | null = null;
     /** A parked `predict` (see {@link FakeOww.hold}), when set. */
     private gate: Promise<void> | null = null;
     private openGate: (() => void) | null = null;
@@ -65,7 +71,12 @@ class FakeOww {
         if (gate !== null) {
             await gate;
         }
-        const score = this.scores[this.predictCalls] ?? 0;
+        const call = this.predictCalls;
+        const score = this.scores[call] ?? 0;
+        if (this.fireOnCall?.call === call) {
+            const { label, score: fired } = this.fireOnCall;
+            this.onDetection?.({ label, score: fired });
+        }
         this.predictCalls += 1;
         return { hey_jarvis: score };
     }
@@ -333,23 +344,27 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("starts after the crossing frame when no quiet frame is in reach", async () => {
-        // An unusually wide ramp — the score never returns to the floor inside
-        // the search window — so nothing can be recovered and the stream
-        // starts after the crossing frame rather than reaching back for audio
-        // that might be the phrase.
+    it("emits the crossing frame when no quiet run is in reach", async () => {
+        // The library fires from *inside* `predict`, with the crossing frame
+        // still in flight — the production path, not the test-driven
+        // `fire()`-after-drain shortcut. When no frame in the search window is
+        // at the floor (an unusually wide ramp) there is nothing to walk back
+        // to, so the cut is the crossing frame itself and it *is* emitted:
+        // the stream starts there rather than reaching back for audio that
+        // might be the phrase.
         const { module, provider } = makeHarness();
         const record = makeRecord();
         await provider.start(record.callbacks);
         const instance = lastInstance(module);
-        instance.scores = Array.from({ length: 20 }, () => 0.2);
-        for (let frame = 0; frame < 20; frame += 1) {
+        instance.scores = [0.2, 0.2, 0.2, 0.6];
+        instance.fireOnCall = { call: 3, label: "hey_jarvis", score: 0.6 };
+        for (const frame of [1, 2, 3, 4]) {
             lastMic(module).emitFrame(frameWith(frame));
             await drain();
         }
-        expect(record.commandAudio).toEqual([]);
-        instance.fire("hey_jarvis", 0.6);
-        expect(record.commandAudio).toEqual([]);
+        expect(record.commandAudio.map((chunk) => chunk.pcm[0])).toEqual([
+            4 / 32768,
+        ]);
         await provider.stop();
     });
 

@@ -96,9 +96,10 @@ export interface SttStartOptions {
      * {@link SttProvider.feed} — the mode the offline replay harness uses to
      * run a recorded utterance through the real engine, and the mode the
      * wake→command redesign uses to feed the detector's own capture.
-     * Engines that cannot take caller audio ignore it (and behave as
-     * `"mic"`); when `"external"` is set the engine rejects if it cannot
-     * honor it.
+     * Engines that take no caller audio at all ignore the option and keep
+     * their own microphone (Web Speech). An engine that *can* take it honors
+     * the flag or rejects the `start()` — the WASM engine rejects an unusable
+     * sample rate rather than silently falling back to its own microphone.
      */
     readonly source?: "mic" | "external";
     /**
@@ -150,12 +151,13 @@ export interface SttStartOptions {
  *   caller — a failure surfaces at the next `start()` instead.
  * - An optional `feed(pcm, sampleRate)` hands the engine raw mono PCM audio
  *   *without* its own microphone: a wake session streams the detector's live
- *   post-match frames through it (`source: "external"`, #121), and a barge-in
- *   session replays its look-back ring. Implementations that capture from
- *   their own held mic reject or ignore it; those that take caller-supplied
- *   audio (the WASM engine backing wake sessions) accept it while `running`.
- *   It is what lets "Hey JARVIS, turn on the lights" reach the recognizer with
- *   the wake phrase excluded by construction — the audio starts at the match.
+ *   command frames through it (`source: "external"`, #121) — the stream starts
+ *   at the phrase's end, never at the match — and a barge-in session replays
+ *   its look-back ring. Implementations that capture from their own held mic
+ *   reject or ignore it; those that take caller-supplied audio (the WASM
+ *   engine backing wake sessions) accept it while `running`. It is what lets
+ *   "Hey JARVIS, turn on the lights" reach the recognizer with the wake phrase
+ *   excluded — the audio starts where the phrase ends.
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
@@ -202,9 +204,8 @@ export interface SttProvider {
      * Feeds caller-supplied mono PCM audio into an active session, instead of
      * opening the microphone. Optional, and only meaningful while `running`:
      * the WASM engine backing wake-word sessions implements it so a wake
-     * session can begin by replaying the detector's look-back buffer (the
-     * command spoken in the same breath as the wake phrase), then continue
-     * on live mic frames. Engines that owe their own mic (Web Speech) omit it.
+     * session's command audio arrives frame by frame from the detector's own
+     * microphone (#121). Engines that owe their own mic (Web Speech) omit it.
      *
      * @param pcm - Interleaved mono PCM samples, normalized to `[-1, 1]`.
      * @param sampleRate - The sample rate the PCM was captured at.
@@ -229,17 +230,21 @@ export interface WakeCallbacks {
     /** The wake phrase matched; the client should begin a voice session. */
     readonly onWake: (detection: WakeDetection) => void;
     /**
-     * The detector's audio **from the match onward** — the command, streamed
-     * frame by frame on the same microphone that heard the phrase, until the
-     * detector is stopped (#121). Because nothing before the match is ever
-     * delivered and the frames are contiguous, the wake session's engine runs
-     * microphone-free over exactly this stream: the phrase cannot reach it and
-     * there is no handoff to a second microphone to splice or clip.
+     * The detector's audio **from the phrase's end onward** — the command,
+     * streamed frame by frame on the same microphone that heard the phrase,
+     * until the detector is stopped (#121). Because nothing before that cut is
+     * ever delivered and the frames are contiguous, the wake session's engine
+     * runs microphone-free over exactly this stream: the phrase's audio has no
+     * path to it, and there is no handoff to a second microphone to splice or
+     * clip.
      *
-     * Deliveries start with the first frame **after** the one that crossed
-     * the threshold (that frame is only predicted, never emitted) and continue
-     * until `stop()` — a detector that has fired stops predicting, so the
-     * stream is the command alone however long it takes the session to open.
+     * Deliveries start at the score's **onset** — the last frame still at the
+     * noise floor, plus one, which the model's ramp puts at the phrase's end —
+     * so they include the command's opening rather than starting a frame or
+     * two into it. When no quiet frame is in the search window the crossing
+     * frame itself is the cut, and it is emitted. Deliveries continue until
+     * `stop()`: a detector that has fired stops predicting, so the stream is
+     * the command alone however long it takes the session to open.
      * `sampleRate` is the detector's capture rate (16 kHz for openWakeWord).
      *
      * Optional: a detector with no streaming capture omits it, in which case a

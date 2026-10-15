@@ -1,10 +1,11 @@
 /**
  * Wake-word transcript hygiene — now a safety net, not the mechanism (#121).
  *
- * The wake session's audio is phrase-free by construction: the detector's
- * buffer is emptied the instant a match fires, so only post-match audio
- * reaches the recognition engine. This module remains as defence in depth for
- * the two ways a phrase fragment can still appear:
+ * The wake session's audio is phrase-free: the detector's stream starts at the
+ * phrase's end (the score's onset), and only frames from there reach the
+ * recognition engine — the phrase's audio has no path to it. This module
+ * remains as defence in depth for the two ways a phrase fragment can still
+ * appear:
  *
  * - a detector that fires *early*, mid-phrase, so the buffer's first frames
  *   are the phrase's tail;

@@ -134,12 +134,13 @@ phase 3's deterministic answer:
   no-speech error) via `stt.cancel()` (no callbacks fire) and the reducer's
   `noSpeech` event: back to `idle` with no error banner.
 - **A wake session** (`{ source: "external" }`, #121) has no VAD and no
-  microphone of its own: its audio is the detector's live post-match frames,
-  pushed in through `VoiceSession.pushCommandAudio` (held across the engine's
-  open, so the command's opening survives a cold start). The engine endpoints
-  on its own silence detection — an empty final is ignored, so a long pause
-  between "Hey JARVIS" and the command cannot end it — bounded by the same
-  `NO_SPEECH_MS` silence guard ("woke up and said nothing") and by
+  microphone of its own: its audio is the detector's live command frames
+  (starting where the phrase ends), pushed in through
+  `VoiceSession.pushCommandAudio` (held across the engine's open, so the
+  command's opening survives a cold start). The engine endpoints on its own
+  silence detection — an empty final is ignored, so a pause between "Hey
+  JARVIS" and the command does not end it early — bounded by the
+  `NO_SPEECH_MS` silence guard ("woke up and said nothing", 4 s) and by
   `MAX_COMMAND_MS` (15 s), which flushes a command that never pauses.
 - **Without a `vad`** (unsupported runtime), behavior is the engine's own:
   it finalizes on its silence detection, a second press stops-and-flushes,

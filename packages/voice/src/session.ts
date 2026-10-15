@@ -66,10 +66,11 @@ export const MAX_COMMAND_MS = 15000;
 
 /**
  * How much command audio a wake session holds before its engine takes it
- * (#121). Bounded at ten seconds — deliberately the same backlog the detector
- * may hand over in one match (`MAX_QUEUED_FRAMES` in the openWakeWord
- * provider), so a recovered command opening is never truncated; in practice
- * the engine is up in milliseconds and only a frame or two is ever held. The
+ * (#121). Bounded at ten seconds — the same order as the detector's own
+ * backlog cap (`MAX_BACKLOG_FRAMES` in the openWakeWord provider, which can
+ * hand over that much plus the cut's search window in one match), so the
+ * bound never truncates an opening the detector recovered; in practice the
+ * engine is up in milliseconds and only a frame or two is ever held. The
  * oldest frames are dropped past the cap. Exported so the controller's
  * pre-session buffer (the wake cue window) uses the same bound.
  */

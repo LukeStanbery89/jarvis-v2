@@ -139,11 +139,10 @@ export interface VoiceControllerOptions {
      * The STT engine used for wake-word sessions. **Required for wake-word
      * support**: `enableWake()` no-ops unless both `wake` and `wakeStt` are
      * present, so omitting it disables wake sessions even with a detector
-     * configured (there is no primary-`stt` fallback). Should accept
-     * caller-supplied audio (`feed()`) so the context spoken around the wake
-     * phrase ("Hey JARVIS, turn on the lights") is transcribed — a
-     * wake-word detector opens a session with its look-back buffer, not a
-     * fresh page — and should be the private/local engine (a remote service
+     * configured (there is no primary-`stt` fallback). Must accept
+     * caller-supplied audio (`feed()`) — the detector streams the command
+     * after the phrase straight into it, so the engine's own microphone is
+     * never opened — and should be the private/local engine (a remote service
      * would send every wake-eavesdropped second to the cloud).
      */
     readonly wakeStt?: SttProvider | null;
@@ -400,9 +399,12 @@ export class VoiceController {
 
     /**
      * Disarms the wake-word detector and leaves it off until
-     * {@link enableWake} is called again. Safe when already disarmed;
-     * cancels a wake-session engine if one is mid-session (the primary
-     * engine's session is left alone).
+     * {@link enableWake} is called again. Safe when already disarmed. It does
+     * **not** cancel a session that is already running: a wake session keeps
+     * the engine it owns and settles through its own bounds (its detector
+     * simply stops delivering frames), and a press/barge session on the
+     * primary engine is left alone. The detector is not restarted when such a
+     * session ends — `maybeReArm` no-ops while disabled.
      *
      * @returns Resolves once the detector is disarmed.
      */
