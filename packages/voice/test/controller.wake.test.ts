@@ -4,9 +4,9 @@
  * The controller is driven with a scripted fake wake detector, fake STT
  * engines (one primary, one for wake sessions), a fake VAD, and a fake
  * scheduler — asserting on the observable `VoiceSnapshot` after each step:
- * arming/disarming, the wake session opening on its own engine, look-back
- * replay into that engine, phrase stripping, and automatic re-arming once
- * a wake-opened turn settles. Timer expiry is fired by hand, never by real
+ * arming/disarming, the wake session opening on its own engine, the
+ * post-match seed fed into that engine (#121), phrase stripping, and
+ * automatic re-arming once a wake-opened turn settles. Timer expiry is fired by hand, never by real
  * clocks.
  */
 import { describe, expect, it } from "vitest";
@@ -237,9 +237,6 @@ async function drain(): Promise<void> {
     }
 }
 
-/** The look-back buffer a wake match carries ("Hey JARVIS, turn on…"). */
-const lookback = Float32Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-
 describe("wake arming", () => {
     it("enableWake arms the detector and warms the wake engine", async () => {
         const harness = makeHarness();
@@ -284,21 +281,23 @@ describe("wake arming", () => {
 });
 
 describe("wake sessions", () => {
-    it("a match opens a session on the wake engine, replaying the look-back", async () => {
+    it("a match opens a session seeded with the detector's post-match audio", async () => {
         const harness = makeHarness();
         const { stt, wakeStt, wake, controller } = harness;
+        // The detector kept capturing after the match; the controller drains
+        // it before disarming, so the session's engine starts with the
+        // command's opening — through the ordered start() feed, which reaches
+        // the decoder before any live chunk.
+        const postMatch = Float32Array.from([90, 91, 92, 93]);
+        wake.drained = postMatch;
         await controller.enableWake();
         await drain();
         expect(controller.getSnapshot().wakeArmed).toBe(true);
         expect(controller.getSnapshot().state).toBe("idle");
 
-        wake.emitWake({ confidence: 0.91, lookback });
+        wake.emitWake({ confidence: 0.91 });
         await drain();
 
-        // The detector disarmed in favor of the session; the wake engine
-        // (not the primary) owns the mic and received the look-back —
-        // through the ordered start() feed (the replay must reach the
-        // decoder before any live chunk).
         expect(controller.getSnapshot().wakeArmed).toBe(false);
         expect(controller.getSnapshot().state).toBe("listening");
         expect(stt.startCalls).toBe(0);
@@ -306,28 +305,20 @@ describe("wake sessions", () => {
         expect(wakeStt.lastStartOptions?.continuous).toBe(true);
         expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(16000);
         expect(Array.from(wakeStt.lastStartOptions?.feed?.pcm ?? [])).toEqual([
-            ...lookback,
+            ...postMatch,
         ]);
     });
 
-    it("appends the drained post-match audio to the replay", async () => {
+    it("seeds nothing when the detector captured nothing after the match", async () => {
         const harness = makeHarness();
         const { wakeStt, wake, controller } = harness;
-        // The detector kept capturing after the match; the controller
-        // drains it before disarming and concatenates it onto the
-        // match-time look-back, so the replay spans the full utterance.
-        const postMatch = Float32Array.from([90, 91, 92, 93]);
-        wake.drained = postMatch;
+        wake.drained = null;
         await controller.enableWake();
         await drain();
-        wake.emitWake({ confidence: 0.9, lookback });
+        wake.emitWake({ confidence: 0.9 });
         await drain();
-        const feed = wakeStt.lastStartOptions?.feed;
-        expect(feed?.sampleRate).toBe(16000);
-        expect(Array.from(feed?.pcm ?? [])).toEqual([
-            ...lookback,
-            ...postMatch,
-        ]);
+        expect(wakeStt.startCalls).toBe(1);
+        expect(wakeStt.lastStartOptions?.feed).toBeUndefined();
     });
 
     it("phrase stripping turns the transcript into the command", async () => {
@@ -336,7 +327,7 @@ describe("wake sessions", () => {
         const harness = makeHarness(false);
         const { wakeStt, wake, controller, submits } = harness;
         await controller.enableWake();
-        wake.emitWake({ confidence: 0.9, lookback });
+        wake.emitWake({ confidence: 0.9 });
         await drain();
         wakeStt.emitResult("Hey JARVIS, turn on the living room light");
         await drain();
@@ -378,7 +369,7 @@ describe("wake sessions", () => {
         controller.press();
         await drain();
         expect(controller.getSnapshot().state).toBe("listening");
-        wake.emitWake({ confidence: 0.9, lookback });
+        wake.emitWake({ confidence: 0.9 });
         await drain();
         expect(wakeStt.startCalls).toBe(0);
         expect(controller.getSnapshot().state).toBe("listening");
@@ -476,7 +467,7 @@ describe("wake race fixes (#104)", () => {
             submit: async () => {},
         });
         await controller.enableWake();
-        wake.emitWake({ confidence: 0.9, lookback });
+        wake.emitWake({ confidence: 0.9 });
         await Promise.resolve();
         // The cue is still playing: the user presses the mic button.
         controller.press();
@@ -514,18 +505,17 @@ describe("wake race fixes (#104)", () => {
         expect(controller.getSnapshot().wakeArmed).toBe(true);
     });
 
-    it("threads the detection's look-back sample rate into the replay", async () => {
+    it("seeds a wake session at the detector's 16 kHz convention", async () => {
         const harness = makeHarness();
         const { wakeStt, wake, controller } = harness;
+        wake.drained = Float32Array.from([1, 2, 3]);
         await controller.enableWake();
         await drain();
-        wake.emitWake({
-            confidence: 0.9,
-            lookback,
-            lookbackSampleRate: 48000,
-        });
+        wake.emitWake({ confidence: 0.9 });
         await drain();
-        expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(48000);
+        // The detector's convention is 16 kHz; a wake session's seed always
+        // carries it, whatever the detection reports (#121).
+        expect(wakeStt.lastStartOptions?.feed?.sampleRate).toBe(16000);
     });
 });
 

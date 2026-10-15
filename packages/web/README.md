@@ -197,11 +197,13 @@ on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
 openwakeword-web running under the WASM STT engine's runtime). While armed,
 the detector holds a second 16 kHz mic open continuously; a match plays a
 short blip (`AudioPlayer.blip()`, the cue the toggle's user gesture
-unlocked), opens a wake session through the same `VoiceController`, replays
-the phrase's look-back audio into `wakeStt` (a second, always-local Vosk
-instance — never Web Speech, so wake-eavesdropped audio never leaves the
-device), strips "Hey JARVIS" from the transcript, and submits it as an
-ordinary voice turn. The toggle is **off by default** (a persistent extra
+unlocked), opens a wake session through the same `VoiceController`, seeds
+`wakeStt` with the detector's post-match audio — the command's opening, never
+the phrase, because the detector empties its buffer the instant the phrase
+fires (#121) — strips any stray "Hey JARVIS" as a safety net, and submits it
+as an ordinary voice turn. `wakeStt` is a second, always-local Vosk instance
+(never Web Speech, so wake-eavesdropped audio never leaves the device). The
+toggle is **off by default** (a persistent extra
 mic), persisted in localStorage, rendered only when the runtime supports
 wake (secure context + audio worklet), a local STT engine exists, and the
 server answers the `HEAD /api/wake/model/melspectrogram.onnx` probe

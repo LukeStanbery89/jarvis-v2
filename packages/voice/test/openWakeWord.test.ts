@@ -5,10 +5,10 @@
  * instance whose `fire()` the test uses to simulate the library detecting a
  * phrase mid-`predict`, and a fake `Microphone` whose frames the test pushes
  * by hand) — no network, no WASM, no AudioWorklet. Assertions cover the
- * ring-buffer look-back (chronological replay of everything before the
- * match), busy-drop prediction serialization, firing-at-most-once, clean
- * start/stop cycles, and the injected-loader path the browser client (and
- * any future client) relies on.
+ * post-match buffer (emptied at the match, so the phrase never reaches the
+ * recognition engine — #121), busy-drop prediction serialization,
+ * firing-at-most-once, clean start/stop cycles, and the injected-loader path
+ * the browser client (and any future client) relies on.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -18,7 +18,6 @@ import {
 } from "../src/index";
 import type { OpenWakeWordModuleLike, OpenWakeWordOptions } from "../src/index";
 import type { VoiceError } from "../src/index";
-import { wakeReplay } from "../src/wake";
 
 /** The slice of create options the fake records and honors. */
 interface CreateOptionsRecord {
@@ -163,7 +162,7 @@ function makeHarness(options: OpenWakeWordOptions = {}): Harness {
 
 /** A recording of the wake deliveries and errors on the armed pass. */
 interface WakeRecord {
-    wakes: Array<{ confidence: number; lookback?: Float32Array }>;
+    wakes: Array<{ confidence: number }>;
     errors: VoiceError[];
     callbacks: Parameters<OpenWakeWordWakeProvider["start"]>[0];
 }
@@ -174,10 +173,7 @@ function makeRecord(): WakeRecord {
         errors: [],
         callbacks: {
             onWake: (detection) =>
-                record.wakes.push({
-                    confidence: detection.confidence ?? 0,
-                    lookback: detection.lookback,
-                }),
+                record.wakes.push({ confidence: detection.confidence ?? 0 }),
             onError: (error) => record.errors.push(error),
         },
     };
@@ -232,29 +228,19 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("delivers a detection with the retained look-back audio", async () => {
-        const { module, provider } = makeHarness({ lookbackMs: 2000 });
+    it("reports the match, and empties the buffer with it", async () => {
+        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
         const record = makeRecord();
         await provider.start(record.callbacks);
         module.mics[0].emitFrame(frameWith(1));
         module.mics[0].emitFrame(frameWith(2));
-        // Ring replay is chronological: frame2's content follows frame1's.
         module.instances[0].fire("hey_jarvis", 0.92);
         expect(record.errors).toEqual([]);
         expect(record.wakes).toHaveLength(1);
         expect(record.wakes[0].confidence).toBe(0.92);
-        const lookback = record.wakes[0].lookback;
-        expect(lookback?.length).toBe(2560);
-        expect(Array.from(lookback ?? []).slice(0, 3)).toEqual([
-            1 / 32768,
-            2 / 32768,
-            3 / 32768,
-        ]);
-        expect(Array.from(lookback ?? []).slice(1280, 1283)).toEqual([
-            2 / 32768,
-            3 / 32768,
-            4 / 32768,
-        ]);
+        // The two pre-match frames went with the match: the phrase is not
+        // retained anywhere, so nothing is left to seed a session with.
+        expect(provider.drainPostMatch?.()).toBeNull();
         await provider.stop();
     });
 
@@ -282,12 +268,11 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("drains post-match audio the ring kept capturing", async () => {
-        // A fired match does not stop capture: frames after the match keep
-        // filling the ring, so the drain hands back the match-time window
-        // PLUS the words spoken while the session's mic was still opening —
-        // the words a frozen match-time snapshot loses.
-        const { module, provider } = makeHarness({ lookbackMs: 2000 });
+    it("drains only the audio captured after the match", async () => {
+        // The buffer is emptied at the match, so everything the phrase left
+        // behind is gone: the drain holds just what the detector heard while
+        // the session was starting — the command's opening (#121).
+        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
         const record = makeRecord();
         await provider.start(record.callbacks);
         module.mics[0].emitFrame(frameWith(1));
@@ -296,48 +281,37 @@ describe("OpenWakeWordWakeProvider", () => {
         // Post-match frames keep flowing (the worklet mic is still alive).
         module.mics[0].emitFrame(frameWith(7));
         const drained = provider.drainPostMatch?.();
-        expect(drained).not.toBeNull();
-        expect(drained?.length).toBe(2560);
-        // The tail is the post-match frame — the drain ends "now".
-        expect(Array.from(drained ?? []).slice(-3)).toEqual([
-            1284 / 32768,
-            1285 / 32768,
-            1286 / 32768,
+        expect(drained?.length).toBe(1280);
+        expect(Array.from(drained ?? []).slice(0, 3)).toEqual([
+            7 / 32768,
+            8 / 32768,
+            9 / 32768,
         ]);
-        // One drain does not empty the ring (stop() does).
+        // One drain does not empty the buffer (stop() does).
         expect(provider.drainPostMatch?.()).not.toBeNull();
         await provider.stop();
         expect(provider.drainPostMatch?.()).toBeNull();
     });
 
-    it("reports a drain window that overlaps the match-time look-back", async () => {
-        // The ring is never reset at the match, so drainPostMatch() returns
-        // the whole trailing window — which still contains the audio the
-        // match-time `lookback` already carried. The controller concatenates
-        // the two (`wakeReplay`), so the phrase region is replayed twice.
-        // Pinned here because neither side shows it alone, and it is the
-        // suspected source of the garbled wake transcripts (#121).
-        const { module, provider } = makeHarness({ lookbackMs: 2000 });
+    it("empties even a full buffer at the match, so no phrase survives", async () => {
+        // The defect this guards (#121): the buffer used to keep the
+        // pre-match window, so the session seed replayed the wake phrase. The
+        // match now clears it wherever the write head sits.
+        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
         const record = makeRecord();
         await provider.start(record.callbacks);
         for (let frame = 0; frame < 30; frame += 1) {
             module.mics[0].emitFrame(frameWith(frame * 1280));
         }
         module.instances[0].fire("hey_jarvis", 0.9);
-        const lookback = record.wakes[0]?.lookback;
-        expect(lookback?.length).toBe(32000);
-        // One more frame: the audio captured while the session's mic opens.
-        module.mics[0].emitFrame(frameWith(30 * 1280));
+        // Three frames captured while the session's mic opens.
+        for (let frame = 30; frame < 33; frame += 1) {
+            module.mics[0].emitFrame(frameWith(frame * 1280));
+        }
         const drained = provider.drainPostMatch?.();
-        expect(drained?.length).toBe(32000);
-        // The drain starts exactly one 80 ms frame into the look-back — the
-        // windows share 31 000 of their 32 000 samples...
-        expect(drained?.[0]).toBe(lookback?.[1280]);
-        // ...so the join the controller performs repeats ~1.9 s of audio,
-        // the wake phrase included.
-        const replay = wakeReplay(lookback, drained ?? null);
-        expect(replay?.length).toBe(64000);
-        expect(replay?.[32000]).toBe(lookback?.[1280]);
+        expect(drained?.length).toBe(3 * 1280);
+        expect(drained?.[0]).toBe(((30 * 1280) % 32767) / 32768);
+        expect(drained?.[1280]).toBe(((31 * 1280) % 32767) / 32768);
         await provider.stop();
     });
 
@@ -383,24 +357,21 @@ describe("OpenWakeWordWakeProvider", () => {
         expect(record.wakes).toHaveLength(0);
     });
 
-    it("re-arms cleanly after a stop, with a fresh ring", async () => {
-        const { module, provider } = makeHarness({ lookbackMs: 2000 });
+    it("re-arms cleanly after a stop, with a fresh buffer", async () => {
+        const { module, provider } = makeHarness({ commandBufferMs: 2000 });
         const record = makeRecord();
         await provider.start(record.callbacks);
         module.mics[0].emitFrame(frameWith(1));
         module.instances[0].fire("hey_jarvis", 0.8);
-        expect(record.wakes[0].lookback?.length).toBe(1280);
+        expect(record.wakes[0].confidence).toBe(0.8);
+        // Nothing followed the first match.
+        expect(provider.drainPostMatch?.()).toBeNull();
         await provider.stop();
         await provider.start(record.callbacks);
         module.mics[0].emitFrame(frameWith(2));
         module.instances[0].fire("hey_jarvis", 0.81);
         expect(record.wakes).toHaveLength(2);
-        expect(record.wakes[1].lookback?.length).toBe(1280);
-        expect(Array.from(record.wakes[1].lookback ?? []).slice(0, 3)).toEqual([
-            2 / 32768,
-            3 / 32768,
-            4 / 32768,
-        ]);
+        expect(record.wakes[1].confidence).toBe(0.81);
         await provider.stop();
     });
 });

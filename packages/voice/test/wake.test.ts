@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { VoiceCore } from "../src/core";
 import { initialVoiceSnapshot, reduceVoice } from "../src/lifecycle";
 import type { VoiceSnapshot } from "../src/lifecycle";
-import { DEFAULT_WAKE_PHRASE, WakeManager, wakeReplay } from "../src/wake";
+import { DEFAULT_WAKE_PHRASE, WakeManager } from "../src/wake";
 import type {
     SttCallbacks,
     SttProvider,
@@ -321,29 +321,6 @@ describe("WakeManager drain + dispose", () => {
         expect(h.snapshot().wakeArmed).toBe(false);
         await manager.dispose();
         expect(h.snapshot().wakeArmed).toBe(false);
-    });
-});
-
-describe("wakeReplay", () => {
-    it("joins look-back and drained audio in order", () => {
-        const joined = wakeReplay(
-            Float32Array.from([1, 2]),
-            Float32Array.from([3, 4]),
-        );
-        expect(Array.from(joined ?? [])).toEqual([1, 2, 3, 4]);
-    });
-
-    it("returns the single present side", () => {
-        expect(
-            Array.from(wakeReplay(Float32Array.from([1]), null) ?? []),
-        ).toEqual([1]);
-        expect(
-            Array.from(wakeReplay(undefined, Float32Array.from([2])) ?? []),
-        ).toEqual([2]);
-    });
-
-    it("returns null when both are absent", () => {
-        expect(wakeReplay(undefined, null)).toBeNull();
     });
 });
 

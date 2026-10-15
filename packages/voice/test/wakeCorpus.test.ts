@@ -156,9 +156,9 @@ async function drain(): Promise<void> {
 }
 
 /**
- * Opens a wake session from a fixture, handing the controller the ring the
- * current provider contract reports: `lookback` = the window ending at the
- * match instant (the phrase), drained = everything after it.
+ * Opens a wake session from a fixture the way the provider now behaves: the
+ * detection carries no audio, and the buffer drained at session open holds
+ * only what followed the match (#121).
  *
  * @param h - The harness.
  * @param audio - The decoded fixture to replay.
@@ -171,11 +171,7 @@ async function openFromCorpus(
 ): Promise<void> {
     const totalMs = (audio.pcm.length / audio.sampleRate) * 1000;
     h.wake.drained = sliceMs(audio, matchMs, totalMs);
-    h.wake.emitWake({
-        confidence: 0.9,
-        lookback: sliceMs(audio, 0, matchMs),
-        lookbackSampleRate: audio.sampleRate,
-    });
+    h.wake.emitWake({ confidence: 0.9 });
     await drain();
 }
 
@@ -189,26 +185,30 @@ describe("wake corpus fixtures", () => {
     });
 });
 
-describe("wake corpus — baseline (pre-redesign contract)", () => {
-    it("pins the phrase into the wake engine's stream", async () => {
+describe("wake corpus — the seed is post-match audio (#121)", () => {
+    it("never feeds the phrase to the wake engine", async () => {
         const h = await makeHarness();
         const audio = loadFixture("pause-then-command");
-        await openFromCorpus(h, loadFixture("pause-then-command"), 900);
+        const matchMs = 900;
+        await openFromCorpus(h, audio, matchMs);
         const feed = h.wakeStt.lastStartOptions?.feed;
         expect(feed?.sampleRate).toBe(16000);
-        // The engine is fed the whole utterance — including the 0.9 s before
-        // the match, which is the wake phrase. This is the defect: the STT
-        // hears "Hey Jarvis" and everything the stripper can't repair follows.
-        expect(feed?.pcm.length).toBe(audio.pcm.length);
-        expect(feed?.pcm[0]).toBe(audio.pcm[0]);
+        // The seed starts at the match, so the phrase (0..900 ms) is behind
+        // it and the audio that reaches the engine is the pause plus the
+        // command — never "Hey Jarvis", and never anything twice.
+        const matchSample = Math.round((matchMs / 1000) * audio.sampleRate);
+        expect(feed?.pcm.length).toBe(audio.pcm.length - matchSample);
+        expect(feed?.pcm[0]).toBe(audio.pcm[matchSample]);
+        expect(rmsOf(feed!.pcm, 0, 400)).toBeLessThan(0.01);
     });
 
-    it("pins the mangled-phrase class reaching the prompt", async () => {
+    it("shows why the strip is a net and not the fix", async () => {
         const h = await makeHarness();
         await openFromCorpus(h, loadFixture("pause-then-command"), 900);
         // The ASR's shape on 2026-10-14: the phrase stretched into extra
-        // tokens over the pause. The positional fuzzy matcher correctly
-        // refuses, so the junk is submitted verbatim.
+        // tokens. The positional matcher cannot repair an inserted token, so
+        // if that junk ever reaches the engine it reaches the prompt — which
+        // is why the audio path must not produce it (#121).
         h.wakeStt.emitResult("he during a journalist what's the weather");
         await drain();
         expect(h.submits).toEqual([
@@ -289,26 +289,27 @@ describe("real corpus (#121) — the maintainer's recordings", () => {
         expect(findPause(loadRealFixture("command-only"))).toBeNull();
     });
 
-    it("pins the phrase into the replay on real audio", async () => {
-        // The same defect the synthetic corpus pins, now on a real recording:
-        // the pre-match window (which the wake provider puts in the replay) is
-        // the phrase, and it is loud — not noise the stripper could shrug off.
+    it("keeps the phrase out of the replay on real audio", async () => {
+        // The defect this guards, measured on a real recording: the phrase is
+        // loud speech, so replaying the pre-match window hands the engine a
+        // phrase it must then be stripped out of the transcript. The seed now
+        // starts at the match, where the recording is still silent.
         const h = await makeHarness();
         const audio = loadRealFixture("pause-then-command");
         const pause = findPause(audio);
         expect(pause).not.toBeNull();
-        const matchMs = pause!.startMs;
-        await openFromCorpus(h, audio, matchMs);
+        await openFromCorpus(h, audio, pause!.startMs);
         const feed = h.wakeStt.lastStartOptions?.feed;
-        expect(feed?.pcm.length).toBe(audio.pcm.length);
-        // The phrase region (everything before the pause) carries speech
-        // energy — real audio, not a low noise floor.
-        const phraseSamples = Math.round(
-            (pause!.startMs / 1000) * audio.sampleRate,
-        );
-        expect(rmsOf(feed!.pcm, 0, phraseSamples)).toBeGreaterThan(0.01);
-        // ...and the engine is fed the pause and the command too (whole clip).
         expect(feed?.sampleRate).toBe(16000);
+        // The phrase (everything before the pause) is not in the seed: its
+        // first frames are the pause's silence, not the phrase's speech.
+        // `findPause` guarantees the window at that boundary is below the
+        // speech floor, so the seed's whole first window is quiet.
+        expect(rmsOf(feed!.pcm, 0, 1600)).toBeLessThan(0.01);
+        expect(feed!.pcm.length).toBe(
+            audio.pcm.length -
+                Math.round((pause!.startMs / 1000) * audio.sampleRate),
+        );
     });
 
     it("pins the command into the post-match slice", () => {
@@ -328,40 +329,27 @@ describe("real corpus (#121) — the maintainer's recordings", () => {
         expect(rmsOf(slice, before, slice.length)).toBeGreaterThan(0.01);
     });
 
-    it("the production splice replays the phrase twice on real audio", async () => {
-        // The controller joins the match-time look-back with the ring drained
-        // at session open (`wakeReplay`). The ring is never reset at the
-        // match, so the drained window still contains the look-back's audio:
-        // the seed repeats whatever preceded the match — the phrase. Modelled
-        // here from the real recording (2 s ring, 200 ms mic-open gap).
+    it("seeds the wake engine with post-match audio only, on real audio", async () => {
+        // The confirmed production defect (#121): joining the match-time
+        // window with the buffer drained at session open fed the phrase
+        // twice. The buffer is now emptied at the match, so the seed is the
+        // pause plus the command — phrase-free and contiguous.
         const h = await makeHarness();
         const audio = loadRealFixture("pause-then-command");
         const pause = findPause(audio);
         expect(pause).not.toBeNull();
         const matchMs = pause!.startMs;
         const gapMs = 200;
-        const lookback = sliceMs(audio, matchMs - 2000, matchMs);
-        const drained = sliceMs(audio, matchMs + gapMs - 2000, matchMs + gapMs);
+        const drained = sliceMs(audio, matchMs, matchMs + gapMs);
         h.wake.drained = drained;
-        h.wake.emitWake({
-            confidence: 0.9,
-            lookback,
-            lookbackSampleRate: audio.sampleRate,
-        });
+        h.wake.emitWake({ confidence: 0.9 });
         await drain();
         const fed = h.wakeStt.lastStartOptions?.feed;
-        expect(fed?.pcm.length).toBe(lookback.length + drained.length);
-        // The drain begins with the same audio the look-back already ended
-        // on: the phrase region is fed twice.
-        expect(fed!.pcm[lookback.length]).toBe(lookback[0]);
-        expect(fed!.pcm[lookback.length + 100]).toBe(lookback[100]);
-        const phraseSamples = Math.round(
-            (pause!.startMs / 1000) * audio.sampleRate,
-        );
-        expect(rmsOf(fed!.pcm, 0, phraseSamples)).toBeGreaterThan(0.01);
-        expect(
-            rmsOf(fed!.pcm, lookback.length, lookback.length + phraseSamples),
-        ).toBeGreaterThan(0.01);
+        expect(fed?.pcm.length).toBe(drained.length);
+        expect(fed!.pcm[0]).toBe(drained[0]);
+        // The seed holds no speech at all here: the 200 ms after the match is
+        // the pause, so nothing the phrase left behind can reach the engine.
+        expect(rmsOf(fed!.pcm, 0, fed!.pcm.length)).toBeLessThan(0.01);
     });
 });
 

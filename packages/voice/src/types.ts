@@ -111,8 +111,8 @@ export interface SttStartOptions {
     readonly sampleRate?: number;
     /**
      * Caller audio to recognize before live capture begins: the wake
-     * detector's look-back ring (the phrase plus the command's opening) or
-     * the barge-in watch's interrupted opening. Riding `start()` — instead
+     * detector's post-match buffer (the command's opening, never the phrase,
+     * #121) or the barge-in watch's interrupted opening. Riding `start()` — instead
      * of a post-start `feed()` call — guarantees the order: the engine's
      * own microphone is not delivering until `start()` resolves, so the
      * replay can never interleave out of order with already-live chunks
@@ -152,9 +152,9 @@ export interface SttStartOptions {
  *   Implementations that capture from their own held mic reject or ignore
  *   it; those that take caller-supplied audio (the WASM engine backing wake
  *   sessions) accept it while `running`. It is the seam that replays the
- *   look-back buffer captured by a wake-word detector ("Hey JARVIS, turn on
- *   the lights") into a session that opened without hearing the phrase
- *   itself (issue #84, phase 4).
+ *   post-match buffer captured by a wake-word detector ("Hey JARVIS, turn on
+ *   the lights") into a session that opened just after the phrase — the
+ *   command's opening, never the phrase itself (issue #121).
  *
  * Implementations own microphone permission prompting and must not assume a
  * particular UI, transport, or conversation model.
@@ -213,30 +213,14 @@ export interface SttProvider {
 }
 
 /**
- * What a wake-word detector saw. The look-back buffer that retains audio
- * spoken in the same breath as the wake phrase ("Hey JARVIS, turn on the
- * lights") is carried here so a wake session can replay it into the STT
- * engine via {@link SttProvider.feed}; a detector that cannot retain audio
- * simply omits it. When present it is mono PCM normalized to `[-1, 1]`
- * (the openWakeWord mic's framing convention is 16 kHz, issue #84, phase 4).
+ * What a wake-word detector saw. The audio that *followed* the match — the
+ * command's opening — is not carried here: it is taken from the detector at
+ * session open (a wake session drains it before the detector stops), so the
+ * detection itself stays a plain notification (#121).
  */
 export interface WakeDetection {
     /** Engine-reported match strength, when the engine provides one. */
     readonly confidence?: number;
-    /**
-     * The mono audio that preceded the wake phrase, for replay into the STT
-     * engine that opens the session. Optional; engines that cannot retain it
-     * omit it, and the session simply starts at the wake phrase. Paired with
-     * {@link WakeDetection.lookbackSampleRate}, which defaults to 16 kHz.
-     */
-    readonly lookback?: Float32Array;
-    /**
-     * The sample rate {@link WakeDetection.lookback} was captured at. Omit
-     * to assume the 16 kHz openWakeWord convention; a detector that captures
-     * at another rate must report it so the replay is not resampled wrongly
-     * (#104).
-     */
-    readonly lookbackSampleRate?: number;
 }
 
 /** Per-listener callbacks handed to {@link WakeWordProvider.start}. */
@@ -268,16 +252,14 @@ export interface WakeWordProvider {
     /** Disarms detection; no callback fires after the returned promise resolves. */
     stop(): Promise<void>;
     /**
-     * Hands back the detector's current look-back ring — the last ~2 seconds
-     * of 16 kHz mono float PCM, ending **now**, not at match time (the ring
-     * keeps capturing until `stop()`, so the window includes whatever the
-     * user said after the phrase while the session's own microphone was
-     * still opening). A wake session replays this through
-     * {@link SttStartOptions.feed} so the opening words survive the handoff.
-     * Callers drain BEFORE `stop()`, which discards the ring.
+     * Hands back the audio captured **since the match** — 16 kHz mono float
+     * PCM, ending now — for the wake session to seed its engine with while it
+     * starts (#121). It never contains the wake phrase: an implementation
+     * empties its buffer the instant a match fires, so what remains is the
+     * command. Callers drain BEFORE `stop()`, which discards the buffer.
      *
-     * Optional: detectors without a ring (or with nothing recorded) omit it
-     * or return `null`. The 16 kHz rate is the look-back convention.
+     * Optional: detectors without a buffer (or with nothing captured) omit it
+     * or return `null`. The 16 kHz rate is the detector convention.
      */
     drainPostMatch?(): Float32Array | null;
 }

@@ -60,8 +60,20 @@ Replayed through the real local Vosk engine (`?voice-harness=1`), the
 | `phrase-only`        | `"they jarvis"` → `""` (no prompt)                                                | (shorter than the skip) |
 
 Synthetic audio mangles the phrase into a **clean one-token** form (`"they
-jarvis"`), which the fuzzy stripper handles — which is why the real set exists.
-Two harness-side lessons, both recorded in
+jarvis"`), which the fuzzy stripper handles — which is why the real set
+exists.
+
+The real recordings then exposed the actual defect, which no `full`-clip run
+could show because it lives in the **splice**, not in the transcription: the
+detector's buffer was never emptied at the match, so the controller joined the
+match-time window with the buffer drained at session open and fed the phrase
+to the engine **twice** (verified in production: `raw="hey jarvis hey jarvis
+what's the weather"`, `submitted="hey jarvis what's the weather"` — see #121).
+The buffer is now emptied the instant a match fires, so a wake session's seed
+is strictly post-match audio: contiguous, phrase-free, and nothing repeated
+(asserted by `test/wakeCorpus.test.ts` and `test/openWakeWord.test.ts`).
+
+Two harness-side lessons remain, both recorded in
 `packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the
 worker decodes silently truncates the utterance's tail at flush time, and the
 provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a

@@ -1,25 +1,29 @@
 /**
- * Wake-word transcript hygiene (issue #84, phase 4).
+ * Wake-word transcript hygiene — now a safety net, not the mechanism (#121).
  *
- * When a wake session opens with a look-back buffer, the STT engine hears
- * the wake phrase itself, so its transcript can begin with what the user
- * *said to trigger* ("hey jarvis turn on the lights") rather than the
- * command. This module owns stripping that phrase and any trailing
- * interjection off the transcript before it is displayed or submitted.
+ * The wake session's audio is phrase-free by construction: the detector's
+ * buffer is emptied the instant a match fires, so only post-match audio
+ * reaches the recognition engine. This module remains as defence in depth for
+ * the two ways a phrase fragment can still appear:
  *
- * The stripping is deliberately conservative, in two tiers. First an exact
- * match: a case-insensitive prefix match of the configured phrase plus a
- * small set of interjections ("hey jarvis, um, …"), touching nothing when
- * the phrase is absent from the start. Then a fallback for the ASR-mangled
- * phrase: the local engine often hears "Hey JARVIS" as "he jarvis" or
- * "a jarvis", and the mangled phrase would otherwise ride into the prompt.
- * The fallback strips a leading token group where every phrase word
- * positionally fuzzy-matches (edit distance ≤ 2 for 4+-char words, ≤ 1 for
- * shorter ones — "he" strips for "hey", but a word nothing like "jarvis",
- * such as "drove", never does). A transcript that is *nothing but* the
- * phrase strips to `""`, which the controller's empty-transcript guard
- * turns into a quiet no-op — waking up and saying only the phrase submits
- * no prompt.
+ * - a detector that fires *early*, mid-phrase, so the buffer's first frames
+ *   are the phrase's tail;
+ * - an engine that hallucinates the phrase from silence or noise.
+ *
+ * When it fires, the stripping is deliberately conservative, in two tiers.
+ * First an exact match: a case-insensitive prefix match of the configured
+ * phrase plus a small set of interjections ("hey jarvis, um, …"), touching
+ * nothing when the phrase is absent from the start. Then a fallback for the
+ * ASR-mangled phrase: the local engine often hears "Hey JARVIS" as "he
+ * jarvis" or "a jarvis". The fallback strips a leading token group where every
+ * phrase word positionally fuzzy-matches (edit distance ≤ 2 for 4+-char words,
+ * ≤ 1 for shorter ones — "he" strips for "hey", but a word nothing like
+ * "jarvis", such as "drove", never does). A transcript that is *nothing but*
+ * the phrase strips to `""`, which the controller's empty-transcript guard
+ * turns into a quiet no-op.
+ *
+ * It is a net, not a fix: no tightening of this matcher can repair a phrase
+ * the audio path should not have produced (see #121).
  */
 
 /** Leading interjections trimmed after the stripped wake phrase. */

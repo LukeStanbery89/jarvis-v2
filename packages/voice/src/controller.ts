@@ -37,9 +37,9 @@
  *
  * ```text
  * enableWake ─ armed (snapshot.wakeArmed); wake engine's model pre-warmed
- *   "Hey JARVIS, …" ──► WakeManager.onMatch ──► begin({fromWake:true, lookback})
+ *   "Hey JARVIS, …" ──► WakeManager.onMatch ──► begin({fromWake:true})
  *       onWakeCue ─► (beep)          ─► wakeStt.start({continuous})
- *                                     ─► wakeStt.feed(lookback)  (phrase→command replay)
+ *                                     ─► wakeStt.feed(post-match audio)  (#121)
  *                                     ─► normal VAD session; transcripts stripped
  *   session lands idle ──► WakeManager.maybeReArm ──► detector re-armed
  * ```
@@ -94,8 +94,15 @@ import type { VoiceCore } from "./core";
 import { initialVoiceSnapshot, reduceVoice } from "./lifecycle";
 import type { VoiceSnapshot } from "./lifecycle";
 import { VoiceSession } from "./session";
-import { DEFAULT_WAKE_PHRASE, WakeManager, wakeReplay } from "./wake";
+import { DEFAULT_WAKE_PHRASE, WakeManager } from "./wake";
 import type { SttProvider, VadProvider, WakeWordProvider } from "./types";
+
+/**
+ * The rate the wake detector's buffer is captured at (the openWakeWord worklet
+ * convention). A wake session's seed is mono audio at this rate; the engine
+ * resamples it internally if its own capture runs at another rate.
+ */
+const DETECTOR_SAMPLE_RATE = 16000;
 
 /** Submits a final transcript as a chat turn (resolves when the turn settles). */
 export type VoiceSubmit = (text: string) => Promise<void>;
@@ -271,20 +278,14 @@ export class VoiceController {
         this.wakeManager = new WakeManager(this.core, {
             wake: options.wake ?? null,
             wakeStt: options.wakeStt ?? null,
-            onMatch: async (detection) => {
+            onMatch: async () => {
                 try {
                     await this.onWakeCue?.();
                 } catch {
                     // A cue that will not play must not stop the session from
                     // opening; the blip is cosmetic.
                 }
-                await this.begin({
-                    fromWake: true,
-                    lookback: detection.lookback,
-                    ...(detection.lookbackSampleRate !== undefined
-                        ? { lookbackSampleRate: detection.lookbackSampleRate }
-                        : {}),
-                });
+                await this.begin({ fromWake: true });
             },
         });
     }
@@ -447,22 +448,16 @@ export class VoiceController {
      * the VAD is free.
      *
      * @param options - `fromWake` opens the session on the wake engine with
-     * wake-phrase stripping; `lookback`/`lookbackSampleRate` (mono PCM
-     * captured by the detector, defaulting to the 16 kHz convention) are
-     * replayed into it the moment capture is live, so the command spoken in
-     * the same breath as the wake phrase is transcribed. `feed` plays the
-     * same role for a barge-in session (#84 P6): the watch's pre-trigger
-     * audio, at the watch's capture rate, on the primary engine.
+     * wake-phrase stripping and seeds it from the detector's post-match audio
+     * (#121 — the command's opening, never the phrase). `feed` plays the same
+     * role for a barge-in session (#84 P6): the watch's pre-trigger audio, at
+     * the watch's capture rate, on the primary engine.
      */
     private async begin({
         fromWake,
-        lookback,
-        lookbackSampleRate,
         feed,
     }: {
         fromWake?: boolean;
-        lookback?: Float32Array;
-        lookbackSampleRate?: number;
         feed?: { pcm: Float32Array; sampleRate: number };
     } = {}): Promise<void> {
         if (this.bargeWatch.active) {
@@ -490,20 +485,20 @@ export class VoiceController {
         const sessionId = this.snapshot.sessionId;
         const fromWakeSession = fromWake === true;
         const engine = fromWakeSession ? (this.wakeStt ?? this.stt) : this.stt;
-        // The replayed pre-session audio, in recognition order. Explicit
+        // The seed for the session's engine, in recognition order. Explicit
         // `feed` (the barge-in handoff) wins; a wake session drains the
-        // detector's look-back ring — BEFORE `stop()` discards it — so the
-        // replay covers the match-time ring **plus** whatever the user said
-        // while this session's own microphone was still opening, which a
-        // match-time snapshot loses ("the lookback misses my first word").
-        // A press never replays (a stale ring would inject phantom audio).
+        // detector's post-match buffer — BEFORE `stop()` discards it — which
+        // holds the command's opening captured while this session was still
+        // starting. The buffer is emptied at the match, so the seed never
+        // contains the wake phrase (#121). A press never seeds (a stale buffer
+        // would inject phantom audio).
         let replayPcm: Float32Array | null = null;
-        let replayRate = lookbackSampleRate ?? 16000;
+        let replayRate = DETECTOR_SAMPLE_RATE;
         if (feed !== undefined) {
             replayPcm = feed.pcm;
             replayRate = feed.sampleRate;
         } else if (fromWakeSession) {
-            replayPcm = wakeReplay(lookback, this.wakeManager.drainPostMatch());
+            replayPcm = this.wakeManager.drainPostMatch();
         }
         this.wakeManager.disarmForSession();
         const session = new VoiceSession(this.core, {

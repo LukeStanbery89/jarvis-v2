@@ -30,25 +30,6 @@ import type { SttProvider, WakeDetection, WakeWordProvider } from "./types";
 /** The default wake phrase (must match the detector's trained phrase). */
 export const DEFAULT_WAKE_PHRASE = "Hey JARVIS";
 
-/**
- * Joins the match-time look-back with the audio drained from the detector at
- * session open, in recognition order, so the replayed opening covers what the
- * user said in the same breath as the wake phrase. Either side may be absent.
- *
- * @param lookback - The look-back captured at match time, if any.
- * @param drained - The detector's post-match ring, if any.
- * @returns The joined buffer, the single present side, or `null`.
- */
-export function wakeReplay(
-    lookback: Float32Array | undefined,
-    drained: Float32Array | null,
-): Float32Array | null {
-    if (lookback !== undefined && drained !== null) {
-        return concatFloat32(lookback, drained);
-    }
-    return lookback ?? drained;
-}
-
 /** Construction options for {@link WakeManager}. */
 export interface WakeManagerOptions {
     /** The wake-word detector; `null` disables wake-word support entirely. */
@@ -176,11 +157,12 @@ export class WakeManager {
     }
 
     /**
-     * Drains the detector's post-match look-back ring (16 kHz mono float
-     * PCM), for {@link wakeReplay} to seed the opening session. Callers must
-     * drain BEFORE the detector is stopped, which discards the ring.
+     * Drains the audio the detector captured since the match (16 kHz mono
+     * float PCM), to seed the opening session — the command's beginning,
+     * never the phrase (#121). Callers must drain BEFORE the detector is
+     * stopped, which discards the buffer.
      *
-     * @returns The ring's PCM, or `null` when unsupported or empty.
+     * @returns The post-match audio, or `null` when unsupported or empty.
      */
     drainPostMatch(): Float32Array | null {
         return this.wake?.drainPostMatch?.() ?? null;
@@ -263,7 +245,8 @@ export class WakeManager {
      * wake word works again without a manual toggle.
      *
      * @param detection - The detector's match, carrying the phrase's
-     * confidence and the look-back audio to replay into the wake engine.
+     * confidence; the session's seed comes from
+     * {@link WakeManager.drainPostMatch}.
      */
     private async handleMatch(detection: WakeDetection): Promise<void> {
         if (
@@ -284,18 +267,4 @@ export class WakeManager {
             this.maybeReArm();
         }
     }
-}
-
-/**
- * Joins two PCM buffers into one.
- *
- * @param a - The leading buffer.
- * @param b - The trailing buffer.
- * @returns A new buffer containing `a` followed by `b`.
- */
-function concatFloat32(a: Float32Array, b: Float32Array): Float32Array {
-    const out = new Float32Array(a.length + b.length);
-    out.set(a, 0);
-    out.set(b, a.length);
-    return out;
 }

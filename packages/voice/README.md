@@ -297,10 +297,14 @@ feature pipeline. A phrase label passing threshold fires `onDetection`
 
 Two things make this provider slot into the controller's wake flow (#84 P4):
 
-- **Look-back ring** — the provider retains up to `lookbackMs` (default 2000) of the last 16 kHz float PCM (`PcmRingBuffer`, whole 1280-sample
-  frames). A match reports a `lookback` slice the controller replays into
-  the STT engine, so "Hey JARVIS, turn on the lights" is transcribed whole
-  — the command was spoken in the same breath as the phrase.
+- **Post-match buffer** — because the detector's microphone keeps running
+  after a phrase fires, the provider retains up to `commandBufferMs`
+  (default 2000) of 16 kHz float PCM (`PcmRingBuffer`, whole 1280-sample
+  frames). The buffer is **emptied the instant a match fires**, so a
+  detection carries no audio and what the controller drains at session open
+  is strictly post-match: the command's opening, captured while the wake cue
+  played and the engine was still starting. The wake phrase is never in it —
+  hygiene by construction, not by stripping a transcript (#121).
 - **Quiet disarm** — `stop()` is idempotent and resolves, then ALWAYS
   leaves the gun un-armed regardless of how it ran: `onDetection` with
   `{ armed: false }` only when the phrase fired within the same armed
@@ -311,7 +315,10 @@ Two things make this provider slot into the controller's wake flow (#84 P4):
 
 `stripWakePhrase()` (in `src/wakeText.ts`) removes a leading wake phrase
 from a wake-session transcript ("Hey JARVIS" by default, ragged whitespace
-and case tolerated) before display or submission.
+and case tolerated) before display or submission. It is a **safety net, not
+the mechanism** (#121): the session's audio is phrase-free by construction, so
+this only catches a detector that fires mid-phrase or an engine that
+hallucinates the phrase from silence.
 
 ### Wiring a wake detector (consuming package)
 
@@ -323,8 +330,8 @@ a dedicated `wakeStt` engine:
 new VoiceController({
     stt, // primary dictation engine
     wake, // WakeWordProvider (constructed, not running)
-    wakeStt, // STT for wake sessions (the local one — look-back
-    // replay must never leave the device)
+    wakeStt, // STT for wake sessions (the local one — the detector's
+    // command audio must never leave the device)
     submit: (text) => submitTurn(text),
     onWakeCue: () => blip(), // optional sound when the phrase matches
 });

@@ -153,8 +153,8 @@ interface AudioContextLike extends AudioNodeLike {
  * rate differs from the recognizer's.
  *
  * The recognizer is created at the engine `AudioContext`'s sample rate
- * (typically 48 kHz), while replayed audio — the wake look-back ring, the
- * barge-in look-back — is 16 kHz. Feeding a different rate makes the vosk
+ * (typically 48 kHz), while replayed audio — the wake detector's post-match
+ * buffer, the barge-in look-back — is 16 kHz. Feeding a different rate makes the vosk
  * worker *recreate the recognizer*, discarding every bit of recognition
  * state (including the replayed audio itself) and re-flipping on the next
  * live chunk — the "spotty transcription" failure. Resampling here keeps
@@ -467,7 +467,7 @@ export class VoskSttProvider implements SttProvider {
             this.processor = processor;
             this.gain = gain;
             this.recognizer = recognizer;
-            // Ordered replay (see SttStartOptions.feed): the look-back must
+            // Ordered replay (see SttStartOptions.feed): the seed must
             // reach the recognizer before any live chunk. The processor is
             // wired but the context is still suspended — nothing live has
             // been delivered — so feeding here keeps the decoder's feature
@@ -584,9 +584,9 @@ export class VoskSttProvider implements SttProvider {
     /**
      * Feeds caller-supplied mono PCM into the active recognizer, reopening
      * the session's audio source — the seam a wake session uses to replay
-     * the detector's look-back buffer (16 kHz float PCM, "Hey JARVIS, turn
-     * on the lights") before live mic frames continue. Vosk resamples
-     * internally, so the look-back's 16 kHz is accepted as-is.
+     * the detector's post-match buffer (16 kHz float PCM — the command's
+     * opening, never the phrase, #121) before live mic frames continue. Vosk
+     * resamples internally, so the 16 kHz seed is accepted as-is.
      *
      * Silently ignored while no session is running; the session's own
      * live audio keeps flowing regardless.
@@ -600,7 +600,7 @@ export class VoskSttProvider implements SttProvider {
             return;
         }
         // Resample to the recognizer's rate: the worker recreates the
-        // recognizer on any rate flip (the wake/barge look-back replay is
+        // recognizer on any rate flip (the wake/barge seed is
         // 16 kHz; the recognizer runs at the context rate, typically
         // 48 kHz), and a recreation drops every accumulated result — the
         // replayed opening of the utterance included.
