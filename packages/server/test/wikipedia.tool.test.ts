@@ -139,7 +139,7 @@ describe("wikipedia tool routing", () => {
     });
 
     it("states the truncation and links the full article when the extract was cut", async () => {
-        const result = await formatWikipediaLookup(TRUNCATED, "Ada Lovelace");
+        const result = formatWikipediaLookup(TRUNCATED, "Ada Lovelace");
         expect(result).toContain("[extract truncated: 4000 of");
         expect(result).toContain(
             "the full article is at https://en.wikipedia.org/wiki/Ada_Lovelace",
@@ -242,22 +242,42 @@ describe("wikipedia tool metering", () => {
         expect(result).toContain("unavailable");
     });
 
-    it("refuses a guest when the tool was wired without guest budgets", async () => {
+    it("does not charge the session bucket when the address bucket refuses", async () => {
+        const fake = fakeProvider(ARTICLE);
+        const session = new FixedWindowQuota<string>(100);
+        const address = new FixedWindowQuota<string>(1);
+        const guest = { session, address };
+        await run(
+            { provider: fake.provider, guest },
+            {},
+            { configurable: { sessionId: "s1", clientIp: "10.0.0.1" } },
+        );
+        expect(session.size).toBe(1);
+        // A fresh session from the spent address is refused before the session
+        // bucket is ever touched, so no new key is created.
+        const second = await run(
+            { provider: fake.provider, guest },
+            {},
+            { configurable: { sessionId: "s2", clientIp: "10.0.0.1" } },
+        );
+        expect(second).toContain("rate limited");
+        expect(session.size).toBe(1);
+        expect(fake.calls).toHaveLength(1);
+    });
+
+    it("refuses an unkeyed guest instead of admitting it unmetered", async () => {
         const fake = fakeProvider(ARTICLE);
         const tool = createWikipediaTool({
             provider: fake.provider,
             quota: new FixedWindowQuota(20),
-            guest: {
-                session: new FixedWindowQuota<string>(3),
-                address: new FixedWindowQuota<string>(10),
-            },
+            guest: undefined,
         });
         // Simulate a graph that stamped no guest keys at all.
         const result = (await tool.invoke(
             { query: "Ada Lovelace" },
             { configurable: { userId: undefined } },
         )) as string;
-        expect(result).toContain("unavailable");
+        expect(result).toContain("requires signing in");
         expect(fake.calls).toHaveLength(0);
     });
 });
@@ -285,6 +305,22 @@ describe("formatWikipediaLookup", () => {
                 "zzz",
             ),
         ).toBe('No Wikipedia article matched "zzz".');
+    });
+
+    it("states the disambiguation page when candidates are empty", () => {
+        const text = formatWikipediaLookup(
+            {
+                kind: "candidates",
+                page: {
+                    title: "Mercury",
+                    url: "https://en.wikipedia.org/wiki/Mercury",
+                },
+                candidates: [],
+            },
+            "mercury",
+        );
+        expect(text).toContain('"Mercury" is a disambiguation page');
+        expect(text).toContain('no single article matched "mercury"');
     });
 
     it("omits the truncation note when nothing was cut", () => {

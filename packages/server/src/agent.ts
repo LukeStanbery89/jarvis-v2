@@ -340,22 +340,6 @@ function getAgentGraph(): AgentGraph {
 }
 
 /**
- * Runs one agent turn for `sessionId`, streaming events as they happen.
- *
- * When `options.capabilities` lists render guarantees (from the socket's
- * `hello` frame), the system prompt is conditioned on them via
- * {@link systemPromptForCapabilities}; under `options.mode: "voice"` (#83)
- * the spoken-word directive joins it so the reply is shaped for
- * text-to-speech. When `options.attachmentIds` is
- * present, the ids are deduplicated and appended to the turn's
- * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
- * `analyzeImage` tool reads ids from), `options.userId` is exposed to
- * tool runtime callbacks so user-scoped tools can enforce ownership and
- * quotas, `options.location` rides along (#31) for location-aware
- * tools, and `sessionId` plus `options.clientIp` are exposed for the tools
- * that meter guests by session and address (#8).
- */
-/**
  * Appends the attachment marker to a prompt (#10).
  *
  * Pure and exported so the dedupe/marker rules are unit-testable without a
@@ -374,6 +358,22 @@ export function withAttachmentMarker(
         : prompt;
 }
 
+/**
+ * Runs one agent turn for `sessionId`, streaming events as they happen.
+ *
+ * When `options.capabilities` lists render guarantees (from the socket's
+ * `hello` frame), the system prompt is conditioned on them via
+ * {@link systemPromptForCapabilities}; under `options.mode: "voice"` (#83)
+ * the spoken-word directive joins it so the reply is shaped for
+ * text-to-speech. When `options.attachmentIds` is
+ * present, the ids are deduplicated and appended to the turn's
+ * `HumanMessage` as an `[attachments: …]` marker (the model-facing list the
+ * `analyzeImage` tool reads ids from), `options.userId` is exposed to
+ * tool runtime callbacks so user-scoped tools can enforce ownership and
+ * quotas, `options.location` rides along (#31) for location-aware
+ * tools, and `sessionId` plus `options.clientIp` are exposed for the tools
+ * that meter guests by session and address (#8).
+ */
 export async function* runAgent(
     prompt: string,
     sessionId: string,

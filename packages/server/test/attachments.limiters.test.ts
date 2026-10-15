@@ -64,6 +64,18 @@ describe("VlCallLimiter", () => {
         expect(quota.tryAcquire("session:b", 1000).ok).toBe(true);
         expect(quota.tryAcquire("session:a", 1000).ok).toBe(false);
     });
+
+    it("reclaims lapsed keys so client-supplied key sets stay bounded (#8)", () => {
+        const quota = new FixedWindowQuota<string>(100, 1000);
+        for (let i = 0; i < 1030; i++) {
+            expect(quota.tryAcquire(`session:${i}`, 0).ok).toBe(true);
+        }
+        expect(quota.size).toBe(1030);
+        // A call after the window lapses sweeps the dead keys and leaves only
+        // the freshly created one.
+        expect(quota.tryAcquire("session:later", 2000).ok).toBe(true);
+        expect(quota.size).toBe(1);
+    });
 });
 
 describe("ByteLedger", () => {

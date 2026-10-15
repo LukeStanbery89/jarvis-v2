@@ -141,9 +141,9 @@ export function requireMeteredUser(
  * Runs the same guard for a tool that also serves guests (#8).
  *
  * A verified numeric `userId` charges the per-user budget and returns a
- * `"user"` caller. Otherwise, when `quotas.guest` is configured, the call
- * is charged to BOTH guest buckets — the strict per-session one and the
- * aggregate per-address one — and only then admitted; the guest reaches the
+ * `"user"` caller. Otherwise, when `quotas.guest` is configured, the call is
+ * charged to BOTH guest buckets — the aggregate per-address one first, then
+ * the strict per-session one — and only then admitted; the guest reaches the
  * provider with no user id, which such a tool must be written to accept.
  * Without guest budgets (or without the session/address the guest keys need)
  * the refusal text is the signed-in-only wording, so a mis-wired graph
@@ -188,18 +188,24 @@ export function requireMeteredCaller(
             text: `${names.subject} is unavailable right now. Try again in a moment.`,
         };
     }
-    const session = quotas.guest.session.tryAcquire(`session:${sessionId}`);
-    if (!session.ok) {
-        return {
-            ok: false,
-            text: rateLimitedText(names.subject, session.retryAfterMs),
-        };
-    }
+    // The aggregate address bucket is checked and charged FIRST, before the
+    // per-session one. It is the bucket that binds a guest who rotates
+    // sessions, and checking it first means a guest whose address budget is
+    // spent never mints a fresh `session:` key — which would otherwise let an
+    // unauthenticated caller grow the session quota's map at the prompt rate
+    // (the `/ws` chat path is not frequency-limited, #65).
     const address = quotas.guest.address.tryAcquire(`address:${clientIp}`);
     if (!address.ok) {
         return {
             ok: false,
             text: rateLimitedText(names.subject, address.retryAfterMs),
+        };
+    }
+    const session = quotas.guest.session.tryAcquire(`session:${sessionId}`);
+    if (!session.ok) {
+        return {
+            ok: false,
+            text: rateLimitedText(names.subject, session.retryAfterMs),
         };
     }
     return { ok: true, caller: { kind: "guest", sessionId, clientIp } };

@@ -38,8 +38,9 @@ import { asString, requestJson } from "../http";
  *
  * The API already bounds a summary via `exsentences` (hard max 10, ~950
  * characters), so this never bites in practice — it is a backstop against a
- * pathological response, and it is not surfaced as truncation the way the
- * `full` budget is.
+ * pathological response. When it does bite it is reported as truncation, the
+ * same as the `full` budget, so the model is never handed a silently cut
+ * extract.
  */
 const SUMMARY_CEILING_CHARS = 4000;
 
@@ -77,12 +78,21 @@ export function createWikipediaClient(
 ): WikipediaProvider {
     const origin = `https://${opts.lang}.wikipedia.org`;
     const endpoint = `${origin}/w/api.php`;
-    const articleUrl = (title: string): string =>
-        `${origin}/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`;
+    const articleUrl = (title: string): string => {
+        // Spaces are underscores in a wiki title; `/` is structural (subpages).
+        const slug = title.replace(/ /g, "_").replace(/\//g, "/"); // keep literal
+        // Encode everything except /, A-Z a-z 0-9 - _ . ! ~ * ' ( )
+        const encoded = encodeURIComponent(slug).replace(/%2F/gi, "/");
+        return `${origin}/wiki/${encoded}`;
+    };
     const sentences = Math.min(
         MAX_EXSENTENCES,
         Math.max(1, Math.floor(opts.maxSentences)),
     );
+    // Floors, so a fractional `JARVIS_WIKIPEDIA_MAX_CANDIDATES` cannot send a
+    // non-integer `srlimit` to the API.
+    const candidateLimit = Math.max(1, Math.floor(opts.maxCandidates));
+    const fullChars = Math.max(1, Math.floor(opts.maxFullChars));
 
     /** Runs one Action API query and resolves the parsed body. */
     async function call(
@@ -95,7 +105,7 @@ export function createWikipediaClient(
             formatversion: "2",
             ...params,
         });
-        return requestJson({
+        const body = await requestJson({
             url: `${endpoint}?${query.toString()}`,
             label: "wikipedia",
             headers: {
@@ -108,6 +118,15 @@ export function createWikipediaClient(
             mapFailure: (failure) =>
                 new WikipediaError(failure.message, failure.cause),
         });
+        // The Action API reports some parameter errors as a 200 with a
+        // top-level `error` envelope rather than an HTTP failure. Treat it as
+        // an error, not as "no results" — the tool must not tell the model an
+        // article does not exist when the request itself was rejected.
+        const code = apiErrorCode(body);
+        if (code !== undefined) {
+            throw new WikipediaError(`wikipedia API error: ${code}`);
+        }
+        return body;
     }
 
     /**
@@ -127,7 +146,7 @@ export function createWikipediaClient(
             {
                 list: "search",
                 srsearch: query,
-                srlimit: String(opts.maxCandidates + 1),
+                srlimit: String(candidateLimit + 1),
                 srnamespace: "0",
             },
             signal,
@@ -139,7 +158,7 @@ export function createWikipediaClient(
         return rows
             .map((raw) => asString((raw as { title?: unknown })?.title))
             .filter((title) => title !== "" && title !== excludeTitle)
-            .slice(0, opts.maxCandidates)
+            .slice(0, candidateLimit)
             .map((title) => ({ title, url: articleUrl(title) }));
     }
 
@@ -189,30 +208,52 @@ export function createWikipediaClient(
                 };
             }
             if (detail === "full") {
-                const truncated = extract.length > opts.maxFullChars;
+                const truncated = extract.length > fullChars;
                 return {
                     kind: "article",
                     title,
                     url,
-                    extract: truncated
-                        ? extract.slice(0, opts.maxFullChars)
-                        : extract,
+                    extract: truncated ? extract.slice(0, fullChars) : extract,
                     truncated,
-                    omittedChars: truncated
-                        ? extract.length - opts.maxFullChars
-                        : 0,
+                    omittedChars: truncated ? extract.length - fullChars : 0,
                 };
             }
+            // A summary is already bounded by `exsentences`; the ceiling is a
+            // backstop for a pathological response, and it is reported the
+            // same way as the `full` budget rather than silently cutting.
+            const truncated = extract.length > SUMMARY_CEILING_CHARS;
             return {
                 kind: "article",
                 title,
                 url,
-                extract: extract.slice(0, SUMMARY_CEILING_CHARS),
-                truncated: false,
-                omittedChars: 0,
+                extract: truncated
+                    ? extract.slice(0, SUMMARY_CEILING_CHARS)
+                    : extract,
+                truncated,
+                omittedChars: truncated
+                    ? extract.length - SUMMARY_CEILING_CHARS
+                    : 0,
             };
         },
     };
+}
+
+/**
+ * The `code` of a top-level Action API error envelope, if the body carries one.
+ *
+ * The API answers some rejected requests with HTTP 200 and
+ * `{"error":{"code":…,"info":…},"servedby":…}`. Only the code is surfaced (a
+ * short, fixed token); the `info` is free-form and is never echoed.
+ */
+function apiErrorCode(body: unknown): string | undefined {
+    if (!body || typeof body !== "object") {
+        return undefined;
+    }
+    const error = (body as { error?: unknown }).error;
+    if (!error || typeof error !== "object") {
+        return undefined;
+    }
+    return asString((error as { code?: unknown }).code) || "unknown";
 }
 
 /**
