@@ -375,11 +375,15 @@ While J.A.R.V.I.S.'s response is streaming or playing, `startBargeWatch()`
 arms a **VAD-only mic session** on the same `VadProvider` sessions use for
 endpointing — no STT, no transcript, no user toggle: the watch lives as long
 as the response. The client arms it when the lifecycle enters `responding`
-(the response's first frame) and disarms it when the turn ends. Arming only
+(the response's first frame) and holds it until the reply's audio has
+drained. Arming only
 at `speaking` left the window before the first audio frame with no
 microphone listener at all, and on a tool turn that window is the whole tool
 round trip — the server announces the call before running it — so an
-utterance said into that silence was never heard (#114). While armed, the
+utterance said into that silence was never heard (#114). Disarming at the
+turn's end is wrong for the same reason at the other end: the audio outlives
+the turn's `done` frame, so the tail of every answer used to be unwatched
+(#114). While armed, the
 watch taps the VAD's
 optional raw-audio callback (`VadCallbacks.onAudio` — the energy VAD
 delivers its analysis frames as a copy per tick) into a ring buffer capped

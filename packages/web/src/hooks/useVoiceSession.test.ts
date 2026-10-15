@@ -71,7 +71,16 @@ describe("watchBargeIn", () => {
 
     it("does not change across the responding → speaking step", () => {
         // The client keys its arming effect on this value, so equal values mean
-        // one microphone open per turn rather than a re-arm mid-turn.
+        // one microphone open per window rather than a re-arm mid-turn.
         expect(watchBargeIn("responding")).toBe(watchBargeIn("speaking"));
+    });
+
+    it("stays armed through the reply's audio tail (#114)", () => {
+        // `responseEnded` fires on the turn's `done` frame; the player is
+        // still speaking for seconds afterwards.
+        expect(watchBargeIn("idle", true)).toBe(true);
+        expect(watchBargeIn("idle", false)).toBe(false);
+        // …and the tail alone arms it, with no response state involved.
+        expect(watchBargeIn("listening", true)).toBe(true);
     });
 });

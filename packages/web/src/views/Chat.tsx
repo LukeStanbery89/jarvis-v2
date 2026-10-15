@@ -111,16 +111,32 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             }
             return runTurn(text, "voice", []);
         },
-        onWakeCue: () => audio.blip(),
+        // A wake match pre-empts the previous reply exactly as a barge-in does
+        // (#114). The reply's audio outlives its `done` frame — the lifecycle
+        // is already `idle` (so the barge watch is disarmed and the detector
+        // has re-armed) while the player still has seconds of speech
+        // scheduled. Opening the session without stopping playback left the
+        // old answer talking over the new command and queued the new answer's
+        // audio behind it, which reads as "it kept speaking the last
+        // response". `cancelTurn` is a no-op once the turn has settled, so
+        // `stopAudio` is the load-bearing half. `client` is declared below but
+        // only read post-mount (event time), so the closure is safe.
+        onWakeCue: () => {
+            stopAudio();
+            client?.cancelTurn();
+            audio.blip();
+        },
         // Barge-in (#84 P6): the controller's watch hears the user talk over a
         // playing reply; the view's half is to stop local playback immediately
-        // (before any server round trip) and cancel the turn. `client` is
-        // declared below but only read post-mount (event time), so the closure
-        // is safe.
+        // (before any server round trip) and cancel the turn. Same closure
+        // rule as above.
         onBargeIn: () => {
             stopAudio();
             client?.cancelTurn();
         },
+        // The watch stays armed while the reply can still be heard, including
+        // the tail after its `done` frame (see `watchBargeIn`, #114).
+        playbackActive: audioSpeaking,
     });
     const { voice, snapshot: voiceSnapshot } = voiceUi;
 

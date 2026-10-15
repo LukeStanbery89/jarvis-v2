@@ -111,16 +111,27 @@ export function voiceStatusText(snapshot: VoiceSnapshot): string | null {
  * zone: a "Hey JARVIS" said into that silence did nothing, and playback then
  * started and ran on. Arming from the response's first frame closes it.
  *
+ * `playbackActive` extends the window the other way, past the turn: the
+ * lifecycle leaves `speaking` when the turn's `done` frame arrives
+ * (`responseEnded`), while the player still has seconds of speech scheduled.
+ * Without it the watch disarms mid-answer and talking over the tail of a
+ * reply does nothing — the behaviour that made barge-in work "sometimes"
+ * depending on where in the answer the user spoke.
+ *
  * Deliberately a boolean rather than the state itself: the caller keys its
- * effect on this value, so the watch is armed once per turn instead of being
- * torn down and re-armed on the `responding` → `speaking` step (which would
- * reopen the microphone mid-turn).
+ * effect on this value, so the watch is armed once per window instead of
+ * being torn down and re-armed on the `responding` → `speaking` step (which
+ * would reopen the microphone mid-turn).
  *
  * @param state - The voice lifecycle state to test.
- * @returns Whether the barge-in watch should be armed in this state.
+ * @param playbackActive - Whether the player still has scheduled audio.
+ * @returns Whether the barge-in watch should be armed.
  */
-export function watchBargeIn(state: VoiceState): boolean {
-    return state === "responding" || state === "speaking";
+export function watchBargeIn(
+    state: VoiceState,
+    playbackActive = false,
+): boolean {
+    return playbackActive || state === "responding" || state === "speaking";
 }
 
 /**
@@ -130,6 +141,8 @@ export function watchBargeIn(state: VoiceState): boolean {
  *   chat view's latest turn runner).
  * @param options.onWakeCue - A cue to play when the wake phrase matches.
  * @param options.onBargeIn - The barge-in trigger (stop playback + cancel).
+ * @param options.playbackActive - Whether the player still has scheduled audio
+ *   (keeps the barge watch armed through the reply's audio tail, #114).
  * @param options.engineAssets - The WASM engine's worker/WASM URLs.
  * @returns The controller, snapshot, derived view state, and the toggles.
  */
@@ -137,6 +150,12 @@ export function useVoiceSession(options: {
     submit(text: string): Promise<void>;
     onWakeCue(): void;
     onBargeIn(): void;
+    /**
+     * Whether the player still has scheduled audio for the last reply
+     * (#114). The reply's audio outlives its `done` frame, so the barge
+     * watch stays armed on this even once the lifecycle is back to `idle`.
+     */
+    playbackActive?: boolean;
     engineAssets?: { workerUrl: string; wasmUrl: string };
 }): UseVoiceSessionResult {
     const { workerUrl = voskWorkerUrl, wasmUrl = voskWasmUrl } =
@@ -252,15 +271,20 @@ export function useVoiceSession(options: {
         }
     }, [controller, wakeAvailable, wakeOn]);
 
-    // Barge-in watch (#84 P6, covering the whole response since #114): while a
+    // Barge-in watch (#84 P6, covering the whole reply since #114): while a
     // voice answer streams and plays, a VAD-only mic session listens for the
     // user talking over it — sustained speech stops local playback, cancels the
     // in-flight turn, and opens a listening session seeded with the interrupted
-    // opening. Armed from the response's first frame so a long tool turn is
-    // covered before any audio exists (see `watchBargeIn`); keyed on the
-    // boolean so the microphone opens once per turn. Arming failures are silent
-    // by design — the controller's log carries what it can (see `BargeWatch`).
-    const bargeWindow = watchBargeIn(snapshot.state);
+    // opening. Armed from the response's first frame, and held through the
+    // audio tail after the turn's `done` (`playbackActive`), so a long tool turn
+    // and a reply that outlives its frames are both covered (see `watchBargeIn`);
+    // keyed on the boolean so the microphone opens once per window. Arming
+    // failures are silent by design — the controller's log carries what it can
+    // (see `BargeWatch`).
+    const bargeWindow = watchBargeIn(
+        snapshot.state,
+        options.playbackActive === true,
+    );
     useEffect(() => {
         if (controller === null || !bargeWindow) {
             return;
