@@ -330,6 +330,9 @@ describe("hello capability handshake", () => {
             mode: "text",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
     });
 
@@ -351,6 +354,9 @@ describe("hello capability handshake", () => {
             mode: "voice",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
         expect(store.getSessionByThread("voice-thread")?.kind).toBe("voice");
     });
@@ -376,6 +382,9 @@ describe("hello capability handshake", () => {
             mode: "text",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
         expect(store.getSessionByThread("text-explicit-thread")?.kind).toBe(
             "text",
@@ -456,6 +465,9 @@ describe("hello capability handshake", () => {
             mode: "text",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
     });
 
@@ -491,6 +503,9 @@ describe("hello capability handshake", () => {
             mode: "text",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
     });
 
@@ -511,6 +526,9 @@ describe("hello capability handshake", () => {
             mode: "text",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
     });
 
@@ -562,6 +580,9 @@ describe("hello capability handshake", () => {
             mode: "text",
             attachmentIds: [],
             signal: expect.any(AbortSignal),
+            // The peer address rides along for guest metering (#8); its exact
+            // value is loopback-format-dependent, so only its presence is pinned.
+            clientIp: expect.any(String),
         });
     });
 });

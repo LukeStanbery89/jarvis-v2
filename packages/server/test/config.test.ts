@@ -14,6 +14,15 @@ import {
     DEFAULT_TURN_TIMEOUT_MS,
     DEFAULT_WEATHER_CALLS_PER_MIN,
     DEFAULT_WEATHER_TIMEOUT_MS,
+    DEFAULT_WIKIPEDIA_CALLS_PER_MIN,
+    DEFAULT_WIKIPEDIA_GUEST_IP_PER_MIN,
+    DEFAULT_WIKIPEDIA_GUEST_SESSION_PER_MIN,
+    DEFAULT_WIKIPEDIA_LANG,
+    DEFAULT_WIKIPEDIA_MAX_CANDIDATES,
+    DEFAULT_WIKIPEDIA_MAX_FULL_CHARS,
+    DEFAULT_WIKIPEDIA_MAX_SENTENCES,
+    DEFAULT_WIKIPEDIA_TIMEOUT_MS,
+    DEFAULT_WIKIPEDIA_USER_AGENT,
     defaultAppDbPath,
     defaultPortalDir,
     defaultWebDir,
@@ -60,6 +69,16 @@ afterEach(() => {
     delete process.env.JARVIS_HA_CACHE_TTL_MS;
     delete process.env.JARVIS_HA_LIST_LIMIT;
     delete process.env.JARVIS_HA_LIGHT_TOKENS;
+    delete process.env.JARVIS_WIKIPEDIA;
+    delete process.env.JARVIS_WIKIPEDIA_LANG;
+    delete process.env.JARVIS_WIKIPEDIA_TIMEOUT_MS;
+    delete process.env.JARVIS_WIKIPEDIA_MAX_SENTENCES;
+    delete process.env.JARVIS_WIKIPEDIA_MAX_FULL_CHARS;
+    delete process.env.JARVIS_WIKIPEDIA_MAX_CANDIDATES;
+    delete process.env.JARVIS_WIKIPEDIA_CALLS_PER_MIN;
+    delete process.env.JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN;
+    delete process.env.JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN;
+    delete process.env.JARVIS_WIKIPEDIA_USER_AGENT;
 });
 
 describe("getServerPort", () => {
@@ -370,6 +389,74 @@ describe("cross-origin configuration (#63)", () => {
         // Fail-closed, matching the empty read-domains posture: an explicitly
         // empty list makes 'lights' find nothing rather than guess everything.
         expect(config?.lightTokens).toEqual([]);
+    });
+
+    it("enables wikipedia by default — no credential to gate on (#8)", () => {
+        expect(getAppConfig().wikipedia).toEqual({
+            lang: DEFAULT_WIKIPEDIA_LANG,
+            timeoutMs: DEFAULT_WIKIPEDIA_TIMEOUT_MS,
+            maxSentences: DEFAULT_WIKIPEDIA_MAX_SENTENCES,
+            maxFullChars: DEFAULT_WIKIPEDIA_MAX_FULL_CHARS,
+            maxCandidates: DEFAULT_WIKIPEDIA_MAX_CANDIDATES,
+            callsPerMin: DEFAULT_WIKIPEDIA_CALLS_PER_MIN,
+            guestSessionPerMin: DEFAULT_WIKIPEDIA_GUEST_SESSION_PER_MIN,
+            guestIpPerMin: DEFAULT_WIKIPEDIA_GUEST_IP_PER_MIN,
+            userAgent: DEFAULT_WIKIPEDIA_USER_AGENT,
+        });
+    });
+
+    it("disables wikipedia only on JARVIS_WIKIPEDIA=off (#8)", () => {
+        process.env.JARVIS_WIKIPEDIA = "off";
+        expect(getAppConfig().wikipedia).toBeUndefined();
+        // Any other value (including empty) leaves it enabled — a typo must
+        // not silently remove a tool.
+        process.env.JARVIS_WIKIPEDIA = "";
+        expect(getAppConfig().wikipedia).toBeDefined();
+        process.env.JARVIS_WIKIPEDIA = "OFF";
+        expect(getAppConfig().wikipedia).toBeDefined();
+    });
+
+    it("overrides every wikipedia knob (#8)", () => {
+        process.env.JARVIS_WIKIPEDIA_LANG = "simple";
+        process.env.JARVIS_WIKIPEDIA_TIMEOUT_MS = "2500";
+        process.env.JARVIS_WIKIPEDIA_MAX_SENTENCES = "8";
+        process.env.JARVIS_WIKIPEDIA_MAX_FULL_CHARS = "1500";
+        process.env.JARVIS_WIKIPEDIA_MAX_CANDIDATES = "3";
+        process.env.JARVIS_WIKIPEDIA_CALLS_PER_MIN = "12";
+        process.env.JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN = "2";
+        process.env.JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN = "6";
+        process.env.JARVIS_WIKIPEDIA_USER_AGENT = "my-fork/1.0";
+        expect(getAppConfig().wikipedia).toEqual({
+            lang: "simple",
+            timeoutMs: 2500,
+            maxSentences: 8,
+            maxFullChars: 1500,
+            maxCandidates: 3,
+            callsPerMin: 12,
+            guestSessionPerMin: 2,
+            guestIpPerMin: 6,
+            userAgent: "my-fork/1.0",
+        });
+    });
+
+    it("rejects a wiki language that is not a safe host label (#8)", () => {
+        // The lang is interpolated into a URL host, so a value carrying
+        // separators must fall back rather than redirect the request.
+        for (const hostile of ["..", "en.wikipedia.org/", "en/../x", "EN US"]) {
+            process.env.JARVIS_WIKIPEDIA_LANG = hostile;
+            expect(getAppConfig().wikipedia?.lang).toBe(DEFAULT_WIKIPEDIA_LANG);
+        }
+        // A normal subdomain is accepted, lowercased.
+        process.env.JARVIS_WIKIPEDIA_LANG = "ZH";
+        expect(getAppConfig().wikipedia?.lang).toBe("zh");
+    });
+
+    it("falls back to the defaults for unparsable wikipedia overrides (#8)", () => {
+        process.env.JARVIS_WIKIPEDIA_TIMEOUT_MS = "forever";
+        process.env.JARVIS_WIKIPEDIA_MAX_SENTENCES = "-3";
+        const config = getAppConfig().wikipedia;
+        expect(config?.timeoutMs).toBe(DEFAULT_WIKIPEDIA_TIMEOUT_MS);
+        expect(config?.maxSentences).toBe(DEFAULT_WIKIPEDIA_MAX_SENTENCES);
     });
 
     it("parses trusted proxies as IPs and subnets", () => {

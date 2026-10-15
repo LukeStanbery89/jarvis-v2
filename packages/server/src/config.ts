@@ -72,6 +72,41 @@ export const DEFAULT_WEATHER_CALLS_PER_MIN = 10;
 /** Default unit system the weather tool reports. */
 export const DEFAULT_WEATHER_UNITS: WeatherUnits = "imperial";
 
+/** Default wiki language subdomain for the `wikipedia` tool (#8). */
+export const DEFAULT_WIKIPEDIA_LANG = "en";
+
+/** Default wall-clock cap for one Wikipedia API call, in milliseconds. */
+export const DEFAULT_WIKIPEDIA_TIMEOUT_MS = 10_000;
+
+/** Default leading sentences requested for a summary extract. */
+export const DEFAULT_WIKIPEDIA_MAX_SENTENCES = 5;
+
+/** Default character budget for a `detail: "full"` extract. */
+export const DEFAULT_WIKIPEDIA_MAX_FULL_CHARS = 6_000;
+
+/** Default candidate titles returned for an ambiguous query. */
+export const DEFAULT_WIKIPEDIA_MAX_CANDIDATES = 5;
+
+/** Default Wikipedia calls allowed per signed-in user per minute. */
+export const DEFAULT_WIKIPEDIA_CALLS_PER_MIN = 20;
+
+/** Default Wikipedia calls allowed per guest session per minute (strict). */
+export const DEFAULT_WIKIPEDIA_GUEST_SESSION_PER_MIN = 3;
+
+/** Default Wikipedia calls allowed per guest client address per minute. */
+export const DEFAULT_WIKIPEDIA_GUEST_IP_PER_MIN = 10;
+
+/**
+ * Default `User-Agent` sent to the Wikimedia API.
+ *
+ * Wikimedia's policy requires a descriptive agent that identifies the client
+ * and offers a contact point; a generic one may be blocked, and an empty one
+ * is answered 403. Operators running a fork should override
+ * `JARVIS_WIKIPEDIA_USER_AGENT` with their own project URL.
+ */
+export const DEFAULT_WIKIPEDIA_USER_AGENT =
+    "jarvis-v2/0.1 (+https://github.com/LukeStanbery89/jarvis-v2)";
+
 /** Default wall-clock cap for one Home Assistant call, in milliseconds. */
 export const DEFAULT_HA_TIMEOUT_MS = 10_000;
 
@@ -192,6 +227,57 @@ export interface WeatherConfig {
     readonly timeoutMs: number;
     /** Per-user weather calls per minute (`JARVIS_WEATHER_CALLS_PER_MIN`). */
     readonly callsPerMin: number;
+}
+
+/**
+ * Wikipedia lookup settings (#8).
+ *
+ * Unlike every other optional tool, this one has **no credential** — no API
+ * key, no token, no LAN URL — so there is nothing to gate registration on.
+ * It is therefore enabled by default and switched off explicitly with
+ * `JARVIS_WIKIPEDIA=off`, which is the deliberate divergence from the
+ * key-gated tools: those are absent because they *cannot* work without
+ * secrets, not because the tool surface should be opt-in.
+ *
+ * Nothing here is a secret. The `User-Agent` is required by Wikimedia's
+ * policy rather than optional, and the budgets are the tool's own — a
+ * signed-in allowance, plus two strictly smaller guest allowances applied
+ * together (per session and per client address).
+ */
+export interface WikipediaConfig {
+    /** Wiki language subdomain (`JARVIS_WIKIPEDIA_LANG`), e.g. `en`. */
+    readonly lang: string;
+    /** Wall-clock cap for one API call (`JARVIS_WIKIPEDIA_TIMEOUT_MS`). */
+    readonly timeoutMs: number;
+    /**
+     * Leading sentences a summary extract asks for
+     * (`JARVIS_WIKIPEDIA_MAX_SENTENCES`); the API caps this at 10.
+     */
+    readonly maxSentences: number;
+    /**
+     * Character budget for a `detail: "full"` extract
+     * (`JARVIS_WIKIPEDIA_MAX_FULL_CHARS`) — the article is cut here and the
+     * result states how much was omitted.
+     */
+    readonly maxFullChars: number;
+    /** Candidate titles for an ambiguous query (`JARVIS_WIKIPEDIA_MAX_CANDIDATES`). */
+    readonly maxCandidates: number;
+    /** Per-user calls per minute (`JARVIS_WIKIPEDIA_CALLS_PER_MIN`). */
+    readonly callsPerMin: number;
+    /**
+     * Per-session guest calls per minute
+     * (`JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN`) — deliberately much
+     * stricter than the per-user budget.
+     */
+    readonly guestSessionPerMin: number;
+    /**
+     * Aggregate per-client-address guest calls per minute
+     * (`JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN`) — the bucket that survives a
+     * guest opening a fresh socket for a fresh session.
+     */
+    readonly guestIpPerMin: number;
+    /** Descriptive `User-Agent` (`JARVIS_WIKIPEDIA_USER_AGENT`). */
+    readonly userAgent: string;
 }
 
 /**
@@ -558,6 +644,14 @@ export interface AppConfig {
      */
     readonly homeAssistant?: HomeAssistantConfig;
     /**
+     * Wikipedia lookup settings (#8), present unless `JARVIS_WIKIPEDIA=off`.
+     * Unlike the other optional tools there is no credential to gate on, so
+     * this is enabled by default; `undefined` means the `wikipedia` tool is
+     * not registered at all. Optional so hand-built configs (tests) can omit
+     * it.
+     */
+    readonly wikipedia?: WikipediaConfig;
+    /**
      * Server-side TTS settings (#83), present only when a provider is
      * configured (`JARVIS_TTS_PROVIDER`) — unset means no synthesis at all:
      * sockets never see audio frames and the optional engine packages are
@@ -663,6 +757,29 @@ function minutesToMs(raw: string | undefined): number | undefined {
         .map((part) => part.trim())
         .filter((part) => part.length > 0);
     return parts.length > 0 ? parts : [];
+}
+
+/**
+ * Normalizes a wiki language subdomain (`JARVIS_WIKIPEDIA_LANG`).
+ *
+ * The value is interpolated into a URL host (`https://<lang>.wikipedia.org`),
+ * so it is validated rather than passed through: only a lowercase
+ * alphanumeric/hyphen label is accepted, and anything else falls back to the
+ * default with a warning. That keeps a typo — or a hostile value — from
+ * redirecting the request to a different host.
+ */
+function wikiLang(raw: string | undefined): string {
+    const value = (raw ?? "").trim().toLowerCase();
+    if (value === "") {
+        return DEFAULT_WIKIPEDIA_LANG;
+    }
+    if (/^[a-z][a-z0-9-]*$/.test(value)) {
+        return value;
+    }
+    logger.warn(
+        `JARVIS_WIKIPEDIA_LANG invalid (${JSON.stringify(raw)}); using ${DEFAULT_WIKIPEDIA_LANG}`,
+    );
+    return DEFAULT_WIKIPEDIA_LANG;
 }
 
 /**
@@ -869,6 +986,50 @@ export function getAppConfig(): AppConfig {
                       DEFAULT_WEATHER_CALLS_PER_MIN,
                   ),
               },
+        wikipedia:
+            process.env.JARVIS_WIKIPEDIA === "off"
+                ? undefined
+                : {
+                      lang: wikiLang(process.env.JARVIS_WIKIPEDIA_LANG),
+                      timeoutMs: numberOr(
+                          "JARVIS_WIKIPEDIA_TIMEOUT_MS",
+                          process.env.JARVIS_WIKIPEDIA_TIMEOUT_MS,
+                          DEFAULT_WIKIPEDIA_TIMEOUT_MS,
+                      ),
+                      maxSentences: numberOr(
+                          "JARVIS_WIKIPEDIA_MAX_SENTENCES",
+                          process.env.JARVIS_WIKIPEDIA_MAX_SENTENCES,
+                          DEFAULT_WIKIPEDIA_MAX_SENTENCES,
+                      ),
+                      maxFullChars: numberOr(
+                          "JARVIS_WIKIPEDIA_MAX_FULL_CHARS",
+                          process.env.JARVIS_WIKIPEDIA_MAX_FULL_CHARS,
+                          DEFAULT_WIKIPEDIA_MAX_FULL_CHARS,
+                      ),
+                      maxCandidates: numberOr(
+                          "JARVIS_WIKIPEDIA_MAX_CANDIDATES",
+                          process.env.JARVIS_WIKIPEDIA_MAX_CANDIDATES,
+                          DEFAULT_WIKIPEDIA_MAX_CANDIDATES,
+                      ),
+                      callsPerMin: numberOr(
+                          "JARVIS_WIKIPEDIA_CALLS_PER_MIN",
+                          process.env.JARVIS_WIKIPEDIA_CALLS_PER_MIN,
+                          DEFAULT_WIKIPEDIA_CALLS_PER_MIN,
+                      ),
+                      guestSessionPerMin: numberOr(
+                          "JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN",
+                          process.env.JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN,
+                          DEFAULT_WIKIPEDIA_GUEST_SESSION_PER_MIN,
+                      ),
+                      guestIpPerMin: numberOr(
+                          "JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN",
+                          process.env.JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN,
+                          DEFAULT_WIKIPEDIA_GUEST_IP_PER_MIN,
+                      ),
+                      userAgent:
+                          process.env.JARVIS_WIKIPEDIA_USER_AGENT ||
+                          DEFAULT_WIKIPEDIA_USER_AGENT,
+                  },
         homeAssistant:
             !process.env.HOME_ASSISTANT_URL ||
             !process.env.HOME_ASSISTANT_ACCESS_TOKEN

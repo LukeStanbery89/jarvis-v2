@@ -7,6 +7,7 @@ import type { ToolDeps } from "../src/llm/tools";
 import { DEFAULT_HA_LIGHT_TOKENS } from "../src/config";
 import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 import type { HomeAssistantProvider } from "../src/llm/tools/homeAssistant/types";
+import type { WikipediaProvider } from "../src/llm/tools/wikipedia/types";
 
 const CASES: Array<[string, number]> = [
     ["42", 42],
@@ -145,5 +146,21 @@ describe("createTools wiring", () => {
 
     it("always keeps the built-in tools alongside the optional ones", () => {
         expect(names()).toEqual(["getCurrentTime", "calculate"]);
+    });
+
+    it("registers wikipedia only when its deps are present (#8)", () => {
+        expect(names()).not.toContain("wikipedia");
+        expect(
+            names({
+                wikipedia: {
+                    provider: {} as WikipediaProvider,
+                    quota: new FixedWindowQuota(20),
+                    guest: {
+                        session: new FixedWindowQuota<string>(3),
+                        address: new FixedWindowQuota<string>(10),
+                    },
+                },
+            }),
+        ).toContain("wikipedia");
     });
 });

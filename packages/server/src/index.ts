@@ -26,6 +26,7 @@ import { createTavilyClient } from "./llm/tools/search/tavily";
 import { createSerperClient } from "./llm/tools/search/serper";
 import { createOpenWeatherClient } from "./llm/tools/weather/openweather";
 import { createHomeAssistantClient } from "./llm/tools/homeAssistant/client";
+import { createWikipediaClient } from "./llm/tools/wikipedia/client";
 import {
     createAttachmentStore,
     sweepOrphanAttachments,
@@ -128,6 +129,39 @@ logger.info(
         : "Home Assistant disabled (no HOME_ASSISTANT_URL or HOME_ASSISTANT_ACCESS_TOKEN configured)",
 );
 
+// Wikipedia (#8): no credential to gate on, so this is ON unless explicitly
+// switched off — `JARVIS_WIKIPEDIA=off` leaves `appConfig.wikipedia`
+// undefined. Two guest budgets are built alongside the per-user one and all
+// three live for the process (see the rate-limiting section of README.md):
+// the per-session bucket bounds one conversation, and the per-address bucket
+// bounds a guest who opens a fresh socket for a fresh session.
+const wikipediaDeps = appConfig.wikipedia
+    ? {
+          provider: createWikipediaClient({
+              lang: appConfig.wikipedia.lang,
+              timeoutMs: appConfig.wikipedia.timeoutMs,
+              userAgent: appConfig.wikipedia.userAgent,
+              maxSentences: appConfig.wikipedia.maxSentences,
+              maxFullChars: appConfig.wikipedia.maxFullChars,
+              maxCandidates: appConfig.wikipedia.maxCandidates,
+          }),
+          quota: new FixedWindowQuota(appConfig.wikipedia.callsPerMin),
+          guest: {
+              session: new FixedWindowQuota<string>(
+                  appConfig.wikipedia.guestSessionPerMin,
+              ),
+              address: new FixedWindowQuota<string>(
+                  appConfig.wikipedia.guestIpPerMin,
+              ),
+          },
+      }
+    : undefined;
+logger.info(
+    wikipediaDeps
+        ? `Wikipedia active: ${appConfig.wikipedia?.lang}.wikipedia.org (users ${appConfig.wikipedia?.callsPerMin}/min; guests ${appConfig.wikipedia?.guestSessionPerMin}/session/min and ${appConfig.wikipedia?.guestIpPerMin}/address/min)`
+        : "Wikipedia disabled (JARVIS_WIKIPEDIA=off)",
+);
+
 // Server-side TTS (#83): present only when a provider is configured — unset
 // JARVIS_TTS_PROVIDER means sockets never see audio frames. Constructing the
 // provider is always safe: the engine module loads lazily on first synthesis,
@@ -172,6 +206,7 @@ initAgentGraph({
     ...(searchDeps ? { search: searchDeps } : {}),
     ...(weatherDeps ? { weather: weatherDeps } : {}),
     ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
+    ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
 });
 const store = openAppDatabase(appConfig.appDbPath);
 const webApp = createApp(store, appConfig, attachments, inFlight);

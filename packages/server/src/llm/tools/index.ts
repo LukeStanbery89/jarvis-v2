@@ -17,11 +17,13 @@ import { createAnalyzeImageTool } from "./analyzeImage";
 import { createWebSearchTool } from "./webSearch";
 import { createGetWeatherTool } from "./getWeather";
 import { createHomeAssistantTool } from "./homeAssistant";
+import { createWikipediaTool } from "./wikipedia";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
 import type { WeatherDeps } from "./getWeather";
 import type { HomeAssistantDeps } from "./homeAssistant";
+import type { WikipediaDeps } from "./wikipedia";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -44,6 +46,13 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * credentials, no `homeAssistant` tool.
      */
     homeAssistant?: HomeAssistantDeps;
+    /**
+     * Wikipedia wiring (#8): the configured client plus the per-user budget
+     * and the two guest budgets. Unlike the other optional tools there is no
+     * credential to gate on, so production always supplies this unless
+     * `JARVIS_WIKIPEDIA=off`.
+     */
+    wikipedia?: WikipediaDeps;
 }
 
 /**
@@ -70,6 +79,9 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
     }
     if (deps.homeAssistant) {
         tools.push(createHomeAssistantTool(deps.homeAssistant));
+    }
+    if (deps.wikipedia) {
+        tools.push(createWikipediaTool(deps.wikipedia));
     }
     return tools;
 }

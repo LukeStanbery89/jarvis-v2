@@ -34,6 +34,10 @@ describe("systemPromptForCapabilities", () => {
             );
             expect(prompt).toMatch(/exactly one tool call at a time/);
             expect(prompt).toMatch(/make exactly\s+one getCurrentTime call/);
+            // The tools-over-memory rule (#8) is unconditional, like the
+            // other hygiene paragraphs: a model that cannot see a lookup tool
+            // is never misled by instruction it cannot follow.
+            expect(prompt).toMatch(/Prefer your tools over your own memory/);
         }
     });
 
