@@ -498,7 +498,14 @@ export class VoiceSession {
             return;
         }
         // The flush settled with nothing recognized at all: end the
-        // session quietly instead of parking it until the deadline.
+        // session quietly instead of parking it until the deadline. Logged
+        // for the same reason as the deadline path below — a dropped
+        // utterance is otherwise invisible, and after a barge-in there is no
+        // error banner either, so "my prompt did not register" leaves no
+        // trace anywhere (#114).
+        this.core.log(
+            `session ${this.sessionId}: nothing recognized; going quiet`,
+        );
         this.clearTimers();
         void this.engine.cancel();
         void this.core.stopVad();
