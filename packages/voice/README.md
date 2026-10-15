@@ -62,16 +62,20 @@ npm install @lukestanbery/jarvis-voice
 
 ## Scripts
 
-| Script              | Description                                    |
-| ------------------- | ---------------------------------------------- |
-| `npm run build`     | Compile TypeScript to `dist/`                  |
-| `npm run typecheck` | Type-check src and tests (no emit)             |
-| `npm test`          | Run the test suite (Vitest)                    |
-| `npm run fixtures`  | Regenerate the #121 audio corpus (macOS `say`) |
+| Script               | Description                                                            |
+| -------------------- | ---------------------------------------------------------------------- |
+| `npm run build`      | Compile TypeScript to `dist/`                                          |
+| `npm run typecheck`  | Type-check src and tests (no emit)                                     |
+| `npm test`           | Run the test suite (Vitest)                                            |
+| `npm run fixtures`   | Regenerate the #121 audio corpus (macOS `say`)                         |
+| `npm run probe:wake` | Print the detector's per-frame RMS/score timeline for a fixture (#121) |
 
 The `#121` wake→command corpus lives in `test/fixtures/`: synthesized WAVs plus
 `real/` recordings (the same shapes in a real voice, committed for tests), and
 a gitignored `local/` scratch area. See `test/fixtures/README.md`.
+`npm run probe:wake <fixture.wav>` replays one through the real detector
+offline and prints where the score crosses the threshold relative to the
+speech — the measurement the wake-session cut is designed around.
 
 ## Lifecycle
 
@@ -309,20 +313,24 @@ feature pipeline. A phrase label passing threshold fires `onDetection`
 Two properties make this provider slot into the controller's wake flow
 (#84 P4, single-mic in #121):
 
-- **Live command stream** — because the detector's microphone keeps running
-  after a phrase fires, every frame **after** the match is handed straight to
-  `WakeCallbacks.onCommandAudio` (16 kHz mono float PCM). The frame that
-  crossed the threshold was only predicted, so the wake phrase is never part
-  of the stream, and the frames are contiguous — so the controller runs the
-  wake session's engine microphone-free over them (`{ source: "external" }`).
-  Nothing is retained here, nothing is drained, nothing is spliced: a
-  one-breath "Hey JARVIS what time is it" arrives whole.
-- **Fire once, capture on** — `onDetection` fires at most once per `start()`,
-  so prediction stops at the match while the microphone stays open for the
-  command. The controller holds the detector open for the whole session
-  (`WakeManager.beginCommand`) and restarts it when the turn lands `idle`
-  (`maybeReArm` → stop + arm). `stop()` is idempotent, and no callback —
-  match or command audio — fires after it resolves.
+- **Live command stream** — the detector's microphone keeps running after a
+  phrase fires, and every frame **after** the frame that crossed the threshold
+  is handed to `WakeCallbacks.onCommandAudio` (16 kHz mono float PCM). So the
+  wake session's engine runs microphone-free over them (`{ source:
+"external" }`): the phrase is never part of the stream, and there is no
+  splice — a one-breath "Hey JARVIS what time is it" arrives whole.
+- **Queue, don't drop** — captured frames are _queued_ and predicted one at a
+  time (never busy-dropped: the feature extractor is streaming, so a skipped
+  frame shifts every later score). The pipeline reaches the phrase only after
+  ingesting the audio that followed it, which is why the match **recovers the
+  frames still in that queue** as the command's opening. A short one-breath
+  command lives almost entirely in that recovery — dropping them (as the
+  busy-drop did) is what clipped the start of the command and, for the
+  shortest utterances, lost it altogether. `onDetection` fires at most once
+  per `start()`, and the controller holds the detector open for the whole
+  session (`WakeManager.beginCommand`), restarting it once the turn lands
+  `idle`. `stop()` is idempotent, and no callback — match or command audio —
+  fires after it resolves.
 
 `stripWakePhrase()` (in `src/wakeText.ts`) removes a leading wake phrase
 from a wake-session transcript ("Hey JARVIS" by default, ragged whitespace

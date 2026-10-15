@@ -28,17 +28,30 @@
  * file — it surfaces as `null` from {@link createOpenWakeWord} or a
  * rejected `start()`.
  *
- * Detection posture: prediction runs serialized (busy-drop — a frame that
- * arrives while a predict is in flight is skipped), the detector fires at
- * most once per `start()` (the `onWake` callback opens a session, which then
- * keeps the detector alive for the command), and after the match every frame
- * flows straight out as command audio — the provider retains nothing.
+ * Detection posture: prediction runs serialized over a FIFO of captured
+ * frames (busy-dropping would starve — and de-align — the feature pipeline,
+ * whose input must stay contiguous), the detector fires at most once per
+ * `start()`, and the frames captured *after* the frame that crossed the
+ * threshold are recovered from that queue and streamed out with everything
+ * that follows — so the command's opening survives however long the pipeline
+ * took to reach the phrase (#121).
  */
 import type { VoiceError, WakeCallbacks, WakeWordProvider } from "../types";
 import { micError, voiceError } from "./internal";
 
 /** The detector's capture rate; the command stream is mono at this rate. */
 const MIC_SAMPLE_RATE = 16000;
+
+/** One frame's worth of samples at the detector's 16 kHz rate (80 ms). */
+const FRAME_SAMPLES = 1280;
+
+/**
+ * The prediction backlog cap (#121): captured frames awaiting a `predict()`.
+ * Ten seconds of audio — a stalled main thread recovers from far less. Past
+ * this the oldest frames are shed so memory stays bounded, at the cost of the
+ * pipeline's contiguity (logged; see {@link OpenWakeWordWakeProvider.onFrame}).
+ */
+const MAX_QUEUED_FRAMES = (10 * MIC_SAMPLE_RATE) / FRAME_SAMPLES;
 
 /** Configuration for {@link createOpenWakeWord}. */
 export interface OpenWakeWordOptions {
@@ -76,6 +89,13 @@ export interface OpenWakeWordOptions {
      * serve it same-origin and pass it in.
      */
     readonly workletUrl?: string;
+    /**
+     * Debug sink for the detector's otherwise-invisible backlog work
+     * (#121): how many captured frames the match had to recover from the
+     * prediction queue. The caller owns diagnostics (this package has no
+     * logging dependency); default: a no-op.
+     */
+    readonly log?: (message: string, error?: unknown) => void;
 }
 
 /** A detection event reported by openwakeword-web. */
@@ -178,9 +198,10 @@ export function isWakeSupported(): boolean {
  * The on-device openWakeWord {@link WakeWordProvider}. One instance arms a
  * single detector; `start()` may be called again after `stop()` (a fresh
  * detection pass). A match arrives through {@link WakeCallbacks.onWake}
- * carrying its confidence, and the command that follows streams through
- * {@link WakeCallbacks.onCommandAudio} until the detector is stopped — the
- * session's audio is taken live from the detector, never buffered here (#121).
+ * carrying its confidence, and the command streams through
+ * {@link WakeCallbacks.onCommandAudio} from the match onward — starting with
+ * the frames the pipeline had already captured while it was scoring the
+ * phrase, which is what keeps a one-breath command whole (#121).
  */
 export class OpenWakeWordWakeProvider implements WakeWordProvider {
     readonly id = "oww-browser";
@@ -192,6 +213,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
     private readonly numThreads: number;
     private readonly workletUrl: string | undefined;
     private readonly loadModule: OpenWakeWordLoader;
+    private readonly log: (message: string, error?: unknown) => void;
     /** Callbacks for the armed pass; dropped when detection stops. */
     private callbacks: WakeCallbacks | null = null;
     private instance: OpenWakeWordInstanceLike | null = null;
@@ -199,6 +221,17 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
     private armed = false;
     private fired = false;
     private predicting = false;
+    /**
+     * Captured frames awaiting prediction, in capture order (#121). The
+     * feature pipeline's input must be contiguous — skipping a frame shifts
+     * every later score — so frames queue here instead of being dropped, and
+     * because the pipeline reaches the phrase some time *after* the phrase was
+     * spoken, this queue is also what holds (and later recovers) the command's
+     * opening. Bounded by {@link MAX_QUEUED_FRAMES}.
+     */
+    private toPredict: Int16Array[] = [];
+    /** Ensures the backlog-cap warning is logged once per arm. */
+    private backlogWarned = false;
     /**
      * Invalidates an in-flight `start()`/`stop()` race: incremented by every
      * stop, checked between the await points of a start.
@@ -221,6 +254,7 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         this.numThreads = options.numThreads ?? 1;
         this.workletUrl = options.workletUrl;
         this.loadModule = loadModule ?? defaultLoadModule;
+        this.log = options.log ?? (() => {});
     }
 
     /**
@@ -239,6 +273,8 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         this.callbacks = callbacks;
         this.fired = false;
         this.predicting = false;
+        this.toPredict = [];
+        this.backlogWarned = false;
         const seq = ++this.initSeq;
         let instance: OpenWakeWordInstanceLike | null = null;
         let mic: MicrophoneLike | null = null;
@@ -313,36 +349,60 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
         } catch {
             // Models that will not reset are already gone.
         }
+        this.toPredict = [];
         this.fired = false;
         this.predicting = false;
     }
 
     /**
-     * One 16 kHz 16-bit PCM frame from the worklet. After a match every frame
-     * is the command and is handed straight out through
-     * `WakeCallbacks.onCommandAudio` — the same microphone, nothing retained
-     * (#121). Before a match the frame is driven through the detection pass,
-     * busy-dropped if a predict is already running so a slow pass can never
-     * stack behind the live microphone.
+     * One 16 kHz 16-bit PCM frame from the worklet. Before a match the frame
+     * joins the prediction queue; after it, the frame *is* the command and is
+     * handed straight out through `WakeCallbacks.onCommandAudio` — the same
+     * microphone, nothing spliced (#121).
      *
      * @param frame - The frame's int16 PCM samples.
      */
     private onFrame(frame: Int16Array): void {
         if (this.fired) {
-            // Post-match: the command, streamed live. The frame that crossed
-            // the threshold was predicted, never emitted, so not one sample of
-            // the phrase is in this stream.
-            this.callbacks?.onCommandAudio?.(
-                pcmFromInt16(frame),
-                MIC_SAMPLE_RATE,
-            );
+            this.emitCommandAudio(frame);
             return;
         }
-        if (!this.armed || this.predicting) {
+        if (!this.armed) {
+            return;
+        }
+        this.toPredict.push(frame);
+        if (this.toPredict.length > MAX_QUEUED_FRAMES) {
+            // The pipeline is ten seconds behind: shed the oldest audio so
+            // memory stays bounded. This breaks the contiguity the feature
+            // extractor needs, so it is a last resort — logged once per arm.
+            this.toPredict.shift();
+            if (!this.backlogWarned) {
+                this.backlogWarned = true;
+                this.log(
+                    "wake detector is falling behind; shedding the oldest audio",
+                );
+            }
+        }
+        this.pump();
+    }
+
+    /**
+     * Runs the oldest queued frame through the detector, one at a time. Every
+     * captured frame is predicted in order — the feature pipeline is a
+     * streaming extractor whose input must be contiguous (skipping a frame
+     * shifts every later score, and the frames skipped while the phrase was
+     * being scored would be the command's opening).
+     */
+    private pump(): void {
+        if (this.predicting || this.fired || !this.armed) {
             return;
         }
         const instance = this.instance;
         if (instance === null) {
+            return;
+        }
+        const frame = this.toPredict.shift();
+        if (frame === undefined) {
             return;
         }
         this.predicting = true;
@@ -360,17 +420,23 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             })
             .finally(() => {
                 this.predicting = false;
+                this.pump();
             });
     }
 
     /**
-     * The threshold was crossed mid-predict (fires synchronously inside
-     * {@link OpenWakeWordInstanceLike.predict}): record the match and deliver
-     * the detection to the armed callbacks. No prediction runs from here on,
-     * so the frames that follow — the command — are streamed out rather than
-     * analyzed; because none of the phrase was ever emitted, the wake
-     * session's audio is phrase-free by construction (#121). Fires at most
-     * once per start.
+     * The threshold was crossed mid-predict (fires inside
+     * {@link OpenWakeWordInstanceLike.predict}, with the crossing frame still
+     * in flight): record the match, deliver the detection to the armed
+     * callbacks, and then emit **every frame already captured after the
+     * crossing frame**.
+     *
+     * That emission is the point (#121). The feature pipeline reaches the
+     * phrase only after ingesting the audio that followed it, so by the time
+     * the score crosses, the command's opening has already been captured —
+     * and, being queued rather than dropped, it is still here. Emitting it
+     * makes the wake session's stream start where the phrase ended: no
+     * phrase, nothing clipped, nothing repeated. Fires at most once per start.
      *
      * @param event - The label and score that crossed the threshold.
      */
@@ -379,7 +445,32 @@ export class OpenWakeWordWakeProvider implements WakeWordProvider {
             return;
         }
         this.fired = true;
+        const recovered = this.toPredict;
+        this.toPredict = [];
+        // Deliver the match first: the client must be holding frames before
+        // the first one arrives (the controller arms its hold from `onWake`).
         this.callbacks?.onWake({ confidence: event.score });
+        if (recovered.length > 0) {
+            this.log(
+                `wake match: recovered ${recovered.length} queued frame(s) (${Math.round(
+                    ((recovered.length * FRAME_SAMPLES) / MIC_SAMPLE_RATE) *
+                        1000,
+                )} ms) captured after the phrase`,
+            );
+        }
+        for (const frame of recovered) {
+            this.emitCommandAudio(frame);
+        }
+    }
+
+    /**
+     * Converts one frame to float PCM and hands it to the armed callbacks as
+     * post-match command audio.
+     *
+     * @param frame - The frame's int16 PCM samples.
+     */
+    private emitCommandAudio(frame: Int16Array): void {
+        this.callbacks?.onCommandAudio?.(pcmFromInt16(frame), MIC_SAMPLE_RATE);
     }
 
     /**

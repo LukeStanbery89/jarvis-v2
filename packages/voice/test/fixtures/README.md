@@ -78,38 +78,51 @@ worker decodes silently truncates the utterance's tail at flush time, and the
 provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a
 lump of replayed audio).
 
-## What the corpus has shown (#121 phase 2)
+## What the corpus has shown (#121)
 
-Stage A — the buffer emptied at the match, the session seeded with post-match
-audio only — removed the reported defect on **real production audio**: six wake
+Stage A (the buffer emptied at the match; the session seeded with post-match
+audio only) removed the reported defect on **real production audio**: six wake
 turns, no doubled phrase, no stray "Hey JARVIS" in any prompt, and the
 pause-then-command shape clean (`raw="what's the weather"`, `submitted`
 identical).
 
-The same run exposed a second, previously-masked failure on the **one-breath**
-shape ("Hey JARVIS what time is it", no pause). The command's continuation was
-supposed to come from the session's _own_ microphone, which opens a few hundred
-milliseconds after the match and the cue — by which time the user has finished
-speaking. Two turns produced nothing at all (`session N: no speech detected`)
-and one lost the command's opening (`raw="richard is outside please"` for "tell
-me what temperature it is outside please"). The duplicated phrase had been
-drowning it out.
+Stage B (the detector streamed into the session's engine) then exposed the
+real shape of the one-breath problem, and a Node probe of the detector over
+these fixtures pinned it down. Feeding `real/one-breath.wav` frame by frame
+(80 ms) through the same pipeline the browser uses:
 
-The resolution is the single-mic design: the detector keeps capturing after the
-match and **every frame from then on is the command**, fed live into the wake
-engine running `{ source: "external" }` (no microphone of its own). The
-engine's own silence detection ends the utterance — an empty final is ignored,
-so the pause between the phrase and the command cannot end it early — bounded
-by `NO_SPEECH_MS` ("woke up and said nothing") and `MAX_COMMAND_MS` (a command
-that never pauses). Nothing is buffered, drained, or spliced, so a one-breath
-utterance is captured whole by construction.
+| fixture              | phrase ends | score crosses 0.5 | score peak | command starts |
+| -------------------- | ----------- | ----------------- | ---------- | -------------- |
+| `one-breath`         | ~560 ms     | **800 ms**        | 1120 ms    | **960 ms**     |
+| `pause-then-command` | ~560 ms     | **880 ms**        | 1040 ms    | **2000 ms**    |
 
-`test/wakeCorpus.test.ts` asserts that routing on the committed fixtures
-(synthetic and real): the frames the engine receives start at the match, are
-contiguous, hold no pre-match speech, and repeat nothing.
-`test/openWakeWord.test.ts` pins the stream itself (frames after the match, and
-only after it). The browser harness remains the way to check _transcription
-quality_ through the real Vosk engine (`?voice-harness=1`).
+Two facts fall out of that:
+
+1. The detector is **not** late relative to the phrase — the crossing lands
+   ~240–320 ms after the phrase ends, comfortably before the command starts.
+2. The score stays high for ~500 ms afterwards, because the feature pipeline
+   only reaches the phrase after ingesting the audio that _followed_ it. So by
+   the time the match fires, the command's opening has already been captured —
+   and in production it had already been **busy-dropped** (frames arriving
+   while a `predict` was in flight were discarded), which is why a one-breath
+   command lost its start, or all of it when the command was short enough that
+   the drop window covered it. The pause cases were immune: the pause absorbed
+   the whole window.
+
+The fix is to queue captured frames instead of dropping them, and to have the
+match emit the frames still in that queue — the command's opening, by
+construction, with the phrase behind it. `test/openWakeWord.test.ts` pins the
+queue and the recovery; `test/wakeCorpus.test.ts` pins the routing into the
+engine (frames start at the match, contiguous, phrase-free, nothing repeated).
+The pause-shape and one-breath-shape assertions on the real set remain.
+
+Two harness-side lessons remain, both recorded in
+`packages/web/src/dev/VoiceHarness.tsx`: feeding a whole clip faster than the
+worker decodes silently truncates the utterance's tail at flush time, and the
+provider's 300 ms flush deadline assumes an empty queue (fine live, wrong for a
+lump of replayed audio).
+
+## `local/` (not committed)
 
 ## `local/` (not committed)
 

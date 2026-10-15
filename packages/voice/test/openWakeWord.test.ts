@@ -6,8 +6,9 @@
  * phrase mid-`predict`, and a fake `Microphone` whose frames the test pushes
  * by hand) — no network, no WASM, no AudioWorklet. Assertions cover the
  * command stream (frames after the match, and only after it, are delivered —
- * the phrase never reaches the recognition engine, #121), busy-drop
- * prediction serialization, firing-at-most-once, clean start/stop cycles, and
+ * the phrase never reaches the recognition engine, #121), the queue that
+ * keeps every captured frame predicted in order and lets the match recover
+ * the command's opening, firing-at-most-once, clean start/stop cycles, and
  * the injected-loader path the browser client (and any future client) relies
  * on.
  */
@@ -195,6 +196,13 @@ function lastInstance(module: FakeModule): FakeOww {
     return module.instances[module.instances.length - 1]!;
 }
 
+/** Flushes the predict/pump microtask chain. */
+async function drain(): Promise<void> {
+    for (let i = 0; i < 8; i += 1) {
+        await Promise.resolve();
+    }
+}
+
 /** A recognizable frame: content starts at `offset` (mod 32767). */
 function frameWith(offset: number, length = 1280): number[] {
     return Array.from({ length }, (_, i) => (i + offset) % 32767);
@@ -243,47 +251,55 @@ describe("OpenWakeWordWakeProvider", () => {
         await provider.stop();
     });
 
-    it("reports the match and streams the command that follows", async () => {
+    it("recovers the frames captured while the phrase was being scored", async () => {
         const { module, provider } = makeHarness();
         const record = makeRecord();
         await provider.start(record.callbacks);
         // Pre-match frames are the phrase: predicted, never emitted.
         lastMic(module).emitFrame(frameWith(1));
         lastMic(module).emitFrame(frameWith(2));
-        expect(record.commandAudio).toEqual([]);
-        // The frame that crosses the threshold is only predicted too, so it
-        // is not part of the stream.
         lastMic(module).emitFrame(frameWith(3));
+        expect(record.commandAudio).toEqual([]);
+        // The pipeline reaches the phrase only after ingesting what followed
+        // it, so frames 2 and 3 were already captured when the crossing frame
+        // (1) was scored. They are the command's opening, and they are handed
+        // over with the match (#121) — this recovery is the fix for a
+        // one-breath command losing its start.
         lastInstance(module).fire("hey_jarvis", 0.92);
         expect(record.errors).toEqual([]);
         expect(record.wakes).toHaveLength(1);
-        expect(record.wakes[0].confidence).toBe(0.92);
-        expect(record.commandAudio).toEqual([]);
-        // Everything after is the command, frame by frame, at 16 kHz.
+        expect(record.wakes[0]!.confidence).toBe(0.92);
+        expect(record.commandAudio.map((chunk) => chunk.pcm[0])).toEqual([
+            2 / 32768,
+            3 / 32768,
+        ]);
+        expect(record.commandAudio.map((chunk) => chunk.sampleRate)).toEqual([
+            16000, 16000,
+        ]);
+        // Everything from here is live, frame by frame, at 16 kHz.
         lastMic(module).emitFrame(frameWith(7));
-        lastMic(module).emitFrame(frameWith(9));
-        expect(record.commandAudio).toHaveLength(2);
-        expect(record.commandAudio[0]!.sampleRate).toBe(16000);
-        expect(record.commandAudio[0]!.pcm.length).toBe(1280);
-        expect(Array.from(record.commandAudio[0]!.pcm.slice(0, 3))).toEqual([
+        expect(record.commandAudio).toHaveLength(3);
+        expect(record.commandAudio[2]!.pcm.length).toBe(1280);
+        expect(Array.from(record.commandAudio[2]!.pcm.slice(0, 3))).toEqual([
             7 / 32768,
             8 / 32768,
-            9 / 32768,
-        ]);
-        expect(Array.from(record.commandAudio[1]!.pcm.slice(0, 1))).toEqual([
             9 / 32768,
         ]);
         await provider.stop();
     });
 
-    it("busy-drops frames while a predict is in flight", async () => {
+    it("predicts every captured frame in order instead of dropping it", async () => {
+        // The feature extractor is streaming: a skipped frame shifts every
+        // later score, and the frames skipped while the phrase is being scored
+        // are exactly the command's opening (#121).
         const { module, provider } = makeHarness();
         await provider.start(makeRecord().callbacks);
-        module.mics[0].emitFrame(frameWith(1));
-        module.mics[0].emitFrame(frameWith(2));
-        expect(module.instances[0].predictCalls).toBe(1); // only the first
-        await Promise.resolve();
-        expect(module.instances[0].predictCalls).toBe(1); // second was dropped
+        for (let frame = 0; frame < 3; frame += 1) {
+            lastMic(module).emitFrame(frameWith(frame * 1280));
+        }
+        expect(lastInstance(module).predictCalls).toBe(1); // one in flight
+        await drain();
+        expect(lastInstance(module).predictCalls).toBe(3); // the rest followed
         await provider.stop();
     });
 
@@ -291,12 +307,29 @@ describe("OpenWakeWordWakeProvider", () => {
         const { module, provider } = makeHarness();
         const record = makeRecord();
         await provider.start(record.callbacks);
-        module.mics[0].emitFrame(frameWith(1));
-        module.instances[0].fire("hey_jarvis", 0.9);
+        lastMic(module).emitFrame(frameWith(1));
+        lastInstance(module).fire("hey_jarvis", 0.9);
         expect(record.wakes).toHaveLength(1);
-        module.mics[0].emitFrame(frameWith(2));
-        module.instances[0].fire("hey_jarvis", 0.95);
+        lastMic(module).emitFrame(frameWith(2));
+        lastInstance(module).fire("hey_jarvis", 0.95);
         expect(record.wakes).toHaveLength(1);
+        await provider.stop();
+    });
+
+    it("logs how much of the command the match recovered from the queue", async () => {
+        const messages: string[] = [];
+        const { module, provider } = makeHarness({
+            log: (message) => messages.push(message),
+        });
+        const record = makeRecord();
+        await provider.start(record.callbacks);
+        lastMic(module).emitFrame(frameWith(1));
+        lastMic(module).emitFrame(frameWith(2));
+        lastMic(module).emitFrame(frameWith(3));
+        lastInstance(module).fire("hey_jarvis", 0.9);
+        expect(messages).toEqual([
+            "wake match: recovered 2 queued frame(s) (160 ms) captured after the phrase",
+        ]);
         await provider.stop();
     });
 
@@ -372,6 +405,8 @@ describe("OpenWakeWordWakeProvider", () => {
         lastMic(module).emitFrame(frameWith(1));
         lastInstance(module).fire("hey_jarvis", 0.8);
         expect(record.wakes[0]!.confidence).toBe(0.8);
+        // Nothing was captured after the crossing frame.
+        expect(record.commandAudio).toEqual([]);
         lastMic(module).emitFrame(frameWith(7));
         expect(record.commandAudio).toHaveLength(1);
         await provider.stop();

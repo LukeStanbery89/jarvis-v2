@@ -140,7 +140,7 @@ export function useVoiceSession(options: {
     const wakeStt = wakeSttRef.current;
     const wakeRef = useRef<WakeWordProvider | null>(null);
     if (wakeRef.current === null) {
-        wakeRef.current = createWakeWord();
+        wakeRef.current = createWakeWord({ log: debugVoice });
     }
     const wake = wakeRef.current;
 
