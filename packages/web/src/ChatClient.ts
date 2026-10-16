@@ -42,6 +42,19 @@ export type ChatStatus = "connecting" | "connected" | "reconnecting" | "closed";
 export interface ChatClientEvents {
     /** Connection-state changes (idempotent transitions). */
     onStatus?(status: ChatStatus): void;
+    /**
+     * A connection that had **dropped** is live again — once per reconnect,
+     * never for the initial connect.
+     *
+     * Distinct from `onStatus("connected")` on purpose: only the client knows
+     * whether this was the first handshake or a recovery, and a consumer that
+     * has to infer it from a status sequence gets it wrong in the case that
+     * matters (`connecting` and `reconnecting` both precede `connected`).
+     * Consumers use it to re-read state the server could not push while the
+     * socket was down — a notification raised then was delivered to nobody,
+     * so the list is the only place it can appear.
+     */
+    onReconnected?(): void;
     /** One parsed server frame of an in-flight prompt turn. */
     onFrame?(frame: ServerFrame): void;
     /**
@@ -393,8 +406,15 @@ export class ChatClient {
             if ("authResult" in frame) {
                 this.clearHandshakeTimer();
                 this.phase = "ready";
+                // Read before the reset: this is the one place that knows
+                // whether the handshake just completed for the first time or
+                // after a drop (`attempt` counts failed connects).
+                const reconnected = this.attempt > 0;
                 this.attempt = 0;
                 this.emitStatus("connected");
+                if (reconnected) {
+                    this.options.events.onReconnected?.();
+                }
                 this.resendLocation();
                 this.flushWaiters();
             } else if ("error" in frame) {

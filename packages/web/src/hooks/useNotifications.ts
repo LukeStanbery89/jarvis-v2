@@ -68,9 +68,9 @@ export interface NotificationsState {
     /** Dismisses one, optimistically. */
     dismiss(id: string): void;
     /**
-     * Re-reads the page. The view calls it when the socket reconnects, since a
-     * notification raised while the connection was down was pushed to nobody
-     * and the list is the only place it can appear.
+     * Re-reads the page. Called when the client recovers a dropped connection
+     * (`onReconnected`), since a notification raised while the socket was down
+     * was pushed to nobody and the list is the only place it can appear.
      */
     refresh(): void;
     /**

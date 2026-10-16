@@ -47,6 +47,8 @@ export interface UseChatClientResult {
  *   in the caller, so the construction effect never re-runs).
  * @param options.onAudio - One binary PCM chunk of the in-flight turn.
  * @param options.onFrame - One parsed server frame of the in-flight turn.
+ * @param options.onNotification - One out-of-turn notification frame (#139).
+ * @param options.onReconnected - The socket recovered from a drop (#139).
  * @param options.onAuthRejected - The credential is permanently unusable.
  * @param options.url - Socket URL override (default {@link webSocketUrl}).
  * @param options.socketFactory - Socket constructor override (tests).
@@ -59,6 +61,11 @@ export function useChatClient(options: {
     onFrame(frame: ServerFrame): void;
     /** One server-initiated notification frame, outside any turn (#139). */
     onNotification(notification: NotificationFrame["notification"]): void;
+    /**
+     * The socket recovered from a drop (#139): re-read anything the server
+     * could not push while it was down.
+     */
+    onReconnected(): void;
     onAuthRejected(): void;
     url?: string;
     socketFactory?: WebSocketFactory;
@@ -78,6 +85,8 @@ export function useChatClient(options: {
     onFrameRef.current = options.onFrame;
     const onNotificationRef = useRef(options.onNotification);
     onNotificationRef.current = options.onNotification;
+    const onReconnectedRef = useRef(options.onReconnected);
+    onReconnectedRef.current = options.onReconnected;
     const onAuthRejectedRef = useRef(options.onAuthRejected);
     onAuthRejectedRef.current = options.onAuthRejected;
 
@@ -94,6 +103,7 @@ export function useChatClient(options: {
                 onFrame: (frame) => onFrameRef.current(frame),
                 onNotification: (notification) =>
                     onNotificationRef.current(notification),
+                onReconnected: () => onReconnectedRef.current(),
                 onAuthRejected: () => onAuthRejectedRef.current(),
             },
         });

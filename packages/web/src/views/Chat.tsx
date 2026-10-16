@@ -17,7 +17,7 @@
  * threads, so conversations created on other clients appear (empty) and
  * locally-created ones appear before their first server claim.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { StoredCredential } from "../credentials";
 import { mergeSessions } from "../sidebar";
@@ -208,25 +208,21 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     });
                 }
             },
+            // A notification raised while the socket was down was pushed to
+            // nobody, so the list is the only place it can appear: when the
+            // client recovers a dropped connection, re-read the page. The
+            // client reports that itself, because `status` cannot distinguish
+            // the first connect (`connecting`) from a recovery
+            // (`reconnecting`) — and an effect keyed on that sequence re-fires
+            // on every render, which is what turned this into a fetch loop.
+            // `refresh` is a stable `useCallback` in the hook.
+            onReconnected: notificationsUi.refresh,
             onAuthRejected,
         });
 
     // A notification raised while the socket was down was pushed to nobody, so
-    // the list is the only place it can appear. Re-read it when the connection
-    // comes back — skipping the first transition, which is the mount fetch the
-    // hook already makes. This lives here rather than in the hook because the
-    // list hook has to be called before the client whose status it would need.
-    const wasConnected = useRef(false);
-    useEffect(() => {
-        if (status === "connected") {
-            if (wasConnected.current) {
-                notificationsUi.refresh();
-            }
-            wasConnected.current = true;
-        } else {
-            wasConnected.current = false;
-        }
-    }, [notificationsUi, status]);
+    // the list is the only place it can appear — which the `onReconnected`
+    // handler passed to the client above handles.
 
     const { locationOn, locationState, toggleLocation } = useLocationSharing({
         sendLocation,

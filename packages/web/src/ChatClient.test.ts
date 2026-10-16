@@ -178,6 +178,39 @@ describe("ChatClient handshake", () => {
             vi.useRealTimers();
         }
     });
+
+    it("reports a recovered drop once, and not the first connect (#139)", () => {
+        // The view re-reads the notification page on this signal, so its
+        // definition is load-bearing: a first connect must not fire it (the
+        // mount fetch is already running) and a recovery must, exactly once.
+        // `status` cannot carry it — "connecting" and "reconnecting" both
+        // precede "connected", which is what made an effect keyed on it
+        // re-fire on every render.
+        let reconnects = 0;
+        const harness = makeClient("tok", {
+            onReconnected: () => {
+                reconnects += 1;
+            },
+        });
+        connected(harness);
+        expect(reconnects).toBe(0);
+
+        vi.useFakeTimers();
+        try {
+            harness.sockets[0].drop();
+            vi.advanceTimersByTime(1_000);
+            expect(harness.sockets.length).toBe(2);
+            const second = harness.sockets[1];
+            second.open();
+            second.receive({ authResult: { user: "u", device: "d" } });
+            expect(reconnects).toBe(1);
+            // A frame arriving on the recovered socket is not another connect.
+            second.receive({ chunk: "still one reconnect" });
+            expect(reconnects).toBe(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
 
 describe("ChatClient prompts", () => {
