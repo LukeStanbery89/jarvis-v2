@@ -624,3 +624,90 @@ describe("turn cancellation (#84 P6)", () => {
         expect(socket.sent).toHaveLength(2);
     });
 });
+
+describe("notifications (#139)", () => {
+    /** A pushed notification frame, exactly as the server serializes it. */
+    const frame = {
+        notification: {
+            id: "3Ybq0kQmT1xVn8sRzWpLdA",
+            kind: "job.finished",
+            priority: "normal",
+            title: "PR #143 is ready",
+            createdAt: "2026-10-15T18:04:11.000Z",
+        },
+    };
+
+    it("surfaces a notification that arrives with no turn in flight", () => {
+        const seen: unknown[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+
+        socket.receive(frame);
+
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toEqual(frame.notification);
+        // The turn-scoped callback must not see it: a view keyed on `onFrame`
+        // would render this as part of a reply that does not exist.
+        expect(harness.frames).toEqual([]);
+        expect(harness.client.isStreaming()).toBe(false);
+    });
+
+    it("also surfaces one that arrives mid-turn, without disturbing the turn", async () => {
+        const seen: unknown[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("working?", "s1");
+        socket.receive({ chunk: "Working on it" });
+        expect(harness.client.isStreaming()).toBe(true);
+
+        socket.receive(frame);
+
+        expect(seen).toHaveLength(1);
+        // The turn is untouched: the notification is not a chunk, and the
+        // prompt still resolves on the turn's own `done`.
+        expect(harness.client.isStreaming()).toBe(true);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+        expect(harness.frames).toEqual([{ chunk: "Working on it" }]);
+    });
+
+    it("carries the answerable flag through", () => {
+        const seen: { requiresAnswer?: boolean }[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+
+        socket.receive({
+            notification: {
+                ...frame.notification,
+                kind: "coding.question",
+                priority: "high",
+                requiresAnswer: true,
+            },
+        });
+
+        expect(seen[0]?.requiresAnswer).toBe(true);
+    });
+
+    it("drops a malformed notification frame instead of failing the turn", () => {
+        const seen: unknown[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+
+        // No `priority` — the shared parser rejects the whole frame, so the
+        // client falls into the unrecognized-frame path rather than handing
+        // the view a notification it cannot render.
+        socket.receive({
+            notification: { id: "x", kind: "k", title: "t", createdAt: "now" },
+        });
+
+        expect(seen).toEqual([]);
+    });
+});

@@ -24,7 +24,10 @@ npm install @lukestanbery/jarvis-protocol
 
 | Export                              | Description                                                                                                                                     |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `type ServerFrame`                  | Union of every frame the server sends to a chat client                                                                                          |
+| `type ServerFrame`                  | Union of every frame the server sends to a chat client, including the out-of-turn `notification` frame (#139)                                   |
+| `type NotificationFrame`            | The proactive-notification payload (#139): `{ notification: { id, kind, priority, title, body?, createdAt, requiresAnswer? } }`                 |
+| `type NotificationPriority`         | `"low" \| "normal" \| "high" \| "urgent"` — how much a notification may disturb the user, derived from `NOTIFICATION_PRIORITIES`                |
+| `NOTIFICATION_PRIORITIES`           | The priority tuple the `NotificationPriority` union and the parser both derive from                                                             |
 | `type ClientFrame`                  | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame \| ClientCancelFrame`                |
 | `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link" \| "audio"` — a render guarantee a client declares, derived from `CLIENT_CAPABILITIES`               |
 | `type ChatMode`                     | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`), derived from `CHAT_MODES`                                          |
@@ -44,6 +47,11 @@ npm install @lukestanbery/jarvis-protocol
 | `MAX_ATTACHMENTS`                   | `4` — longest allowed `attachments` list in a prompt                                                                                            |
 | `MAX_ATTACHMENT_ID_LENGTH`          | `32` — longest allowed single attachment id                                                                                                     |
 | `MAX_LOCATION_LABEL_LENGTH`         | `64` — longest allowed optional place-name `label` in a `location` frame                                                                        |
+| `MAX_NOTIFICATION_ID_LENGTH`        | `64` — longest allowed notification `id`                                                                                                        |
+| `MAX_NOTIFICATION_KIND_LENGTH`      | `64` — longest allowed notification `kind` token                                                                                                |
+| `MAX_NOTIFICATION_TITLE_LENGTH`     | `200` — longest allowed notification `title`                                                                                                    |
+| `MAX_NOTIFICATION_BODY_LENGTH`      | `2000` — longest allowed notification `body`                                                                                                    |
+| `MAX_NOTIFICATION_ANSWER_LENGTH`    | `2000` — longest allowed answer to an answerable notification (the REST reply's bound)                                                          |
 | `MALFORMED_SERVER_FRAME`            | User-facing wording thrown by `parseFrame` for unreadable (non-JSON / non-object) payloads; exported so clients reject with it verbatim (#106)  |
 | `parseFrame(raw)`                   | Parses a server frame; throws on malformed/unrecognized payload                                                                                 |
 | `parseClientMessage(raw)`           | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, `ClientCancelFrame`, or `ChatPrompt`           |
@@ -98,7 +106,15 @@ JSON text frames over `/ws`:
       frames while the agent calls tools,
     - then `{ "chunk": "<text>" }` … then `{ "done": true }`, then (for `audio`-capable sockets) `{ "audioStart": {...} }`, binary PCM chunks, `{ "audioEnd": {...} }`; and
       `{ "authResult": { "user", "device" } }` as the one-frame reply to an
-      `auth` handshake.
+      `auth` handshake,
+    - and `{ "notification": { "id", "kind", "priority", "title", "body", "createdAt", "requiresAnswer" } }`
+      (#139) at **any** time — the one frame outside a turn. It is
+      pushed to a user's open sockets when the server has something to report
+      (a background job finished, a reminder came due, an agent needs an
+      answer), so a client must handle it whether or not a prompt is in
+      flight and must not treat it as the reply to one. Delivery is
+      best-effort: the durable record lives behind `GET /api/notifications`,
+      and a client matches by `id` so nothing renders twice.
 - Invalid input or model failure: `{ "error": "<message>" }` then `{ "done": true }`.
 
 Frames are key-discriminated (no `type` field), with exception only for the

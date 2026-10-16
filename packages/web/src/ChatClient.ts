@@ -31,6 +31,7 @@ import {
     serializeRequest,
     type ChatMode,
     type ClientCapability,
+    type NotificationFrame,
     type ServerFrame,
 } from "@lukestanbery/jarvis-protocol";
 
@@ -50,6 +51,14 @@ export interface ChatClientEvents {
      * turn's `audioStart` frame (which flows through {@link onFrame}).
      */
     onAudio?(pcm: Float32Array): void;
+    /**
+     * One `notification` frame (#139): something the server wants the user to
+     * know, arriving **outside** a turn. Delivered whenever the socket is
+     * ready, so a view must handle it without a prompt in flight — and must
+     * not confuse it with a reply. Handled through a separate callback rather
+     * than {@link onFrame} precisely because `onFrame` is turn-scoped.
+     */
+    onNotification?(notification: NotificationFrame["notification"]): void;
     /** The credential is permanently unusable (invalid or revoked). */
     onAuthRejected?(): void;
 }
@@ -414,6 +423,14 @@ export class ChatClient {
                 return;
             }
             this.failPrompt(new Error(frame.error));
+            return;
+        }
+        if ("notification" in frame) {
+            // Outside the `streaming` gate on purpose (#139): a notification
+            // is not part of a turn, so gating it here would drop every
+            // notification raised while the user was idle — the exact case
+            // this feature exists for.
+            this.options.events.onNotification?.(frame.notification);
             return;
         }
         if (this.streaming) {

@@ -281,6 +281,39 @@ export interface WikipediaConfig {
 }
 
 /**
+ * Notification settings (#139).
+ *
+ * Three knobs, none of them a secret, so notifications need no credential to
+ * gate on — like `wikipedia`, the surface is on by default and switched off
+ * with `JARVIS_NOTIFY=off`, which removes the REST routes and the delivery
+ * wiring entirely rather than leaving an endpoint that does nothing.
+ *
+ * The two budgets are the notification service's own (see the rate-limiting
+ * section of the package README): `deliveriesPerMin` bounds *interruptions*
+ * per user per minute — a producer that goes haywire cannot turn a chat client
+ * into a firehose — and `maxPerUser` bounds how much history the store keeps,
+ * trimming only settled rows.
+ */
+export interface NotifyConfig {
+    /**
+     * Pushes allowed per user per minute
+     * (`JARVIS_NOTIFY_DELIVERIES_PER_MIN`), default 20.
+     */
+    readonly deliveriesPerMin: number;
+    /**
+     * Settled notifications kept per user (`JARVIS_NOTIFY_MAX_PER_USER`),
+     * default 200. Undelivered ones are never evicted.
+     */
+    readonly maxPerUser: number;
+}
+
+/** LAN-reasonable notification defaults: 20 pushes/min, 200 kept per user. */
+export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
+    deliveriesPerMin: 20,
+    maxPerUser: 200,
+};
+
+/**
  * Home Assistant connection settings (#15).
  *
  * Both the URL and the long-lived access token are required, and neither has a
@@ -595,7 +628,14 @@ export interface AppConfig {
      * disable web-chat serving (leaving a bare `/web` to 404).
      */
     readonly webDir?: string;
-    /** Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values. */
+    /**
+     * Notification settings (#139). Undefined when `JARVIS_NOTIFY=off`, which
+     * unmounts the REST surface and the delivery wiring.
+     */
+    readonly notify?: NotifyConfig;
+    /**
+     * Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values.
+     */
     readonly loginRateLimit?: RateLimitConfig;
     /**
      * Whether the server also verifies REST response bodies against the
@@ -907,6 +947,21 @@ export function getAppConfig(): AppConfig {
             ),
         },
         apiContractVerify: process.env.JARVIS_API_CONTRACT === "verify",
+        notify:
+            process.env.JARVIS_NOTIFY === "off"
+                ? undefined
+                : {
+                      deliveriesPerMin: numberOr(
+                          "JARVIS_NOTIFY_DELIVERIES_PER_MIN",
+                          process.env.JARVIS_NOTIFY_DELIVERIES_PER_MIN,
+                          DEFAULT_NOTIFY_CONFIG.deliveriesPerMin,
+                      ),
+                      maxPerUser: numberOr(
+                          "JARVIS_NOTIFY_MAX_PER_USER",
+                          process.env.JARVIS_NOTIFY_MAX_PER_USER,
+                          DEFAULT_NOTIFY_CONFIG.maxPerUser,
+                      ),
+                  },
         attachments:
             process.env.JARVIS_ATTACHMENT_TTL_MINUTES === undefined &&
             process.env.JARVIS_ATTACHMENT_MAX_BYTES === undefined &&

@@ -29,6 +29,7 @@ import { useChatClient } from "../hooks/useChatClient";
 import { useVoiceSession, voiceStatusText } from "../hooks/useVoiceSession";
 import { useLocationSharing } from "../hooks/useLocationSharing";
 import { useAttachments } from "../hooks/useAttachments";
+import { useNotifications } from "../hooks/useNotifications";
 import {
     type ChatMode,
     type ClientCapability,
@@ -36,6 +37,7 @@ import {
 import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
+import { Notifications } from "./chat/Notifications";
 
 /**
  * The capabilities this client announces in its `hello` frame. Module-level so
@@ -140,6 +142,12 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     });
     const { voice, snapshot: voiceSnapshot } = voiceUi;
 
+    // Notifications (#139): the list is fetched over REST and merged with the
+    // live frames the socket pushes, which is why the hook is called before
+    // the client that feeds it.
+    const notificationsUi = useNotifications(credential.token);
+    const [notificationsOpen, setNotificationsOpen] = useState(false);
+
     const { client, status, isStreaming, cancelTurn, sendLocation } =
         useChatClient({
             token: credential.token,
@@ -147,6 +155,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             // `audio` (#83): voice turns from this client are also spoken
             // server-side; the player renders the binary chunks.
             onAudio: (pcm) => audio.play(pcm),
+            onNotification: (notification) =>
+                notificationsUi.acceptFrame(notification),
             onFrame: (frame) => {
                 // Voice turns watch the first frame (waiting → responding)
                 // and the spoken-audio span (audioStart → speaking); frames
@@ -348,6 +358,15 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         {banner}
                     </p>
                 )}
+                <Notifications
+                    banner={notificationsUi.banner}
+                    notifications={notificationsUi.notifications}
+                    unread={notificationsUi.unread}
+                    open={notificationsOpen}
+                    onToggle={() => setNotificationsOpen((open) => !open)}
+                    onMarkRead={notificationsUi.markRead}
+                    onDismiss={notificationsUi.dismiss}
+                />
                 <Transcript
                     messages={transcriptMessages}
                     previews={previews}

@@ -380,6 +380,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's notifications
+         * @description Newest first. Dismissed notifications are excluded unless `includeDismissed=true`. `unread` counts everything neither read nor dismissed, for a badge.
+         */
+        get: operations["notificationsList"];
+        put?: never;
+        /**
+         * Raise a notification for the caller
+         * @description The producer entry point (a tool, the scheduler, or a manual call): records the notification and attempts to push it to the caller's live `/ws` sockets. `delivered` is how many clients received the frame, and `suppressed` says why nothing was pushed — `null` when it was delivered, otherwise `disabled` (the caller's `notify.enabled` pref), `quiet-hours`, `absent` (no live socket), or `cap` (the per-user delivery budget). A suppressed notification is still recorded and appears in the list. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        post: operations["notificationsCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark a notification read
+         * @description Idempotent: reading an already-settled notification returns it unchanged. A notification belonging to another account is indistinguishable from one that does not exist (404).
+         */
+        post: operations["notificationsRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/{id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss a notification
+         * @description Removes it from the default list without marking it read. Idempotent, with the same 404 scope as `read`.
+         */
+        post: operations["notificationsDismiss"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/{id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer a notification that asked a question
+         * @description For a notification raised with `requiresAnswer`. The reply is what retires it — answering is the notification's `answered` state, and a producer reads the answer back from the record. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        post: operations["notificationsAnswer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -533,6 +617,63 @@ export interface components {
         RenameDevice: {
             name: string;
         };
+        /** @description Body of `POST /api/notifications`. Field bounds mirror the wire protocol's (`@lukestanbery/jarvis-protocol`), so anything accepted here can be rendered by any client. */
+        NotificationInput: {
+            /** @description Producer-defined category ("job.finished", "reminder", …). Free-form so a new producer needs no server change. */
+            kind: string;
+            title: string;
+            body?: string;
+            /**
+             * @description How much this may disturb the user. `low` and `normal` respect the caller's quiet hours; `high` and `urgent` bypass them. Defaults to `normal`.
+             * @enum {string}
+             */
+            priority?: "low" | "normal" | "high" | "urgent";
+            /** @description Whether the user's reply (not an acknowledgement) retires this — the shape a clarifying question from a background agent uses. */
+            requiresAnswer?: boolean;
+            /** @description Producer-side coalescing key: while an unsettled notification with the same key exists, a new one replaces it instead of stacking. */
+            dedupeKey?: string;
+        };
+        /** @description One stored notification, as the API exposes it. */
+        Notification: {
+            id: string;
+            kind: string;
+            /** @enum {unknown} */
+            priority: "low" | "normal" | "high" | "urgent";
+            title: string;
+            body?: string;
+            /**
+             * @description `pending` — recorded, never pushed (nobody was connected, the delivery budget was spent, or quiet hours suppressed it), so a client finds it through this list instead. `delivered` — pushed to at least one live socket. `read` / `dismissed` / `answered` are terminal; `answered` is the retirement path for a notification raised with `requiresAnswer`.
+             * @enum {string}
+             */
+            state: "pending" | "delivered" | "read" | "answered" | "dismissed";
+            requiresAnswer?: boolean;
+            /** @description The user's reply, on an answered notification. */
+            answer?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            deliveredAt?: string;
+            /** Format: date-time */
+            settledAt?: string;
+        };
+        /** @description Body of `GET /api/notifications`. */
+        NotificationList: {
+            notifications: components["schemas"]["Notification"][];
+            /** @description Notifications neither read nor dismissed (a badge count, so it counts past the page size). */
+            unread: number;
+        };
+        /** @description Body of the `read` / `dismiss` / `answer` routes: the notification as it now stands. */
+        NotificationSettlement: {
+            notification: components["schemas"]["Notification"];
+        };
+        /** @description Body of `POST /api/notifications`. */
+        NotificationDelivery: {
+            notification: components["schemas"]["Notification"];
+            /** @description How many live clients received the frame. */
+            delivered: number;
+            /** @description `null` when it was delivered, otherwise the reason nothing was pushed: `disabled`, `quiet-hours`, `absent` (no live socket), or `cap`. */
+            suppressed: ("disabled" | "quiet-hours" | "absent" | "cap") | null;
+        };
     };
     responses: never;
     parameters: {
@@ -544,6 +685,8 @@ export interface components {
         PathThreadId: string;
         /** @description The wake-model file to serve. Only three files exist — `melspectrogram.onnx`, `embedding_model.onnx`, and `hey_jarvis_v0.1.onnx` — and anything outside that allowlist answers 404 (the server, not the shape layer, owns that decision, so an unknown name stays a 404 rather than a 400). The schema forbids path separators so the parameter can never leave the cache directory. */
         PathWakeFile: string;
+        /** @description The notification's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+        PathNotificationId: string;
         /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. Optional at the shape layer on purpose: a missing or mismatched secret is an authorization outcome (403, or 409 when setup is disabled), decided by the server — not a request-shape violation. */
         XBootstrapToken: string;
         /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
@@ -1844,6 +1987,229 @@ export interface operations {
             };
             /** @description Unknown file, or wake model serving is not configured (`JARVIS_WAKE_PROVIDER` unset). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    notificationsList: {
+        parameters: {
+            query?: {
+                /** @description Page size (1–200, default 50). Out-of-range or unparsable values fall back to the default rather than failing the request. */
+                limit?: number;
+                /** @description Include notifications the user dismissed. */
+                includeDismissed?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's notifications and unread count. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationList"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    notificationsCreate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationInput"];
+            };
+        };
+        responses: {
+            /** @description The recorded notification and its delivery outcome. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDelivery"];
+                };
+            };
+            /** @description Missing or over-long field, or an unknown priority (server-enforced bounds match the wire protocol's). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    notificationsRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The notification's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathNotificationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settled notification. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettlement"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such notification for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    notificationsDismiss: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The notification's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathNotificationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settled notification. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettlement"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such notification for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    notificationsAnswer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The notification's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathNotificationId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    answer: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The answered notification. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettlement"];
+                };
+            };
+            /** @description The notification does not require an answer, or the answer is missing or over-long. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such notification for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The notification is already settled. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

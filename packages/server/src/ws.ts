@@ -65,6 +65,7 @@ import type { AppDatabase, AuthContext } from "@lukestanbery/jarvis-auth";
 import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
 import { createSessionManager } from "./sessionManager";
 import type { SessionManager, TurnOutcome } from "./sessionManager";
+import type { NotificationHub } from "./notify/hub";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
@@ -174,6 +175,13 @@ export interface ChatServerOptions {
      * a short interval instead of fake timers.
      */
     heartbeatIntervalMs?: number;
+    /**
+     * The live-connection registry (#139), present when notifications are
+     * wired. An authenticated socket is tracked in it, so a notification can
+     * be pushed to a user's open clients instead of only answering the socket
+     * that spoke. Absent → nothing server-initiated is ever sent.
+     */
+    notifications?: NotificationHub;
 }
 
 /**
@@ -340,6 +348,7 @@ export function attachChatServer(
 
         socket.on("close", () => {
             clearInterval(heartbeat);
+            options.notifications?.remove(socket);
             sessions.cleanupGuests(conn.guestThreads);
             logger.info("WebSocket connection closed");
         });
@@ -380,7 +389,7 @@ async function handleFrame(
             // tail); a no-op keeps the dispatch total.
             logger.warn("Cancel frame reached the tail (ignored)");
         } else {
-            await handleAuth(socket, conn, store, frame.token);
+            await handleAuth(socket, conn, store, frame.token, options);
         }
         return;
     }
@@ -604,6 +613,7 @@ async function handleAuth(
     conn: ConnectionState,
     store: AppDatabase,
     token: string,
+    options: ChatServerOptions,
 ): Promise<void> {
     if (conn.authed || conn.promptSeen) {
         logger.warn("Rejecting auth: handshake must be the first frame");
@@ -625,6 +635,10 @@ async function handleAuth(
     };
     conn.tokenHash = hashDeviceToken(token);
     store.touchDevice(identity.device.id);
+    // Reachable from now on (#139): the registry is what lets the server push
+    // a notification to this socket without it having asked for anything. A
+    // guest never registers — there is no user to address.
+    options.notifications?.add(identity.user.id, socket);
     logger.info(
         `Socket authenticated as ${identity.user.username} (device: ${identity.device.name})`,
     );

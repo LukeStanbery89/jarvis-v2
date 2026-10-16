@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
     ClientCapability,
+    NotificationFrame,
     ServerFrame,
 } from "@lukestanbery/jarvis-protocol";
 import {
@@ -56,6 +57,8 @@ export function useChatClient(options: {
     capabilities: ClientCapability[];
     onAudio(pcm: Float32Array): void;
     onFrame(frame: ServerFrame): void;
+    /** One server-initiated notification frame, outside any turn (#139). */
+    onNotification(notification: NotificationFrame["notification"]): void;
     onAuthRejected(): void;
     url?: string;
     socketFactory?: WebSocketFactory;
@@ -73,6 +76,8 @@ export function useChatClient(options: {
     onAudioRef.current = options.onAudio;
     const onFrameRef = useRef(options.onFrame);
     onFrameRef.current = options.onFrame;
+    const onNotificationRef = useRef(options.onNotification);
+    onNotificationRef.current = options.onNotification;
     const onAuthRejectedRef = useRef(options.onAuthRejected);
     onAuthRejectedRef.current = options.onAuthRejected;
 
@@ -87,6 +92,8 @@ export function useChatClient(options: {
                 onStatus: (next) => setStatus(next),
                 onAudio: (pcm) => onAudioRef.current(pcm),
                 onFrame: (frame) => onFrameRef.current(frame),
+                onNotification: (notification) =>
+                    onNotificationRef.current(notification),
                 onAuthRejected: () => onAuthRejectedRef.current(),
             },
         });

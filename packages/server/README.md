@@ -439,6 +439,25 @@ so behind a reverse proxy it collapses toward one global bucket — the same
 `req.ip` caveat [below](#scope-and-caveats), tracked with
 [#63](https://github.com/LukeStanbery89/jarvis-v2/issues/63).
 
+### Notification delivery budget — `src/notify/service.ts`
+
+Not a tool quota, but the same primitive for a different resource: a
+per-user, per-minute ceiling on how many notifications may be **pushed** to
+that user's live sockets (`JARVIS_NOTIFY_DELIVERIES_PER_MIN`, default 20). A
+notification past the budget is still recorded and still shows up in
+`GET /api/notifications` — the budget bounds interruption, not storage, which
+is what keeps a misbehaving producer from turning a chat client into a
+firehose without ever losing the message.
+
+Two properties make it behave unlike the tables above. The budget is only
+charged when there is somebody to interrupt: a notification raised while the
+user has no live socket is left `pending` and spends nothing. And a suppressed
+notification is not an error the caller has to handle — `POST
+/api/notifications` answers 201 with `suppressed: "cap"` (or `"disabled"`,
+`"quiet-hours"`, `"absent"`), so the producer learns what happened without a
+failure. Retention is the other half: `JARVIS_NOTIFY_MAX_PER_USER` (default 200) trims **settled** rows on every insert, so an undelivered notification is
+never the thing evicted.
+
 ### Not rate limited
 
 Worth stating explicitly, because these are the surfaces that cost real CPU:
@@ -447,6 +466,7 @@ Worth stating explicitly, because these are the surfaces that cost real CPU:
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `/ws` chat turns                                               | concurrency only — a per-thread lock (one turn per `sessionId`), one streaming turn per socket, and `JARVIS_TURN_TIMEOUT_MS` per turn | **prompt frequency** — a socket can submit turns back-to-back indefinitely |
 | REST resources (`/api/users`, `/api/devices`, `/api/prefs`, …) | authentication and ownership checks                                                                                                   | any request-rate ceiling                                                   |
+| Notification **records** (`POST /api/notifications`)           | the per-user delivery budget above (which bounds pushes), plus retention                                                              | how many notifications may be _stored_ per minute                          |
 
 The `/ws` gap is tracked in [#65](https://github.com/LukeStanbery89/jarvis-v2/issues/65).
 Guest sockets (a `/ws` socket that sends a prompt without an `auth` frame) are
@@ -847,6 +867,16 @@ fetch; `HEAD` answers 200 without downloading.
   `createWakeModelHandler` for `GET|HEAD /api/wake/model/:file`
   (200 `application/octet-stream` + `Cache-Control public, max-age=86400`;
   `HEAD` answers 200 without downloading).
+- `src/notify/` — server-initiated messaging (#139): `types.ts` is the channel
+  seam and its capability vocabulary (`canSpeak`, `canShowText`, …) so a
+  satellite speaker or a phone outranks nothing it cannot do; `hub.ts` is the
+  live-socket registry (`ws.ts` fills it on auth, empties it on close) that
+  makes "is the user reachable?" answerable at all; `service.ts` is the policy
+  (presence-first, quiet hours from the `notify.quietHours` pref, the delivery
+  budget above); `channels/inApp.ts` is the one phase-1 channel, pushing the
+  stored record as a `notification` frame; `http.ts` is `/api/notifications`
+  (list + create + read/dismiss/answer), mounted only when notifications are
+  configured and refused to guests like every other account-scoped surface.
 
 | Variable                | Default                                   | Description                                       |
 | ----------------------- | ----------------------------------------- | ------------------------------------------------- |

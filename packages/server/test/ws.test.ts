@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket, type WebSocketServer } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
+import { createNotificationHub } from "../src/notify/hub";
 import { runAgent } from "../src/agent";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
@@ -1590,5 +1591,74 @@ describe("server hardening", () => {
         }
         expect(followUp).toBe("Hello, World!");
         c.close();
+    });
+});
+
+describe("notification push wiring (#139)", () => {
+    /** The registry this fixture's server fills in as sockets authenticate. */
+    const hub = createNotificationHub();
+    const pushServer = createApp(store, appConfig).listen(0);
+    attachChatServer(pushServer, store, {
+        turnTimeoutMs: 30_000,
+        notifications: hub,
+    });
+
+    const target = (): string =>
+        `ws://127.0.0.1:${(pushServer.address() as AddressInfo).port}/ws`;
+
+    it("tracks an authenticated socket and pushes a frame to it", async () => {
+        const user = store.createUser("notified", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "phone",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const client = await connect(target());
+        client.send({ type: "auth", token: material.token });
+        await client.next(); // authResult
+
+        expect(hub.isPresent(user.id)).toBe(true);
+        expect(
+            hub.deliver(user.id, {
+                notification: {
+                    id: "n1",
+                    kind: "job.finished",
+                    priority: "normal",
+                    title: "PR #143 is ready",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                },
+            }),
+        ).toBe(1);
+
+        const pushed = await client.next();
+        expect(pushed).toEqual({
+            kind: "frame",
+            frame: {
+                notification: {
+                    id: "n1",
+                    kind: "job.finished",
+                    priority: "normal",
+                    title: "PR #143 is ready",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                },
+            },
+        });
+
+        client.close();
+        await settle();
+        expect(hub.isPresent(user.id)).toBe(false);
+    });
+
+    it("never tracks a guest socket, so nothing can be addressed to one", async () => {
+        const client = await connect(target());
+        // A prompt without `auth` makes the socket a guest for its lifetime.
+        client.send({ prompt: "hi", sessionId: "guest-notify" });
+        await client.next(); // first frame of the turn
+        expect(hub.presentUsers()).toBe(0);
+        client.close();
+        await settle();
     });
 });

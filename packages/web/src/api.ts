@@ -30,6 +30,16 @@ export type LoginResult = components["schemas"]["AuthResult"];
 /** Chat-thread session row as exposed by `GET /api/sessions`. */
 export type SessionSummary = components["schemas"]["SessionSummary"];
 
+/**
+ * One stored notification (#139), as the REST API exposes it. The live
+ * `/ws` `notification` frame carries a subset of this shape — same `id`, so
+ * the two can be merged without rendering anything twice.
+ */
+export type Notification = components["schemas"]["Notification"];
+
+/** Body of `GET /api/notifications`: the page plus the unread badge count. */
+export type NotificationList = components["schemas"]["NotificationList"];
+
 /** REST failure carrying the server's `{ error }` message on a non-2xx body. */
 export class ApiError extends Error {
     constructor(
@@ -158,6 +168,51 @@ export function createApi(
                 token,
                 body: { data: base64 },
             });
+        },
+        /**
+         * Lists the caller's notifications (#139), newest first, with the
+         * unread count for the badge. Dismissed rows are excluded unless
+         * asked for; a notification that was never pushed (the user was
+         * offline when it was raised) is found here instead, which is why the
+         * live `/ws` frame is an optimisation rather than the mechanism.
+         */
+        listNotifications(
+            token: string,
+            options: { limit?: number; includeDismissed?: boolean } = {},
+        ): Promise<NotificationList> {
+            const params = new URLSearchParams();
+            if (options.limit !== undefined) {
+                params.set("limit", String(options.limit));
+            }
+            if (options.includeDismissed === true) {
+                params.set("includeDismissed", "true");
+            }
+            const query = params.size > 0 ? `?${params.toString()}` : "";
+            return request("GET", `/api/notifications${query}`, { token });
+        },
+        /** Marks one notification read (idempotent; 404 for a foreign id). */
+        async markNotificationRead(
+            token: string,
+            id: string,
+        ): Promise<Notification> {
+            const result = await request<{ notification: Notification }>(
+                "POST",
+                `/api/notifications/${encodeURIComponent(id)}/read`,
+                { token },
+            );
+            return result.notification;
+        },
+        /** Dismisses one notification (idempotent; 404 for a foreign id). */
+        async dismissNotification(
+            token: string,
+            id: string,
+        ): Promise<Notification> {
+            const result = await request<{ notification: Notification }>(
+                "POST",
+                `/api/notifications/${encodeURIComponent(id)}/dismiss`,
+                { token },
+            );
+            return result.notification;
         },
     };
 }

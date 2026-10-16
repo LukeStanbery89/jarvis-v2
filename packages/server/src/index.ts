@@ -34,6 +34,9 @@ import {
 import { InFlightLimiter, VlCallLimiter } from "./attachments/limiters";
 import { FixedWindowQuota } from "./rate/fixedWindowQuota";
 import { KokoroTtsProvider } from "./tts/kokoro";
+import { createNotificationHub } from "./notify/hub";
+import { createInAppChannel } from "./notify/channels/inApp";
+import { createNotificationService } from "./notify/service";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -209,7 +212,33 @@ initAgentGraph({
     ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
 });
 const store = openAppDatabase(appConfig.appDbPath);
-const webApp = createApp(store, appConfig, attachments, inFlight);
+
+// Notifications (#139): the connection registry is built here and handed to
+// both the REST surface (which needs it to know whether the user is reachable)
+// and the chat server (which fills it in as sockets authenticate). Absent when
+// `JARVIS_NOTIFY=off`, which unmounts the routes and the delivery wiring
+// together — a half-wired surface would record notifications nobody can be
+// told about.
+const notifyConfig = appConfig.notify;
+const notificationHub = notifyConfig ? createNotificationHub() : null;
+const notifications =
+    notifyConfig && notificationHub
+        ? createNotificationService({
+              store,
+              hub: notificationHub,
+              channels: [createInAppChannel(notificationHub)],
+              maxPerUser: notifyConfig.maxPerUser,
+              deliveriesPerWindow: notifyConfig.deliveriesPerMin,
+          })
+        : undefined;
+
+const webApp = createApp(
+    store,
+    appConfig,
+    attachments,
+    inFlight,
+    notifications,
+);
 
 const { server } = createJarvisServer(webApp, {
     port,
@@ -222,4 +251,5 @@ attachChatServer(server, store, {
     turnTimeoutMs: appConfig.turnTimeoutMs,
     attachments,
     ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
+    ...(notificationHub ? { notifications: notificationHub } : {}),
 });

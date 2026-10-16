@@ -7,7 +7,8 @@
 #
 # Phase 5: full spec. One message per frame (`clientHello`, `authHandshake`,
 # `chatPrompt`, `locationFrame`, `chunk`, `toolCall`, `toolResult`, `done`,
-# `error`, `authResult`) so docs and conformance tests can address each frame
+# `error`, `authResult`, `notification`) so docs and conformance tests can
+# address each frame
 # individually — plus the #83 spoken-audio span (`audioStart`, binary
 # `pcmChunk` messages, `audioEnd`). Payloads are strict
 # (`additionalProperties: false`) and encode
@@ -78,6 +79,8 @@ channels:
                 $ref: "#/components/messages/audioStart"
             audioEnd:
                 $ref: "#/components/messages/audioEnd"
+            notification:
+                $ref: "#/components/messages/notification"
             pcmChunk:
                 $ref: "#/components/messages/pcmChunk"
 operations:
@@ -127,6 +130,10 @@ operations:
             the span, raw binary PCM `pcmChunk` messages follow (one per
             spoken segment, in segment order), `audioEnd` closes it — always
             before the terminal `done`, so the turn lock covers speaking.
+            `notification` (#139) is the one frame that is **not** part of a
+            turn: it arrives whenever the server has something to tell the
+            user, so a client must handle it whether or not a prompt is in
+            flight, and must not treat it as the reply to one.
             Failures and
             pre-turn rejections (busy thread, foreign session, bad first
             frame, bad token) each answer `error` followed by a terminal
@@ -140,6 +147,7 @@ operations:
             - $ref: "#/channels/ws/messages/error"
             - $ref: "#/channels/ws/messages/audioStart"
             - $ref: "#/channels/ws/messages/audioEnd"
+            - $ref: "#/channels/ws/messages/notification"
             - $ref: "#/channels/ws/messages/pcmChunk"
 components:
     messages:
@@ -577,6 +585,82 @@ components:
                 - payload:
                       audioEnd:
                           generationId: 7
+        notification:
+            title: Proactive notification
+            summary: Something JARVIS wants to tell the user, outside any turn (#139)
+            description: >-
+                The one server frame that is not part of a turn: it is pushed
+                to a user's open sockets when the server has something to
+                report — a background job finished, a timer came due, an agent
+                needs an answer. It carries only what a client needs to
+                interrupt with; the durable record (state, timestamps, the
+                reply) lives behind `GET /api/notifications`, and a client
+                should match by `id` so a notification is never rendered
+                twice. Delivery is best-effort: a client that was offline sees
+                it in its next list fetch instead, which is why nothing here
+                is required for the notification to exist. `priority` is the
+                client's cue for how loud to be (badge versus speech), and
+                `requiresAnswer` marks a notification a reply retires rather
+                than a read.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - notification
+                properties:
+                    notification:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - id
+                            - kind
+                            - priority
+                            - title
+                            - createdAt
+                        properties:
+                            id:
+                                type: string
+                                minLength: 1
+                                maxLength: 64
+                            kind:
+                                type: string
+                                minLength: 1
+                                maxLength: 64
+                            priority:
+                                type: string
+                                enum:
+                                    - low
+                                    - normal
+                                    - high
+                                    - urgent
+                            title:
+                                type: string
+                                minLength: 1
+                                maxLength: 200
+                            body:
+                                type: string
+                                maxLength: 2000
+                            createdAt:
+                                type: string
+                                minLength: 1
+                                description: >-
+                                    ISO-8601 UTC. Declared without `format:
+                                    date-time` on purpose: the conformance
+                                    suite compiles payloads with a bare Ajv
+                                    that has no format vocabulary, so a
+                                    `format` here would fail schema
+                                    compilation rather than test anything.
+                            requiresAnswer:
+                                type: boolean
+            examples:
+                - payload:
+                      notification:
+                          id: 3Ybq0kQmT1xVn8sRzWpLdA
+                          kind: job.finished
+                          priority: normal
+                          title: The coding agent finished and opened PR #143
+                          body: 4 files changed, tests green. Nothing is merged yet.
+                          createdAt: "2026-10-15T18:04:11.000Z"
         pcmChunk:
             title: Spoken-response audio chunk
             summary: One synthesized segment's raw PCM samples (#83)

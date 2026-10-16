@@ -286,6 +286,26 @@ submitted="…"`). It is deliberately a _separate_ switch from
   `?debug=1`/`jarvis.debug` (`src/voiceTrace.ts`): it prints real user speech,
   so ordinary voice debugging must never start dumping transcripts.
 
+## Notifications (#139)
+
+The server can push a `notification` frame at any time — a background job
+finishing, a reminder coming due, an agent needing an answer — and this client
+is where it surfaces. Two sources feed one list: the frame itself (best-effort,
+arriving **outside** a turn, so `ChatClient` routes it to `onNotification`
+rather than the turn-scoped `onFrame`) and `GET /api/notifications` on load.
+They carry the same `id`, and `src/notifications.ts` merges by it — so a
+pushed notification is never rendered twice, and a frame can never un-read or
+un-dismiss something the user already settled (the wire frame carries no
+state; the record does).
+
+The surface is a banner for the newest unsettled notification plus a
+collapsible list with a badge, rendered inside the conversation column
+(`src/views/chat/Notifications.tsx`) so a notification cannot be missed while
+the sidebar is collapsed. Reading or dismissing is optimistic — the list
+updates immediately and rolls back if the server refuses — and a notification
+raised while this client was closed is simply in the list when it next loads,
+which is why nothing here depends on the frame arriving.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -300,10 +320,10 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 
 - `src/main.tsx` — React bootstrap.
 - `src/App.tsx` — sign-in gate ↔ chat routing over the stored credential.
-- `src/api.ts` — typed REST client (login, session list/delete; Bearer token).
+- `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
-- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6).
+- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6; out-of-turn `notification` frames via `onNotification`, #139).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b) and the wake-word helpers (`createWakeWord`, `createWakeStt`, `probeWakeSupport`, wake pref — #84 P4); the controller lives in `packages/voice`.
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83) + wake cue (`blip`, #84 P4).
@@ -313,8 +333,9 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens. `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
-- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
-- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useAutoScroll`.
+- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`, `Notifications.tsx` (#139 banner + list).
+- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useAutoScroll`.
+- `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread.
 - `src/sidebar.ts` — sidebar-row merge (`mergeSessions`) + wake/location label helpers.
 - `src/attachments.ts` — attachment chip lifecycle + upload/retry helpers (#10).
 - `src/components/ToolCall.tsx` — collapsible tool/toolResult notices.

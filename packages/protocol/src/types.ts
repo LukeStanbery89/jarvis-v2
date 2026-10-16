@@ -13,9 +13,16 @@
  *
  * Frames are JSON object frames, key-discriminated: exactly one of
  * `chunk` / `tool` / `toolResult` / `done` / `error` / `authResult` /
- * `audioStart` / `audioEnd` is present. Binary WebSocket messages (raw
- * little-endian s16le PCM chunks, #83) are not JSON and never pass through
- * frame parsing — clients branch on the message type before parsing.
+ * `audioStart` / `audioEnd` / `notification` is present. Binary WebSocket
+ * messages (raw little-endian s16le PCM chunks, #83) are not JSON and never
+ * pass through frame parsing — clients branch on the message type before
+ * parsing.
+ *
+ * Every frame but {@link NotificationFrame} belongs to a turn: a client may
+ * assume the frames between a prompt and its `done` describe that turn. A
+ * `notification` is the one server frame that arrives **outside** a turn
+ * (#139) — a client must accept it whenever the socket is ready, not only
+ * while a prompt is streaming.
  */
 export type ServerFrame =
     | { chunk: string }
@@ -25,7 +32,8 @@ export type ServerFrame =
     | { error: string }
     | AuthResultFrame
     | AudioStartFrame
-    | AudioEndFrame;
+    | AudioEndFrame
+    | NotificationFrame;
 
 /** Payload of an `authResult` frame: the account a socket is now bound to. */
 export interface AuthResult {
@@ -79,6 +87,93 @@ export interface AudioEndFrame {
         generationId: number;
     };
 }
+
+/**
+ * The urgency tokens the protocol recognizes, in ascending order.
+ *
+ * The {@link NotificationPriority} union derives from this tuple, so the
+ * protocol, the server's routing policy, and the client's presentation cannot
+ * drift on what the levels are.
+ */
+export const NOTIFICATION_PRIORITIES = [
+    "low",
+    "normal",
+    "high",
+    "urgent",
+] as const;
+
+/**
+ * How much a notification is allowed to disturb the user.
+ *
+ * The server's routing policy reads this (#139 phase 1): `low` and `normal`
+ * respect quiet hours and coalesce, `high` and `urgent` bypass them. This is
+ * the one field a client should use to decide between a silent badge and
+ * something that speaks.
+ */
+export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
+
+/**
+ * The payload of a `notification` frame: something JARVIS wants to tell the
+ * user that no one asked for (#139).
+ *
+ * Deliberately a *payload* and not a whole record: the durable record lives
+ * in the server's store and is read back over REST, so this frame carries only
+ * what a client needs to render an interruption — identity (so the client can
+ * match it against its fetched list and dedupe a redelivery), the text, how
+ * loud it may be, and whether it wants an answer. Delivery is best-effort: a
+ * client that was offline sees the notification in its next `GET
+ * /api/notifications` instead.
+ */
+export interface NotificationFrame {
+    notification: {
+        /** Stable id, matching the record's `GET /api/notifications` entry. */
+        id: string;
+        /**
+         * Producer-defined category ("job.finished", "reminder", …), so a
+         * client can pick an icon and a policy without the protocol growing a
+         * token per feature. Free-form but bounded ({@link MAX_NOTIFICATION_KIND_LENGTH}).
+         */
+        kind: string;
+        priority: NotificationPriority;
+        /** One-line headline, already written for display. */
+        title: string;
+        /** Optional detail; absent when the headline says everything. */
+        body?: string;
+        /** When the notification was created, ISO-8601 UTC. */
+        createdAt: string;
+        /**
+         * Whether this notification is a question: the user's reply is
+         * expected, and answering is what retires it (rather than reading or
+         * dismissing). The reply path is the producer's — see #94.
+         */
+        requiresAnswer?: boolean;
+    };
+}
+
+/**
+ * Longest notification `id` the protocol carries.
+ *
+ * Server ids are 18 random bytes (24 base64url characters); the bound leaves
+ * room for a future id scheme without re-opening the protocol.
+ */
+export const MAX_NOTIFICATION_ID_LENGTH = 64;
+
+/** Longest notification `kind` token, bounding a display/route field. */
+export const MAX_NOTIFICATION_KIND_LENGTH = 64;
+
+/** Longest notification `title` — a headline, not a paragraph. */
+export const MAX_NOTIFICATION_TITLE_LENGTH = 200;
+
+/** Longest notification `body` — enough for a sentence or three. */
+export const MAX_NOTIFICATION_BODY_LENGTH = 2000;
+
+/**
+ * Longest `answer` a client may send back for an answerable notification.
+ *
+ * Generous for a dictated sentence (the intended path is voice, #94) while
+ * bounding what a caller can park in the store.
+ */
+export const MAX_NOTIFICATION_ANSWER_LENGTH = 2000;
 
 /**
  * A frame a chat client sends to the server over `/ws`.
