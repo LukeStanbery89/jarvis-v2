@@ -306,6 +306,31 @@ updates immediately and rolls back if the server refuses — and a notification
 raised while this client was closed is simply in the list when it next loads,
 which is why nothing here depends on the frame arriving.
 
+**Desktop notifications (phase 2).** A bell in the sidebar raises OS
+notifications through the `Notification` API, for the case where the user is
+not looking at this tab. The rules live in `src/browserNotify.ts` and are all
+refusals: only while the document is **hidden** (a visible tab already has the
+in-app banner, and an OS pop-up beside it is noise), only for something still
+unsettled, only once per id (the live frame and the fetched page both mention
+it), and only when both the user's preference and the browser's permission
+agree. Clicking one focuses this tab and marks it read — that is the entire
+point of the channel.
+
+Permission can only be requested from a user gesture, so the toggle's click
+handler is where `requestPermission()` runs; a `denied` browser is reported as
+**blocked** rather than merely off, because it cannot be re-prompted and the
+tooltip has to send the user to their settings. The preference is stored per
+browser _and_ per username (`jarvis.web.user.<name>.browserNotify`): the
+browser grants permission per origin, and it cannot be synced, so a server
+preference would let the UI claim "on" while that browser would refuse. Web
+Push — which genuinely needs server-side state — is phase 3.
+
+Everything about raising an OS notification is guarded: an environment with no
+`Notification` global (the node test env, an old browser) hides the toggle
+entirely, and a throw from `new Notification` (iOS Safari outside an installed
+PWA, permission revoked in a background tab) is swallowed — the in-app
+notification and the stored record are unaffected.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -334,8 +359,9 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens. `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
 - `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`, `Notifications.tsx` (#139 banner + list).
-- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useAutoScroll`.
+- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `useAutoScroll`.
 - `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread.
+- `src/browserNotify.ts` — pure desktop-notification rules (#139 phase 2): the announce decision (hidden tab, unsettled, not already announced, preference _and_ permission), the toggle's UI state, and this browser's stored preference.
 - `src/sidebar.ts` — sidebar-row merge (`mergeSessions`) + wake/location label helpers.
 - `src/attachments.ts` — attachment chip lifecycle + upload/retry helpers (#10).
 - `src/components/ToolCall.tsx` — collapsible tool/toolResult notices.

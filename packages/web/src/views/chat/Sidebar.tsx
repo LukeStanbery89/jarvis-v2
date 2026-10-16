@@ -7,7 +7,14 @@
  * `describeLocationState` (both stay in their `src/` modules so the copy remains
  * node-testable).
  */
-import { AudioLines, LogOut, MapPin, SquarePen, Trash2 } from "lucide-react";
+import {
+    AudioLines,
+    BellRing,
+    LogOut,
+    MapPin,
+    SquarePen,
+    Trash2,
+} from "lucide-react";
 import { describeLocationState, type LocationUiState } from "../../location";
 import { describeWakeState, type SidebarRow } from "../../sidebar";
 
@@ -31,6 +38,12 @@ export interface SidebarProps {
     wakeOn: boolean;
     /** The controller is actively listening for the wake phrase. */
     wakeArmed: boolean;
+    /** This browser can raise OS notifications at all. */
+    browserNotifyAvailable: boolean;
+    /** The OS-notification preference for this browser. */
+    browserNotifyOn: boolean;
+    /** The OS-notification toggle's label/tooltip (from `browserNotifyState`). */
+    browserNotifyLabel: string;
     /** Starts a fresh conversation. */
     onNewChat(): void;
     /** Opens a conversation. */
@@ -41,6 +54,8 @@ export interface SidebarProps {
     onToggleLocation(): void;
     /** Flips the wake-word toggle. */
     onToggleWake(): void;
+    /** Flips the OS-notification toggle (prompting for permission). */
+    onToggleBrowserNotify(): void;
     /** Signs out. */
     onSignOut(): void;
 }
@@ -60,11 +75,15 @@ export function Sidebar({
     wakeAvailable,
     wakeOn,
     wakeArmed,
+    browserNotifyAvailable,
+    browserNotifyOn,
+    browserNotifyLabel,
     onNewChat,
     onOpenThread,
     onRemoveThread,
     onToggleLocation,
     onToggleWake,
+    onToggleBrowserNotify,
     onSignOut,
 }: SidebarProps) {
     const wakeStateText = describeWakeState(wakeAvailable, wakeArmed);
@@ -101,6 +120,22 @@ export function Sidebar({
                             onClick={onToggleWake}
                         >
                             <AudioLines size={16} />
+                        </button>
+                    )}
+                    {browserNotifyAvailable && (
+                        <button
+                            type="button"
+                            className={
+                                browserNotifyOn
+                                    ? "icon-btn location active"
+                                    : "icon-btn location"
+                            }
+                            aria-pressed={browserNotifyOn}
+                            aria-label={browserNotifyLabel}
+                            title={browserNotifyLabel}
+                            onClick={onToggleBrowserNotify}
+                        >
+                            <BellRing size={16} />
                         </button>
                     )}
                     <button

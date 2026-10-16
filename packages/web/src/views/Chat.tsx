@@ -30,6 +30,7 @@ import { useVoiceSession, voiceStatusText } from "../hooks/useVoiceSession";
 import { useLocationSharing } from "../hooks/useLocationSharing";
 import { useAttachments } from "../hooks/useAttachments";
 import { useNotifications } from "../hooks/useNotifications";
+import { useBrowserNotify } from "../hooks/useBrowserNotify";
 import {
     type ChatMode,
     type ClientCapability,
@@ -147,6 +148,14 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     // the client that feeds it.
     const notificationsUi = useNotifications(credential.token);
     const [notificationsOpen, setNotificationsOpen] = useState(false);
+    // The OS channel (#139 phase 2): a second way to interrupt, for the case
+    // where the user is not looking at this tab. Clicking an OS notification
+    // comes back here to mark it read.
+    const browserNotify = useBrowserNotify({
+        username: credential.username,
+        notifications: notificationsUi.notifications,
+        onOpen: notificationsUi.markRead,
+    });
 
     const { client, status, isStreaming, cancelTurn, sendLocation } =
         useChatClient({
@@ -337,11 +346,15 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 wakeAvailable={voiceUi.wakeAvailable}
                 wakeOn={voiceUi.wakeOn}
                 wakeArmed={voiceSnapshot.wakeArmed}
+                browserNotifyAvailable={browserNotify.available}
+                browserNotifyOn={browserNotify.enabled}
+                browserNotifyLabel={browserNotify.label}
                 onNewChat={newChat}
                 onOpenThread={openThread}
                 onRemoveThread={(id) => void remove(id)}
                 onToggleLocation={toggleLocation}
                 onToggleWake={toggleWake}
+                onToggleBrowserNotify={browserNotify.toggle}
                 onSignOut={signOut}
             />
             <section className="conversation">
