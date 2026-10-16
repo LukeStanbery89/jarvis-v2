@@ -664,7 +664,9 @@ describe("notification push, end to end (#139)", () => {
             });
         });
         await new Promise<void>((resolve) => socket.once("open", resolve));
-        socket.send(JSON.stringify({ type: "hello", capabilities: [] }));
+        socket.send(
+            JSON.stringify({ type: "hello", capabilities: ["notification"] }),
+        );
         socket.send(JSON.stringify({ type: "auth", token: material.token }));
         // Wait for the authResult so the server has certainly processed auth.
         await new Promise<void>((resolve) => {

@@ -31,6 +31,7 @@ import { Parser } from "@asyncapi/parser";
 import Ajv from "ajv";
 import { load as loadYaml } from "js-yaml";
 import {
+    CLIENT_CAPABILITIES,
     MAX_CAPABILITIES,
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_LOCATION_LABEL_LENGTH,
@@ -326,12 +327,15 @@ describe("AsyncAPI conformance: protocol frames", () => {
         });
 
         it("validates a hello declaring every capability token", () => {
-            // 16 distinct entries are unbuildable from the 4-value enum, so
-            // "at the MAX_CAPABILITIES cap" has no spec-valid shape (the
+            // Derived from `CLIENT_CAPABILITIES`, so adding a token cannot
+            // leave this case testing a subset of the protocol (the list was
+            // hardcoded while it still had four entries, and this test kept
+            // passing after `audio` was added — the drift it exists to catch).
+            // A 16-entry announcement has no spec-valid shape (the
             // duplicate-rejection case below pins why); the widest valid
-            // announcement is all four tokens, once each.
+            // announcement is every distinct token, once each.
             expectWireConformant(
-                () => serializeHello(["markdown", "html", "image", "link"]),
+                () => serializeHello([...CLIENT_CAPABILITIES]),
                 MESSAGE_FOR_CLIENT.clientHello,
             );
         });

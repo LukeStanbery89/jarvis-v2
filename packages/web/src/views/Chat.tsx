@@ -49,6 +49,9 @@ const CHAT_CAPABILITIES: ClientCapability[] = [
     "image",
     "link",
     "audio",
+    // The out-of-turn `notification` frame (#139): this client renders
+    // notifications, so the server may push them to its sockets.
+    "notification",
 ];
 
 /** One chat turn runner (typed or voice-origin), shared via `runTurnRef`. */

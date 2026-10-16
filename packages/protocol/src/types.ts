@@ -227,6 +227,7 @@ export const CLIENT_CAPABILITIES = [
     "image",
     "link",
     "audio",
+    "notification",
 ] as const;
 
 /**
@@ -242,6 +243,13 @@ export const CLIENT_CAPABILITIES = [
  * and delivered as an `audioStart` … binary PCM … `audioEnd` span. Text
  * rendering is unaffected — a client may hold `audio` and any other tokens
  * at once.
+ *
+ * `notification` (#139) declares the client can handle the out-of-turn
+ * `notification` frame, which is what makes adding a server frame safe: an
+ * older client that never declares it is simply never sent one, instead of
+ * receiving a payload its parser must reject. A client that cannot render a
+ * notification must not claim this token — the frame is delivered, not
+ * negotiated.
  */
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number];
 

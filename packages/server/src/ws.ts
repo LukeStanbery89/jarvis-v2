@@ -636,9 +636,18 @@ async function handleAuth(
     conn.tokenHash = hashDeviceToken(token);
     store.touchDevice(identity.device.id);
     // Reachable from now on (#139): the registry is what lets the server push
-    // a notification to this socket without it having asked for anything. A
-    // guest never registers — there is no user to address.
-    options.notifications?.add(identity.user.id, socket);
+    // a notification to this socket without it having asked for anything.
+    //
+    // Only for sockets that declared the `notification` capability, which is
+    // what keeps a new frame from breaking clients that predate it: an older
+    // client (or the CLI) parses every server frame it receives, and an
+    // unrecognized one fails its turn — the CLI tears the connection down
+    // (#106). Such a client simply never appears in the registry, so nothing
+    // is ever pushed to it. A guest never registers either: there is no user
+    // to address.
+    if (conn.capabilities.includes("notification")) {
+        options.notifications?.add(identity.user.id, socket);
+    }
     logger.info(
         `Socket authenticated as ${identity.user.username} (device: ${identity.device.name})`,
     );

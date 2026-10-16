@@ -288,6 +288,13 @@ submitted="…"`). It is deliberately a _separate_ switch from
 
 ## Notifications (#139)
 
+This client declares the `notification` capability in its `hello` frame, which
+is what lets the server push the out-of-turn `notification` frame to its
+sockets. That gate is deliberate rather than incidental: a client that does not
+declare it (an older bundle, the CLI) is never sent the frame, because an
+unreadable frame fails that client's turn — so adding a server frame stays
+additive instead of breaking clients the server cannot update.
+
 The server can push a `notification` frame at any time — a background job
 finishing, a reminder coming due, an agent needing an answer — and this client
 is where it surfaces. Two sources feed one list: the frame itself (best-effort,

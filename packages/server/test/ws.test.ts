@@ -1617,6 +1617,10 @@ describe("notification push wiring (#139)", () => {
         );
 
         const client = await connect(target());
+        // The socket must declare it can handle the frame (#139): a client
+        // that does not is never registered, so nothing unexpected is ever
+        // pushed to a parser that would reject it.
+        client.send({ type: "hello", capabilities: ["notification"] });
         client.send({ type: "auth", token: material.token });
         await client.next(); // authResult
 
@@ -1650,6 +1654,39 @@ describe("notification push wiring (#139)", () => {
         client.close();
         await settle();
         expect(hub.isPresent(user.id)).toBe(false);
+    });
+
+    it("does not register a socket that did not declare the capability", async () => {
+        const user = store.createUser("unaware", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "old-client",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const client = await connect(target());
+        // An authenticated socket from a client that predates the frame: it
+        // is never registered, so a notification cannot fail its turn.
+        client.send({ type: "hello", capabilities: ["markdown"] });
+        client.send({ type: "auth", token: material.token });
+        await client.next(); // authResult
+
+        expect(hub.isPresent(user.id)).toBe(false);
+        expect(
+            hub.deliver(user.id, {
+                notification: {
+                    id: "n1",
+                    kind: "k",
+                    priority: "low",
+                    title: "never sent",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                },
+            }),
+        ).toBe(0);
+        client.close();
+        await settle();
     });
 
     it("never tracks a guest socket, so nothing can be addressed to one", async () => {

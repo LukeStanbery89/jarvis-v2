@@ -161,12 +161,16 @@ components:
                 stores the declared capabilities for the socket's lifetime and
                 conditions the agent's output on them. `capabilities` lists
                 tokens from the `markdown` / `html` / `image` / `link` /
-                `audio` enum — at most 16 entries, each a non-empty string
+                `audio` / `notification` enum — at most 16 entries, each a non-empty string
                 ≤16 characters. An empty list declares a plain-text-only
                 client. `audio` (#83) declares the client can play the turn's
                 spoken response: voice-mode prompts from such a socket are
                 also synthesized server-side and delivered as the
-                `audioStart` … `pcmChunk` … `audioEnd` span.
+                `audioStart` … `pcmChunk` … `audioEnd` span. `notification`
+                (#139) declares the client can handle the out-of-turn
+                `notification` frame, and is what makes that frame additive:
+                a client that does not declare it is never sent one, because
+                a payload its parser cannot read would fail its turn.
             payload:
                 type: object
                 additionalProperties: false
@@ -190,6 +194,7 @@ components:
                                 - image
                                 - link
                                 - audio
+                                - notification
             examples:
                 - payload:
                       type: hello
