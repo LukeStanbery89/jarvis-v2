@@ -29,6 +29,7 @@ import {
 } from "../browserNotify";
 import type { BrowserNotifyUiState } from "../browserNotify";
 import type { ClientNotification } from "../notifications";
+import { debugLog } from "../debug";
 
 /** What {@link useBrowserNotify} exposes to the view. */
 export interface BrowserNotifyState {
@@ -103,6 +104,7 @@ export function useBrowserNotify(options: {
             return;
         }
         void Notification.requestPermission().then((result) => {
+            debugLog("notify", `permission result=${result}`);
             setPermission(result);
             if (result === "granted") {
                 setEnabled(true);
@@ -115,19 +117,25 @@ export function useBrowserNotify(options: {
         if (!supported || !enabled) {
             return;
         }
+        const hidden =
+            typeof document === "undefined" ||
+            document.visibilityState === "hidden";
+        debugLog(
+            "notify",
+            `announce pass: enabled=${enabled} permission=${permission} hidden=${hidden} rows=${notifications.length}`,
+        );
         for (const notification of notifications) {
             const announce = shouldAnnounce(notification, {
                 enabled,
                 permission,
-                hidden:
-                    typeof document === "undefined" ||
-                    document.visibilityState === "hidden",
+                hidden,
                 announced: announced.current,
             });
             if (!announce) {
                 continue;
             }
             announced.current.add(notification.id);
+            debugLog("notify", `raising OS notification id=${notification.id}`);
             raise(notification, () => onOpenRef.current(notification.id));
         }
     }, [enabled, notifications, permission, supported]);

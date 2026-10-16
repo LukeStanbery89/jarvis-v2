@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api";
+import { debugLog } from "../debug";
 import {
     mergeNotification,
     mergeNotificationPage,
@@ -80,6 +81,10 @@ export function useNotifications(token: string): NotificationsState {
         setLoading(true);
         api.listNotifications(token)
             .then((page) => {
+                debugLog(
+                    "notify",
+                    `list loaded (${page.notifications.length} row(s), ${page.unread} unread)`,
+                );
                 setNotifications((current) =>
                     mergeNotificationPage(
                         current,
@@ -109,6 +114,13 @@ export function useNotifications(token: string): NotificationsState {
 
     const acceptFrame = useCallback(
         (frame: NotificationFrame["notification"]) => {
+            // The one line that answers "did the server actually push it?":
+            // if this never appears, the socket or the server's delivery gate
+            // is the story, not the UI.
+            debugLog(
+                "notify",
+                `frame received id=${frame.id} kind=${frame.kind} priority=${frame.priority}`,
+            );
             setNotifications((current) =>
                 mergeNotification(current, fromFrame(frame)),
             );

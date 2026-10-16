@@ -140,6 +140,30 @@ export function selectBanner(
     return list.find((item) => !isSettled(item.state)) ?? null;
 }
 
+/**
+ * A lifecycle state in plain language, for the list.
+ *
+ * The distinction that matters to a user asking "why did nothing pop up?" is
+ * `pending` versus `delivered`: a pending notification was *recorded* while no
+ * client was listening (or while quiet hours or the delivery budget held it
+ * back), so it is waiting to be read rather than lost. Bare `pending` reads as
+ * an error; this says what actually happened.
+ */
+export function describeNotificationState(state: NotificationState): string {
+    switch (state) {
+        case "pending":
+            return "not announced — recorded while you were away";
+        case "delivered":
+            return "new";
+        case "read":
+            return "read";
+        case "answered":
+            return "answered";
+        case "dismissed":
+            return "dismissed";
+    }
+}
+
 /** How many notifications are neither read nor dismissed (the badge count). */
 export function unreadCount(list: ClientNotification[]): number {
     return list.filter((item) => !isSettled(item.state)).length;

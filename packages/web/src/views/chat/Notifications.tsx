@@ -13,6 +13,7 @@
  * What `high`/`urgent` buy here is emphasis.
  */
 import { Bell, X } from "lucide-react";
+import { describeNotificationState } from "../../notifications";
 import type { ClientNotification } from "../../notifications";
 
 /** Props for {@link Notifications}. */
@@ -118,7 +119,7 @@ export function Notifications({
                             </div>
                             <div className="notification-actions">
                                 <span className="notification-state">
-                                    {item.state}
+                                    {describeNotificationState(item.state)}
                                 </span>
                                 {item.state === "pending" ||
                                 item.state === "delivered" ? (

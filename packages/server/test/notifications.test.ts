@@ -17,6 +17,8 @@
  * hub), so a change to the frame mapping or the registry shows up here.
  */
 import { describe, expect, it, beforeEach } from "vitest";
+import { WebSocket } from "ws";
+import type { AddressInfo } from "node:net";
 import request from "supertest";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
@@ -25,6 +27,7 @@ import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { createApp } from "../src/app";
 import { getAppConfig } from "../src/config";
 import type { AppConfig } from "../src/config";
+import { attachChatServer } from "../src/ws";
 import { createNotificationHub } from "../src/notify/hub";
 import type { HubSocket, NotificationHub } from "../src/notify/hub";
 import { createInAppChannel } from "../src/notify/channels/inApp";
@@ -614,5 +617,76 @@ describe("notification routes (#139)", () => {
             .get("/api/notifications")
             .set("authorization", `Bearer ${token}`)
             .expect(404);
+    });
+});
+
+describe("notification push, end to end (#139)", () => {
+    it("delivers a REST-created notification to the user's live socket", async () => {
+        const store = createInMemoryAppDatabase();
+        const userId = makeUser(store);
+        const material = generateDeviceToken();
+        store.createDevice(userId, "web", material.tokenHash, material.prefix);
+        const hub = createNotificationHub();
+        const service = createNotificationService({
+            store,
+            hub,
+            channels: [createInAppChannel(hub)],
+            maxPerUser: 200,
+            deliveriesPerWindow: 20,
+        });
+        const appConfig: AppConfig = {
+            ...getAppConfig(),
+            notify: { deliveriesPerMin: 20, maxPerUser: 200 },
+        };
+        const server = createApp(
+            store,
+            appConfig,
+            undefined,
+            undefined,
+            service,
+        );
+        const listening = server.listen(0);
+        attachChatServer(listening, store, {
+            turnTimeoutMs: 30_000,
+            notifications: hub,
+        });
+        const port = (listening.address() as AddressInfo).port;
+
+        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+        const received: unknown[] = [];
+        const gotFrame = new Promise<void>((resolve) => {
+            socket.on("message", (data) => {
+                const frame = JSON.parse((data as Buffer).toString());
+                if ("notification" in frame) {
+                    received.push(frame);
+                    resolve();
+                }
+            });
+        });
+        await new Promise<void>((resolve) => socket.once("open", resolve));
+        socket.send(JSON.stringify({ type: "hello", capabilities: [] }));
+        socket.send(JSON.stringify({ type: "auth", token: material.token }));
+        // Wait for the authResult so the server has certainly processed auth.
+        await new Promise<void>((resolve) => {
+            socket.on("message", (data) => {
+                if ("authResult" in JSON.parse((data as Buffer).toString())) {
+                    resolve();
+                }
+            });
+        });
+        expect(hub.isPresent(userId)).toBe(true);
+
+        const created = await request(listening)
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${material.token}`)
+            .send({ kind: "test", title: "Background alert", priority: "high" })
+            .expect(201);
+
+        expect(created.body.suppressed).toBeNull();
+        expect(created.body.delivered).toBe(1);
+        await gotFrame;
+        expect(received).toHaveLength(1);
+        socket.close();
+        listening.close();
     });
 });

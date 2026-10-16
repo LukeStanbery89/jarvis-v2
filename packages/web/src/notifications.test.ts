@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    describeNotificationState,
     isSettled,
     mergeNotification,
     mergeNotificationPage,
@@ -168,6 +169,14 @@ describe("selectBanner and unreadCount", () => {
                 make({ id: "e", state: "dismissed" }),
             ]),
         ).toBe(2);
+    });
+
+    it("explains each state in words a user can act on", () => {
+        expect(describeNotificationState("pending")).toContain("not announced");
+        expect(describeNotificationState("delivered")).toBe("new");
+        expect(describeNotificationState("read")).toBe("read");
+        expect(describeNotificationState("answered")).toBe("answered");
+        expect(describeNotificationState("dismissed")).toBe("dismissed");
     });
 
     it("agrees with isSettled on what counts as done", () => {
