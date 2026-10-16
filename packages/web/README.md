@@ -400,7 +400,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 
 - `src/main.tsx` — React bootstrap.
 - `src/App.tsx` — sign-in gate ↔ chat routing over the stored credential.
-- `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss; Bearer token).
+- `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, prefs read/patch; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6; out-of-turn `notification` frames via `onNotification`, #139).
@@ -416,6 +416,7 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`, `Notifications.tsx` (#139 banner + list).
 - `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `useAutoScroll`.
 - `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread.
+- `src/prefs.ts` — pure account-preference helpers (settings panel): read `notify.enabled`/`notify.quietHours` the way the server does (an unreadable stored value reads as not in effect, flagged rather than hidden), validate a typed window, and build the one-key patches the panel writes.
 - `src/browserNotify.ts` — pure desktop-notification rules (#139 phase 2): the announce decision (hidden tab, unsettled, not already announced, preference _and_ permission), the toggle's UI state, and this browser's stored preference.
 - `src/sidebar.ts` — sidebar-row merge (`mergeSessions`) + wake/location label helpers.
 - `src/attachments.ts` — attachment chip lifecycle + upload/retry helpers (#10).

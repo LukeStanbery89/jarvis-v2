@@ -47,6 +47,14 @@ export type NotificationDelivery =
 /** Body of `POST /api/notifications`: what the producer asks for. */
 export type NotificationInput = components["schemas"]["NotificationInput"];
 
+/**
+ * The caller's free-form preferences map (`GET`/`PUT /api/prefs`): string keys
+ * to any JSON value. The web client only reads and writes the keys it owns
+ * (`notify.*`, see `prefs.ts`); everything else in the map belongs to
+ * integrations and is passed through untouched.
+ */
+export type Prefs = components["schemas"]["Prefs"];
+
 /** REST failure carrying the server's `{ error }` message on a non-2xx body. */
 export class ApiError extends Error {
     constructor(
@@ -235,6 +243,29 @@ export function createApi(
                 { token },
             );
             return result.notification;
+        },
+        /**
+         * Reads the caller's preferences map (possibly empty). The panel needs
+         * the *stored* values rather than a projection of them, so it can tell
+         * "never set" from "set to something unreadable".
+         */
+        getPrefs(token: string): Promise<Prefs> {
+            return request("GET", "/api/prefs", { token });
+        },
+        /**
+         * Upserts the given pref keys and returns the whole updated map.
+         *
+         * Only the keys sent are touched; every other key keeps its value, so a
+         * caller patches one setting at a time. Bearer-authenticated, no CSRF
+         * token (the web client has no CSRF secret by design). A key whose
+         * value the server cannot accept is a 400 — never a silent no-op.
+         *
+         * Note there is **no** `clearPrefs`: `DELETE /api/prefs` drops every
+         * key, which would wipe integration preferences the panel knows nothing
+         * about. Turning a pref off means writing its off value.
+         */
+        setPrefs(token: string, patch: Prefs): Promise<Prefs> {
+            return request("PUT", "/api/prefs", { token, body: patch });
         },
     };
 }

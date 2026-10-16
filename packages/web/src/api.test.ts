@@ -89,3 +89,49 @@ describe("createApi sessions", () => {
         expect(calls[0].init.method).toBe("DELETE");
     });
 });
+
+describe("createApi prefs", () => {
+    it("reads the caller's prefs map with the Bearer token", async () => {
+        const { fetch, calls } = fetchJson(200, { "notify.enabled": false });
+        const prefs = await createApi(fetch).getPrefs("tok");
+        expect(prefs).toEqual({ "notify.enabled": false });
+        expect(calls[0].path).toBe("/api/prefs");
+        expect(calls[0].init.method).toBe("GET");
+        expect(
+            (calls[0].init.headers as Record<string, string>).authorization,
+        ).toBe("Bearer tok");
+    });
+
+    it("PUTs only the patched keys and returns the updated map", async () => {
+        const { fetch, calls } = fetchJson(200, {
+            "notify.enabled": true,
+            "notify.quietHours": null,
+            "some.integration": "kept",
+        });
+        const updated = await createApi(fetch).setPrefs("tok", {
+            "notify.quietHours": null,
+        });
+        expect(updated["some.integration"]).toBe("kept");
+        expect(calls[0].path).toBe("/api/prefs");
+        expect(calls[0].init.method).toBe("PUT");
+        const body = JSON.parse(String(calls[0].init.body)) as Record<
+            string,
+            unknown
+        >;
+        expect(body).toEqual({ "notify.quietHours": null });
+    });
+
+    it("surfaces a rejected pref write as an ApiError with the server's message", async () => {
+        const { fetch } = fetchJson(400, {
+            error: "notify.quietHours must be { start, end } or null",
+        });
+        const attempt = createApi(fetch).setPrefs("tok", {
+            "notify.quietHours": "22:00-07:00",
+        });
+        await expect(attempt).rejects.toBeInstanceOf(ApiError);
+        await attempt.catch((e: ApiError) => {
+            expect(e.status).toBe(400);
+            expect(e.message).toMatch(/must be/);
+        });
+    });
+});
