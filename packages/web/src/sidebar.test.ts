@@ -3,7 +3,7 @@
  * local threads, and the wake-toggle description.
  */
 import { describe, expect, it } from "vitest";
-import { briefWakeState, describeWakeState, mergeSessions } from "./sidebar";
+import { describeWakeState, mergeSessions, wakeIsListening } from "./sidebar";
 import type { SessionSummary } from "./api";
 import type { ThreadMap, ThreadRecord } from "./threads";
 
@@ -118,10 +118,10 @@ describe("describeWakeState", () => {
     });
 });
 
-describe("briefWakeState", () => {
-    it("says something only for a live detector", () => {
-        expect(briefWakeState(true, true)).toBe("Listening");
-        expect(briefWakeState(true, false)).toBeNull();
-        expect(briefWakeState(false, false)).toBeNull();
+describe("wakeIsListening", () => {
+    it("is true only for a live detector", () => {
+        expect(wakeIsListening(true, true)).toBe(true);
+        expect(wakeIsListening(true, false)).toBe(false);
+        expect(wakeIsListening(false, false)).toBe(false);
     });
 });

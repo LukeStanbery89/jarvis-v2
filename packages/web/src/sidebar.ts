@@ -92,13 +92,16 @@ export function describeWakeState(
  * this keeps that fact on screen without keeping a whole button for it. The
  * panel carries the rest (unavailable, off) beside the control itself.
  *
+ * The sidebar draws this as a blinking microphone rather than a word, so the
+ * text is only the accessible name (see `Sidebar.tsx`).
+ *
  * @param wakeAvailable - Local engines exist and the server serves the model.
  * @param wakeArmed - The controller is actively listening for the wake phrase.
- * @returns `"Listening"`, or `null`.
+ * @returns `true` while a detector is live.
  */
-export function briefWakeState(
+export function wakeIsListening(
     wakeAvailable: boolean,
     wakeArmed: boolean,
-): string | null {
-    return wakeAvailable && wakeArmed ? "Listening" : null;
+): boolean {
+    return wakeAvailable && wakeArmed;
 }

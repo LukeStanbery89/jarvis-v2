@@ -9,15 +9,15 @@
  * The hints beside it come from the pure modules (`briefLocationState`,
  * `briefWakeState`), so the copy stays node-testable.
  */
-import { Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
+import { Mic, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import {
     briefLocationState,
     describeLocationState,
     type LocationUiState,
 } from "../../location";
 import {
-    briefWakeState,
     describeWakeState,
+    wakeIsListening,
     type SidebarRow,
 } from "../../sidebar";
 
@@ -77,20 +77,26 @@ export function Sidebar({
     // Two states must stay visible while the panel is closed: a live wake
     // detector (a microphone that is on) and a location share that is not
     // delivering. Everything else moved into the panel with its control.
-    const wakeHint = briefWakeState(wakeAvailable, wakeArmed);
+    const wakeStateText = describeWakeState(wakeAvailable, wakeArmed);
+    const listening = wakeIsListening(wakeAvailable, wakeArmed);
     const locationHint = locationOn ? briefLocationState(locationState) : null;
     return (
         <aside className="sidebar">
             <div className="sidebar-head">
                 <span>{username}</span>
                 <span className="sidebar-actions">
-                    {wakeHint !== null && (
+                    {listening && (
                         <span
                             className="sidebar-state"
                             role="status"
-                            title={describeWakeState(wakeAvailable, wakeArmed)}
+                            aria-label={wakeStateText}
+                            title={wakeStateText}
                         >
-                            {wakeHint}
+                            <Mic
+                                size={14}
+                                className="sidebar-state-icon"
+                                aria-hidden="true"
+                            />
                         </span>
                     )}
                     {locationHint !== null && (

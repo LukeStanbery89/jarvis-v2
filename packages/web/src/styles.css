@@ -423,10 +423,38 @@ textarea::placeholder {
    a live wake detector, or a location share that is not delivering. Small and
    secondary — the control itself lives in the panel. */
 .sidebar-state {
+    display: inline-flex;
+    align-items: center;
     font-size: 0.68rem;
     font-weight: 400;
     color: var(--primary-dim);
     white-space: nowrap;
+}
+
+/* An armed wake detector is an open microphone, so it says so from the sidebar
+   rather than only inside the panel. The blink is the "live" part — a static
+   icon would read as a decoration — and reduced-motion keeps the icon without
+   the pulse. */
+.sidebar-state-icon {
+    color: var(--primary);
+    animation: jarvis-listening 1.4s ease-in-out infinite;
+}
+
+@keyframes jarvis-listening {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.2;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar-state-icon {
+        animation: none;
+    }
 }
 
 /* The attach button sits in the composer row beside the textarea. */

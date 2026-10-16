@@ -199,8 +199,9 @@ switch in the settings panel (#143, "This browser" — the detector is a
 per-device engine) arms an
 on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
 openwakeword-web running under the WASM STT engine's runtime). While armed,
-the sidebar says `Listening` beside the gear, because an open microphone is
-not something to have to open a panel to discover, and
+the sidebar shows a blinking microphone beside the gear, because an open
+microphone is not something to have to open a panel to discover (a static
+icon under `prefers-reduced-motion`), and
 the detector holds a 16 kHz mic open continuously; a match plays a short blip
 (`AudioPlayer.blip()`, the cue the toggle's user gesture unlocked), opens a
 wake session through the same `VoiceController`, and then **streams the
