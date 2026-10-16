@@ -326,6 +326,15 @@ status sequence: `connecting` and `reconnecting` both precede `connected`, so a
 view effect trying to tell them apart ends up keyed on something that changes
 every render — which is a fetch loop, not a reconnect.
 
+A **held-back** notification (quiet hours, the per-minute budget, the user's own
+switch) is pushed to nobody at all — the suppression gate returns before any
+channel runs — so the record is the only trace it leaves, and the client has to
+re-read the list to find it. Two more places do that fetch, both because the
+alternative is a notification that is invisible until a page reload: the end of
+a **turn** (a tool call is exactly how the assistant raises one) and the moment
+the **list is opened** (which is the user asking what is there). Silence is not
+a state the UI should be able to be in.
+
 **Desktop notifications (phase 2).** A switch in the settings panel (#143,
 "This browser") raises OS
 notifications through the `Notification` API, for the case where the user is

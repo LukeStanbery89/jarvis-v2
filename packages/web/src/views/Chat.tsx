@@ -307,6 +307,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             setStreaming(false);
             persist();
             void refreshSessions();
+            // A turn is where a tool can raise a notification, and a *held
+            // back* one (quiet hours, the delivery budget, the user's switch
+            // off) is pushed to nobody — the record is the only trace, and it
+            // is not in the list until something re-reads it. Without this the
+            // notification appeared only after a page reload, which is the
+            // "nothing happened" mystery #139 exists to remove.
+            notificationsUi.refresh();
         }
     }
     // The voice controller reads this at submit time — see runTurnRef.
@@ -396,7 +403,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     notifications={notificationsUi.notifications}
                     unread={notificationsUi.unread}
                     open={notificationsOpen}
-                    onToggle={() => setNotificationsOpen((open) => !open)}
+                    onToggle={() => {
+                        const opening = !notificationsOpen;
+                        setNotificationsOpen(opening);
+                        if (opening) {
+                            // Opening the list is the user asking "what is
+                            // there?" — and a held-back notification has no
+                            // push to announce it, so the fetch is the only way
+                            // it ever appears.
+                            notificationsUi.refresh();
+                        }
+                    }}
                     onMarkRead={notificationsUi.markRead}
                     onDismiss={notificationsUi.dismiss}
                     onSendTest={notificationsUi.sendTest}

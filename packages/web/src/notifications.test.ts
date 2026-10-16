@@ -193,6 +193,13 @@ describe("selectBanner and unreadCount", () => {
         expect(describeNotificationState("dismissed")).toBe("dismissed");
     });
 
+    it("does not blame the user's absence for a held-back notification", () => {
+        // The record does not store *why* it was not announced, and quiet hours
+        // is one of the reasons — so naming "while you were away" was wrong for
+        // exactly the case a user is most likely to hit while watching.
+        expect(describeNotificationState("pending")).not.toMatch(/away/);
+    });
+
     it("agrees with isSettled on what counts as done", () => {
         expect(isSettled("pending")).toBe(false);
         expect(isSettled("delivered")).toBe(false);

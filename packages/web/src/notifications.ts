@@ -145,14 +145,21 @@ export function selectBanner(
  *
  * The distinction that matters to a user asking "why did nothing pop up?" is
  * `pending` versus `delivered`: a pending notification was *recorded* while no
- * client was listening (or while quiet hours or the delivery budget held it
- * back), so it is waiting to be read rather than lost. Bare `pending` reads as
- * an error; this says what actually happened.
+ * announcement was pushed — because no client was listening, or because a gate
+ * held it back (quiet hours, the delivery budget, the user's own switch). Which
+ * of those it was is not stored on the record, so this says only what is true
+ * in every case: it was recorded, and it was not announced. The old wording
+ * named one cause ("while you were away") and was therefore wrong for the rest
+ * — and quietly wrong copy is the exact failure this area exists to remove.
+ * The gate that refused a push is reported to whoever raised it (the tool
+ * result, the test button's outcome line).
+ *
+ * Bare `pending` reads as an error; this says what actually happened.
  */
 export function describeNotificationState(state: NotificationState): string {
     switch (state) {
         case "pending":
-            return "not announced — recorded while you were away";
+            return "recorded — not announced";
         case "delivered":
             return "new";
         case "read":
