@@ -539,6 +539,24 @@ export interface JobLedger {
      */
     listDueJobs(at: string, limit: number): AppJob[];
     /**
+     * Every job currently `running`, across users — the recovery feed.
+     *
+     * A job is `running` only while a claim holds it, and a claim lives in the
+     * claiming process's memory, so at boot any `running` row was left behind
+     * by a process that died mid-run. What to do about that is the scheduler's
+     * policy (phase 1: fail it and say so), which is why the store only
+     * reports them.
+     */
+    listRunningJobs(limit: number): AppJob[];
+    /**
+     * Closes every still-open run of a job, recording why. This is the trace of
+     * an attempt that never finished — the process making it died — and a run
+     * row left saying `running` forever would be a lie about a dead process.
+     *
+     * @returns The number of run rows closed.
+     */
+    failOpenJobRuns(jobId: string, error: string, at: string): number;
+    /**
      * Claims one job for this process: `pending` → `running`, counting the
      * attempt. The transition is in the WHERE clause, so a second claim — from
      * another tick, or from a process that restarted mid-run — touches no row.
@@ -1112,11 +1130,13 @@ export class SqliteAppDatabase implements AppDatabase {
         selectJobs: Database.Statement;
         selectJobsWithSettled: Database.Statement;
         selectDueJobs: Database.Statement;
+        selectRunningJobs: Database.Statement;
         claimJob: Database.Statement;
         settleJob: Database.Statement;
         cancelJob: Database.Statement;
         insertJobRun: Database.Statement;
         finishJobRun: Database.Statement;
+        failOpenJobRuns: Database.Statement;
         selectJobRuns: Database.Statement;
         pruneSettledJobs: Database.Statement;
         pruneJobs: Database.Statement;
@@ -1275,6 +1295,12 @@ export class SqliteAppDatabase implements AppDatabase {
             selectDueJobs: db.prepare(
                 `${JOB_COLUMNS} WHERE state = 'pending' AND run_at <= ? ORDER BY run_at ASC, rowid ASC LIMIT ?`,
             ),
+            // The recovery feed: any `running` row belongs to a process that
+            // died (a claim is in-memory), so the loop's boot pass asks for
+            // them and decides what they mean.
+            selectRunningJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE state = 'running' ORDER BY run_at ASC, rowid ASC LIMIT ?`,
+            ),
             // The claim *is* the transition: `state = 'pending'` in the WHERE
             // clause means a second claim — another tick, or a process that
             // restarted mid-run — touches no row and cannot double-fire a job.
@@ -1295,6 +1321,9 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             finishJobRun: db.prepare(
                 "UPDATE job_runs SET state = ?, output = ?, error = ?, finished_at = ? WHERE id = ?",
+            ),
+            failOpenJobRuns: db.prepare(
+                "UPDATE job_runs SET state = 'failed', error = ?, finished_at = ? WHERE job_id = ? AND state = 'running'",
             ),
             selectJobRuns: db.prepare(
                 `${JOB_RUN_COLUMNS} WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`,
@@ -1781,6 +1810,17 @@ export class SqliteAppDatabase implements AppDatabase {
             Math.max(1, limit),
         ) as JobRow[];
         return rows.map(mapJob);
+    }
+
+    listRunningJobs(limit: number): AppJob[] {
+        const rows = this.statements.selectRunningJobs.all(
+            Math.max(1, limit),
+        ) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    failOpenJobRuns(jobId: string, error: string, at: string): number {
+        return this.statements.failOpenJobRuns.run(error, at, jobId).changes;
     }
 
     claimJob(id: string): boolean {

@@ -21,6 +21,7 @@ import {
 } from "./llm/agentGraph";
 import { createTools } from "./llm/tools";
 import type { ToolDeps } from "./llm/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { getLlmConfig } from "./config";
 import { logger } from "./logger";
 import type { ChatMode, ClientCapability } from "@lukestanbery/jarvis-protocol";
@@ -318,6 +319,17 @@ export function systemPromptForCapabilities(
 let graph: AgentGraph | null = null;
 
 /**
+ * The tool instances the graph was built with.
+ *
+ * Held alongside the graph so the scheduler can invoke a job's tool directly
+ * with the *same* objects a graph turn would use. The per-user quotas,
+ * ownership checks and quiet-hours policy live inside those tools; rebuilding
+ * them for the scheduler would be a second set of counters that agree by
+ * accident.
+ */
+let agentTools: readonly StructuredToolInterface[] | null = null;
+
+/**
  * Builds the shared agent graph up-front and opens its checkpoint store.
  *
  * Call once at server startup (`index.ts`): creates `~/.jarvis` and the SQLite
@@ -340,13 +352,31 @@ export function initAgentGraph(deps?: ToolDeps): AgentGraph {
     logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
     const saver = new SqliteSaver(new Database(checkpointPath));
     ensurePrivateFile(checkpointPath);
+    const tools = createTools(deps);
     graph = createAgentGraph({
         model: createChatModel(),
-        tools: createTools(deps),
+        tools,
         checkpointer: saver,
     });
+    agentTools = tools;
     logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
     return graph;
+}
+
+/**
+ * Returns the tool instances the graph was built with.
+ *
+ * For the scheduler (#90), which invokes one of them directly for a `tool`
+ * job. Throws if `initAgentGraph()` has not run — same contract and reason as
+ * {@link getAgentGraph}.
+ */
+export function getAgentTools(): readonly StructuredToolInterface[] {
+    if (agentTools === null) {
+        throw new Error(
+            "agent graph not initialized; call initAgentGraph() at server startup",
+        );
+    }
+    return agentTools;
 }
 
 /**

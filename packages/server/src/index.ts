@@ -21,7 +21,7 @@ import {
     DEFAULT_ATTACHMENT_CONFIG,
 } from "./config";
 import { attachChatServer } from "./ws";
-import { initAgentGraph } from "./agent";
+import { initAgentGraph, getAgentTools } from "./agent";
 import { createVisionModel } from "./llm/visionModel";
 import { createTavilyClient } from "./llm/tools/search/tavily";
 import { createSerperClient } from "./llm/tools/search/serper";
@@ -38,6 +38,8 @@ import { KokoroTtsProvider } from "./tts/kokoro";
 import { createNotificationHub } from "./notify/hub";
 import { createInAppChannel } from "./notify/channels/inApp";
 import { createNotificationService } from "./notify/service";
+import { createJobRunner } from "./scheduler/runner";
+import { createScheduler } from "./scheduler/loop";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -236,6 +238,29 @@ initAgentGraph({
     ...(notifications ? { notifications: { service: notifications } } : {}),
 });
 
+// The scheduler (#90): one loop over the `jobs` table, running each due job
+// through the same agent seam and the same tool instances a chat turn uses.
+// Built after the graph so it can be handed those tools, and only when there is
+// a notification service to announce a run's outcome with — a loop nobody can
+// be told about would be worse than no loop. `JARVIS_SCHEDULER=off` (or
+// `JARVIS_NOTIFY=off`) leaves it out entirely.
+const scheduler =
+    appConfig.scheduler && notifications
+        ? createScheduler({
+              ledger: store,
+              runner: createJobRunner({
+                  ledger: store,
+                  notifications,
+                  tools: getAgentTools(),
+                  turnTimeoutMs: appConfig.turnTimeoutMs,
+                  maxPerUser: appConfig.scheduler.maxPerUser,
+                  maxLatenessMs: appConfig.scheduler.maxLatenessMs,
+              }),
+              tickMs: appConfig.scheduler.tickMs,
+              maxConcurrent: appConfig.scheduler.maxPerTick,
+          })
+        : undefined;
+
 const webApp = createApp(
     store,
     appConfig,
@@ -257,3 +282,8 @@ attachChatServer(server, store, {
     ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
     ...(notificationHub ? { notifications: notificationHub } : {}),
 });
+
+// Last, once the socket layer is attached: the first thing `start` does is
+// fail the runs a previous process left in flight, and a job firing in the
+// same tick can then reach a live hub rather than recording into the void.
+void scheduler?.start();

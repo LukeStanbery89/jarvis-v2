@@ -383,4 +383,47 @@ describe("jobs ledger", () => {
         // cascade rather than accumulating against a dangling id.
         expect(store.listJobRuns("j1")).toEqual([]);
     });
+
+    it("reports the jobs a dead process left running, and closes their runs", () => {
+        const { store, userId } = makeStore();
+        const pepper = store.createUser("pepper", "hash", "user");
+        store.createJob(userId, promptJob({ id: "j1" }));
+        store.createJob(pepper.id, promptJob({ id: "j2" }));
+        store.claimJob("j1");
+        store.claimJob("j2");
+        store.startJobRun({
+            id: "r1",
+            jobId: "j1",
+            startedAt: "2026-10-20T09:00:01.000Z",
+        });
+
+        // Both users' in-flight jobs, because recovery is the process's job,
+        // not one account's.
+        expect(store.listRunningJobs(10).map((job) => job.id)).toEqual([
+            "j1",
+            "j2",
+        ]);
+        expect(store.listRunningJobs(1)).toHaveLength(1);
+
+        expect(
+            store.failOpenJobRuns(
+                "j1",
+                "interrupted by a restart",
+                "2026-10-20T09:05:00.000Z",
+            ),
+        ).toBe(1);
+        // Closing twice touches nothing: the run is no longer open.
+        expect(
+            store.failOpenJobRuns(
+                "j1",
+                "interrupted by a restart",
+                "2026-10-20T09:06:00.000Z",
+            ),
+        ).toBe(0);
+        expect(store.listJobRuns("j1")[0]).toMatchObject({
+            state: "failed",
+            error: "interrupted by a restart",
+            finishedAt: "2026-10-20T09:05:00.000Z",
+        });
+    });
 });

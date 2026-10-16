@@ -6,9 +6,10 @@
  * runner), session touch, and lock release — plus guest-session cleanup on
  * socket close. Extracted out of `ws.ts` so that file stays protocol- and
  * socket-only and the ledger/lock/ownership math is unit-testable without a
- * port. The lock set is per-manager (one per `attachChatServer`): production
- * runs a single server, so cross-socket exclusion is preserved, and tests get
- * isolated lock state instead of sharing a module global.
+ * port. The lock is a {@link KeyedLock} created per manager (one per
+ * `attachChatServer`): production runs a single server, so cross-socket
+ * exclusion is preserved, and tests get isolated lock state instead of sharing
+ * a module global.
  *
  * Invariant: exactly one `SessionManager` must exist per `AppDatabase`/process
  * for the ::thread-lock:: to guarantee cross-socket exclusion. If a future
@@ -18,6 +19,7 @@
 import type { AuthContext, SessionLedger } from "@lukestanbery/jarvis-auth";
 import { ownsRow } from "@lukestanbery/jarvis-auth";
 import type { ChatMode } from "@lukestanbery/jarvis-protocol";
+import { createKeyedLock } from "./keyedLock";
 
 /** How a turn resolved; the caller decides the user-facing message. */
 export type TurnOutcome = "completed" | "busy" | "not-owned";
@@ -66,13 +68,12 @@ export interface SessionManager {
  */
 export function createSessionManager(store: SessionLedger): SessionManager {
     /** Thread ids with a turn currently in flight, across all sockets. */
-    const threadLocks = new Set<string>();
+    const threadLocks = createKeyedLock();
     return {
         async runTurn({ sessionId, actor, guestThreads, mode, stream }) {
-            if (threadLocks.has(sessionId)) {
+            if (!threadLocks.tryAcquire(sessionId)) {
                 return "busy";
             }
-            threadLocks.add(sessionId);
             try {
                 const actorUserId =
                     actor.kind === "authed" ? actor.user.id : null;
@@ -96,7 +97,7 @@ export function createSessionManager(store: SessionLedger): SessionManager {
                 store.touchSession(sessionId);
                 return "completed";
             } finally {
-                threadLocks.delete(sessionId);
+                threadLocks.release(sessionId);
             }
         },
         cleanupGuests(sessionIds) {
