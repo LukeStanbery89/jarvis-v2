@@ -464,6 +464,15 @@ home server that normally shares its user's clock, and a deployment that does
 not (the container defaults to UTC — see `TZ` in `docker-compose.yml`) would
 otherwise be quietly wrong. A per-user timezone is the tracked follow-up.
 
+A held-back notification is **never re-announced when the window ends**. The
+gate is evaluated once, at raise time; nothing watches the clock, so there is no
+event at 07:00 to push anything. That is deliberate rather than unfinished:
+re-pushing a night's worth the moment quiet hours lift is a burst of exactly the
+interruptions quiet hours exists to prevent. What the user gets instead is the
+durable record, shown on their client's next contact with the server — never
+pushed, but never lost. (A single digest at the window's end is the shape if
+that is ever wanted; it needs a timer, which is #90.)
+
 Retention is the other half: `JARVIS_NOTIFY_MAX_PER_USER` (default 200) trims on
 every insert, evicting settled rows first — an undelivered notification is the
 last thing a prune takes, but it is not exempt, because the rows that pile up
