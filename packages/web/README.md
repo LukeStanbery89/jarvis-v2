@@ -312,13 +312,13 @@ the sidebar is collapsed. Reading or dismissing is optimistic — the list
 updates immediately and rolls back if the server refuses — and a notification
 raised while this client was closed is simply in the list when it next loads,
 which is why nothing here depends on the frame arriving. The list is re-read
-when the socket **recovers a drop** — the client reports that itself
-(`ChatClient`'s `onReconnected`), because a notification raised while the
-socket was down was pushed to nobody and the list is the only place it can
-appear. The client reports it rather than the view inferring it from the
-status sequence: `connecting` and `reconnecting` both precede `connected`, so
-a view effect keyed on the sequence re-fires on every render — which is a
-fetch loop, not a reconnect.
+when the socket comes up after a **failed attempt** — the client reports that
+itself (`ChatClient`'s `onReconnected`), because a notification raised while
+the server was unreachable was pushed to nobody and the list is the only place
+it can appear. The client reports it rather than the view inferring it from the
+status sequence: `connecting` and `reconnecting` both precede `connected`, so a
+view effect trying to tell them apart ends up keyed on something that changes
+every render — which is a fetch loop, not a reconnect.
 
 **Desktop notifications (phase 2).** A bell in the sidebar raises OS
 notifications through the `Notification` API, for the case where the user is

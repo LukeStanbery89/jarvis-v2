@@ -43,16 +43,16 @@ export interface ChatClientEvents {
     /** Connection-state changes (idempotent transitions). */
     onStatus?(status: ChatStatus): void;
     /**
-     * A connection that had **dropped** is live again — once per reconnect,
-     * never for the initial connect.
+     * The connection became **ready after an earlier attempt failed** — a
+     * dropped connection recovering, or a cold start whose first attempt could
+     * not reach the server. Not fired when the first attempt simply succeeds.
      *
      * Distinct from `onStatus("connected")` on purpose: only the client knows
-     * whether this was the first handshake or a recovery, and a consumer that
-     * has to infer it from a status sequence gets it wrong in the case that
-     * matters (`connecting` and `reconnecting` both precede `connected`).
-     * Consumers use it to re-read state the server could not push while the
-     * socket was down — a notification raised then was delivered to nobody,
-     * so the list is the only place it can appear.
+     * how many attempts preceded this one, and a consumer cannot infer it from
+     * the status sequence — `connecting` and `reconnecting` both precede
+     * `connected`. Consumers use it to re-read state the server could not push
+     * while it was unreachable (a notification raised then was delivered to
+     * nobody, so the list is the only place it can appear).
      */
     onReconnected?(): void;
     /** One parsed server frame of an in-flight prompt turn. */

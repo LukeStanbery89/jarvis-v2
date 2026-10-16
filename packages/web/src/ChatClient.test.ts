@@ -211,6 +211,36 @@ describe("ChatClient handshake", () => {
             vi.useRealTimers();
         }
     });
+
+    it("also reports a cold start whose first attempt failed (#139)", () => {
+        // The contract is "ready after an earlier attempt failed", not "a
+        // connection was once established and dropped": if the server was
+        // unreachable at boot, the view's mount fetch failed too, so the
+        // refresh is exactly what is wanted there. Pinned because the
+        // implementation keys on the attempt counter, which cannot tell the
+        // two cases apart.
+        let reconnects = 0;
+        const harness = makeClient("tok", {
+            onReconnected: () => {
+                reconnects += 1;
+            },
+        });
+        vi.useFakeTimers();
+        try {
+            harness.client.connect();
+            harness.sockets[0].open();
+            // No verdict: the handshake times out and the client retries.
+            vi.advanceTimersByTime(5_000);
+            vi.advanceTimersByTime(1_000);
+            expect(harness.sockets.length).toBe(2);
+            const second = harness.sockets[1];
+            second.open();
+            second.receive({ authResult: { user: "u", device: "d" } });
+            expect(reconnects).toBe(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
 
 describe("ChatClient prompts", () => {

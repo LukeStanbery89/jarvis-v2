@@ -208,14 +208,14 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     });
                 }
             },
-            // A notification raised while the socket was down was pushed to
-            // nobody, so the list is the only place it can appear: when the
-            // client recovers a dropped connection, re-read the page. The
-            // client reports that itself, because `status` cannot distinguish
-            // the first connect (`connecting`) from a recovery
-            // (`reconnecting`) — and an effect keyed on that sequence re-fires
-            // on every render, which is what turned this into a fetch loop.
-            // `refresh` is a stable `useCallback` in the hook.
+            // A notification raised while the server could not be reached was
+            // pushed to nobody, so the list is the only place it can appear:
+            // when the client reports that a connection finally came up after
+            // a failed attempt, re-read the page. The client reports that
+            // itself, because the status sequence cannot distinguish it
+            // (`connecting` and `reconnecting` both precede `connected`) — and
+            // the effect that tried to, with a dependency that changes every
+            // render, was a fetch loop. `refresh` is a stable `useCallback`.
             onReconnected: notificationsUi.refresh,
             onAuthRejected,
         });

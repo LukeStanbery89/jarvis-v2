@@ -1,9 +1,10 @@
 /**
  * Server entry point.
  *
- * Builds the Express app, boots the agent graph (creating `~/.jarvis` and the
- * checkpoint store), opens the app database (users/devices/sessions), hands
- * the app to the listener seam, and attaches the WebSocket chat server.
+ * Builds the Express app, opens the app database (users/devices/sessions) and
+ * the notification surface built on it, boots the agent graph (creating
+ * `~/.jarvis` and the checkpoint store) with that surface's tool injected,
+ * hands the app to the listener seam, and attaches the WebSocket chat server.
  *
  * Transport selection, TLS, the cert reads, and the HTTPS redirect listener
  * all live in `src/listener.ts`; this file is a thin composition root.
