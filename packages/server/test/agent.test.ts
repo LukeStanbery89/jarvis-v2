@@ -38,6 +38,10 @@ describe("systemPromptForCapabilities", () => {
             // other hygiene paragraphs: a model that cannot see a lookup tool
             // is never misled by instruction it cannot follow.
             expect(prompt).toMatch(/Prefer your tools over your own memory/);
+            // The notification-restraint rule (#139) is unconditional for the
+            // same reason — and it matters most for the model that has the
+            // tool, so its absence would be silent.
+            expect(prompt).toMatch(/sendNotification reaches the user/);
         }
     });
 

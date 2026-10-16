@@ -18,12 +18,14 @@ import { createWebSearchTool } from "./webSearch";
 import { createGetWeatherTool } from "./getWeather";
 import { createHomeAssistantTool } from "./homeAssistant";
 import { createWikipediaTool } from "./wikipedia";
+import { createNotifyTool } from "./notify";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
 import type { WeatherDeps } from "./getWeather";
 import type { HomeAssistantDeps } from "./homeAssistant";
 import type { WikipediaDeps } from "./wikipedia";
+import type { NotifyToolDeps } from "./notify";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -53,6 +55,13 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * `JARVIS_WIKIPEDIA=off`.
      */
     wikipedia?: WikipediaDeps;
+    /**
+     * Notification wiring (#139): the notification service, which the
+     * `sendNotification` tool asks to reach the user. Present whenever the
+     * notification surface is enabled — the tool is the agent's half of it,
+     * and with `JARVIS_NOTIFY=off` there is no service to call.
+     */
+    notifications?: NotifyToolDeps;
 }
 
 /**
@@ -82,6 +91,11 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
     }
     if (deps.wikipedia) {
         tools.push(createWikipediaTool(deps.wikipedia));
+    }
+    if (deps.notifications) {
+        // The only tool whose *result* is an interruption (#139), so it is
+        // registered last and reads as an exception among lookups.
+        tools.push(createNotifyTool(deps.notifications));
     }
     return tools;
 }

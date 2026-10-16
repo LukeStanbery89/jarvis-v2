@@ -464,8 +464,10 @@ home server that normally shares its user's clock, and a deployment that does
 not (the container defaults to UTC — see `TZ` in `docker-compose.yml`) would
 otherwise be quietly wrong. A per-user timezone is the tracked follow-up.
 
-Retention is the other half: `JARVIS_NOTIFY_MAX_PER_USER` (default 200) trims **settled** rows on every insert, so an undelivered notification is
-never the thing evicted.
+Retention is the other half: `JARVIS_NOTIFY_MAX_PER_USER` (default 200) trims on
+every insert, evicting settled rows first — an undelivered notification is the
+last thing a prune takes, but it is not exempt, because the rows that pile up
+most easily are precisely the `pending` ones nobody was online to receive.
 
 ### Not rate limited
 
@@ -886,6 +888,14 @@ fetch; `HEAD` answers 200 without downloading.
   stored record as a `notification` frame; `http.ts` is `/api/notifications`
   (list + create + read/dismiss/answer), mounted only when notifications are
   configured and refused to guests like every other account-scoped surface.
+- `src/llm/tools/notify.ts` — the `sendNotification` tool (#139): the agent's
+  half of that surface and the channel's first real producer. It holds no
+  policy of its own — it asks `service.ts` and reports the answer — so the
+  budget above bounds an over-eager model exactly as it bounds a webhook. The
+  tool is registered only when the notification surface is wired, and it is
+  announced to the model by a hygiene paragraph that pins restraint rather
+  than use: a notification is an interruption, and one that arrives for
+  everything stops meaning anything.
 
 | Variable                | Default                                   | Description                                       |
 | ----------------------- | ----------------------------------------- | ------------------------------------------------- |

@@ -23,6 +23,13 @@ import {
     type AgentGraph,
 } from "../src/llm/agentGraph";
 import { getCurrentTime } from "../src/llm/tools/time";
+import {
+    AGENT_NOTIFICATION_KIND,
+    createNotifyTool,
+} from "../src/llm/tools/notify";
+import type { NotificationInput, NotifyOutcome } from "../src/notify/types";
+import type { NotificationService } from "../src/notify/service";
+import type { AppNotification } from "@lukestanbery/jarvis-auth";
 
 /** Returns scripted responses in order, recording every call's input history. */
 class ScriptedChatModel extends BaseChatModel {
@@ -185,6 +192,84 @@ describe("createAgentGraph", () => {
         controller.abort();
         await expect(turn).rejects.toThrow();
         expect(seen?.aborted).toBe(true);
+    });
+
+    it("hands a tool the turn's own user through configurable (#139)", async () => {
+        // The tool's own suite builds its runtime by hand; this pins the seam
+        // the whole feature rests on — that the `configurable` `runAgent`
+        // stamps reaches the tool *through the graph*, so a notification is
+        // addressed to the user who asked and never to another account. It
+        // also checks the honest result: the model is told where the
+        // notification is, not that it appeared.
+        const calls: { userId: number; input: NotificationInput }[] = [];
+        const service = {
+            async notify(userId: number, input: NotificationInput) {
+                calls.push({ userId, input });
+                return {
+                    notification: {
+                        id: "n1",
+                        userId,
+                        kind: input.kind,
+                        priority: input.priority ?? "normal",
+                        title: input.title,
+                        body: null,
+                        state: "pending",
+                        requiresAnswer: false,
+                        dedupeKey: null,
+                        answer: null,
+                        createdAt: "2026-10-16T12:00:00.000Z",
+                        deliveredAt: null,
+                        settledAt: null,
+                    } satisfies AppNotification,
+                    delivered: 0,
+                    suppressed: "absent",
+                } satisfies NotifyOutcome;
+            },
+        } as unknown as NotificationService;
+        const model = new ScriptedChatModel([
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        name: "sendNotification",
+                        args: { title: "The long job is done" },
+                        id: "call-1",
+                    },
+                ],
+            }),
+            new AIMessage({ content: "I let you know." }),
+        ]);
+        const graph = createAgentGraph({
+            model: model as unknown as Parameters<
+                typeof createAgentGraph
+            >[0]["model"],
+            tools: [createNotifyTool({ service })] as StructuredToolInterface[],
+            checkpointer: new MemorySaver(),
+        });
+        const events = await collect(
+            streamAgentTurn(graph, "tell me when it is done", "t-notify", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+                configurable: { userId: 7 },
+            }),
+        );
+
+        expect(calls).toEqual([
+            {
+                userId: 7,
+                input: {
+                    kind: AGENT_NOTIFICATION_KIND,
+                    title: "The long job is done",
+                },
+            },
+        ]);
+        expect(events[1]).toMatchObject({
+            type: "toolResult",
+            name: "sendNotification",
+        });
+        expect((events[1] as { output: string }).output).toContain(
+            "not pushed",
+        );
     });
 
     it("never streams messages from a model invoked inside a tool (#70)", async () => {

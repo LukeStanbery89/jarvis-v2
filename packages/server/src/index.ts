@@ -202,23 +202,15 @@ logger.info(
         : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
 );
 
-initAgentGraph({
-    attachments,
-    vision: createVisionModel(getLlmConfig()),
-    vlLimiter,
-    ...(searchDeps ? { search: searchDeps } : {}),
-    ...(weatherDeps ? { weather: weatherDeps } : {}),
-    ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
-    ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
-});
 const store = openAppDatabase(appConfig.appDbPath);
 
 // Notifications (#139): the connection registry is built here and handed to
-// both the REST surface (which needs it to know whether the user is reachable)
-// and the chat server (which fills it in as sockets authenticate). Absent when
-// `JARVIS_NOTIFY=off`, which unmounts the routes and the delivery wiring
-// together — a half-wired surface would record notifications nobody can be
-// told about.
+// the REST surface (which needs it to know whether the user is reachable), the
+// chat server (which fills it in as sockets authenticate), and the agent (the
+// `sendNotification` tool, one of the registry's consumers below). Absent when
+// `JARVIS_NOTIFY=off`, which unmounts the routes, the delivery wiring, and the
+// tool together — a half-wired surface would record notifications nobody can
+// be told about.
 const notifyConfig = appConfig.notify;
 const notificationHub = notifyConfig ? createNotificationHub() : null;
 const notifications =
@@ -231,6 +223,17 @@ const notifications =
               deliveriesPerWindow: notifyConfig.deliveriesPerMin,
           })
         : undefined;
+
+initAgentGraph({
+    attachments,
+    vision: createVisionModel(getLlmConfig()),
+    vlLimiter,
+    ...(searchDeps ? { search: searchDeps } : {}),
+    ...(weatherDeps ? { weather: weatherDeps } : {}),
+    ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
+    ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
+    ...(notifications ? { notifications: { service: notifications } } : {}),
+});
 
 const webApp = createApp(
     store,

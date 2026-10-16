@@ -332,15 +332,23 @@ browser grants permission per origin, and it cannot be synced, so a server
 preference would let the UI claim "on" while that browser would refuse. Web
 Push — which genuinely needs server-side state — is phase 3.
 
-**Testing it.** With the `jarvis.debug` gate on, the expanded list shows a
-_Send a test notification_ button. It raises a notification through this
-browser's own credential and prints what the server did with it — pushed to N
-clients, or recorded only because no client was connected, quiet hours held it
-back, or the delivery budget was spent. That single line separates "the server
-did not push it" from "the client received it and did not show it", which is
-otherwise unresolvable from a missing banner; doing the same thing with `curl`
-also requires a device token and the right account, which is exactly the sort
-of thing that makes a test inconclusive.
+**Testing it.** In a development build, with the `jarvis.debug` gate on, the
+expanded list shows a _Send a test notification_ button — it is behind
+`import.meta.env.DEV` as well, so a shipped bundle carries neither the branch
+nor the button. It raises a notification through this browser's own credential
+and prints what the server did with it — pushed to N clients, or recorded only
+because no client was connected, quiet hours held it back, or the delivery
+budget was spent. That single line separates "the server did not push it" from
+"the client received it and did not show it", which is otherwise unresolvable
+from a missing banner; doing the same thing with `curl` also requires a device
+token and the right account, which is exactly the sort of thing that makes a
+test inconclusive.
+
+In a shipped client the same test runs through the assistant instead — "send me
+a test notification" calls the `sendNotification` tool (#139), which is a real
+producer exercising the same service the button does. The button stays because
+it costs no model call and still works when the model path is the thing that is
+broken.
 
 Everything about raising an OS notification is guarded: an environment with no
 `Notification` global (the node test env, an old browser) hides the toggle

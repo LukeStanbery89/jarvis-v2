@@ -19,6 +19,12 @@
  * a guest is charged to two stricter buckets — a per-`sessionId` one and an
  * aggregate per-address one — so guests get a much tighter, reconnect-proof
  * allowance. The refusal wording is shared, so both gates read the same.
+ *
+ * {@link requireSignedInUser} is that same identity check on its own, for a
+ * tool bounded by something other than a call quota (`sendNotification`,
+ * #139 — its interruptions and rows are capped downstream by the notification
+ * service). Splitting it out means a fifth tool refuses a guest in exactly the
+ * words the other four use, rather than in a second phrasing of the same idea.
  */
 import type { ToolRuntime } from "@langchain/core/tools";
 import type { QuotaAdmission } from "../../rate/fixedWindowQuota";
@@ -106,6 +112,27 @@ function signInRequiredText(subject: string): string {
 }
 
 /**
+ * Runs the owner guard alone: a guest socket has no verified `userId`, so the
+ * call is refused with the shared sign-in text.
+ *
+ * For a tool whose only gate is identity — one bounded by something other than
+ * a call quota (`sendNotification`, #139, whose interruptions the notification
+ * service caps). {@link requireMeteredUser} is this guard plus a per-user
+ * quota, so both refusals read identically.
+ */
+export function requireSignedInUser(
+    runtime: ToolRuntime,
+    names: { subject: string; logName: string },
+): MeteredGate {
+    const owner = runtime.configurable?.userId;
+    if (typeof owner !== "number" || !Number.isInteger(owner)) {
+        logger.warn(`${names.logName} called without a user id`);
+        return { ok: false, text: signInRequiredText(names.subject) };
+    }
+    return { ok: true, userId: owner };
+}
+
+/**
  * Runs the two gates every metered tool opens with: the owner guard (a
  * guest socket has no verified `userId` — refuse with sign-in text) and the
  * per-user quota (refused calls get the wait, floored and model-facing).
@@ -122,19 +149,18 @@ export function requireMeteredUser(
     quota: QuotaGate,
     names: { subject: string; logName: string },
 ): MeteredGate {
-    const owner = runtime.configurable?.userId;
-    if (typeof owner !== "number" || !Number.isInteger(owner)) {
-        logger.warn(`${names.logName} called without a user id`);
-        return { ok: false, text: signInRequiredText(names.subject) };
+    const guard = requireSignedInUser(runtime, names);
+    if (!guard.ok) {
+        return guard;
     }
-    const admission = quota.tryAcquire(owner);
+    const admission = quota.tryAcquire(guard.userId);
     if (!admission.ok) {
         return {
             ok: false,
             text: rateLimitedText(names.subject, admission.retryAfterMs),
         };
     }
-    return { ok: true, userId: owner };
+    return guard;
 }
 
 /**

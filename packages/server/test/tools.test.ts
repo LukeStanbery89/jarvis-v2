@@ -8,6 +8,7 @@ import { DEFAULT_HA_LIGHT_TOKENS } from "../src/config";
 import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 import type { HomeAssistantProvider } from "../src/llm/tools/homeAssistant/types";
 import type { WikipediaProvider } from "../src/llm/tools/wikipedia/types";
+import type { NotificationService } from "../src/notify/service";
 
 const CASES: Array<[string, number]> = [
     ["42", 42],
@@ -162,5 +163,14 @@ describe("createTools wiring", () => {
                 },
             }),
         ).toContain("wikipedia");
+    });
+
+    it("registers sendNotification only when notifications are wired (#139)", () => {
+        expect(names()).not.toContain("sendNotification");
+        expect(
+            names({
+                notifications: { service: {} as NotificationService },
+            }),
+        ).toContain("sendNotification");
     });
 });

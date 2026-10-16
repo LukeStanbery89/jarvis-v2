@@ -41,11 +41,11 @@ export interface NotificationsProps {
     onDismiss(id: string): void;
     /**
      * Raises a test notification with this browser's own credential (#139).
-     * Only rendered under the `jarvis.debug` gate. That gate is a debug
-     * switch rather than a build-time one, so this is reachable in a
-     * production bundle by a user who turns debug on — deliberately, because
-     * the built client is where the channel gets exercised; it can only ever
-     * create a notification for the caller's own account.
+     * Development only — the button is rendered under `import.meta.env.DEV`
+     * as well as the `jarvis.debug` flag, so a production bundle has no trace
+     * of it. A shipped build tests this path by asking the assistant
+     * ("send me a test notification"), which exercises a real producer rather
+     * than a debug affordance.
      */
     onSendTest(): void;
     /** The last test outcome, so the panel can say what happened to it. */
@@ -73,7 +73,10 @@ export function Notifications({
     onSendTest,
     lastTest,
 }: NotificationsProps) {
-    const showTest = debugEnabled();
+    // Development only: a shipped bundle carries neither the branch nor the
+    // button (Vite folds `import.meta.env.DEV` to `false`), because a real
+    // producer now exists to exercise the channel in production.
+    const showTest = import.meta.env.DEV && debugEnabled();
     return (
         <>
             {banner && (
