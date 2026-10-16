@@ -327,8 +327,15 @@ export interface NotificationLedger {
         options?: { answer?: string },
     ): AppNotification | null;
     /**
-     * Deletes the oldest notifications past `keep` for a user, so a long-lived
+     * Trims a user's notifications to the newest `keep`, so a long-lived
      * instance cannot grow the table without bound.
+     *
+     * Settled rows are evicted first — they are the ones the user is finished
+     * with — and only if that is not enough does the oldest survivor go,
+     * whatever its state. The ceiling therefore holds for the *table*, which
+     * is the point: `pending` rows are created precisely when nobody is
+     * listening, so a rule that only trimmed settled rows would let an offline
+     * client grow a user's table without bound.
      *
      * @returns The number of rows deleted.
      */
@@ -727,6 +734,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectNotificationsWithDismissed: Database.Statement;
         countUnreadNotifications: Database.Statement;
         settleNotification: Database.Statement;
+        pruneSettledNotifications: Database.Statement;
         pruneNotifications: Database.Statement;
     };
 
@@ -842,7 +850,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             ),
             countUnreadNotifications: db.prepare(
-                "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN ('read', 'dismissed')",
+                "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
             ),
             // One statement covers every transition: the terminal guard lives
             // in the WHERE clause, so a late duplicate ack touches no row and
@@ -851,8 +859,19 @@ export class SqliteAppDatabase implements AppDatabase {
             settleNotification: db.prepare(
                 "UPDATE notifications SET state = ?, answer = COALESCE(?, answer), delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, settled_at = CASE WHEN ? IN ('read', 'answered', 'dismissed') THEN ? ELSE settled_at END WHERE user_id = ? AND id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
             ),
+            // Two passes, because the ceiling has to hold for the table and
+            // not merely for its settled rows: a client that is repeatedly
+            // offline creates `pending` rows no user has seen, and a rule that
+            // only trimmed settled rows would let those grow without bound.
+            // The first pass evicts settled rows that fall outside the newest
+            // `keep` rows *overall*, so an unsettled row is only reached by the
+            // second pass when unsettled rows alone exceed the ceiling — i.e.
+            // exactly when there is no alternative.
+            pruneSettledNotifications: db.prepare(
+                "DELETE FROM notifications WHERE user_id = ? AND state != 'pending' AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
+            ),
             pruneNotifications: db.prepare(
-                "DELETE FROM notifications WHERE user_id = ? AND state != 'pending' AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? AND state != 'pending' ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
         };
     }
@@ -1262,12 +1281,18 @@ export class SqliteAppDatabase implements AppDatabase {
     }
 
     pruneNotifications(userId: number, keep: number): number {
-        const result = this.statements.pruneNotifications.run(
+        const limit = Math.max(0, keep);
+        const settled = this.statements.pruneSettledNotifications.run(
             userId,
             userId,
-            Math.max(0, keep),
+            limit,
         );
-        return result.changes;
+        const excess = this.statements.pruneNotifications.run(
+            userId,
+            userId,
+            limit,
+        );
+        return settled.changes + excess.changes;
     }
 
     close(): void {

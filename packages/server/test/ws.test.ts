@@ -1656,6 +1656,29 @@ describe("notification push wiring (#139)", () => {
         expect(hub.isPresent(user.id)).toBe(false);
     });
 
+    it("does not register a socket that authenticates before announcing", async () => {
+        const user = store.createUser("auth-first", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "early",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const client = await connect(target());
+        // The protocol allows `auth` to open the socket, in which case `hello`
+        // is rejected as late: the socket has no declared capabilities and is
+        // therefore never addressable. Safe by default — the frame is not
+        // pushed to a client that never claimed to understand it.
+        client.send({ type: "auth", token: material.token });
+        await client.next(); // authResult
+        client.send({ type: "hello", capabilities: ["notification"] });
+        await settle();
+
+        expect(hub.isPresent(user.id)).toBe(false);
+    });
+
     it("does not register a socket that did not declare the capability", async () => {
         const user = store.createUser("unaware", "unused", "user");
         const material = generateDeviceToken();

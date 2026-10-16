@@ -145,7 +145,7 @@ export function createNotificationRouter(
             const jarv = authed(req).jarv;
             const { notifications, unread } = service.list(jarv.user.id, {
                 limit: parseLimit(req.query.limit),
-                includeDismissed: req.query.includeDismissed === "true",
+                includeDismissed: parseBoolean(req.query.includeDismissed),
             });
             res.status(200).json({
                 notifications: notifications.map(toNotificationResponse),
@@ -256,13 +256,13 @@ function notificationInputFrom(body: unknown): {
             ? { priority: priority as AppNotification["priority"] }
             : {}),
         ...(candidate.body !== undefined
-            ? { body: requireString(candidate.body, "body") }
+            ? { body: optionalString(candidate.body, "body") }
             : {}),
         ...(candidate.requiresAnswer !== undefined
             ? { requiresAnswer: candidate.requiresAnswer === true }
             : {}),
         ...(candidate.dedupeKey !== undefined
-            ? { dedupeKey: requireString(candidate.dedupeKey, "dedupeKey") }
+            ? { dedupeKey: optionalString(candidate.dedupeKey, "dedupeKey") }
             : {}),
     };
 }
@@ -271,6 +271,20 @@ function notificationInputFrom(body: unknown): {
 function requireString(value: unknown, field: string): string {
     if (typeof value !== "string" || value.trim().length === 0) {
         throw new NotificationInputError(`${field} must be a non-empty string`);
+    }
+    return value.trim();
+}
+
+/**
+ * Requires a string, but tolerates an empty one.
+ *
+ * The spec puts no `minLength` on `body`/`dedupeKey`, and an empty body is a
+ * producer saying "no detail" — `normalizeNotificationInput` drops it, so
+ * rejecting it here would be a 400 for a request the contract accepts.
+ */
+function optionalString(value: unknown, field: string): string {
+    if (typeof value !== "string") {
+        throw new NotificationInputError(`${field} must be a string`);
     }
     return value.trim();
 }
@@ -292,16 +306,35 @@ function notificationId(value: unknown): string {
     return value;
 }
 
-/** Clamps a `limit` query parameter into the page bounds. */
+/**
+ * Clamps a `limit` query parameter into the page bounds.
+ *
+ * Accepts a number as well as a string because the contract validator runs
+ * with `coerceTypes`, which rewrites `req.query` in place — by the time a
+ * handler sees `limit` it is already an integer, and a `typeof value !==
+ * "string"` guard silently ignored every real request the spec advertises.
+ */
 function parseLimit(value: unknown): number {
-    if (typeof value !== "string" || value.length === 0) {
-        return DEFAULT_LIMIT;
-    }
-    const parsed = Number(value);
+    const parsed =
+        typeof value === "number"
+            ? value
+            : typeof value === "string" && value.length > 0
+              ? Number(value)
+              : Number.NaN;
     if (!Number.isInteger(parsed) || parsed < 1) {
         return DEFAULT_LIMIT;
     }
     return Math.min(parsed, MAX_LIMIT);
+}
+
+/**
+ * Reads a boolean query parameter, in either the coerced or the raw form.
+ *
+ * Same reason as {@link parseLimit}: after validation `includeDismissed` is a
+ * real boolean, so `=== "true"` was always false and the knob did nothing.
+ */
+function parseBoolean(value: unknown): boolean {
+    return value === true || value === "true";
 }
 
 /** Maps a thrown error onto the `{ error }` shape the API promises. */

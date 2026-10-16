@@ -119,6 +119,15 @@ export interface NotificationChannel {
 }
 
 /**
+ * Longest producer coalescing key.
+ *
+ * Mirrors the REST schema's bound (`NotificationInput.dedupeKey`); it is not a
+ * protocol constant because the wire never carries it — it is bookkeeping
+ * between a producer and the store, so the server owns the limit.
+ */
+const MAX_DEDUPE_KEY_LENGTH = 64;
+
+/**
  * Rejected producer input: an over-long field, or an empty kind/title.
  *
  * Thrown rather than truncated, because a notification whose text was silently
@@ -170,6 +179,11 @@ export function normalizeNotificationInput(
         );
     }
     const dedupeKey = input.dedupeKey?.trim();
+    if (dedupeKey !== undefined && dedupeKey.length > MAX_DEDUPE_KEY_LENGTH) {
+        throw new NotificationInputError(
+            `dedupeKey must be at most ${MAX_DEDUPE_KEY_LENGTH} characters`,
+        );
+    }
     return {
         kind,
         priority: input.priority ?? "normal",

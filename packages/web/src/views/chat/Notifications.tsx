@@ -41,8 +41,11 @@ export interface NotificationsProps {
     onDismiss(id: string): void;
     /**
      * Raises a test notification with this browser's own credential (#139).
-     * Only rendered under the `jarvis.debug` gate — it is a development
-     * affordance for exercising the channel, not a product feature.
+     * Only rendered under the `jarvis.debug` gate. That gate is a debug
+     * switch rather than a build-time one, so this is reachable in a
+     * production bundle by a user who turns debug on — deliberately, because
+     * the built client is where the channel gets exercised; it can only ever
+     * create a notification for the caller's own account.
      */
     onSendTest(): void;
     /** The last test outcome, so the panel can say what happened to it. */

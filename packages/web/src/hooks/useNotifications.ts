@@ -57,6 +57,8 @@ export interface NotificationsState {
     unread: number;
     /** Whether a fetch is in flight (the list can render empty meanwhile). */
     loading: boolean;
+    /** Whether the first page load has completed (see the options doc). */
+    loaded: boolean;
     /** Why the last call failed, if it did. */
     error: string | null;
     /** Feeds one live `/ws` frame into the list. */
@@ -65,7 +67,11 @@ export interface NotificationsState {
     markRead(id: string): void;
     /** Dismisses one, optimistically. */
     dismiss(id: string): void;
-    /** Re-reads the page (after a reconnect, or from a manual retry). */
+    /**
+     * Re-reads the page. The view calls it when the socket reconnects, since a
+     * notification raised while the connection was down was pushed to nobody
+     * and the list is the only place it can appear.
+     */
     refresh(): void;
     /**
      * Raises a test notification through this browser's own credential
@@ -85,11 +91,15 @@ export interface NotificationsState {
  *
  * @param token - The device credential the REST calls authenticate with.
  */
-export function useNotifications(token: string): NotificationsState {
+export function useNotifications(options: {
+    token: string;
+}): NotificationsState {
+    const { token } = options;
     const [notifications, setNotifications] = useState<ClientNotification[]>(
         [],
     );
     const [loading, setLoading] = useState(false);
+    const [loaded, setLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [lastTest, setLastTest] = useState<{
         delivered: number;
@@ -110,6 +120,7 @@ export function useNotifications(token: string): NotificationsState {
                         page.notifications.map(toClientNotification),
                     ),
                 );
+                setLoaded(true);
                 setError(null);
             })
             .catch((err: unknown) => {
@@ -153,7 +164,12 @@ export function useNotifications(token: string): NotificationsState {
             state: NotificationState,
             call: () => Promise<unknown>,
         ) => {
-            const before = notifications;
+            debugLog("notify", `${state} id=${id}`);
+            // Snapshot the *row*, not the list: a notification that arrives
+            // between this click and a failure must survive the rollback, and
+            // restoring a whole-list snapshot would silently discard it — and
+            // nothing refetches mid-session, so it would stay gone.
+            const before = notifications.find((item) => item.id === id);
             setNotifications((current) =>
                 settleNotification(current, id, state),
             );
@@ -161,7 +177,11 @@ export function useNotifications(token: string): NotificationsState {
                 // Roll back to what the server still believes: an optimistic
                 // dismissal that never landed is a lie the next fetch would
                 // expose anyway, so it is undone immediately and reported.
-                setNotifications(before);
+                setNotifications((current) =>
+                    before === undefined
+                        ? current
+                        : replaceNotification(current, before),
+                );
                 setError(
                     err instanceof Error
                         ? err.message
@@ -228,6 +248,7 @@ export function useNotifications(token: string): NotificationsState {
         banner,
         unread,
         loading,
+        loaded,
         error,
         acceptFrame,
         markRead,
@@ -236,6 +257,19 @@ export function useNotifications(token: string): NotificationsState {
         sendTest,
         lastTest,
     };
+}
+
+/**
+ * Replaces one row with a known previous version, leaving the rest alone.
+ *
+ * Used for a failed settle's rollback, where restoring the whole list would
+ * drop anything merged in the meantime.
+ */
+function replaceNotification(
+    list: ClientNotification[],
+    previous: ClientNotification,
+): ClientNotification[] {
+    return list.map((item) => (item.id === previous.id ? previous : item));
 }
 
 /** Maps a REST record onto the client shape (state included). */

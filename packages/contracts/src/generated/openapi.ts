@@ -2093,6 +2093,15 @@ export interface operations {
                     "application/json": components["schemas"]["NotificationSettlement"];
                 };
             };
+            /** @description A malformed notification id (over-long). Normally the shape validator answers this before the route runs. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Missing or invalid credentials. */
             401: {
                 headers: {
@@ -2132,6 +2141,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NotificationSettlement"];
+                };
+            };
+            /** @description A malformed notification id (over-long). Normally the shape validator answers this before the route runs. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Missing or invalid credentials. */

@@ -212,7 +212,7 @@ describe("notification store (#139)", () => {
         );
     });
 
-    it("prunes settled notifications but never an undelivered one", () => {
+    it("prunes settled notifications first, keeping an undelivered one when it can", () => {
         for (let i = 0; i < 5; i += 1) {
             store.createNotification(userId, {
                 id: `read-${i}`,
@@ -223,6 +223,8 @@ describe("notification store (#139)", () => {
             });
             store.setNotificationState(userId, `read-${i}`, "read");
         }
+        // Newest, and never delivered: the one row the ceiling must not take
+        // while it has a settled alternative.
         store.createNotification(userId, {
             id: "pending",
             kind: "k",
@@ -231,14 +233,28 @@ describe("notification store (#139)", () => {
             createdAt: "2026-10-15T09:00:00.000Z",
         });
         const deleted = store.pruneNotifications(userId, 2);
-        expect(deleted).toBe(3);
+        expect(deleted).toBe(4);
         const remaining = store
             .listNotifications(userId, { includeDismissed: true })
             .map((n) => n.id);
-        expect(remaining).toContain("pending");
-        expect(remaining).toContain("read-4");
-        expect(remaining).toContain("read-3");
-        expect(remaining).not.toContain("read-0");
+        expect(remaining).toEqual(["pending", "read-4"]);
+    });
+
+    it("still bounds the table when the pending rows are the ones piling up", () => {
+        for (let i = 0; i < 4; i += 1) {
+            store.createNotification(userId, {
+                id: `p${i}`,
+                kind: "k",
+                priority: "low",
+                title: `p${i}`,
+                createdAt: `2026-10-15T0${i}:00:00.000Z`,
+            });
+        }
+        expect(store.pruneNotifications(userId, 2)).toBe(2);
+        expect(store.listNotifications(userId).map((n) => n.id)).toEqual([
+            "p3",
+            "p2",
+        ]);
     });
 });
 
@@ -329,6 +345,77 @@ describe("notification service policy (#139)", () => {
         });
         expect(loud.suppressed).toBeNull();
         expect(socket.frames).toHaveLength(1);
+    });
+
+    it("treats a quiet-hours window as half-open across midnight", async () => {
+        const prefs = [
+            {
+                key: "notify.quietHours",
+                value: { start: "22:00", end: "07:00" },
+            },
+        ];
+        // Local-time instants: quiet hours are evaluated against the server's
+        // clock, so the boundaries have to be built the same way.
+        const cases: Array<[Date, boolean]> = [
+            [new Date(2026, 9, 15, 21, 59), false],
+            [new Date(2026, 9, 15, 22, 0), true],
+            [new Date(2026, 9, 16, 3, 0), true],
+            [new Date(2026, 9, 16, 6, 59), true],
+            [new Date(2026, 9, 16, 7, 0), false],
+            [new Date(2026, 9, 16, 12, 0), false],
+        ];
+        for (const [at, quiet] of cases) {
+            const { store, hub, service, socket } = makeService({ at });
+            const userId = makeUser(store);
+            hub.add(userId, socket);
+            store.setPrefs(userId, prefs);
+            const outcome = await service.notify(userId, {
+                kind: "k",
+                priority: "normal",
+                title: "when?",
+            });
+            expect([at.getHours(), outcome.suppressed]).toEqual([
+                at.getHours(),
+                quiet ? "quiet-hours" : null,
+            ]);
+        }
+    });
+
+    it("handles a non-wrapping quiet-hours window", async () => {
+        const { store, hub, service, socket } = makeService({
+            at: new Date(2026, 9, 15, 12, 30),
+        });
+        const userId = makeUser(store);
+        hub.add(userId, socket);
+        store.setPrefs(userId, [
+            {
+                key: "notify.quietHours",
+                value: { start: "12:00", end: "13:00" },
+            },
+        ]);
+        expect(
+            (await service.notify(userId, { kind: "k", title: "lunch" }))
+                .suppressed,
+        ).toBe("quiet-hours");
+
+        const outside = makeService({ at: new Date(2026, 9, 15, 13, 30) });
+        const otherUser = makeUser(outside.store);
+        outside.hub.add(otherUser, outside.socket);
+        outside.store.setPrefs(otherUser, [
+            {
+                key: "notify.quietHours",
+                value: { start: "12:00", end: "13:00" },
+            },
+        ]);
+        expect(
+            (
+                await outside.service.notify(otherUser, {
+                    kind: "k",
+                    title: "after lunch",
+                })
+            ).suppressed,
+        ).toBeNull();
+        expect(outside.socket.frames).toHaveLength(1);
     });
 
     it("ignores a malformed quiet-hours pref rather than going silent", async () => {
@@ -527,6 +614,50 @@ describe("notification routes (#139)", () => {
         expect(after.body.unread).toBe(0);
     });
 
+    it("honours limit and includeDismissed from the query string", async () => {
+        // The contract validator coerces `req.query` in place, so these
+        // assertions only hold if the handler reads the *coerced* types — the
+        // bug this test exists for silently ignored both knobs.
+        for (const [id, at] of [
+            ["a", "2026-10-15T10:00:00.000Z"],
+            ["b", "2026-10-15T11:00:00.000Z"],
+            ["c", "2026-10-15T12:00:00.000Z"],
+        ]) {
+            store.createNotification(userId, {
+                id,
+                kind: "k",
+                priority: "low",
+                title: id,
+                createdAt: at,
+            });
+        }
+        store.setNotificationState(userId, "b", "dismissed");
+
+        const all = await request(buildApp())
+            .get("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .expect(200);
+        expect(all.body.notifications.map((n: { id: string }) => n.id)).toEqual(
+            ["c", "a"],
+        );
+
+        const limited = await request(buildApp())
+            .get("/api/notifications?limit=1")
+            .set("authorization", `Bearer ${token}`)
+            .expect(200);
+        expect(
+            limited.body.notifications.map((n: { id: string }) => n.id),
+        ).toEqual(["c"]);
+
+        const withDismissed = await request(buildApp())
+            .get("/api/notifications?includeDismissed=true")
+            .set("authorization", `Bearer ${token}`)
+            .expect(200);
+        expect(
+            withDismissed.body.notifications.map((n: { id: string }) => n.id),
+        ).toEqual(["c", "b", "a"]);
+    });
+
     it("answers an answerable notification and rejects the wrong kinds", async () => {
         const created = await request(buildApp())
             .post("/api/notifications")
@@ -690,5 +821,63 @@ describe("notification push, end to end (#139)", () => {
         expect(received).toHaveLength(1);
         socket.close();
         listening.close();
+    });
+});
+
+describe("notification hub (#139)", () => {
+    it("tracks a user's sockets and counts what a push reached", () => {
+        const hub = createNotificationHub();
+        const first = fakeSocket();
+        const second = fakeSocket();
+        hub.add(1, first);
+        hub.add(1, second);
+        expect(hub.isPresent(1)).toBe(true);
+        expect(hub.presentUsers()).toBe(1);
+        expect(hub.deliver(1, { chunk: "hi" })).toBe(2);
+        expect(first.frames).toHaveLength(1);
+        expect(second.frames).toHaveLength(1);
+    });
+
+    it("moves a socket when it is re-registered under another user", () => {
+        const hub = createNotificationHub();
+        const socket = fakeSocket();
+        hub.add(1, socket);
+        hub.add(2, socket);
+        // One socket is addressable by exactly one user, or a push would leak
+        // across accounts.
+        expect(hub.isPresent(1)).toBe(false);
+        expect(hub.isPresent(2)).toBe(true);
+        expect(hub.deliver(1, { chunk: "no" })).toBe(0);
+        expect(hub.deliver(2, { chunk: "yes" })).toBe(1);
+    });
+
+    it("forgets a socket idempotently and skips a closed one", () => {
+        const hub = createNotificationHub();
+        const socket = fakeSocket();
+        hub.add(1, socket);
+        hub.remove(socket);
+        hub.remove(socket);
+        expect(hub.isPresent(1)).toBe(false);
+        expect(hub.presentUsers()).toBe(0);
+
+        const gone = { ...fakeSocket(), readyState: 3 };
+        hub.add(1, gone);
+        expect(hub.deliver(1, { chunk: "into the void" })).toBe(0);
+    });
+
+    it("survives a socket whose write throws", () => {
+        const hub = createNotificationHub();
+        const healthy = fakeSocket();
+        const broken = {
+            readyState: 1,
+            send() {
+                throw new Error("write after close");
+            },
+        };
+        hub.add(1, broken);
+        hub.add(1, healthy);
+        // One dead socket must not cost the others their copy.
+        expect(hub.deliver(1, { chunk: "still delivered" })).toBe(1);
+        expect(healthy.frames).toHaveLength(1);
     });
 });

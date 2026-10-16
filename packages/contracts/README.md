@@ -38,7 +38,7 @@ validate representative real frames against each message payload.
 
 ## REST spec inventory (`spec/openapi.yaml`)
 
-26 operations covering `GET /health`, the 25 `/api` management routes, and the
+31 operations covering `GET /health`, the 30 `/api` management routes, and the
 `POST /api/attachments` upload route (#10). The management routes mirror the
 handlers in `packages/server/src/http/authRoutes.ts`; the attachment route is
 owned by `packages/server/src/http/attachmentRoutes.ts`:
@@ -55,13 +55,17 @@ owned by `packages/server/src/http/attachmentRoutes.ts`:
 | `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                       |
 | `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`            |
 | `ChatSessions`   | `GET /api/sessions`, `DELETE /api/sessions/{threadId}`                                 |
+| `Notifications`  | `GET`/`POST /api/notifications`, `POST /api/notifications/{id}/{read,dismiss,answer}`  |
 
 Key shapes in `components.schemas`: `User`, `Device` (nullable `lastSeenAt`),
 `IssuedDevice` (one-time `token`), `AuthResult` (shared by bootstrap + device
 login), `Session` (optional `csrfToken` for cookie vs bearer), `SessionLogin`,
 `MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `Error`, plus the
 attachment trio (`AttachmentUpload` with its deliberate no-`pattern` base64
-field, `AttachmentCreated`, `AttachmentTooLarge`). Auth is a
+field, `AttachmentCreated`, `AttachmentTooLarge`), and the notification set
+(`NotificationInput`, `Notification`, `NotificationList`,
+`NotificationSettlement`, `NotificationDelivery` — the last carrying the
+`delivered` count and the `suppressed` gate, #139). Auth is a
 device-token bearer OR the `jarvis_session` cookie (`bearerToken` and `session`
 security schemes), with optional `x-csrf-token` on cookie-authenticated state
 changes and a required `x-bootstrap-token` on bootstrap. Error responses reuse
@@ -119,13 +123,13 @@ check:endpoints` regenerates the endpoint tables the same way (`build`
 
 ## WS spec inventory (`spec/asyncapi.yaml`)
 
-One channel (`/ws`), two operations, fourteen messages mirroring
+One channel (`/ws`), two operations, fifteen messages mirroring
 `@lukestanbery/jarvis-protocol`'s types:
 
-| Operation            | Direction     | Messages                                                                                                                                                                          |
-| -------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time) |
-| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`                                                                            |
+| Operation            | Direction     | Messages                                                                                                                                                                           |
+| -------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time)  |
+| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`, `notification` (out-of-turn, only to sockets that declared the capability) |
 
 A client may open the socket with either the `hello` capability announcement or
 the `auth` handshake (and `auth` may also come immediately after `hello`); any

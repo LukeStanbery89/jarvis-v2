@@ -150,10 +150,11 @@ export function createNotificationService(
                 createdAt: at.toISOString(),
             });
             // Housekeeping happens once, on the way in: the ceiling is about
-            // the table's size, not about this notification's fate, and a
-            // notification that never gets delivered is exactly the one a
-            // later prune must not be able to evict first. Only settled rows
-            // are eligible.
+            // the table's size, not about this notification's fate. Settled
+            // rows are evicted first, so an undelivered notification is the
+            // last thing a prune takes — but it is not exempt, because a
+            // client that is repeatedly offline would otherwise grow the table
+            // without bound (see `pruneNotifications`).
             const pruned = prune(store, userId, maxPerUser);
             if (pruned > 0) {
                 logger.debug(
@@ -181,6 +182,11 @@ export function createNotificationService(
                 };
             }
 
+            // Charged before the channels run, so the budget bounds delivery
+            // *attempts*: a socket that closes between the presence check and
+            // the write still costs a token. That is the conservative
+            // direction — the budget exists to bound interruptions, and an
+            // attempt is one.
             if (!deliveryQuota.tryAcquire(userId).ok) {
                 logger.warn(
                     `notification delivery budget reached for user ${userId}; recorded as pending`,
@@ -416,11 +422,12 @@ function clockMinutes(value: string): number {
 }
 
 /**
- * Trims a user's settled notifications to `maxPerUser`.
+ * Trims a user's notifications to `maxPerUser`.
  *
- * Only settled rows are eligible: an undelivered notification is something the
- * user has not seen yet, and dropping it to save space would lose exactly the
- * thing the store exists for.
+ * Prefers settled rows, which is what makes the common case lossless — but the
+ * ceiling applies to the table (see the ledger's `pruneNotifications`), since
+ * the rows that pile up most easily are the `pending` ones nobody was online
+ * to receive.
  */
 function prune(
     store: NotificationLedger,

@@ -17,7 +17,7 @@
  * threads, so conversations created on other clients appear (empty) and
  * locally-created ones appear before their first server claim.
  */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { StoredCredential } from "../credentials";
 import { mergeSessions } from "../sidebar";
@@ -149,7 +149,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     // Notifications (#139): the list is fetched over REST and merged with the
     // live frames the socket pushes, which is why the hook is called before
     // the client that feeds it.
-    const notificationsUi = useNotifications(credential.token);
+    const notificationsUi = useNotifications({ token: credential.token });
     const [notificationsOpen, setNotificationsOpen] = useState(false);
     // The OS channel (#139 phase 2): a second way to interrupt, for the case
     // where the user is not looking at this tab. Clicking an OS notification
@@ -157,6 +157,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     const browserNotify = useBrowserNotify({
         username: credential.username,
         notifications: notificationsUi.notifications,
+        loaded: notificationsUi.loaded,
         onOpen: notificationsUi.markRead,
     });
 
@@ -209,6 +210,23 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             },
             onAuthRejected,
         });
+
+    // A notification raised while the socket was down was pushed to nobody, so
+    // the list is the only place it can appear. Re-read it when the connection
+    // comes back — skipping the first transition, which is the mount fetch the
+    // hook already makes. This lives here rather than in the hook because the
+    // list hook has to be called before the client whose status it would need.
+    const wasConnected = useRef(false);
+    useEffect(() => {
+        if (status === "connected") {
+            if (wasConnected.current) {
+                notificationsUi.refresh();
+            }
+            wasConnected.current = true;
+        } else {
+            wasConnected.current = false;
+        }
+    }, [notificationsUi, status]);
 
     const { locationOn, locationState, toggleLocation } = useLocationSharing({
         sendLocation,

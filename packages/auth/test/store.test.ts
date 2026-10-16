@@ -558,7 +558,7 @@ describe("notifications", () => {
         expect(store.getNotification(luke.id, "n1")?.state).toBe("pending");
     });
 
-    it("cascades with the user and prunes only settled rows", () => {
+    it("evicts settled rows first, and only reaches pending ones if it must", () => {
         const user = store.createUser("luke", "hash", "owner");
         for (let i = 0; i < 4; i += 1) {
             store.createNotification(user.id, {
@@ -566,10 +566,12 @@ describe("notifications", () => {
                 kind: "k",
                 priority: "low",
                 title: `n${i}`,
-                createdAt: `2026-10-15T1${i}:00:00.000Z`,
+                createdAt: `2026-10-15T0${i}:00:00.000Z`,
             });
             store.setNotificationState(user.id, `n${i}`, "dismissed");
         }
+        // Newest of all, and never delivered: the row a prune must keep if
+        // there is any choice.
         store.createNotification(user.id, {
             id: "keep",
             kind: "k",
@@ -578,12 +580,34 @@ describe("notifications", () => {
             createdAt: "2026-10-15T09:00:00.000Z",
         });
 
-        expect(store.pruneNotifications(user.id, 1)).toBe(3);
+        // Five rows, a ceiling of two: the three settled ones outside the cut
+        // go, and the undelivered row survives because there was a choice.
+        expect(store.pruneNotifications(user.id, 2)).toBe(3);
         expect(
             store
                 .listNotifications(user.id, { includeDismissed: true })
                 .map((n) => n.id),
-        ).toEqual(["n3", "keep"]);
+        ).toEqual(["keep", "n3"]);
+    });
+
+    it("still bounds the table when the pending rows are the ones piling up", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        for (let i = 0; i < 5; i += 1) {
+            // The case retention exists for: nobody was connected, so every
+            // one of these is `pending` and no settled row can absorb the cut.
+            store.createNotification(user.id, {
+                id: `p${i}`,
+                kind: "k",
+                priority: "low",
+                title: `p${i}`,
+                createdAt: `2026-10-15T0${i}:00:00.000Z`,
+            });
+        }
+        expect(store.pruneNotifications(user.id, 2)).toBe(3);
+        expect(store.listNotifications(user.id).map((n) => n.id)).toEqual([
+            "p4",
+            "p3",
+        ]);
     });
 });
 

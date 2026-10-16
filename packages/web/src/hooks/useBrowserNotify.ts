@@ -55,9 +55,11 @@ export interface BrowserNotifyState {
 export function useBrowserNotify(options: {
     username: string;
     notifications: ClientNotification[];
+    /** Whether the first page load has completed (see `useNotifications`). */
+    loaded: boolean;
     onOpen(id: string): void;
 }): BrowserNotifyState {
-    const { username, notifications, onOpen } = options;
+    const { username, notifications, loaded, onOpen } = options;
     const supported = supportsNotifications();
     const [enabled, setEnabled] = useState(false);
     const [permission, setPermission] = useState<string>(() =>
@@ -68,6 +70,8 @@ export function useBrowserNotify(options: {
     /** Latest `onOpen`, so the announcement effect needs no re-subscription. */
     const onOpenRef = useRef(onOpen);
     onOpenRef.current = onOpen;
+    /** Whether the initial page has been folded into `announced`. */
+    const seeded = useRef(false);
 
     // Read the stored preference once per user: a switch of account on the
     // same browser must not inherit the previous user's choice.
@@ -115,6 +119,27 @@ export function useBrowserNotify(options: {
 
     useEffect(() => {
         if (!supported || !enabled) {
+            return;
+        }
+        if (!loaded) {
+            // Nothing to judge yet: until the first page has been read, the
+            // list is empty or mid-fetch, and announcing now would either miss
+            // the backlog's own notifications or interrupt for all of them.
+            return;
+        }
+        if (!seeded.current) {
+            // The first list this session sees is the *backlog* — everything
+            // raised while the tab was closed. Those are marked seen, not
+            // announced: opening a hidden tab must not fire one OS
+            // notification per unread row (#139 phase 2).
+            seeded.current = true;
+            for (const notification of notifications) {
+                announced.current.add(notification.id);
+            }
+            debugLog(
+                "notify",
+                `seeded ${notifications.length} existing notification(s) as seen`,
+            );
             return;
         }
         const hidden =

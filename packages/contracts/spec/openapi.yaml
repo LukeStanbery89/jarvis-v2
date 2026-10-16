@@ -1264,6 +1264,14 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/NotificationSettlement"
+                "400":
+                    description: >-
+                        A malformed notification id (over-long). Normally the
+                        shape validator answers this before the route runs.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
                 "401":
                     description: Missing or invalid credentials.
                     content:
@@ -1296,6 +1304,14 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/NotificationSettlement"
+                "400":
+                    description: >-
+                        A malformed notification id (over-long). Normally the
+                        shape validator answers this before the route runs.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
                 "401":
                     description: Missing or invalid credentials.
                     content:

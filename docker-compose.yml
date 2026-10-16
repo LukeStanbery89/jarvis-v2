@@ -47,6 +47,13 @@ services:
             # diagnosing, `silent` to quieten entirely.
             JARVIS_LOG_LEVEL: "${JARVIS_LOG_LEVEL:-info}"
 
+            # The container's clock is what notification quiet hours are
+            # evaluated against, and the slim base image defaults to UTC — so
+            # without this, "quiet from 22:00" means 22:00 UTC rather than
+            # 22:00 where you live. Set TZ (e.g. America/Chicago) in the
+            # environment or a `.env` next to this file.
+            TZ: "${TZ:-UTC}"
+
             # Defaults to `info` and resolves under /app; the image ships no SPA
             # builds, so leave these unset unless you mount dist/ directories
             # (see below).

@@ -694,7 +694,7 @@ describe("notifications (#139)", () => {
         expect(seen[0]?.requiresAnswer).toBe(true);
     });
 
-    it("drops a malformed notification frame instead of failing the turn", () => {
+    it("drops a malformed notification frame when no turn is in flight", () => {
         const seen: unknown[] = [];
         const harness = makeClient("tok", {
             onNotification: (notification) => seen.push(notification),
@@ -703,7 +703,10 @@ describe("notifications (#139)", () => {
 
         // No `priority` — the shared parser rejects the whole frame, so the
         // client falls into the unrecognized-frame path rather than handing
-        // the view a notification it cannot render.
+        // the view a notification it cannot render. (With a turn in flight
+        // that path fails the prompt — pre-existing behavior for any
+        // unreadable frame, and why the server gates the frame on a declared
+        // capability.)
         socket.receive({
             notification: { id: "x", kind: "k", title: "t", createdAt: "now" },
         });
