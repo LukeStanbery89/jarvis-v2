@@ -1,24 +1,25 @@
 /**
- * The chat sidebar: account header, the location/wake/sign-out controls plus the
- * gear (with its unread badge) that opens the settings panel, the new-chat
- * button, and the merged conversation list.
+ * The chat sidebar: account header, the settings gear (with its unread badge and
+ * the state hints that must stay visible), the new-chat button, and the merged
+ * conversation list.
  *
- * Presentational — props in, events out. The wake button's tooltip comes from
- * the pure `describeWakeState`; the location note/tooltip text from
- * `describeLocationState` (both stay in their `src/` modules so the copy remains
- * node-testable).
+ * Presentational — props in, events out. The four controls that used to live
+ * here (location, wake word, desktop notifications, sign out) moved into the
+ * settings panel (#143), which is why the only icon button left is the gear.
+ * The hints beside it come from the pure modules (`briefLocationState`,
+ * `briefWakeState`), so the copy stays node-testable.
  */
+import { Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import {
-    AudioLines,
-    BellRing,
-    LogOut,
-    MapPin,
-    Settings as SettingsIcon,
-    SquarePen,
-    Trash2,
-} from "lucide-react";
-import { describeLocationState, type LocationUiState } from "../../location";
-import { describeWakeState, type SidebarRow } from "../../sidebar";
+    briefLocationState,
+    describeLocationState,
+    type LocationUiState,
+} from "../../location";
+import {
+    briefWakeState,
+    describeWakeState,
+    type SidebarRow,
+} from "../../sidebar";
 
 /** Props for {@link Sidebar}. */
 export interface SidebarProps {
@@ -32,20 +33,12 @@ export interface SidebarProps {
     streaming: boolean;
     /** The location-sharing preference. */
     locationOn: boolean;
-    /** Why the location pin looks the way it does. */
+    /** Why the location state hint says what it says. */
     locationState: LocationUiState;
     /** Local wake engines exist and the server serves the model. */
     wakeAvailable: boolean;
-    /** The wake-word preference. */
-    wakeOn: boolean;
     /** The controller is actively listening for the wake phrase. */
     wakeArmed: boolean;
-    /** This browser can raise OS notifications at all. */
-    browserNotifyAvailable: boolean;
-    /** The OS-notification preference for this browser. */
-    browserNotifyOn: boolean;
-    /** The OS-notification toggle's label/tooltip (from `browserNotifyState`). */
-    browserNotifyLabel: string;
     /** Notifications neither read nor dismissed (the badge over the gear). */
     unread: number;
     /** Whether the settings panel is showing (the gear's `aria-expanded`). */
@@ -58,14 +51,6 @@ export interface SidebarProps {
     onOpenThread(id: string): void;
     /** Deletes a conversation. */
     onRemoveThread(id: string): void;
-    /** Flips location sharing. */
-    onToggleLocation(): void;
-    /** Flips the wake-word toggle. */
-    onToggleWake(): void;
-    /** Flips the OS-notification toggle (prompting for permission). */
-    onToggleBrowserNotify(): void;
-    /** Signs out. */
-    onSignOut(): void;
 }
 
 /**
@@ -81,73 +66,41 @@ export function Sidebar({
     locationOn,
     locationState,
     wakeAvailable,
-    wakeOn,
     wakeArmed,
-    browserNotifyAvailable,
-    browserNotifyOn,
-    browserNotifyLabel,
     unread,
     settingsOpen,
     onOpenSettings,
     onNewChat,
     onOpenThread,
     onRemoveThread,
-    onToggleLocation,
-    onToggleWake,
-    onToggleBrowserNotify,
-    onSignOut,
 }: SidebarProps) {
-    const wakeStateText = describeWakeState(wakeAvailable, wakeArmed);
+    // Two states must stay visible while the panel is closed: a live wake
+    // detector (a microphone that is on) and a location share that is not
+    // delivering. Everything else moved into the panel with its control.
+    const wakeHint = briefWakeState(wakeAvailable, wakeArmed);
+    const locationHint = locationOn ? briefLocationState(locationState) : null;
     return (
         <aside className="sidebar">
             <div className="sidebar-head">
                 <span>{username}</span>
                 <span className="sidebar-actions">
-                    <button
-                        type="button"
-                        className={
-                            locationState === "active"
-                                ? "icon-btn location active"
-                                : "icon-btn location"
-                        }
-                        aria-pressed={locationOn}
-                        aria-label={describeLocationState(locationState)}
-                        title={describeLocationState(locationState)}
-                        onClick={onToggleLocation}
-                    >
-                        <MapPin size={16} />
-                    </button>
-                    {wakeAvailable && (
-                        <button
-                            type="button"
-                            className={
-                                wakeArmed
-                                    ? "icon-btn location active"
-                                    : "icon-btn location"
-                            }
-                            aria-pressed={wakeOn}
-                            aria-label={wakeStateText}
-                            title={wakeStateText}
-                            onClick={onToggleWake}
+                    {wakeHint !== null && (
+                        <span
+                            className="sidebar-state"
+                            role="status"
+                            title={describeWakeState(wakeAvailable, wakeArmed)}
                         >
-                            <AudioLines size={16} />
-                        </button>
+                            {wakeHint}
+                        </span>
                     )}
-                    {browserNotifyAvailable && (
-                        <button
-                            type="button"
-                            className={
-                                browserNotifyOn
-                                    ? "icon-btn location active"
-                                    : "icon-btn location"
-                            }
-                            aria-pressed={browserNotifyOn}
-                            aria-label={browserNotifyLabel}
-                            title={browserNotifyLabel}
-                            onClick={onToggleBrowserNotify}
+                    {locationHint !== null && (
+                        <span
+                            className="sidebar-state"
+                            role="status"
+                            title={describeLocationState(locationState)}
                         >
-                            <BellRing size={16} />
-                        </button>
+                            {locationHint}
+                        </span>
                     )}
                     <button
                         type="button"
@@ -169,28 +122,8 @@ export function Sidebar({
                             </span>
                         )}
                     </button>
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label="Sign out"
-                        title="Sign out"
-                        onClick={onSignOut}
-                    >
-                        <LogOut size={16} />
-                    </button>
                 </span>
             </div>
-            {locationOn && locationState !== "active" && (
-                <p className="location-note" role="status">
-                    {locationState === "unsupported" &&
-                        "Location unavailable — HTTPS or localhost required"}
-                    {locationState === "locating" && "Locating…"}
-                    {locationState === "denied" &&
-                        "Location denied — allow it in the browser, then toggle the pin again"}
-                    {locationState === "failed" &&
-                        "Location lookup failed — toggle the pin to retry"}
-                </p>
-            )}
             <button
                 type="button"
                 className="new-chat"

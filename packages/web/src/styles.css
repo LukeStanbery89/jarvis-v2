@@ -412,28 +412,21 @@ textarea::placeholder {
     cursor: default;
 }
 
-/* The location-consent pin (#31): dim until actively sharing. */
+/* The sidebar's icon row: the state hints plus the settings gear (#143). */
 .sidebar-actions {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
 }
 
-.icon-btn.location {
+/* A state that must stay visible while the settings panel is closed (#143):
+   a live wake detector, or a location share that is not delivering. Small and
+   secondary — the control itself lives in the panel. */
+.sidebar-state {
+    font-size: 0.68rem;
+    font-weight: 400;
     color: var(--primary-dim);
-}
-
-.icon-btn.location.active {
-    color: var(--primary);
-}
-
-/* A sharing problem the user must act on (denied/unsupported/…) — stated
-   in the open, not hidden in a tooltip. */
-.location-note {
-    margin: 4px 12px 0;
-    font-size: 0.72rem;
-    line-height: 1.35;
-    color: var(--primary-dim);
+    white-space: nowrap;
 }
 
 /* The attach button sits in the composer row beside the textarea. */

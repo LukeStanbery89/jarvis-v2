@@ -106,15 +106,18 @@ whole state machine is unit-tested in node (`src/ChatClient.test.ts`).
 Device-location sharing for the `getWeather` tool is **automatic by
 default**: on load a geolocation request runs once, and the browser's own
 permission prompt is the consent gate (the user answers explicitly; the
-browser remembers). The sidebar MapPin is the visible opt-out (persisted in
-localStorage — an explicit "0" suppresses sharing) and doubles as the
-status light. On success, coordinates are
+browser remembers). The location pin lives in the **settings panel** under
+"This browser" (#143) and is the visible opt-out (persisted in localStorage —
+an explicit "0" suppresses sharing). While sharing is on but not delivering,
+the sidebar says so in a word beside the gear (`Locating…` / `Location denied`
+/ `Location failed` / `Location unavailable`), so a declined permission prompt
+is never silent. On success, coordinates are
 rounded to four decimals (~11 m), and the result ships as a `location`
 frame — sent immediately (the server accepts them at any point in the
 socket's lifetime) and re-announced after every reconnect, since the
 server's socket state is per-connection. Outcomes have UI states: locating /
 active / denied / failed / **unsupported** — `navigator.geolocation` exists
-only in secure contexts (HTTPS or localhost), so over plain HTTP the pin
+only in secure contexts (HTTPS or localhost), so over plain HTTP the panel
 reports "unsupported" and the server-side tool falls back to asking for a
 city. All geolocation logic lives in `src/location.ts` (plain `.ts`, node-
 tested in `src/location.test.ts`) — the web package's node-env suite never
@@ -192,9 +195,12 @@ disturbs the text stream — the answer simply is not spoken.
 ### Wake word (#84 P4)
 
 An optional "Hey JARVIS" wake word lives beside the click-to-talk mic: a
-sidebar toggle (waveform icon, next to the location pin) arms an
+switch in the settings panel (#143, "This browser" — the detector is a
+per-device engine) arms an
 on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
 openwakeword-web running under the WASM STT engine's runtime). While armed,
+the sidebar says `Listening` beside the gear, because an open microphone is
+not something to have to open a panel to discover, and
 the detector holds a 16 kHz mic open continuously; a match plays a short blip
 (`AudioPlayer.blip()`, the cue the toggle's user gesture unlocked), opens a
 wake session through the same `VoiceController`, and then **streams the
@@ -320,7 +326,8 @@ status sequence: `connecting` and `reconnecting` both precede `connected`, so a
 view effect trying to tell them apart ends up keyed on something that changes
 every render — which is a fetch loop, not a reconnect.
 
-**Desktop notifications (phase 2).** A bell in the sidebar raises OS
+**Desktop notifications (phase 2).** A switch in the settings panel (#143,
+"This browser") raises OS
 notifications through the `Notification` API, for the case where the user is
 not looking at this tab. The rules live in `src/browserNotify.ts` and are all
 refusals: only while the document is **hidden** (a visible tab already has the
@@ -362,6 +369,43 @@ Everything about raising an OS notification is guarded: an environment with no
 entirely, and a throw from `new Notification` (iOS Safari outside an installed
 PWA, permission revoked in a background tab) is swallowed — the in-app
 notification and the stored record are unaffected.
+
+## Settings panel (#143)
+
+A gear in the sidebar head opens a settings panel holding the controls that
+used to sit as four icon buttons beside the account name (location, wake word,
+desktop notifications, sign out). It is a native `<dialog showModal()>` — so
+Escape, the focus trap, and restoring focus to the gear are the platform's job
+rather than a hand-rolled key handler — and it is organized by **where a
+setting lives**, because that is the part a user has to know:
+
+| Group            | Settings                                         | Stored in                                              |
+| ---------------- | ------------------------------------------------ | ------------------------------------------------------ |
+| **Your account** | Notifications, quiet hours                       | `notify.*` in `/api/prefs` — applies on every device   |
+| **This browser** | Desktop notifications, wake word, share location | `localStorage` — a permission, a microphone, an engine |
+
+The split is not cosmetic. The server is the one that decides whether to
+interrupt you (`notify.enabled`) and when it is quiet (`notify.quietHours`), so
+those must hold on every device — including the phone, which will never share a
+browser's notification permission. The browser-side three are per-device facts
+that cannot be synced without lying about them.
+
+The account group renders what the system **does**, not what happens to be
+stored (`src/prefs.ts`): a well-formed pref shows the real controls, an absent
+one shows the documented default, and a stored value the server cannot parse
+shows _not in effect_ with a line saying so and how to fix it. It never crashes
+on an unexpected shape, never echoes raw bytes into a time input, and never
+shows the default as though the write had worked — the last of those would hide
+exactly the failure the notification work exists to make visible. A rejected
+write surfaces the server's own message (a malformed value for a known key is a
+400, see the server README), and the hook re-reads the stored map rather than
+guessing a rollback.
+
+Zeros worth knowing: the panel writes single-key patches, so it never touches
+integration prefs; it never calls `DELETE /api/prefs`, which would clear the
+whole map; quiet hours are switched off by writing `null`; and the badge over
+the gear is an _addition_ to the badge on the notification list, not a
+replacement, so nothing depends on the sidebar being on screen.
 
 ## Dev-server gotcha: the linked protocol package
 

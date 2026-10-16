@@ -369,21 +369,13 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 locationOn={locationOn}
                 locationState={locationState}
                 wakeAvailable={voiceUi.wakeAvailable}
-                wakeOn={voiceUi.wakeOn}
                 wakeArmed={voiceSnapshot.wakeArmed}
-                browserNotifyAvailable={browserNotify.available}
-                browserNotifyOn={browserNotify.enabled}
-                browserNotifyLabel={browserNotify.label}
                 unread={notificationsUi.unread}
                 settingsOpen={settingsOpen}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onNewChat={newChat}
                 onOpenThread={openThread}
                 onRemoveThread={(id) => void remove(id)}
-                onToggleLocation={toggleLocation}
-                onToggleWake={toggleWake}
-                onToggleBrowserNotify={browserNotify.toggle}
-                onSignOut={signOut}
             />
             <section className="conversation">
                 {status !== "connected" && (
