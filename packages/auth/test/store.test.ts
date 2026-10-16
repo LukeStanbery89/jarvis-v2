@@ -699,10 +699,22 @@ describe("openAppDatabase", () => {
                 createdAt: "2026-10-15T18:00:00.000Z",
             });
             expect(upgraded.getNotification(1, "n1")?.state).toBe("pending");
+            // v8 (#90): the same rule for the scheduler's tables — a legacy
+            // store must end up with tables it can actually use, not merely a
+            // bumped version.
+            upgraded.createJob(1, {
+                id: "j1",
+                label: "after the upgrade",
+                kind: "prompt",
+                prompt: "check the filter",
+                runAt: "2026-10-20T09:00:00.000Z",
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+            expect(upgraded.getJob(1, "j1")?.state).toBe("pending");
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(7);
+            expect(check.pragma("user_version", { simple: true })).toBe(8);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
@@ -785,7 +797,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(7);
+            expect(check.pragma("user_version", { simple: true })).toBe(8);
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -854,7 +866,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(7);
+            expect(check.pragma("user_version", { simple: true })).toBe(8);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toHaveLength(1);
             // The v2 migration's named index is gone; the inline constraint's
@@ -930,7 +942,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(7);
+            expect(check.pragma("user_version", { simple: true })).toBe(8);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toEqual(["idx_devices_user_name"]);
             check.close();

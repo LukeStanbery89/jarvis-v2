@@ -25,12 +25,25 @@ export {
     ensurePrivateStorage,
 } from "./fs";
 export { openAppDatabase, SqliteAppDatabase } from "./store";
-export { NOTIFICATION_PRIORITIES, NOTIFICATION_STATES } from "./store";
+export {
+    JOB_KINDS,
+    JOB_RUN_STATES,
+    JOB_STATES,
+    NOTIFICATION_PRIORITIES,
+    NOTIFICATION_STATES,
+} from "./store";
 export type {
     AppDatabase,
+    AppJob,
+    AppJobRun,
     AppNotification,
+    CreateJobInput,
     CreateNotificationInput,
     DeviceLedger,
+    JobKind,
+    JobLedger,
+    JobRunState,
+    JobState,
     NotificationLedger,
     NotificationPriority,
     NotificationState,

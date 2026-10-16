@@ -11,18 +11,18 @@ concern so consumers depend on narrow seams, never raw SQL.
 
 ## Files
 
-| File            | Responsibility                                                                                                                                                                                                                                                                                                                     |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                   |
-| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                          |
-| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                              |
-| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                         |
-| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & NotificationLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session + notification ledgers |
-| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                               |
-| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                           |
-| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                         |
-| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                             |
-| `README.md`     | this file                                                                                                                                                                                                                                                                                                                          |
+| File            | Responsibility                                                                                                                                                                                                                                                                                                                                       |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                                     |
+| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                                            |
+| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                                                |
+| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                                           |
+| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & NotificationLedger & JobLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session + notification + job ledgers |
+| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                                                 |
+| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                                             |
+| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                                           |
+| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                                               |
+| `README.md`     | this file                                                                                                                                                                                                                                                                                                                                            |
 
 The REST layer lives outside this package in the server's `src/http/` (`middleware.ts` = `requireAuth`
 [bearer-then-cookie fallback]/`requireOwner`/`requireCsrf` filling `req.jarv`; `cookies.ts` = the web-session
@@ -32,7 +32,7 @@ browser portal (#24) authenticates through, so the cookie provider and the CLI/d
 
 ## Ledger roles
 
-`AppDatabase` is an intersection of five narrower roles, so consumers depend on
+`AppDatabase` is an intersection of narrower roles, so consumers depend on
 only the surface they call:
 
 - `UserLedger` — account rows + stored password hashes (`getPasswordHash` is
@@ -64,9 +64,21 @@ only the surface they call:
   `settled_at` are stamped by the states that imply them) while the server's
   notification service owns the _policy_ (when to push, quiet hours, caps,
   retention).
+- `JobLedger` — the scheduler's queue and history (#90) over the `jobs` and
+  `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
+  `listJobRuns` / `pruneJobs`, plus the **scheduler-scoped** half
+  (`listDueJobs` / `claimJob` / `startJobRun` / `finishJobRun` / `settleJob`)
+  that no request handler may reach. This is the one ledger with two surfaces
+  on purpose: a job belongs to one user, but the scheduler is a _process_
+  acting for every user at once, so it selects due work across accounts and
+  settles it by the id it claimed. `claimJob` is the load-bearing statement —
+  `state = 'pending'` sits in its WHERE clause, which is what makes a second
+  tick, or a process that restarted mid-run, unable to fire a job twice. The
+  store owns rows and transitions; the server's scheduler owns the _policy_
+  (what may be scheduled, what a run means, deferral, retention).
 
 The server's `createApp`/`attachChatServer` are the composition roots; the REST
-router and middleware span all five ledgers and therefore take the full
+router and middleware span every ledger and therefore take the full
 `AppDatabase`, while `createSessionManager` narrows to `SessionLedger`.
 
 ## Credential model
@@ -133,6 +145,22 @@ router and middleware span all five ledgers and therefore take the full
   the user. `pending` is not an error state — it is the normal outcome for a
   user who was offline — so the table is also the delivery queue's record of
   what still wants attention.
+- `jobs` — one row per scheduled job (#90, v8): `label`, `kind`
+  (`prompt`/`tool`) with the prompt _or_ the tool call (a CHECK refuses a row
+  that has neither, or both), `run_at`, a `state` lifecycle (`pending` →
+  `running` → `done`/`failed`/`cancelled`/`missed`), `attempts`, and
+  `last_error`. Indexed on `(user_id, created_at DESC)` for the owner's list
+  and on `(run_at) WHERE state = 'pending'` — a partial index, because the
+  scheduler's claim feed only ever scans pending work. `missed` is deliberately
+  not `failed`: a job whose moment passed while the server was down was never
+  attempted.
+- `job_runs` — one row per attempt at a job: `started_at`/`finished_at`, the
+  run's `state` (`running`/`ok`/`failed`), the `output` it produced (the reply,
+  or a tool's result text) and the `error` it ended with. Cascade-deleted with
+  its job even when the _job_ is pruned. This is the job's observable history;
+  the model's own context lives in the LangGraph checkpoint under a `job:<id>`
+  thread that never enters the `sessions` ledger, which is what keeps a job's
+  runs out of the chat-thread list.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's
