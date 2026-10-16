@@ -10,17 +10,30 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    DEFAULT_QUIET_HOURS,
     describeQuietHours,
     isClockTime,
     NOTIFY_ENABLED_PREF,
     NOTIFY_QUIET_HOURS_PREF,
     notificationsEnabledPatch,
+    quietHoursEdit,
     quietHoursPatch,
     readNotificationsEnabled,
     readQuietHours,
     validateQuietHours,
 } from "./prefs";
 import type { Prefs } from "./api";
+
+describe("DEFAULT_QUIET_HOURS", () => {
+    it("is itself a window the server accepts, so switching the toggle on cannot 400", () => {
+        expect(
+            validateQuietHours(
+                DEFAULT_QUIET_HOURS.start,
+                DEFAULT_QUIET_HOURS.end,
+            ),
+        ).toBeNull();
+    });
+});
 
 describe("readNotificationsEnabled", () => {
     it("reads an absent key as on, without flagging it", () => {
@@ -155,6 +168,22 @@ describe("isClockTime", () => {
         expect(isClockTime("07:0")).toBe(false);
         expect(isClockTime("0700")).toBe(false);
         expect(isClockTime("")).toBe(false);
+    });
+});
+
+describe("quietHoursEdit", () => {
+    it("turns a valid pair into the one-key patch", () => {
+        expect(quietHoursEdit("22:00", "07:00")).toEqual({
+            kind: "ok",
+            patch: { "notify.quietHours": { start: "22:00", end: "07:00" } },
+        });
+    });
+
+    it("returns the message to show instead of sending an invalid window", () => {
+        const edit = quietHoursEdit("22:00", "22:00");
+        expect(edit.kind).toBe("invalid");
+        expect(edit.kind === "invalid" && edit.message).toMatch(/differ/);
+        expect(quietHoursEdit("", "").kind).toBe("invalid");
     });
 });
 

@@ -381,6 +381,7 @@ textarea::placeholder {
 /* Square hit-area, centered glyph; the icon inherits currentColor, so the
    dual-chromatic rules color icons exactly like the text they replaced. */
 .icon-btn {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -702,4 +703,158 @@ textarea::placeholder {
     font: inherit;
     font-size: 0.72rem;
     cursor: pointer;
+}
+
+/* --- Settings panel (#143) --- */
+
+/* The unread count over the gear. The badge is an addition to the one on the
+   notification list, not a replacement: that one stays visible in the
+   conversation column, so nothing is lost if the gear is off screen. */
+.icon-badge {
+    position: absolute;
+    top: -0.35rem;
+    right: -0.35rem;
+    min-width: 1.05rem;
+    padding: 0 0.2rem;
+    border-radius: 999px;
+    background: var(--primary);
+    color: var(--bg);
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1.05rem;
+    text-align: center;
+}
+
+/* A native modal dialog: the platform owns Escape, the focus trap, and
+   restoring focus to the gear, which is why this is not a div with a
+   hand-rolled key handler. */
+.settings {
+    width: min(26rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
+    padding: 1rem 1.1rem 1.25rem;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 10px;
+}
+
+.settings::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+
+.settings-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+}
+
+.settings-group {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--primary-border);
+}
+
+.settings-group:first-of-type {
+    border-top: none;
+    padding-top: 0;
+}
+
+.settings-group h3 {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--primary);
+}
+
+/* What the group means — the account/browser split is the reason the panel
+   has groups at all, so each one says which it is. */
+.settings-hint {
+    margin: 2px 0 0.6rem;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--primary-faint);
+}
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0;
+    cursor: pointer;
+}
+
+.settings-times {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.2rem 0 0.4rem 1.6rem;
+    color: var(--primary-dim);
+}
+
+.settings-times input[type="time"] {
+    padding: 0.15rem 0.3rem;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+    font: inherit;
+    font-size: 0.82rem;
+}
+
+.settings-times input[type="time"]:disabled {
+    opacity: 0.45;
+}
+
+.settings-note {
+    margin: 0 0 0.4rem;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--primary-dim);
+}
+
+/* A stored value the server cannot honour: stated in the open, with what the
+   system actually does, rather than shown as the default. */
+.settings-warning {
+    margin: 0 0 0.4rem;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--error);
+}
+
+.settings-error {
+    margin: 0.2rem 0 0;
+    font-size: 0.75rem;
+    color: var(--error);
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.settings-signout {
+    padding: 0.3rem 0.7rem;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--primary);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.settings-signout:hover {
+    background: var(--primary-wash);
+    border-color: var(--primary);
 }

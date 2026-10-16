@@ -4,7 +4,8 @@
  * It owns the cross-cutting chat-turn orchestration — `runTurn` (record →
  * send → settle), `send` (ready attachment ids + error bubble), `remove`,
  * `signOut`, `toggleWake`, and the socket frame → reducer wiring — over the
- * eight hooks in `hooks/` and the presentational components in `views/chat/`.
+ * nine hooks in `hooks/` and the presentational components in `views/chat/`
+ * (including the settings panel's open state).
  * The {@link ChatClient} and the {@link VoiceController} are constructed inside
  * those hooks' mount effects, so both survive React's StrictMode double-invoke
  * (previously: a stuck `Disconnected` socket and a dead wake/barge-in
@@ -31,6 +32,7 @@ import { useLocationSharing } from "../hooks/useLocationSharing";
 import { useAttachments } from "../hooks/useAttachments";
 import { useNotifications } from "../hooks/useNotifications";
 import { useBrowserNotify } from "../hooks/useBrowserNotify";
+import { usePrefs } from "../hooks/usePrefs";
 import {
     type ChatMode,
     type ClientCapability,
@@ -39,6 +41,7 @@ import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
 import { Notifications } from "./chat/Notifications";
+import { Settings } from "./chat/Settings";
 
 /**
  * The capabilities this client announces in its `hello` frame. Module-level so
@@ -160,6 +163,11 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         loaded: notificationsUi.loaded,
         onOpen: notificationsUi.markRead,
     });
+    // The settings panel (#143): the account's own preferences live on the
+    // server, the browser's four controls on the hooks below — the panel is
+    // where the two are labelled and edited together.
+    const prefsUi = usePrefs({ token: credential.token });
+    const [settingsOpen, setSettingsOpen] = useState(false);
 
     const { client, status, isStreaming, cancelTurn, sendLocation } =
         useChatClient({
@@ -366,6 +374,9 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 browserNotifyAvailable={browserNotify.available}
                 browserNotifyOn={browserNotify.enabled}
                 browserNotifyLabel={browserNotify.label}
+                unread={notificationsUi.unread}
+                settingsOpen={settingsOpen}
+                onOpenSettings={() => setSettingsOpen(true)}
                 onNewChat={newChat}
                 onOpenThread={openThread}
                 onRemoveThread={(id) => void remove(id)}
@@ -436,6 +447,27 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     />
                 )}
             </section>
+            <Settings
+                open={settingsOpen}
+                onClose={() => setSettingsOpen(false)}
+                prefs={prefsUi.prefs}
+                prefsLoaded={prefsUi.loaded}
+                prefsSaving={prefsUi.saving}
+                prefsError={prefsUi.error}
+                onPatchPrefs={prefsUi.patch}
+                browserNotifyAvailable={browserNotify.available}
+                browserNotifyOn={browserNotify.enabled}
+                browserNotifyLabel={browserNotify.label}
+                onToggleBrowserNotify={browserNotify.toggle}
+                wakeAvailable={voiceUi.wakeAvailable}
+                wakeOn={voiceUi.wakeOn}
+                wakeArmed={voiceSnapshot.wakeArmed}
+                onToggleWake={toggleWake}
+                locationOn={locationOn}
+                locationState={locationState}
+                onToggleLocation={toggleLocation}
+                onSignOut={signOut}
+            />
         </main>
     );
 }

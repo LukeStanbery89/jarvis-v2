@@ -38,6 +38,13 @@ export interface QuietHours {
 }
 
 /**
+ * The window the panel offers when quiet hours are switched on, and the one it
+ * shows while they are off: the common shape (`22:00 → 07:00`), so turning the
+ * switch on is a one-click change rather than a form to fill in first.
+ */
+export const DEFAULT_QUIET_HOURS: QuietHours = { start: "22:00", end: "07:00" };
+
+/**
  * How one stored preference reads.
  *
  * `value` is always **what the server would do** with the stored bytes, which
@@ -149,6 +156,25 @@ export function notificationsEnabledPatch(enabled: boolean): Prefs {
  */
 export function quietHoursPatch(hours: QuietHours | null): Prefs {
     return { [NOTIFY_QUIET_HOURS_PREF]: hours };
+}
+
+/** What {@link quietHoursEdit} makes of the two fields the user typed. */
+export type QuietHoursEdit =
+    { kind: "ok"; patch: Prefs } | { kind: "invalid"; message: string };
+
+/**
+ * Turns the two typed fields into a patch, or into the message to show instead.
+ *
+ * The panel saves on the way out of a field, so this is the one gate between
+ * what was typed and what is sent: an invalid window never reaches the API,
+ * where it would be a 400 that reads like a server fault rather than a typo.
+ */
+export function quietHoursEdit(start: string, end: string): QuietHoursEdit {
+    const message = validateQuietHours(start, end);
+    if (message !== null) {
+        return { kind: "invalid", message };
+    }
+    return { kind: "ok", patch: quietHoursPatch({ start, end }) };
 }
 
 /**

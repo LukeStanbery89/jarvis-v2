@@ -1,6 +1,7 @@
 /**
- * The chat sidebar: account header, the location/wake/sign-out controls, the
- * new-chat button, and the merged conversation list.
+ * The chat sidebar: account header, the location/wake/sign-out controls plus the
+ * gear (with its unread badge) that opens the settings panel, the new-chat
+ * button, and the merged conversation list.
  *
  * Presentational — props in, events out. The wake button's tooltip comes from
  * the pure `describeWakeState`; the location note/tooltip text from
@@ -12,6 +13,7 @@ import {
     BellRing,
     LogOut,
     MapPin,
+    Settings as SettingsIcon,
     SquarePen,
     Trash2,
 } from "lucide-react";
@@ -44,6 +46,12 @@ export interface SidebarProps {
     browserNotifyOn: boolean;
     /** The OS-notification toggle's label/tooltip (from `browserNotifyState`). */
     browserNotifyLabel: string;
+    /** Notifications neither read nor dismissed (the badge over the gear). */
+    unread: number;
+    /** Whether the settings panel is showing (the gear's `aria-expanded`). */
+    settingsOpen: boolean;
+    /** Opens the settings panel. */
+    onOpenSettings(): void;
     /** Starts a fresh conversation. */
     onNewChat(): void;
     /** Opens a conversation. */
@@ -78,6 +86,9 @@ export function Sidebar({
     browserNotifyAvailable,
     browserNotifyOn,
     browserNotifyLabel,
+    unread,
+    settingsOpen,
+    onOpenSettings,
     onNewChat,
     onOpenThread,
     onRemoveThread,
@@ -138,6 +149,26 @@ export function Sidebar({
                             <BellRing size={16} />
                         </button>
                     )}
+                    <button
+                        type="button"
+                        className="icon-btn"
+                        aria-expanded={settingsOpen}
+                        aria-controls="settings-panel"
+                        aria-label={
+                            unread > 0
+                                ? `Settings, ${unread} unread notification${unread === 1 ? "" : "s"}`
+                                : "Settings"
+                        }
+                        title="Settings"
+                        onClick={onOpenSettings}
+                    >
+                        <SettingsIcon size={16} aria-hidden="true" />
+                        {unread > 0 && (
+                            <span className="icon-badge" aria-hidden="true">
+                                {unread}
+                            </span>
+                        )}
+                    </button>
                     <button
                         type="button"
                         className="icon-btn"
