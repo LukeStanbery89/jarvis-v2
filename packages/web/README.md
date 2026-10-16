@@ -286,6 +286,106 @@ submitted="…"`). It is deliberately a _separate_ switch from
   `?debug=1`/`jarvis.debug` (`src/voiceTrace.ts`): it prints real user speech,
   so ordinary voice debugging must never start dumping transcripts.
 
+## Notifications (#139)
+
+This client declares the `notification` capability in its `hello` frame, which
+is what lets the server push the out-of-turn `notification` frame to its
+sockets. That gate is deliberate rather than incidental: a client that does not
+declare it (an older bundle, the CLI) is never sent the frame, because an
+unreadable frame fails that client's turn — so adding a server frame stays
+additive instead of breaking clients the server cannot update.
+
+The server can push a `notification` frame at any time — a background job
+finishing, a reminder coming due, an agent needing an answer — and this client
+is where it surfaces. Two sources feed one list: the frame itself (best-effort,
+arriving **outside** a turn, so `ChatClient` routes it to `onNotification`
+rather than the turn-scoped `onFrame`) and `GET /api/notifications` on load.
+They carry the same `id`, and `src/notifications.ts` merges by it — so a
+pushed notification is never rendered twice, and a frame can never un-read or
+un-dismiss something the user already settled (the wire frame carries no
+state; the record does).
+
+The surface is a banner for the newest unsettled notification plus a
+collapsible list with a badge, rendered inside the conversation column
+(`src/views/chat/Notifications.tsx`) so a notification cannot be missed while
+the sidebar is collapsed. Reading or dismissing is optimistic — the list
+updates immediately and rolls back if the server refuses — and a notification
+raised while this client was closed is simply in the list when it next loads,
+which is why nothing here depends on the frame arriving. The list is re-read
+when the socket comes up after a **failed attempt** — the client reports that
+itself (`ChatClient`'s `onReconnected`), because a notification raised while
+the server was unreachable was pushed to nobody and the list is the only place
+it can appear. The client reports it rather than the view inferring it from the
+status sequence: `connecting` and `reconnecting` both precede `connected`, so a
+view effect trying to tell them apart ends up keyed on something that changes
+every render — which is a fetch loop, not a reconnect.
+
+**Desktop notifications (phase 2).** A bell in the sidebar raises OS
+notifications through the `Notification` API, for the case where the user is
+not looking at this tab. The rules live in `src/browserNotify.ts` and are all
+refusals: only while the document is **hidden** (a visible tab already has the
+in-app banner, and an OS pop-up beside it is noise), only for something still
+unsettled, only once per id (the live frame and the fetched page both mention
+it), and only when both the user's preference and the browser's permission
+agree. Clicking one focuses this tab and marks it read — that is the entire
+point of the channel.
+
+Permission can only be requested from a user gesture, so the toggle's click
+handler is where `requestPermission()` runs; a `denied` browser is reported as
+**blocked** rather than merely off, because it cannot be re-prompted and the
+tooltip has to send the user to their settings. The preference is stored per
+browser _and_ per username (`jarvis.web.user.<name>.browserNotify`): the
+browser grants permission per origin, and it cannot be synced, so a server
+preference would let the UI claim "on" while that browser would refuse. Web
+Push — which genuinely needs server-side state — is phase 3.
+
+**Testing it.** In a development build, with the `jarvis.debug` gate on, the
+expanded list shows a _Send a test notification_ button — it is behind
+`import.meta.env.DEV` as well, so a shipped bundle carries neither the branch
+nor the button. It raises a notification through this browser's own credential
+and prints what the server did with it — pushed to N clients, or recorded only
+because no client was connected, quiet hours held it back, or the delivery
+budget was spent. That single line separates "the server did not push it" from
+"the client received it and did not show it", which is otherwise unresolvable
+from a missing banner; doing the same thing with `curl` also requires a device
+token and the right account, which is exactly the sort of thing that makes a
+test inconclusive.
+
+In a shipped client the same test runs through the assistant instead — "send me
+a test notification" calls the `sendNotification` tool (#139), which is a real
+producer exercising the same service the button does. The button stays because
+it costs no model call and still works when the model path is the thing that is
+broken.
+
+Everything about raising an OS notification is guarded: an environment with no
+`Notification` global (the node test env, an old browser) hides the toggle
+entirely, and a throw from `new Notification` (iOS Safari outside an installed
+PWA, permission revoked in a background tab) is swallowed — the in-app
+notification and the stored record are unaffected.
+
+## Dev-server gotcha: the linked protocol package
+
+`npm run dev` pre-bundles `@lukestanbery/jarvis-protocol` (its build output is
+CommonJS, which the browser cannot load directly — see the note in
+`vite.config.ts`). Vite keys that pre-bundle on the **lockfile and its own
+config**, not on the linked package's contents, so **rebuilding the protocol
+while the dev server is running leaves the browser holding the old
+`parseFrame`**. The symptom is nasty because it is silent: the server sends a
+frame the stale parser does not recognize, the client drops it, and only an
+REST-backed refresh shows the result — so a feature looks like it "only works
+after a reload" even though it works in the built client.
+
+When you change `packages/protocol` (a new frame, a parser rule):
+
+```sh
+npm run build -w @lukestanbery/jarvis-protocol
+npm run dev:clean -w @lukestanbery/jarvis-web   # clears the dep cache, restarts Vite
+```
+
+`dev:clean` is the whole fix — it removes `node_modules/.vite/deps`, so the
+next start re-optimizes against the current build. The built client served by
+the JARVIS server at `/web` has no such cache and is unaffected.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
@@ -300,10 +400,10 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 
 - `src/main.tsx` — React bootstrap.
 - `src/App.tsx` — sign-in gate ↔ chat routing over the stored credential.
-- `src/api.ts` — typed REST client (login, session list/delete; Bearer token).
+- `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
-- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6).
+- `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6; out-of-turn `notification` frames via `onNotification`, #139).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b) and the wake-word helpers (`createWakeWord`, `createWakeStt`, `probeWakeSupport`, wake pref — #84 P4); the controller lives in `packages/voice`.
 - `src/audio.ts` — spoken-response playback queue (WebAudio, #83) + wake cue (`blip`, #84 P4).
@@ -313,8 +413,10 @@ same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens. `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
-- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
-- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useAutoScroll`.
+- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`, `Notifications.tsx` (#139 banner + list).
+- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `useAutoScroll`.
+- `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread.
+- `src/browserNotify.ts` — pure desktop-notification rules (#139 phase 2): the announce decision (hidden tab, unsettled, not already announced, preference _and_ permission), the toggle's UI state, and this browser's stored preference.
 - `src/sidebar.ts` — sidebar-row merge (`mergeSessions`) + wake/location label helpers.
 - `src/attachments.ts` — attachment chip lifecycle + upload/retry helpers (#10).
 - `src/components/ToolCall.tsx` — collapsible tool/toolResult notices.

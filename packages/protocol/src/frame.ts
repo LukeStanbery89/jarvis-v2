@@ -19,8 +19,13 @@ import {
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
     MAX_LOCATION_LABEL_LENGTH,
+    MAX_NOTIFICATION_BODY_LENGTH,
+    MAX_NOTIFICATION_ID_LENGTH,
+    MAX_NOTIFICATION_KIND_LENGTH,
+    MAX_NOTIFICATION_TITLE_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    NOTIFICATION_PRIORITIES,
 } from "./types";
 import type {
     AuthRequest,
@@ -31,6 +36,8 @@ import type {
     ClientFrame,
     ClientHello,
     ClientLocationFrame,
+    NotificationFrame,
+    NotificationPriority,
     ServerFrame,
 } from "./types";
 
@@ -47,6 +54,14 @@ const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set<string>(
  * {@link CHAT_MODES} so the parser cannot drift from the union.
  */
 const KNOWN_MODES: ReadonlySet<string> = new Set<string>(CHAT_MODES);
+
+/**
+ * The notification-priority tokens the protocol recognizes, derived from
+ * {@link NOTIFICATION_PRIORITIES} for the same reason.
+ */
+const KNOWN_NOTIFICATION_PRIORITIES: ReadonlySet<string> = new Set<string>(
+    NOTIFICATION_PRIORITIES,
+);
 
 /** User-facing wording for a malformed JSON payload; must not drift. */
 const MALFORMED_JSON = "malformed request; expected a JSON object";
@@ -93,6 +108,7 @@ export function parseFrame(raw: string): ServerFrame {
             channels?: unknown;
         };
         audioEnd?: { generationId?: unknown };
+        notification?: unknown;
     };
     if (typeof frame.chunk === "string") {
         return { chunk: frame.chunk };
@@ -152,7 +168,96 @@ export function parseFrame(raw: string): ServerFrame {
             },
         };
     }
+    if (frame.notification) {
+        const parsed = parseNotificationFrame(frame.notification);
+        if (parsed !== null) {
+            return parsed;
+        }
+    }
     throw new Error("received an unrecognized message from the server");
+}
+
+/**
+ * Validates the `notification` payload of a server frame (#139), returning the
+ * typed frame or `null` when the payload is not one this protocol version can
+ * render.
+ *
+ * Bounds are enforced here rather than trusted: the server is the only writer,
+ * but the shared parser is what every client relies on to know a frame is
+ * displayable, and an unbounded `title`/`body` arriving from a future or
+ * misbehaving server must not become unbounded client state. Optional fields
+ * are normalized away when absent so consumers get one shape, and an
+ * over-long string is a rejected frame rather than a truncated one — silently
+ * cutting a notification's text would hide the fact that the sender and the
+ * receiver disagree about the protocol.
+ */
+function parseNotificationFrame(payload: unknown): NotificationFrame | null {
+    if (typeof payload !== "object" || payload === null) {
+        return null;
+    }
+    const n = payload as {
+        id?: unknown;
+        kind?: unknown;
+        priority?: unknown;
+        title?: unknown;
+        body?: unknown;
+        createdAt?: unknown;
+        requiresAnswer?: unknown;
+    };
+    if (
+        typeof n.id !== "string" ||
+        n.id.length === 0 ||
+        n.id.length > MAX_NOTIFICATION_ID_LENGTH ||
+        typeof n.kind !== "string" ||
+        n.kind.length === 0 ||
+        n.kind.length > MAX_NOTIFICATION_KIND_LENGTH ||
+        typeof n.title !== "string" ||
+        n.title.length === 0 ||
+        n.title.length > MAX_NOTIFICATION_TITLE_LENGTH ||
+        typeof n.createdAt !== "string" ||
+        !isNotificationPriority(n.priority)
+    ) {
+        return null;
+    }
+    if (
+        n.body !== undefined &&
+        (typeof n.body !== "string" ||
+            n.body.length > MAX_NOTIFICATION_BODY_LENGTH)
+    ) {
+        return null;
+    }
+    if (
+        n.requiresAnswer !== undefined &&
+        typeof n.requiresAnswer !== "boolean"
+    ) {
+        return null;
+    }
+    return {
+        notification: {
+            id: n.id,
+            kind: n.kind,
+            priority: n.priority,
+            title: n.title,
+            ...(typeof n.body === "string" && n.body.length > 0
+                ? { body: n.body }
+                : {}),
+            createdAt: n.createdAt,
+            ...(n.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        },
+    };
+}
+
+/**
+ * True when `value` is one of the {@link NOTIFICATION_PRIORITIES} tokens.
+ *
+ * Derived from the shared tuple, so a priority added to the protocol cannot be
+ * silently unparsable — the set and the union move together.
+ */
+function isNotificationPriority(value: unknown): value is NotificationPriority {
+    return (
+        typeof value === "string" &&
+        (KNOWN_NOTIFICATION_PRIORITIES as ReadonlySet<string>).has(value)
+    );
 }
 
 /** Parses raw wire text into a plain object, or throws the shared wording. */

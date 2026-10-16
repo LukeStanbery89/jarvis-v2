@@ -486,6 +486,131 @@ describe("prefs", () => {
     });
 });
 
+describe("notifications", () => {
+    it("creates, lists, and settles notifications for one user", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        store.createNotification(user.id, {
+            id: "n1",
+            kind: "job.finished",
+            priority: "high",
+            title: "PR #143 is ready",
+            body: "4 files changed.",
+            requiresAnswer: false,
+            dedupeKey: "job-143",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        const created = store.getNotification(user.id, "n1");
+        expect(created).toMatchObject({
+            kind: "job.finished",
+            priority: "high",
+            body: "4 files changed.",
+            dedupeKey: "job-143",
+            state: "pending",
+            requiresAnswer: false,
+            deliveredAt: null,
+            settledAt: null,
+        });
+        expect(store.countUnreadNotifications(user.id)).toBe(1);
+
+        const read = store.setNotificationState(user.id, "n1", "read");
+        expect(read?.state).toBe("read");
+        expect(read?.settledAt).not.toBeNull();
+        expect(store.countUnreadNotifications(user.id)).toBe(0);
+    });
+
+    it("records an answer and refuses to move a settled row", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        store.createNotification(user.id, {
+            id: "q1",
+            kind: "coding.question",
+            priority: "urgent",
+            title: "Which React version?",
+            requiresAnswer: true,
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        const answered = store.setNotificationState(user.id, "q1", "answered", {
+            answer: "React 19",
+        });
+        expect(answered).toMatchObject({
+            state: "answered",
+            answer: "React 19",
+            requiresAnswer: true,
+        });
+        expect(store.setNotificationState(user.id, "q1", "read")?.state).toBe(
+            "answered",
+        );
+    });
+
+    it("scopes every read and write to the owning user", () => {
+        const luke = store.createUser("luke", "hash", "owner");
+        const pepper = store.createUser("pepper", "hash", "user");
+        store.createNotification(luke.id, {
+            id: "n1",
+            kind: "k",
+            priority: "low",
+            title: "mine",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        expect(store.getNotification(pepper.id, "n1")).toBeNull();
+        expect(store.listNotifications(pepper.id)).toEqual([]);
+        expect(store.setNotificationState(pepper.id, "n1", "read")).toBeNull();
+        expect(store.getNotification(luke.id, "n1")?.state).toBe("pending");
+    });
+
+    it("evicts settled rows first, and only reaches pending ones if it must", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        for (let i = 0; i < 4; i += 1) {
+            store.createNotification(user.id, {
+                id: `n${i}`,
+                kind: "k",
+                priority: "low",
+                title: `n${i}`,
+                createdAt: `2026-10-15T0${i}:00:00.000Z`,
+            });
+            store.setNotificationState(user.id, `n${i}`, "dismissed");
+        }
+        // Newest of all, and never delivered: the row a prune must keep if
+        // there is any choice.
+        store.createNotification(user.id, {
+            id: "keep",
+            kind: "k",
+            priority: "high",
+            title: "keep",
+            createdAt: "2026-10-15T09:00:00.000Z",
+        });
+
+        // Five rows, a ceiling of two: the three settled ones outside the cut
+        // go, and the undelivered row survives because there was a choice.
+        expect(store.pruneNotifications(user.id, 2)).toBe(3);
+        expect(
+            store
+                .listNotifications(user.id, { includeDismissed: true })
+                .map((n) => n.id),
+        ).toEqual(["keep", "n3"]);
+    });
+
+    it("still bounds the table when the pending rows are the ones piling up", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        for (let i = 0; i < 5; i += 1) {
+            // The case retention exists for: nobody was connected, so every
+            // one of these is `pending` and no settled row can absorb the cut.
+            store.createNotification(user.id, {
+                id: `p${i}`,
+                kind: "k",
+                priority: "low",
+                title: `p${i}`,
+                createdAt: `2026-10-15T0${i}:00:00.000Z`,
+            });
+        }
+        expect(store.pruneNotifications(user.id, 2)).toBe(3);
+        expect(store.listNotifications(user.id).map((n) => n.id)).toEqual([
+            "p4",
+            "p3",
+        ]);
+    });
+});
+
 describe("openAppDatabase", () => {
     it("reopens an existing database without error (migration is idempotent)", () => {
         const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
@@ -563,10 +688,21 @@ describe("openAppDatabase", () => {
                 "2999-01-01T00:00:00.000Z",
             );
             expect(upgraded.getWebSessionByHash("h")?.csrfToken).toBe("csrf");
+            // v7 (#139): the upgrade must leave a *usable* notifications
+            // table, not merely a bumped version — a legacy store is exactly
+            // the case the migration exists for.
+            upgraded.createNotification(1, {
+                id: "n1",
+                kind: "k",
+                priority: "normal",
+                title: "after the upgrade",
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+            expect(upgraded.getNotification(1, "n1")?.state).toBe("pending");
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(6);
+            expect(check.pragma("user_version", { simple: true })).toBe(7);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
@@ -649,7 +785,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(6);
+            expect(check.pragma("user_version", { simple: true })).toBe(7);
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -718,7 +854,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(6);
+            expect(check.pragma("user_version", { simple: true })).toBe(7);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toHaveLength(1);
             // The v2 migration's named index is gone; the inline constraint's
@@ -794,7 +930,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(6);
+            expect(check.pragma("user_version", { simple: true })).toBe(7);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toEqual(["idx_devices_user_name"]);
             check.close();

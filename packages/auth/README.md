@@ -11,18 +11,18 @@ concern so consumers depend on narrow seams, never raw SQL.
 
 ## Files
 
-| File            | Responsibility                                                                                                                                                                                                                                                                                 |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)               |
-| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                      |
-| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                          |
-| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                     |
-| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session ledgers |
-| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                           |
-| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                       |
-| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                     |
-| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                         |
-| `README.md`     | this file                                                                                                                                                                                                                                                                                      |
+| File            | Responsibility                                                                                                                                                                                                                                                                                                                     |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                   |
+| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                          |
+| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                              |
+| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                         |
+| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & NotificationLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session + notification ledgers |
+| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                               |
+| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                           |
+| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                         |
+| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                             |
+| `README.md`     | this file                                                                                                                                                                                                                                                                                                                          |
 
 The REST layer lives outside this package in the server's `src/http/` (`middleware.ts` = `requireAuth`
 [bearer-then-cookie fallback]/`requireOwner`/`requireCsrf` filling `req.jarv`; `cookies.ts` = the web-session
@@ -54,6 +54,16 @@ only the surface they call:
   touch / delete / `listOwnedSessions` / `listAllSessions` [owner-wide]).
   The server's `SessionManager`
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
+- `NotificationLedger` — JARVIS's outbound messages to a user (#139) over the
+  `notifications` table: `createNotification` / `getNotification` /
+  `listNotifications` (newest first, dismissed hidden by default) /
+  `countUnreadNotifications` / `setNotificationState` / `pruneNotifications`.
+  Every method scopes by `userId`, so a foreign id is indistinguishable from a
+  missing one — the reason the REST layer needs no ownership check. The store
+  owns _transitions_ (terminal states are terminal, `delivered_at` and
+  `settled_at` are stamped by the states that imply them) while the server's
+  notification service owns the _policy_ (when to push, quiet hours, caps,
+  retention).
 
 The server's `createApp`/`attachChatServer` are the composition roots; the REST
 router and middleware span all five ledgers and therefore take the full
@@ -114,6 +124,15 @@ router and middleware span all five ledgers and therefore take the full
   settings stay in the environment. Reached through the `PrefLedger` accessors
   — the reserved home for the per-user integration state the web portal (#24)
   manages, from a consumer (v4 schema, planning-complete) onward.
+- `notifications` — one row per notification (#139, v7): producer `kind` +
+  `priority`, the `title`/`body` text, a `state` lifecycle (`pending` →
+  `delivered` → `read`/`answered`/`dismissed`, with `pending` → `read` legal
+  for a notification the user found in the list rather than had pushed), an
+  optional `requires_answer`, `dedupe_key`, and `answer`, plus the timestamps.
+  Indexed on `(user_id, created_at DESC)` for the list; cascade-deleted with
+  the user. `pending` is not an error state — it is the normal outcome for a
+  user who was offline — so the table is also the delivery queue's record of
+  what still wants attention.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's

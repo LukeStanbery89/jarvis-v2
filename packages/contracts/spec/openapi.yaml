@@ -53,6 +53,10 @@ tags:
       description: Device tokens and their lifecycle.
     - name: Health
       description: Machine health checks.
+    - name: Notifications
+      description: >-
+          JARVIS's outbound messages to a user (#139) — recorded, listed, and
+          settled here; pushed live over `/ws` as a `notification` frame.
     - name: Preferences
       description: Free-form per-user integration prefs.
     - name: Session
@@ -1151,6 +1155,237 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/Error"
+    /api/notifications:
+        get:
+            operationId: notificationsList
+            summary: List the caller's notifications
+            description: >-
+                Newest first. Dismissed notifications are excluded unless
+                `includeDismissed=true`. `unread` counts everything neither
+                read nor dismissed, for a badge.
+            tags: [Notifications]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - name: limit
+                  in: query
+                  required: false
+                  description: >-
+                      Page size (1–200, default 50). Out-of-range or
+                      unparsable values fall back to the default rather than
+                      failing the request.
+                  schema:
+                      type: integer
+                      minimum: 1
+                      maximum: 200
+                - name: includeDismissed
+                  in: query
+                  required: false
+                  description: Include notifications the user dismissed.
+                  schema:
+                      type: boolean
+            responses:
+                "200":
+                    description: The caller's notifications and unread count.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NotificationList"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        post:
+            operationId: notificationsCreate
+            summary: Raise a notification for the caller
+            description: >-
+                The producer entry point (a tool, the scheduler, or a manual
+                call): records the notification and attempts to push it to the
+                caller's live `/ws` sockets. `delivered` is how many clients
+                received the frame, and `suppressed` says why nothing was
+                pushed — `null` when it was delivered, otherwise `disabled`
+                (the caller's `notify.enabled` pref), `quiet-hours`,
+                `absent` (no live socket), or `cap` (the per-user delivery
+                budget). A suppressed notification is still recorded and
+                appears in the list. Cookie-authenticated callers must send
+                `x-csrf-token`.
+            tags: [Notifications]
+            security:
+                - bearerToken: []
+                - session: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/NotificationInput"
+            responses:
+                "201":
+                    description: The recorded notification and its delivery outcome.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NotificationDelivery"
+                "400":
+                    description: >-
+                        Missing or over-long field, or an unknown priority
+                        (server-enforced bounds match the wire protocol's).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/notifications/{id}/read:
+        post:
+            operationId: notificationsRead
+            summary: Mark a notification read
+            description: >-
+                Idempotent: reading an already-settled notification returns it
+                unchanged. A notification belonging to another account is
+                indistinguishable from one that does not exist (404).
+            tags: [Notifications]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathNotificationId"
+            responses:
+                "200":
+                    description: The settled notification.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NotificationSettlement"
+                "400":
+                    description: >-
+                        A malformed notification id (over-long). Normally the
+                        shape validator answers this before the route runs.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such notification for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/notifications/{id}/dismiss:
+        post:
+            operationId: notificationsDismiss
+            summary: Dismiss a notification
+            description: >-
+                Removes it from the default list without marking it read.
+                Idempotent, with the same 404 scope as `read`.
+            tags: [Notifications]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathNotificationId"
+            responses:
+                "200":
+                    description: The settled notification.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NotificationSettlement"
+                "400":
+                    description: >-
+                        A malformed notification id (over-long). Normally the
+                        shape validator answers this before the route runs.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such notification for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/notifications/{id}/answer:
+        post:
+            operationId: notificationsAnswer
+            summary: Answer a notification that asked a question
+            description: >-
+                For a notification raised with `requiresAnswer`. The reply is
+                what retires it — answering is the notification's `answered`
+                state, and a producer reads the answer back from the record.
+                Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Notifications]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathNotificationId"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            additionalProperties: false
+                            required:
+                                - answer
+                            properties:
+                                answer:
+                                    type: string
+                                    minLength: 1
+                                    maxLength: 2000
+            responses:
+                "200":
+                    description: The answered notification.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/NotificationSettlement"
+                "400":
+                    description: >-
+                        The notification does not require an answer, or the
+                        answer is missing or over-long.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such notification for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: The notification is already settled.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
 components:
     securitySchemes:
         bearerToken:
@@ -1211,6 +1446,18 @@ components:
                 type: string
                 minLength: 1
                 pattern: '^[^/\s]+$'
+        PathNotificationId:
+            name: id
+            in: path
+            required: true
+            description: >-
+                The notification's opaque id, as returned by the list route.
+                Ids belong to one account: an id owned by somebody else is
+                answered 404, the same as one that does not exist.
+            schema:
+                type: string
+                minLength: 1
+                maxLength: 64
         XBootstrapToken:
             name: x-bootstrap-token
             in: header
@@ -1540,3 +1787,139 @@ components:
                     type: string
                     minLength: 1
                     maxLength: 64
+        NotificationInput:
+            type: object
+            description: >-
+                Body of `POST /api/notifications`. Field bounds mirror the wire
+                protocol's (`@lukestanbery/jarvis-protocol`), so anything
+                accepted here can be rendered by any client.
+            required: [kind, title]
+            properties:
+                kind:
+                    type: string
+                    description: >-
+                        Producer-defined category ("job.finished",
+                        "reminder", …). Free-form so a new producer needs no
+                        server change.
+                    minLength: 1
+                    maxLength: 64
+                title:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                body:
+                    type: string
+                    maxLength: 2000
+                priority:
+                    type: string
+                    description: >-
+                        How much this may disturb the user. `low` and `normal`
+                        respect the caller's quiet hours; `high` and `urgent`
+                        bypass them. Defaults to `normal`.
+                    enum: [low, normal, high, urgent]
+                requiresAnswer:
+                    type: boolean
+                    description: >-
+                        Whether the user's reply (not an acknowledgement)
+                        retires this — the shape a clarifying question from a
+                        background agent uses.
+                dedupeKey:
+                    type: string
+                    description: >-
+                        Producer-side coalescing key: while an unsettled
+                        notification with the same key exists, a new one
+                        replaces it instead of stacking.
+                    minLength: 1
+                    maxLength: 64
+        Notification:
+            type: object
+            description: One stored notification, as the API exposes it.
+            required: [id, kind, priority, title, state, createdAt]
+            properties:
+                id:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                kind:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                priority:
+                    enum: [low, normal, high, urgent]
+                title:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                body:
+                    type: string
+                    maxLength: 2000
+                state:
+                    type: string
+                    description: >-
+                        `pending` — recorded, never pushed (nobody was
+                        connected, the delivery budget was spent, or quiet
+                        hours suppressed it), so a client finds it through
+                        this list instead. `delivered` — pushed to at least one
+                        live socket. `read` / `dismissed` / `answered` are
+                        terminal; `answered` is the retirement path for a
+                        notification raised with `requiresAnswer`.
+                    enum: [pending, delivered, read, answered, dismissed]
+                requiresAnswer:
+                    type: boolean
+                answer:
+                    type: string
+                    description: The user's reply, on an answered notification.
+                    maxLength: 2000
+                createdAt:
+                    type: string
+                    format: date-time
+                deliveredAt:
+                    type: string
+                    format: date-time
+                settledAt:
+                    type: string
+                    format: date-time
+        NotificationList:
+            type: object
+            description: Body of `GET /api/notifications`.
+            required: [notifications, unread]
+            properties:
+                notifications:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/Notification"
+                unread:
+                    type: integer
+                    minimum: 0
+                    description: >-
+                        Notifications neither read nor dismissed (a badge
+                        count, so it counts past the page size).
+        NotificationSettlement:
+            type: object
+            description: >-
+                Body of the `read` / `dismiss` / `answer` routes: the
+                notification as it now stands.
+            required: [notification]
+            properties:
+                notification:
+                    $ref: "#/components/schemas/Notification"
+        NotificationDelivery:
+            type: object
+            description: Body of `POST /api/notifications`.
+            required: [notification, delivered, suppressed]
+            properties:
+                notification:
+                    $ref: "#/components/schemas/Notification"
+                delivered:
+                    type: integer
+                    minimum: 0
+                    description: How many live clients received the frame.
+                suppressed:
+                    description: >-
+                        `null` when it was delivered, otherwise the reason
+                        nothing was pushed: `disabled`, `quiet-hours`,
+                        `absent` (no live socket), or `cap`.
+                    anyOf:
+                        - type: string
+                          enum: [disabled, quiet-hours, absent, cap]
+                        - type: "null"

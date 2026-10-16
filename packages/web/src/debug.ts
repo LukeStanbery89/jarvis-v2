@@ -44,8 +44,14 @@ export function debugLog(
     }
 }
 
-/** Whether the debug gate is on (storage flag or `debug=1` URL param). */
-function debugEnabled(): boolean {
+/**
+ * Whether the debug gate is on (storage flag or `debug=1` URL param).
+ *
+ * Exported so a view can hang a *development affordance* on the same switch —
+ * the notification panel's "send a test notification" button — rather than
+ * inventing a second gate or shipping a test control unconditionally.
+ */
+export function debugEnabled(): boolean {
     try {
         if (localStorage.getItem("jarvis.debug") === "1") {
             return true;

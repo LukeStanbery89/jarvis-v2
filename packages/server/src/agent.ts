@@ -215,6 +215,32 @@ const RESEARCH_RULE =
     "question, say what you are unsure of instead of stating a guess as fact.";
 
 /**
+ * Notification hygiene appended to every conditioned system prompt (#139).
+ *
+ * `sendNotification` is the one tool whose *result* is an interruption, so its
+ * characteristic failure is not a wrong answer but a nagging assistant: a
+ * model that pings the user on every turn teaches them to ignore
+ * notifications, and an ignored notification channel is worth nothing — the
+ * feature's entire purpose is that a notification means something. So this
+ * pins restraint rather than use, and it is the reason the tool's own
+ * description spends most of its words on when *not* to call it.
+ *
+ * The last clause covers the other half: a model told "sent" will say it
+ * appeared, and a user who then sees nothing learns to distrust the channel —
+ * the "nothing happened" mystery #139 set out to remove. The tool reports what
+ * actually happened; the model's job is to relay that, not to round it up.
+ */
+const NOTIFY_RULE =
+    "sendNotification reaches the user outside this conversation, so it is " +
+    "an interruption rather than an answer: use it only when the user asked " +
+    "you to notify them, or when you are about to work long enough that they " +
+    "may walk away before you finish. Never use it to acknowledge a message, " +
+    "to restate the reply you are about to give, or more than once for the " +
+    "same thing. Its result says whether a connected client actually received " +
+    "it — if the result says it was not pushed, tell the user it is waiting " +
+    "in their notification list rather than that it appeared.";
+
+/**
  * Spoken-word formatting directive appended for voice-mode turns (#83).
  *
  * A voice prompt's effective capabilities are empty, which yields plain
@@ -244,16 +270,16 @@ const VOICE_FORMAT_RULE =
  * model. The fixed hygiene paragraphs — tool-call discipline
  * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
  * lookups ({@link IMAGE_ANALYSIS_RULE}), Home Assistant calls
- * ({@link HOME_CALL_RULE}), and tools-over-memory for research
- * ({@link RESEARCH_RULE}) — are always appended: all are server concerns,
- * independent of the client's rendering capabilities and of any
- * `LLM_SYSTEM_PROMPT` override. (The Home and research rules are
- * unconditional even though their tools are optional: a model that cannot
- * see a tool is never misled by instruction it cannot follow.) Capability
- * notes are appended as one paragraph only when the client actually declared
- * the token. Under `mode: "voice"` (#83) the spoken-word directive
- * ({@link VOICE_FORMAT_RULE}) is appended instead: the reply is shaped for
- * text-to-speech rather than for a renderer.
+ * ({@link HOME_CALL_RULE}), tools-over-memory for research
+ * ({@link RESEARCH_RULE}), and notification restraint ({@link NOTIFY_RULE}) —
+ * are always appended: all are server concerns, independent of the client's
+ * rendering capabilities and of any `LLM_SYSTEM_PROMPT` override. (The Home,
+ * research, and notification rules are unconditional even though their tools
+ * are optional: a model that cannot see a tool is never misled by instruction
+ * it cannot follow.) Capability notes are appended as one paragraph only when
+ * the client actually declared the token. Under `mode: "voice"` (#83) the
+ * spoken-word directive ({@link VOICE_FORMAT_RULE}) is appended instead: the
+ * reply is shaped for text-to-speech rather than for a renderer.
  */
 export function systemPromptForCapabilities(
     systemPrompt: string,
@@ -286,7 +312,7 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}${rendering}${spoken}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;

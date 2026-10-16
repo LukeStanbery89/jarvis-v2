@@ -31,6 +31,7 @@ import {
     serializeRequest,
     type ChatMode,
     type ClientCapability,
+    type NotificationFrame,
     type ServerFrame,
 } from "@lukestanbery/jarvis-protocol";
 
@@ -41,6 +42,19 @@ export type ChatStatus = "connecting" | "connected" | "reconnecting" | "closed";
 export interface ChatClientEvents {
     /** Connection-state changes (idempotent transitions). */
     onStatus?(status: ChatStatus): void;
+    /**
+     * The connection became **ready after an earlier attempt failed** — a
+     * dropped connection recovering, or a cold start whose first attempt could
+     * not reach the server. Not fired when the first attempt simply succeeds.
+     *
+     * Distinct from `onStatus("connected")` on purpose: only the client knows
+     * how many attempts preceded this one, and a consumer cannot infer it from
+     * the status sequence — `connecting` and `reconnecting` both precede
+     * `connected`. Consumers use it to re-read state the server could not push
+     * while it was unreachable (a notification raised then was delivered to
+     * nobody, so the list is the only place it can appear).
+     */
+    onReconnected?(): void;
     /** One parsed server frame of an in-flight prompt turn. */
     onFrame?(frame: ServerFrame): void;
     /**
@@ -50,6 +64,14 @@ export interface ChatClientEvents {
      * turn's `audioStart` frame (which flows through {@link onFrame}).
      */
     onAudio?(pcm: Float32Array): void;
+    /**
+     * One `notification` frame (#139): something the server wants the user to
+     * know, arriving **outside** a turn. Delivered whenever the socket is
+     * ready, so a view must handle it without a prompt in flight — and must
+     * not confuse it with a reply. Handled through a separate callback rather
+     * than {@link onFrame} precisely because `onFrame` is turn-scoped.
+     */
+    onNotification?(notification: NotificationFrame["notification"]): void;
     /** The credential is permanently unusable (invalid or revoked). */
     onAuthRejected?(): void;
 }
@@ -384,8 +406,15 @@ export class ChatClient {
             if ("authResult" in frame) {
                 this.clearHandshakeTimer();
                 this.phase = "ready";
+                // Read before the reset: this is the one place that knows
+                // whether the handshake just completed for the first time or
+                // after a drop (`attempt` counts failed connects).
+                const reconnected = this.attempt > 0;
                 this.attempt = 0;
                 this.emitStatus("connected");
+                if (reconnected) {
+                    this.options.events.onReconnected?.();
+                }
                 this.resendLocation();
                 this.flushWaiters();
             } else if ("error" in frame) {
@@ -414,6 +443,14 @@ export class ChatClient {
                 return;
             }
             this.failPrompt(new Error(frame.error));
+            return;
+        }
+        if ("notification" in frame) {
+            // Outside the `streaming` gate on purpose (#139): a notification
+            // is not part of a turn, so gating it here would drop every
+            // notification raised while the user was idle — the exact case
+            // this feature exists for.
+            this.options.events.onNotification?.(frame.notification);
             return;
         }
         if (this.streaming) {

@@ -15,6 +15,8 @@ import {
 } from "./http/contractValidation";
 import { createCorsMiddleware } from "./http/cors";
 import { createAttachmentRouter } from "./http/attachmentRoutes";
+import { createNotificationRouter } from "./notify/http";
+import type { NotificationService } from "./notify/service";
 import type { AttachmentStore } from "./attachments/store";
 import type { InFlightLimiter } from "./attachments/limiters";
 import { DEFAULT_ATTACHMENT_MAX_BYTES, type AppConfig } from "./config";
@@ -74,6 +76,7 @@ export function createApp(
     appConfig: AppConfig,
     attachments?: AttachmentStore,
     inFlight?: InFlightLimiter,
+    notifications?: NotificationService,
 ) {
     const app = express();
 
@@ -135,6 +138,16 @@ export function createApp(
     }
 
     app.use("/api", createAuthRouter(store, appConfig));
+
+    // Notifications (#139): mounted only when the surface is wired, so a
+    // deployment with `JARVIS_NOTIFY=off` has no endpoint at all rather than
+    // one that quietly does nothing.
+    if (notifications) {
+        app.use(
+            "/api",
+            createNotificationRouter(store, notifications, appConfig),
+        );
+    }
 
     // The local STT model route (#84 P3b): the client-side WASM engine's
     // archive, cached download-once under ~/.jarvis/stt when configured and

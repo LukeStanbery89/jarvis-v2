@@ -20,6 +20,8 @@ export type {
     ClientFrame,
     ClientHello,
     ClientLocationFrame,
+    NotificationFrame,
+    NotificationPriority,
     ServerFrame,
 } from "./types";
 export {
@@ -30,8 +32,14 @@ export {
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
     MAX_LOCATION_LABEL_LENGTH,
+    MAX_NOTIFICATION_ANSWER_LENGTH,
+    MAX_NOTIFICATION_BODY_LENGTH,
+    MAX_NOTIFICATION_ID_LENGTH,
+    MAX_NOTIFICATION_KIND_LENGTH,
+    MAX_NOTIFICATION_TITLE_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    NOTIFICATION_PRIORITIES,
     REVOKED_TOKEN_ERROR,
 } from "./types";
 export {

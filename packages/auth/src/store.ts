@@ -69,6 +69,23 @@ CREATE TABLE IF NOT EXISTS prefs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
+CREATE TABLE IF NOT EXISTS notifications (
+    id              TEXT PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+    title           TEXT NOT NULL,
+    body            TEXT,
+    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
+    requires_answer INTEGER NOT NULL DEFAULT 0,
+    dedupe_key      TEXT,
+    answer          TEXT,
+    created_at      TEXT NOT NULL,
+    delivered_at    TEXT,
+    settled_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user
+    ON notifications (user_id, created_at DESC);
 ${WEB_SESSIONS_SCHEMA}
 `;
 
@@ -180,6 +197,152 @@ export interface PrefLedger {
 }
 
 /**
+ * The urgency levels a notification may carry, in ascending order.
+ *
+ * Structurally mirrors the protocol's `NOTIFICATION_PRIORITIES`
+ * (`@lukestanbery/jarvis-protocol`) the same way {@link SessionKind} mirrors the
+ * wire's chat modes: the server passes values straight through, so the two
+ * packages stay independent of each other. Keep the tuples in step.
+ */
+export const NOTIFICATION_PRIORITIES = [
+    "low",
+    "normal",
+    "high",
+    "urgent",
+] as const;
+
+/** How much a notification is allowed to disturb the user. */
+export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
+
+/**
+ * Where a notification is in its life (#139).
+ *
+ * `pending` — recorded but never pushed to a live client (nobody was
+ * connected, the delivery cap was reached, or quiet hours suppressed it), so a
+ * client that connects later finds it through the list. `delivered` — pushed
+ * to at least one live socket. `read` / `dismissed` / `answered` are terminal
+ * from the user's point of view. `answered` is the retirement path for a
+ * `requiresAnswer` notification: a reply, not an acknowledgement, is what
+ * settles it.
+ *
+ * Note that `pending` → `read` is a legal transition: a user who finds the
+ * notification in the list and reads it there never needs it delivered.
+ */
+export const NOTIFICATION_STATES = [
+    "pending",
+    "delivered",
+    "read",
+    "answered",
+    "dismissed",
+] as const;
+
+/** A notification's lifecycle state. */
+export type NotificationState = (typeof NOTIFICATION_STATES)[number];
+
+/**
+ * One persisted notification (#139) as the store returns it.
+ *
+ * Times are ISO-8601 UTC strings, matching every other row in this database.
+ */
+export interface AppNotification {
+    id: string;
+    userId: number;
+    /** Producer-defined category ("job.finished", "reminder", …). */
+    kind: string;
+    priority: NotificationPriority;
+    title: string;
+    body: string | null;
+    state: NotificationState;
+    /** Whether the user's reply (not an acknowledgement) retires it. */
+    requiresAnswer: boolean;
+    /**
+     * Producer-supplied coalescing key: two notifications with the same
+     * `(userId, dedupeKey)` while the first is unsettled replace each other
+     * rather than stacking. `null` means "always deliver separately".
+     */
+    dedupeKey: string | null;
+    /** The user's reply, for an answered notification. */
+    answer: string | null;
+    createdAt: string;
+    deliveredAt: string | null;
+    /** When the notification reached a terminal state. */
+    settledAt: string | null;
+}
+
+/** The producer-supplied half of a notification; identity and times are the store's. */
+export interface CreateNotificationInput {
+    kind: string;
+    priority: NotificationPriority;
+    title: string;
+    body?: string | null;
+    requiresAnswer?: boolean;
+    dedupeKey?: string | null;
+}
+
+/**
+ * Notification-rows ledger: JARVIS's outbound messages to a user (#139).
+ *
+ * Every method scopes by `userId` — a notification is private to one account,
+ * so there is no cross-user read to authorize: the REST layer passes the
+ * authenticated id and a mismatched id simply does not resolve
+ * ({@link getNotification} returns `null`), which is what makes "someone
+ * else's notification id" indistinguishable from "no such id".
+ *
+ * The ledger stores and transitions; the *policy* (when to push, quiet hours,
+ * delivery caps, coalescing) lives in the server's notification service.
+ */
+export interface NotificationLedger {
+    /** Inserts a notification and returns the stored row. */
+    createNotification(
+        userId: number,
+        input: CreateNotificationInput & { id: string; createdAt: string },
+    ): AppNotification;
+    /** One notification, or `null` when it is missing or another user's. */
+    getNotification(userId: number, id: string): AppNotification | null;
+    /**
+     * A user's notifications, newest first. Dismissed rows are excluded by
+     * default; `limit` caps the page.
+     */
+    listNotifications(
+        userId: number,
+        options?: { limit?: number; includeDismissed?: boolean },
+    ): AppNotification[];
+    /** How many of a user's notifications are neither read nor dismissed. */
+    countUnreadNotifications(userId: number): number;
+    /**
+     * Moves a notification to `state`, stamping `delivered_at` / `settled_at`
+     * as that state implies, optionally recording the user's `answer`.
+     *
+     * Terminal states are terminal: a transition out of `read`, `dismissed`,
+     * or `answered` is refused and the existing row returned unchanged, so a
+     * late duplicate ack cannot resurrect a settled notification.
+     *
+     * @returns The row after the attempt, or `null` when no such notification
+     * belongs to `userId`.
+     */
+    setNotificationState(
+        userId: number,
+        id: string,
+        state: NotificationState,
+        options?: { answer?: string },
+    ): AppNotification | null;
+    /**
+     * Trims a user's notifications to the newest `keep`, so a long-lived
+     * instance cannot grow the table without bound.
+     *
+     * Settled rows are evicted first — they are the ones the user is finished
+     * with — and only if that is not enough does the oldest survivor go,
+     * whatever its state. The ceiling therefore holds for the *table*, which
+     * is the point: `pending` rows are created precisely when nobody is
+     * listening, so a rule that only trimmed settled rows would let an offline
+     * client grow a user's table without bound.
+     *
+     * @returns The number of rows deleted.
+     */
+    pruneNotifications(userId: number, keep: number): number;
+}
+
+/**
  * Session-rows ledger: the WS chat sessions (one per `thread_id`).
  */
 export interface SessionLedger {
@@ -213,7 +376,8 @@ export type AppDatabase = UserLedger &
     DeviceLedger &
     WebSessionLedger &
     PrefLedger &
-    SessionLedger & {
+    SessionLedger &
+    NotificationLedger & {
         /** Releases the underlying connection. */
         close(): void;
     };
@@ -260,6 +424,29 @@ type DeviceIdentityRow = DeviceRow & {
     u_disabled: number;
     u_created_at: string;
 };
+
+/** A `notifications` table row as the SELECTs alias it (see {@link mapNotification}). */
+interface NotificationRow {
+    id: string;
+    userId: number;
+    kind: string;
+    priority: NotificationPriority;
+    title: string;
+    body: string | null;
+    state: NotificationState;
+    requiresAnswer: number;
+    dedupeKey: string | null;
+    answer: string | null;
+    createdAt: string;
+    deliveredAt: string | null;
+    settledAt: string | null;
+}
+
+/**
+ * The notification SELECT list, shared by every read so a new column cannot
+ * reach one query and miss another (`mapNotification` is the other half).
+ */
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
 
 /**
  * Whether a rejected statement is better-sqlite3's UNIQUE-constraint
@@ -311,9 +498,35 @@ function mapSession(row: SessionRow): AppSession {
     };
 }
 
+/** Maps a `notifications` row onto the ledger's public shape. */
+function mapNotification(row: NotificationRow): AppNotification {
+    return {
+        id: row.id,
+        userId: row.userId,
+        kind: row.kind,
+        priority: row.priority,
+        title: row.title,
+        body: row.body,
+        state: row.state,
+        requiresAnswer: row.requiresAnswer === 1,
+        dedupeKey: row.dedupeKey,
+        answer: row.answer,
+        createdAt: row.createdAt,
+        deliveredAt: row.deliveredAt,
+        settledAt: row.settledAt,
+    };
+}
+
 /** The named `(user_id, name)` index the v2 migration creates on legacy stores. */
 const DEVICE_NAME_INDEX = "idx_devices_user_name";
 
+/**
+ * How many notifications a list call returns when the caller does not say.
+ *
+ * Small enough that a badge/list load stays cheap, large enough to cover a
+ * busy day of background work.
+ */
+const DEFAULT_NOTIFICATION_PAGE = 50;
 /**
  * Whether `devices` already carries a UNIQUE index over exactly
  * `(user_id, name)` — either the named {@link DEVICE_NAME_INDEX} (v2's
@@ -444,6 +657,31 @@ CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions (user_id);`);
         }
         db.pragma("user_version = 6");
     }
+    if (version < 7) {
+        // v7: notifications (#139). A fresh database gets the table from
+        // SCHEMA; this branch brings an existing one to the same shape. The
+        // DDL is repeated rather than extracted because it runs once per
+        // store in its own right — and the table, not the string, is what
+        // must match SCHEMA.
+        db.exec(`CREATE TABLE IF NOT EXISTS notifications (
+    id              TEXT PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+    title           TEXT NOT NULL,
+    body            TEXT,
+    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
+    requires_answer INTEGER NOT NULL DEFAULT 0,
+    dedupe_key      TEXT,
+    answer          TEXT,
+    created_at      TEXT NOT NULL,
+    delivered_at    TEXT,
+    settled_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user
+    ON notifications (user_id, created_at DESC);`);
+        db.pragma("user_version = 7");
+    }
 }
 
 export function openAppDatabase(dbPath: string): AppDatabase {
@@ -490,6 +728,14 @@ export class SqliteAppDatabase implements AppDatabase {
         upsertPref: Database.Statement;
         selectPrefs: Database.Statement;
         deletePrefKey: Database.Statement;
+        insertNotification: Database.Statement;
+        selectNotification: Database.Statement;
+        selectNotifications: Database.Statement;
+        selectNotificationsWithDismissed: Database.Statement;
+        countUnreadNotifications: Database.Statement;
+        settleNotification: Database.Statement;
+        pruneSettledNotifications: Database.Statement;
+        pruneNotifications: Database.Statement;
     };
 
     constructor(db: Database.Database) {
@@ -590,6 +836,42 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             deletePrefKey: db.prepare(
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
+            ),
+            insertNotification: db.prepare(
+                "INSERT INTO notifications (id, user_id, kind, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            ),
+            selectNotification: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
+            ),
+            selectNotifications: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND state != 'dismissed' ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            selectNotificationsWithDismissed: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            countUnreadNotifications: db.prepare(
+                "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
+            ),
+            // One statement covers every transition: the terminal guard lives
+            // in the WHERE clause, so a late duplicate ack touches no row and
+            // the caller re-reads the settled one instead. `delivered_at` and
+            // `settled_at` are stamped only by the states that imply them.
+            settleNotification: db.prepare(
+                "UPDATE notifications SET state = ?, answer = COALESCE(?, answer), delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, settled_at = CASE WHEN ? IN ('read', 'answered', 'dismissed') THEN ? ELSE settled_at END WHERE user_id = ? AND id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
+            ),
+            // Two passes, because the ceiling has to hold for the table and
+            // not merely for its settled rows: a client that is repeatedly
+            // offline creates `pending` rows no user has seen, and a rule that
+            // only trimmed settled rows would let those grow without bound.
+            // The first pass evicts settled rows that fall outside the newest
+            // `keep` rows *overall*, so an unsettled row is only reached by the
+            // second pass when unsettled rows alone exceed the ceiling — i.e.
+            // exactly when there is no alternative.
+            pruneSettledNotifications: db.prepare(
+                "DELETE FROM notifications WHERE user_id = ? AND state != 'pending' AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
+            ),
+            pruneNotifications: db.prepare(
+                "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
         };
     }
@@ -927,6 +1209,90 @@ export class SqliteAppDatabase implements AppDatabase {
     listAllSessions(): AppSession[] {
         const rows = this.statements.listAllSessions.all() as SessionRow[];
         return rows.map(mapSession);
+    }
+
+    createNotification(
+        userId: number,
+        input: CreateNotificationInput & { id: string; createdAt: string },
+    ): AppNotification {
+        this.statements.insertNotification.run(
+            input.id,
+            userId,
+            input.kind,
+            input.priority,
+            input.title,
+            input.body ?? null,
+            input.requiresAnswer === true ? 1 : 0,
+            input.dedupeKey ?? null,
+            input.createdAt,
+        );
+        // The row was just written, so a re-read cannot miss; the assertion
+        // documents that rather than papering over a null with a fake row.
+        const created = this.getNotification(userId, input.id);
+        if (created === null) {
+            throw new Error("notification insert vanished");
+        }
+        return created;
+    }
+
+    getNotification(userId: number, id: string): AppNotification | null {
+        const row = this.statements.selectNotification.get(userId, id) as
+            NotificationRow | undefined;
+        return row ? mapNotification(row) : null;
+    }
+
+    listNotifications(
+        userId: number,
+        options: { limit?: number; includeDismissed?: boolean } = {},
+    ): AppNotification[] {
+        const limit = Math.max(1, options.limit ?? DEFAULT_NOTIFICATION_PAGE);
+        const statement = options.includeDismissed
+            ? this.statements.selectNotificationsWithDismissed
+            : this.statements.selectNotifications;
+        const rows = statement.all(userId, limit) as NotificationRow[];
+        return rows.map(mapNotification);
+    }
+
+    countUnreadNotifications(userId: number): number {
+        const row = this.statements.countUnreadNotifications.get(userId) as {
+            n: number;
+        };
+        return row.n;
+    }
+
+    setNotificationState(
+        userId: number,
+        id: string,
+        state: NotificationState,
+        options: { answer?: string } = {},
+    ): AppNotification | null {
+        const stamp = now();
+        this.statements.settleNotification.run(
+            state,
+            options.answer ?? null,
+            state,
+            stamp,
+            state,
+            stamp,
+            userId,
+            id,
+        );
+        return this.getNotification(userId, id);
+    }
+
+    pruneNotifications(userId: number, keep: number): number {
+        const limit = Math.max(0, keep);
+        const settled = this.statements.pruneSettledNotifications.run(
+            userId,
+            userId,
+            limit,
+        );
+        const excess = this.statements.pruneNotifications.run(
+            userId,
+            userId,
+            limit,
+        );
+        return settled.changes + excess.changes;
     }
 
     close(): void {

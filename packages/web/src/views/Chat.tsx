@@ -29,6 +29,8 @@ import { useChatClient } from "../hooks/useChatClient";
 import { useVoiceSession, voiceStatusText } from "../hooks/useVoiceSession";
 import { useLocationSharing } from "../hooks/useLocationSharing";
 import { useAttachments } from "../hooks/useAttachments";
+import { useNotifications } from "../hooks/useNotifications";
+import { useBrowserNotify } from "../hooks/useBrowserNotify";
 import {
     type ChatMode,
     type ClientCapability,
@@ -36,6 +38,7 @@ import {
 import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
+import { Notifications } from "./chat/Notifications";
 
 /**
  * The capabilities this client announces in its `hello` frame. Module-level so
@@ -46,6 +49,9 @@ const CHAT_CAPABILITIES: ClientCapability[] = [
     "image",
     "link",
     "audio",
+    // The out-of-turn `notification` frame (#139): this client renders
+    // notifications, so the server may push them to its sockets.
+    "notification",
 ];
 
 /** One chat turn runner (typed or voice-origin), shared via `runTurnRef`. */
@@ -140,6 +146,21 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     });
     const { voice, snapshot: voiceSnapshot } = voiceUi;
 
+    // Notifications (#139): the list is fetched over REST and merged with the
+    // live frames the socket pushes, which is why the hook is called before
+    // the client that feeds it.
+    const notificationsUi = useNotifications({ token: credential.token });
+    const [notificationsOpen, setNotificationsOpen] = useState(false);
+    // The OS channel (#139 phase 2): a second way to interrupt, for the case
+    // where the user is not looking at this tab. Clicking an OS notification
+    // comes back here to mark it read.
+    const browserNotify = useBrowserNotify({
+        username: credential.username,
+        notifications: notificationsUi.notifications,
+        loaded: notificationsUi.loaded,
+        onOpen: notificationsUi.markRead,
+    });
+
     const { client, status, isStreaming, cancelTurn, sendLocation } =
         useChatClient({
             token: credential.token,
@@ -147,6 +168,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
             // `audio` (#83): voice turns from this client are also spoken
             // server-side; the player renders the binary chunks.
             onAudio: (pcm) => audio.play(pcm),
+            onNotification: (notification) =>
+                notificationsUi.acceptFrame(notification),
             onFrame: (frame) => {
                 // Voice turns watch the first frame (waiting → responding)
                 // and the spoken-audio span (audioStart → speaking); frames
@@ -185,8 +208,21 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     });
                 }
             },
+            // A notification raised while the server could not be reached was
+            // pushed to nobody, so the list is the only place it can appear:
+            // when the client reports that a connection finally came up after
+            // a failed attempt, re-read the page. The client reports that
+            // itself, because the status sequence cannot distinguish it
+            // (`connecting` and `reconnecting` both precede `connected`) — and
+            // the effect that tried to, with a dependency that changes every
+            // render, was a fetch loop. `refresh` is a stable `useCallback`.
+            onReconnected: notificationsUi.refresh,
             onAuthRejected,
         });
+
+    // A notification raised while the socket was down was pushed to nobody, so
+    // the list is the only place it can appear — which the `onReconnected`
+    // handler passed to the client above handles.
 
     const { locationOn, locationState, toggleLocation } = useLocationSharing({
         sendLocation,
@@ -327,11 +363,15 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 wakeAvailable={voiceUi.wakeAvailable}
                 wakeOn={voiceUi.wakeOn}
                 wakeArmed={voiceSnapshot.wakeArmed}
+                browserNotifyAvailable={browserNotify.available}
+                browserNotifyOn={browserNotify.enabled}
+                browserNotifyLabel={browserNotify.label}
                 onNewChat={newChat}
                 onOpenThread={openThread}
                 onRemoveThread={(id) => void remove(id)}
                 onToggleLocation={toggleLocation}
                 onToggleWake={toggleWake}
+                onToggleBrowserNotify={browserNotify.toggle}
                 onSignOut={signOut}
             />
             <section className="conversation">
@@ -348,6 +388,17 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                         {banner}
                     </p>
                 )}
+                <Notifications
+                    banner={notificationsUi.banner}
+                    notifications={notificationsUi.notifications}
+                    unread={notificationsUi.unread}
+                    open={notificationsOpen}
+                    onToggle={() => setNotificationsOpen((open) => !open)}
+                    onMarkRead={notificationsUi.markRead}
+                    onDismiss={notificationsUi.dismiss}
+                    onSendTest={notificationsUi.sendTest}
+                    lastTest={notificationsUi.lastTest}
+                />
                 <Transcript
                     messages={transcriptMessages}
                     previews={previews}

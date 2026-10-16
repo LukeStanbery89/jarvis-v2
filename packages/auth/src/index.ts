@@ -25,9 +25,15 @@ export {
     ensurePrivateStorage,
 } from "./fs";
 export { openAppDatabase, SqliteAppDatabase } from "./store";
+export { NOTIFICATION_PRIORITIES, NOTIFICATION_STATES } from "./store";
 export type {
     AppDatabase,
+    AppNotification,
+    CreateNotificationInput,
     DeviceLedger,
+    NotificationLedger,
+    NotificationPriority,
+    NotificationState,
     PrefLedger,
     SessionLedger,
     UserLedger,

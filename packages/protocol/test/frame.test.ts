@@ -19,6 +19,7 @@ import {
     serializeAuth,
     serializeCancel,
     serializeFrame,
+    type NotificationFrame,
     serializeHello,
     serializeLocation,
     serializeRequest,
@@ -148,6 +149,98 @@ describe("parseFrame: audio frames (#83)", () => {
         expect(() =>
             parseFrame('{"audioEnd":{"generationId":"five"}}'),
         ).toThrow(/unrecognized/);
+    });
+});
+
+describe("parseFrame: notification frames (#139)", () => {
+    const valid: { notification: NotificationFrame["notification"] } = {
+        notification: {
+            id: "abc123",
+            kind: "job.finished",
+            priority: "normal",
+            title: "PR #143 is ready",
+            body: "4 files changed.",
+            createdAt: "2026-10-15T18:04:11.000Z",
+        },
+    };
+
+    it("parses a notification and keeps its optional fields", () => {
+        expect(parseFrame(JSON.stringify(valid))).toEqual(valid);
+    });
+
+    it("normalizes absent optional fields away", () => {
+        expect(
+            parseFrame(
+                JSON.stringify({
+                    notification: {
+                        id: "a",
+                        kind: "k",
+                        priority: "low",
+                        title: "t",
+                        createdAt: "2026-10-15T18:04:11.000Z",
+                    },
+                }),
+            ),
+        ).toEqual({
+            notification: {
+                id: "a",
+                kind: "k",
+                priority: "low",
+                title: "t",
+                createdAt: "2026-10-15T18:04:11.000Z",
+            },
+        });
+    });
+
+    it("carries requiresAnswer only when true", () => {
+        const parsed = parseFrame(
+            JSON.stringify({
+                notification: {
+                    ...valid.notification,
+                    requiresAnswer: true,
+                },
+            }),
+        );
+        expect(
+            "notification" in parsed && parsed.notification.requiresAnswer,
+        ).toBe(true);
+        // `false` is normalized away: the wire either asks or does not.
+        const off = parseFrame(
+            JSON.stringify({
+                notification: {
+                    ...valid.notification,
+                    requiresAnswer: false,
+                },
+            }),
+        );
+        expect(
+            "notification" in off && "requiresAnswer" in off.notification,
+        ).toBe(false);
+    });
+
+    it("rejects a notification missing a required field or priority token", () => {
+        for (const payload of [
+            { ...valid.notification, id: undefined },
+            { ...valid.notification, id: "" },
+            { ...valid.notification, kind: "" },
+            { ...valid.notification, title: "" },
+            { ...valid.notification, createdAt: undefined },
+            { ...valid.notification, priority: undefined },
+            { ...valid.notification, priority: "eventually" },
+            { ...valid.notification, title: "x".repeat(201) },
+            { ...valid.notification, body: "x".repeat(2001) },
+            { ...valid.notification, id: "x".repeat(65) },
+            { ...valid.notification, requiresAnswer: "yes" },
+        ]) {
+            expect(() =>
+                parseFrame(JSON.stringify({ notification: payload })),
+            ).toThrow(/unrecognized/);
+        }
+    });
+
+    it("round-trips through serializeFrame", () => {
+        const text = serializeFrame(valid);
+        expect(parseFrame(text)).toEqual(valid);
     });
 });
 

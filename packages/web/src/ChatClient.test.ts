@@ -178,6 +178,69 @@ describe("ChatClient handshake", () => {
             vi.useRealTimers();
         }
     });
+
+    it("reports a recovered drop once, and not the first connect (#139)", () => {
+        // The view re-reads the notification page on this signal, so its
+        // definition is load-bearing: a first connect must not fire it (the
+        // mount fetch is already running) and a recovery must, exactly once.
+        // `status` cannot carry it — "connecting" and "reconnecting" both
+        // precede "connected", which is what made an effect keyed on it
+        // re-fire on every render.
+        let reconnects = 0;
+        const harness = makeClient("tok", {
+            onReconnected: () => {
+                reconnects += 1;
+            },
+        });
+        connected(harness);
+        expect(reconnects).toBe(0);
+
+        vi.useFakeTimers();
+        try {
+            harness.sockets[0].drop();
+            vi.advanceTimersByTime(1_000);
+            expect(harness.sockets.length).toBe(2);
+            const second = harness.sockets[1];
+            second.open();
+            second.receive({ authResult: { user: "u", device: "d" } });
+            expect(reconnects).toBe(1);
+            // A frame arriving on the recovered socket is not another connect.
+            second.receive({ chunk: "still one reconnect" });
+            expect(reconnects).toBe(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("also reports a cold start whose first attempt failed (#139)", () => {
+        // The contract is "ready after an earlier attempt failed", not "a
+        // connection was once established and dropped": if the server was
+        // unreachable at boot, the view's mount fetch failed too, so the
+        // refresh is exactly what is wanted there. Pinned because the
+        // implementation keys on the attempt counter, which cannot tell the
+        // two cases apart.
+        let reconnects = 0;
+        const harness = makeClient("tok", {
+            onReconnected: () => {
+                reconnects += 1;
+            },
+        });
+        vi.useFakeTimers();
+        try {
+            harness.client.connect();
+            harness.sockets[0].open();
+            // No verdict: the handshake times out and the client retries.
+            vi.advanceTimersByTime(5_000);
+            vi.advanceTimersByTime(1_000);
+            expect(harness.sockets.length).toBe(2);
+            const second = harness.sockets[1];
+            second.open();
+            second.receive({ authResult: { user: "u", device: "d" } });
+            expect(reconnects).toBe(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
 
 describe("ChatClient prompts", () => {
@@ -622,5 +685,95 @@ describe("turn cancellation (#84 P6)", () => {
         const socket = harness.sockets[0]!;
         // Only the handshake frames on the wire.
         expect(socket.sent).toHaveLength(2);
+    });
+});
+
+describe("notifications (#139)", () => {
+    /** A pushed notification frame, exactly as the server serializes it. */
+    const frame = {
+        notification: {
+            id: "3Ybq0kQmT1xVn8sRzWpLdA",
+            kind: "job.finished",
+            priority: "normal",
+            title: "PR #143 is ready",
+            createdAt: "2026-10-15T18:04:11.000Z",
+        },
+    };
+
+    it("surfaces a notification that arrives with no turn in flight", () => {
+        const seen: unknown[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+
+        socket.receive(frame);
+
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toEqual(frame.notification);
+        // The turn-scoped callback must not see it: a view keyed on `onFrame`
+        // would render this as part of a reply that does not exist.
+        expect(harness.frames).toEqual([]);
+        expect(harness.client.isStreaming()).toBe(false);
+    });
+
+    it("also surfaces one that arrives mid-turn, without disturbing the turn", async () => {
+        const seen: unknown[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+        const pending = harness.client.prompt("working?", "s1");
+        socket.receive({ chunk: "Working on it" });
+        expect(harness.client.isStreaming()).toBe(true);
+
+        socket.receive(frame);
+
+        expect(seen).toHaveLength(1);
+        // The turn is untouched: the notification is not a chunk, and the
+        // prompt still resolves on the turn's own `done`.
+        expect(harness.client.isStreaming()).toBe(true);
+        socket.receive({ done: true });
+        await expect(pending).resolves.toBeUndefined();
+        expect(harness.frames).toEqual([{ chunk: "Working on it" }]);
+    });
+
+    it("carries the answerable flag through", () => {
+        const seen: { requiresAnswer?: boolean }[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+
+        socket.receive({
+            notification: {
+                ...frame.notification,
+                kind: "coding.question",
+                priority: "high",
+                requiresAnswer: true,
+            },
+        });
+
+        expect(seen[0]?.requiresAnswer).toBe(true);
+    });
+
+    it("drops a malformed notification frame when no turn is in flight", () => {
+        const seen: unknown[] = [];
+        const harness = makeClient("tok", {
+            onNotification: (notification) => seen.push(notification),
+        });
+        const socket = connected(harness);
+
+        // No `priority` — the shared parser rejects the whole frame, so the
+        // client falls into the unrecognized-frame path rather than handing
+        // the view a notification it cannot render. (With a turn in flight
+        // that path fails the prompt — pre-existing behavior for any
+        // unreadable frame, and why the server gates the frame on a declared
+        // capability.)
+        socket.receive({
+            notification: { id: "x", kind: "k", title: "t", createdAt: "now" },
+        });
+
+        expect(seen).toEqual([]);
     });
 });

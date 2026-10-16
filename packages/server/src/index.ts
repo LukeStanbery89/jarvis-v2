@@ -1,9 +1,10 @@
 /**
  * Server entry point.
  *
- * Builds the Express app, boots the agent graph (creating `~/.jarvis` and the
- * checkpoint store), opens the app database (users/devices/sessions), hands
- * the app to the listener seam, and attaches the WebSocket chat server.
+ * Builds the Express app, opens the app database (users/devices/sessions) and
+ * the notification surface built on it, boots the agent graph (creating
+ * `~/.jarvis` and the checkpoint store) with that surface's tool injected,
+ * hands the app to the listener seam, and attaches the WebSocket chat server.
  *
  * Transport selection, TLS, the cert reads, and the HTTPS redirect listener
  * all live in `src/listener.ts`; this file is a thin composition root.
@@ -34,6 +35,9 @@ import {
 import { InFlightLimiter, VlCallLimiter } from "./attachments/limiters";
 import { FixedWindowQuota } from "./rate/fixedWindowQuota";
 import { KokoroTtsProvider } from "./tts/kokoro";
+import { createNotificationHub } from "./notify/hub";
+import { createInAppChannel } from "./notify/channels/inApp";
+import { createNotificationService } from "./notify/service";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -199,6 +203,28 @@ logger.info(
         : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
 );
 
+const store = openAppDatabase(appConfig.appDbPath);
+
+// Notifications (#139): the connection registry is built here and handed to
+// the REST surface (which needs it to know whether the user is reachable), the
+// chat server (which fills it in as sockets authenticate), and the agent (the
+// `sendNotification` tool, one of the registry's consumers below). Absent when
+// `JARVIS_NOTIFY=off`, which unmounts the routes, the delivery wiring, and the
+// tool together — a half-wired surface would record notifications nobody can
+// be told about.
+const notifyConfig = appConfig.notify;
+const notificationHub = notifyConfig ? createNotificationHub() : null;
+const notifications =
+    notifyConfig && notificationHub
+        ? createNotificationService({
+              store,
+              hub: notificationHub,
+              channels: [createInAppChannel(notificationHub)],
+              maxPerUser: notifyConfig.maxPerUser,
+              deliveriesPerWindow: notifyConfig.deliveriesPerMin,
+          })
+        : undefined;
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
@@ -207,9 +233,16 @@ initAgentGraph({
     ...(weatherDeps ? { weather: weatherDeps } : {}),
     ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
     ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
+    ...(notifications ? { notifications: { service: notifications } } : {}),
 });
-const store = openAppDatabase(appConfig.appDbPath);
-const webApp = createApp(store, appConfig, attachments, inFlight);
+
+const webApp = createApp(
+    store,
+    appConfig,
+    attachments,
+    inFlight,
+    notifications,
+);
 
 const { server } = createJarvisServer(webApp, {
     port,
@@ -222,4 +255,5 @@ attachChatServer(server, store, {
     turnTimeoutMs: appConfig.turnTimeoutMs,
     attachments,
     ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
+    ...(notificationHub ? { notifications: notificationHub } : {}),
 });

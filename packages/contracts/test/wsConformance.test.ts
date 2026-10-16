@@ -31,6 +31,7 @@ import { Parser } from "@asyncapi/parser";
 import Ajv from "ajv";
 import { load as loadYaml } from "js-yaml";
 import {
+    CLIENT_CAPABILITIES,
     MAX_CAPABILITIES,
     MAX_ATTACHMENT_ID_LENGTH,
     MAX_LOCATION_LABEL_LENGTH,
@@ -61,7 +62,7 @@ type PayloadSchema = Record<string, unknown>;
  */
 type FrameKeys<T> = T extends unknown ? keyof T : never;
 
-/** The 8 server-frame discriminator keys, checked against `ServerFrame`. */
+/** The 9 server-frame discriminator keys, checked against `ServerFrame`. */
 const SERVER_FRAME_KEYS = [
     "chunk",
     "tool",
@@ -71,6 +72,7 @@ const SERVER_FRAME_KEYS = [
     "authResult",
     "audioStart",
     "audioEnd",
+    "notification",
 ] as const satisfies readonly FrameKeys<ServerFrame>[];
 
 /** Client message names (not `ClientFrame` keys — it is a union of five shapes). */
@@ -96,6 +98,7 @@ const MESSAGE_FOR_KEY: Record<string, string> = {
     authResult: "authResult",
     audioStart: "audioStart",
     audioEnd: "audioEnd",
+    notification: "notification",
 };
 
 /**
@@ -324,12 +327,15 @@ describe("AsyncAPI conformance: protocol frames", () => {
         });
 
         it("validates a hello declaring every capability token", () => {
-            // 16 distinct entries are unbuildable from the 4-value enum, so
-            // "at the MAX_CAPABILITIES cap" has no spec-valid shape (the
+            // Derived from `CLIENT_CAPABILITIES`, so adding a token cannot
+            // leave this case testing a subset of the protocol (the list was
+            // hardcoded while it still had four entries, and this test kept
+            // passing after `audio` was added — the drift it exists to catch).
+            // A 16-entry announcement has no spec-valid shape (the
             // duplicate-rejection case below pins why); the widest valid
-            // announcement is all four tokens, once each.
+            // announcement is every distinct token, once each.
             expectWireConformant(
-                () => serializeHello(["markdown", "html", "image", "link"]),
+                () => serializeHello([...CLIENT_CAPABILITIES]),
                 MESSAGE_FOR_CLIENT.clientHello,
             );
         });
@@ -475,6 +481,40 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeFrame(frame),
                 MESSAGE_FOR_KEY.audioEnd,
+            );
+        });
+
+        it("validates a notification frame (#139)", () => {
+            const frame: ServerFrame = {
+                notification: {
+                    id: "3Ybq0kQmT1xVn8sRzWpLdA",
+                    kind: "job.finished",
+                    priority: "normal",
+                    title: "The coding agent finished and opened PR #143",
+                    body: "4 files changed, tests green.",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.notification,
+            );
+        });
+
+        it("validates an answerable notification frame (#139)", () => {
+            const frame: ServerFrame = {
+                notification: {
+                    id: "3Ybq0kQmT1xVn8sRzWpLdA",
+                    kind: "coding.question",
+                    priority: "high",
+                    title: "Which React version?",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                    requiresAnswer: true,
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.notification,
             );
         });
     });
