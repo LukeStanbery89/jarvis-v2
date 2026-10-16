@@ -37,6 +37,7 @@ import { authed, requireAuth, requireCsrf, requireOwner } from "./middleware";
 import type { CookieAuthOptions } from "./middleware";
 import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
 import { logger } from "../logger";
+import { assertKnownPrefs } from "../prefs/known";
 import { RateLimiter } from "./rateLimit";
 
 const USERNAME_MAX = 64;
@@ -761,7 +762,14 @@ function roleFrom(body: unknown): "owner" | "user" {
     return role;
 }
 
-/** Reads + validates a prefs map body into ledger upsert entries. */
+/**
+ * Reads + validates a prefs map body into ledger upsert entries.
+ *
+ * The generic checks (an object, at least one key, bounds, serializable
+ * values) are followed by {@link assertKnownPrefs}, which rejects a malformed
+ * value for any key a feature *reads* — the one place every prefs write passes
+ * through, so no route can store an unreadable known pref.
+ */
 function prefsFrom(body: unknown): { key: string; value: unknown }[] {
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
         throw new AuthError("BAD_REQUEST", "prefs must be a JSON object");
@@ -776,7 +784,7 @@ function prefsFrom(body: unknown): { key: string; value: unknown }[] {
             `too many prefs (max ${PREF_KEY_COUNT_MAX})`,
         );
     }
-    return entries.map(([key, value]) => {
+    const shaped = entries.map(([key, value]) => {
         if (key.length === 0 || key.length > PREF_KEY_MAX) {
             throw new AuthError(
                 "BAD_REQUEST",
@@ -793,6 +801,8 @@ function prefsFrom(body: unknown): { key: string; value: unknown }[] {
         }
         return { key, value };
     });
+    assertKnownPrefs(shaped);
+    return shaped;
 }
 
 function stringField(value: unknown, field: string): string {

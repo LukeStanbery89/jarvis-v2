@@ -33,6 +33,7 @@ import type { HubSocket, NotificationHub } from "../src/notify/hub";
 import { createInAppChannel } from "../src/notify/channels/inApp";
 import { createNotificationService } from "../src/notify/service";
 import type { NotificationService } from "../src/notify/service";
+import { assertKnownPrefs } from "../src/prefs/known";
 
 /** A socket double that records what the hub pushed to it. */
 function fakeSocket(): HubSocket & { frames: ServerFrame[] } {
@@ -433,6 +434,36 @@ describe("notification service policy (#139)", () => {
         });
         expect(outcome.suppressed).toBeNull();
         expect(socket.frames).toHaveLength(1);
+    });
+
+    it("honours a window the prefs write path accepted (#143 parity)", async () => {
+        const at = new Date(2026, 9, 15, 23, 30);
+        const { store, hub, service, socket } = makeService({ at });
+        const userId = makeUser(store);
+        hub.add(userId, socket);
+
+        // Exactly what the settings panel sends: one key, the documented shape.
+        // The write path validates it (a 400 here would make the panel's save a
+        // silent no-op) and the delivery path then acts on it. The two halves
+        // share one definition of the shape, and this is the assertion that
+        // says so.
+        const patch: Record<string, unknown> = {
+            "notify.quietHours": { start: "22:00", end: "07:00" },
+        };
+        const entries = Object.entries(patch).map(([key, value]) => ({
+            key,
+            value,
+        }));
+        expect(() => assertKnownPrefs(entries)).not.toThrow();
+        store.setPrefs(userId, entries);
+
+        const outcome = await service.notify(userId, {
+            kind: "k",
+            priority: "normal",
+            title: "held for the morning",
+        });
+        expect(outcome.suppressed).toBe("quiet-hours");
+        expect(socket.frames).toEqual([]);
     });
 
     it("caps deliveries per user but keeps recording past the cap", async () => {

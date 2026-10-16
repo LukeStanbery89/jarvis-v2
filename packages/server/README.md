@@ -639,6 +639,34 @@ The request/response normalization and the defensive parsing live in the
 `packages/server/src/README.md` file map (`llm/tools/wikipedia.ts`,
 `llm/tools/wikipedia/client.ts`).
 
+## Preferences — `/api/prefs`
+
+`GET /api/prefs` / `PUT /api/prefs` are a **free-form per-user map**: string
+keys (1–256 chars, at most 64) to any JSON value. It is where integrations keep
+their own settings, and the portal's raw JSON editor is the escape hatch for
+them. `PUT` upserts only the keys it names, so a client patches one setting at a
+time; `DELETE` clears **every** key on the account and is not a way to unset
+one.
+
+A key the server _itself reads_ is a different matter, because a setting in a
+shape the reader cannot parse saves fine and then silently does nothing — the
+"nothing happened" failure class #139 exists to remove. So writes to those keys
+are validated (`src/prefs/known.ts`) and a malformed value is a **400 carrying
+the reason**, to whoever wrote it (the web panel, the portal's raw editor, or
+`curl`). A rejected body stores nothing at all: a prefs write is all-or-nothing.
+
+The two keys read today, both by the notification service:
+
+| Key                 | Value                                                | Off / unset                                                                     |
+| ------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `notify.enabled`    | `true` / `false`                                     | `false` turns interruptions off (records are still kept); `null` or absent = on |
+| `notify.quietHours` | `{ "start": "HH:MM", "end": "HH:MM" }`, server-local | `null` or absent = off; a zero-length window is refused on write                |
+
+The reader stays lenient (an unreadable stored value is ignored, never fatal),
+so a hand-edited database can never silence a user for the day; the write check
+is the strict counterpart. Both live in `packages/server/src/notify/prefs.ts`,
+one definition, so a new pref shape cannot have two.
+
 ## Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:

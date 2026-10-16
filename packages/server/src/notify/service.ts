@@ -47,10 +47,12 @@ import type {
 } from "./types";
 import { normalizeNotificationInput, validateAnswer } from "./types";
 import type { NotificationHub } from "./hub";
-
-/** Pref keys this service reads. Undocumented keys are ignored. */
-export const NOTIFY_ENABLED_PREF = "notify.enabled";
-export const NOTIFY_QUIET_HOURS_PREF = "notify.quietHours";
+import {
+    NOTIFY_ENABLED_PREF,
+    NOTIFY_QUIET_HOURS_PREF,
+    parseQuietHours,
+    type QuietHours,
+} from "./prefs";
 
 /** How the service is configured for this process. */
 export interface NotificationServiceOptions {
@@ -67,12 +69,6 @@ export interface NotificationServiceOptions {
     deliveriesPerWindow: number;
     /** Injectable clock, so quiet hours and the budget window are testable. */
     now?: () => Date;
-}
-
-/** A quiet-hours window in the server's local time, `"HH:MM"` to `"HH:MM"`. */
-interface QuietHours {
-    start: string;
-    end: string;
 }
 
 /** The result of a state-changing call, so the route can answer precisely. */
@@ -369,34 +365,6 @@ function safePrefs(
         );
         return {};
     }
-}
-
-/**
- * Parses a quiet-hours pref: `{ start: "22:00", end: "07:30" }`.
- *
- * Returns `null` for anything unrecognized — a malformed window must not
- * silence the user for the rest of the day, so the failure direction is
- * "no quiet hours".
- */
-function parseQuietHours(value: unknown): QuietHours | null {
-    if (typeof value !== "object" || value === null) {
-        return null;
-    }
-    const { start, end } = value as { start?: unknown; end?: unknown };
-    if (!isClockTime(start) || !isClockTime(end)) {
-        return null;
-    }
-    if (start === end) {
-        // A zero-length window is meaningless; treat it as "not configured"
-        // rather than as "always quiet".
-        return null;
-    }
-    return { start, end };
-}
-
-/** True for a `"HH:MM"` 24-hour clock string. */
-function isClockTime(value: unknown): value is string {
-    return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
 /**

@@ -576,7 +576,7 @@ export interface components {
             /** Format: date-time */
             lastActiveAt: string;
         };
-        /** @description Free-form per-user integration preferences: a map of string keys (1–256 chars, at most 64 entries) to any JSON value. PUT bodies must contain at least one key (server-enforced); a store may be empty when read. */
+        /** @description Free-form per-user integration preferences: a map of string keys (1–256 chars, at most 64 entries) to any JSON value. PUT bodies must contain at least one key (server-enforced); a store may be empty when read. Keys the server itself reads — today `notify.enabled` (boolean or null) and `notify.quietHours` (`{ start, end }` `"HH:MM"` times, or null for off) — are validated on write, so a malformed value is a 400 rather than a setting that saves and then does nothing. Other keys are free-form. */
         Prefs: {
             [key: string]: unknown;
         };
@@ -1596,7 +1596,7 @@ export interface operations {
                     "application/json": components["schemas"]["Prefs"];
                 };
             };
-            /** @description Malformed prefs body (not an object, empty, too many keys, or a key that is too long). */
+            /** @description Malformed prefs body (not an object, empty, too many keys, a key that is too long, or a value rejected for a known key such as `notify.*`). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -1739,7 +1739,7 @@ export interface operations {
                     "application/json": components["schemas"]["Prefs"];
                 };
             };
-            /** @description Malformed prefs body (not an object, empty, too many keys, or a key that is too long). */
+            /** @description Malformed prefs body (not an object, empty, too many keys, a key that is too long, or a value rejected for a known key such as `notify.*`). */
             400: {
                 headers: {
                     [name: string]: unknown;
