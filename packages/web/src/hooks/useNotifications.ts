@@ -22,7 +22,11 @@ import {
     settleNotification,
     unreadCount,
 } from "../notifications";
-import type { ClientNotification, NotificationState } from "../notifications";
+import type {
+    ClientNotification,
+    NotificationState,
+    NotificationSuppression,
+} from "../notifications";
 import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
 
 /** One live frame as the client stores it: state is the record's, not the wire's. */
@@ -63,6 +67,17 @@ export interface NotificationsState {
     dismiss(id: string): void;
     /** Re-reads the page (after a reconnect, or from a manual retry). */
     refresh(): void;
+    /**
+     * Raises a test notification through this browser's own credential
+     * (#139 debug affordance), so the whole path can be exercised without a
+     * device token: the answer says whether it was pushed or held back.
+     */
+    sendTest(): void;
+    /** The last {@link sendTest} outcome, or `null` before the first one. */
+    lastTest: {
+        delivered: number;
+        suppressed: NotificationSuppression | null;
+    } | null;
 }
 
 /**
@@ -76,6 +91,10 @@ export function useNotifications(token: string): NotificationsState {
     );
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [lastTest, setLastTest] = useState<{
+        delivered: number;
+        suppressed: NotificationSuppression | null;
+    } | null>(null);
 
     const refresh = useCallback(() => {
         setLoading(true);
@@ -167,6 +186,40 @@ export function useNotifications(token: string): NotificationsState {
         [settle, token],
     );
 
+    const sendTest = useCallback(() => {
+        setLastTest(null);
+        api.createNotification(token, {
+            kind: "test",
+            title: "Test notification",
+            body: "Raised from this browser's own session.",
+            priority: "high",
+        })
+            .then((outcome) => {
+                setLastTest({
+                    delivered: outcome.delivered,
+                    // The REST schema types this as a plain string; the union
+                    // is asserted here so the renderer can be exhaustive over
+                    // the four gates instead of printing a raw token.
+                    suppressed: (outcome.suppressed ??
+                        null) as NotificationSuppression | null,
+                });
+                debugLog(
+                    "notify",
+                    `test push: delivered=${outcome.delivered} suppressed=${String(outcome.suppressed)}`,
+                );
+                // Re-read either way: a suppressed notification is not pushed,
+                // and the list is the only place it becomes visible.
+                refresh();
+            })
+            .catch((err: unknown) => {
+                setError(
+                    err instanceof Error
+                        ? err.message
+                        : "could not create the test notification",
+                );
+            });
+    }, [refresh, token]);
+
     const banner = useMemo(() => selectBanner(notifications), [notifications]);
     const unread = useMemo(() => unreadCount(notifications), [notifications]);
 
@@ -180,6 +233,8 @@ export function useNotifications(token: string): NotificationsState {
         markRead,
         dismiss,
         refresh,
+        sendTest,
+        lastTest,
     };
 }
 

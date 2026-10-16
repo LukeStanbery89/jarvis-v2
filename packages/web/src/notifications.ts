@@ -164,6 +164,37 @@ export function describeNotificationState(state: NotificationState): string {
     }
 }
 
+/**
+ * A delivery outcome in plain language, for the debug affordance.
+ *
+ * This is the sentence that ends the "nothing happened" ambiguity: it says
+ * whether the server pushed the notification to a live client, and if not,
+ * which gate held it — so a missing banner is attributable instead of
+ * mysterious.
+ */
+export function describeDelivery(
+    delivered: number,
+    suppressed: NotificationSuppression | null,
+): string {
+    if (suppressed === null) {
+        return `pushed to ${delivered} connected client${delivered === 1 ? "" : "s"}`;
+    }
+    switch (suppressed) {
+        case "absent":
+            return "recorded only — no client was connected at that moment";
+        case "quiet-hours":
+            return "held back by quiet hours (priority below high)";
+        case "cap":
+            return "held back by the per-minute delivery budget";
+        case "disabled":
+            return "held back — notifications are switched off for this account";
+    }
+}
+
+/** The gates a delivery can be suppressed by, mirroring the REST schema. */
+export type NotificationSuppression =
+    "disabled" | "quiet-hours" | "absent" | "cap";
+
 /** How many notifications are neither read nor dismissed (the badge count). */
 export function unreadCount(list: ClientNotification[]): number {
     return list.filter((item) => !isSettled(item.state)).length;

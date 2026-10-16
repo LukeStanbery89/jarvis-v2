@@ -40,6 +40,13 @@ export type Notification = components["schemas"]["Notification"];
 /** Body of `GET /api/notifications`: the page plus the unread badge count. */
 export type NotificationList = components["schemas"]["NotificationList"];
 
+/** Body of `POST /api/notifications`: the record plus what happened to it. */
+export type NotificationDelivery =
+    components["schemas"]["NotificationDelivery"];
+
+/** Body of `POST /api/notifications`: what the producer asks for. */
+export type NotificationInput = components["schemas"]["NotificationInput"];
+
 /** REST failure carrying the server's `{ error }` message on a non-2xx body. */
 export class ApiError extends Error {
     constructor(
@@ -201,6 +208,21 @@ export function createApi(
                 { token },
             );
             return result.notification;
+        },
+        /**
+         * Raises a notification for the caller (#139) and reports what
+         * happened to it: `delivered` is how many live clients received the
+         * frame, `suppressed` names the gate that held it back (`absent` when
+         * no client was connected, then `quiet-hours`/`cap`/`disabled`).
+         */
+        createNotification(
+            token: string,
+            input: NotificationInput,
+        ): Promise<NotificationDelivery> {
+            return request("POST", "/api/notifications", {
+                token,
+                body: input,
+            });
         },
         /** Dismisses one notification (idempotent; 404 for a foreign id). */
         async dismissNotification(

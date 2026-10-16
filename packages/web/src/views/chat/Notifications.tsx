@@ -13,8 +13,15 @@
  * What `high`/`urgent` buy here is emphasis.
  */
 import { Bell, X } from "lucide-react";
-import { describeNotificationState } from "../../notifications";
-import type { ClientNotification } from "../../notifications";
+import { debugEnabled } from "../../debug";
+import {
+    describeDelivery,
+    describeNotificationState,
+} from "../../notifications";
+import type {
+    ClientNotification,
+    NotificationSuppression,
+} from "../../notifications";
 
 /** Props for {@link Notifications}. */
 export interface NotificationsProps {
@@ -32,6 +39,17 @@ export interface NotificationsProps {
     onMarkRead(id: string): void;
     /** Dismisses one notification. */
     onDismiss(id: string): void;
+    /**
+     * Raises a test notification with this browser's own credential (#139).
+     * Only rendered under the `jarvis.debug` gate — it is a development
+     * affordance for exercising the channel, not a product feature.
+     */
+    onSendTest(): void;
+    /** The last test outcome, so the panel can say what happened to it. */
+    lastTest: {
+        delivered: number;
+        suppressed: NotificationSuppression | null;
+    } | null;
 }
 
 /**
@@ -49,7 +67,10 @@ export function Notifications({
     onToggle,
     onMarkRead,
     onDismiss,
+    onSendTest,
+    lastTest,
 }: NotificationsProps) {
+    const showTest = debugEnabled();
     return (
         <>
             {banner && (
@@ -97,6 +118,22 @@ export function Notifications({
                     <span className="notification-count">{unread}</span>
                 )}
             </button>
+            {open && showTest && (
+                <p className="notification-test">
+                    <button type="button" onClick={onSendTest}>
+                        Send a test notification
+                    </button>
+                    {lastTest !== null && (
+                        <span role="status">
+                            {" "}
+                            {describeDelivery(
+                                lastTest.delivered,
+                                lastTest.suppressed,
+                            )}
+                        </span>
+                    )}
+                </p>
+            )}
             {open && (
                 <ul className="notification-list">
                     {notifications.length === 0 && (

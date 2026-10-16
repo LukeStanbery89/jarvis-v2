@@ -379,6 +379,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                     onToggle={() => setNotificationsOpen((open) => !open)}
                     onMarkRead={notificationsUi.markRead}
                     onDismiss={notificationsUi.dismiss}
+                    onSendTest={notificationsUi.sendTest}
+                    lastTest={notificationsUi.lastTest}
                 />
                 <Transcript
                     messages={transcriptMessages}

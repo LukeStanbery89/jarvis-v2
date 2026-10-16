@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    describeDelivery,
     describeNotificationState,
     isSettled,
     mergeNotification,
@@ -141,6 +142,19 @@ describe("settleNotification", () => {
             { answer: "yes" },
         );
         expect(settled[0]).toMatchObject({ state: "answered", answer: "yes" });
+    });
+});
+
+describe("describeDelivery", () => {
+    it("names every gate that can hold a notification back", () => {
+        expect(describeDelivery(1, null)).toBe("pushed to 1 connected client");
+        expect(describeDelivery(2, null)).toBe("pushed to 2 connected clients");
+        expect(describeDelivery(0, "absent")).toContain(
+            "no client was connected",
+        );
+        expect(describeDelivery(0, "quiet-hours")).toContain("quiet hours");
+        expect(describeDelivery(0, "cap")).toContain("delivery budget");
+        expect(describeDelivery(0, "disabled")).toContain("switched off");
     });
 });
 
