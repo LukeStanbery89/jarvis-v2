@@ -341,6 +341,29 @@ entirely, and a throw from `new Notification` (iOS Safari outside an installed
 PWA, permission revoked in a background tab) is swallowed — the in-app
 notification and the stored record are unaffected.
 
+## Dev-server gotcha: the linked protocol package
+
+`npm run dev` pre-bundles `@lukestanbery/jarvis-protocol` (its build output is
+CommonJS, which the browser cannot load directly — see the note in
+`vite.config.ts`). Vite keys that pre-bundle on the **lockfile and its own
+config**, not on the linked package's contents, so **rebuilding the protocol
+while the dev server is running leaves the browser holding the old
+`parseFrame`**. The symptom is nasty because it is silent: the server sends a
+frame the stale parser does not recognize, the client drops it, and only an
+REST-backed refresh shows the result — so a feature looks like it "only works
+after a reload" even though it works in the built client.
+
+When you change `packages/protocol` (a new frame, a parser rule):
+
+```sh
+npm run build -w @lukestanbery/jarvis-protocol
+npm run dev:clean -w @lukestanbery/jarvis-web   # clears the dep cache, restarts Vite
+```
+
+`dev:clean` is the whole fix — it removes `node_modules/.vite/deps`, so the
+next start re-optimizes against the current build. The built client served by
+the JARVIS server at `/web` has no such cache and is unaffected.
+
 ## Serving
 
 The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
