@@ -42,6 +42,8 @@ import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
 export interface NotificationsState {
     /** Newest first, bounded (see `NOTIFICATION_LIMIT`). */
     notifications: ClientNotification[];
+    /** The fired timer that should be ringing, or `null` (#90 phase 4). */
+    ring: ClientNotification | null;
     /** The newest unsettled notification, for the prominent surface. */
     banner: ClientNotification | null;
     /** Count of notifications neither read nor dismissed. */
@@ -273,18 +275,19 @@ export function useNotifications(options: {
             });
     }, [refresh, token]);
 
-    const banner = useMemo(
+    const { ring, banner } = useMemo(
         () =>
             selectAlerts(notifications, {
                 enabled: notifyEnabled,
                 now: new Date(),
-            }).banner,
+            }),
         [notifications, notifyEnabled],
     );
     const unread = useMemo(() => unreadCount(notifications), [notifications]);
 
     return {
         notifications,
+        ring,
         banner,
         unread,
         loading,

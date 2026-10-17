@@ -17,8 +17,12 @@ export interface UseAudioResult {
     speaking: boolean;
     /** Stops all scheduled playback (stop button, barge-in). */
     stop(): void;
-    /** Resumes the audio context (call from the mic-press user gesture). */
+    /** Resumes the audio context (call from any user gesture). */
     unlock(): void;
+    /** Starts the repeating timer ring (#90 phase 4). Idempotent. */
+    startRing(): void;
+    /** Stops the timer ring. */
+    stopRing(): void;
 }
 
 /**
@@ -52,6 +56,8 @@ export function useAudio(options?: {
 
     const stop = useCallback((): void => audio.stop(), [audio]);
     const unlock = useCallback((): void => audio.unlock(), [audio]);
+    const startRing = useCallback((): void => audio.startRing(), [audio]);
+    const stopRing = useCallback((): void => audio.stopRing(), [audio]);
 
-    return { audio, speaking, stop, unlock };
+    return { audio, speaking, stop, unlock, startRing, stopRing };
 }

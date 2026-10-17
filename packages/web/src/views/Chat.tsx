@@ -18,7 +18,7 @@
  * threads, so conversations created on other clients appear (empty) and
  * locally-created ones appear before their first server claim.
  */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { StoredCredential } from "../credentials";
 import { mergeSessions } from "../sidebar";
@@ -42,6 +42,7 @@ import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
 import { Notifications } from "./chat/Notifications";
+import { TimerRing } from "./chat/TimerRing";
 import { Settings } from "./chat/Settings";
 
 /**
@@ -99,6 +100,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         speaking: audioSpeaking,
         stop: stopAudio,
         unlock: unlockAudio,
+        startRing,
+        stopRing,
     } = useAudio();
 
     const [banner, setBanner] = useState<string | null>(null);
@@ -238,6 +241,54 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     // A notification raised while the socket was down was pushed to nobody, so
     // the list is the only place it can appear — which the `onReconnected`
     // handler passed to the client above handles.
+
+    /**
+     * A timer's ring belongs to the alert selection, not to a click: it starts
+     * when a fired timer becomes the ring target (or when the next one takes
+     * over after a Stop) and stops the moment nothing is owed. The player's
+     * `startRing` is idempotent, so a hand-over does not restart the pattern.
+     */
+    const ringId = notificationsUi.ring?.id ?? null;
+    useEffect(() => {
+        if (ringId === null) {
+            stopRing();
+        } else {
+            startRing();
+        }
+    }, [ringId, startRing, stopRing]);
+
+    /**
+     * Acknowledges the ringing timer (#90 phase 4).
+     *
+     * `Stop` is the one exit: the notification is dismissed (the durable half)
+     * and the alarm stops immediately rather than waiting for the REST round
+     * trip. A failed dismissal rolls the row back, and the ring resumes with
+     * it — the overlay never claims an acknowledgement the server did not get.
+     */
+    function stopTimer(id: string): void {
+        stopRing();
+        notificationsUi.dismiss(id);
+    }
+
+    /**
+     * The audio context starts suspended, and only a user gesture may resume
+     * it. Unlocking on the mic press alone meant a timer that fired before the
+     * user ever touched the mic was silent (#90 phase 4), so the first gesture
+     * of any kind — a click, a key, a tap — unlocks it once.
+     */
+    useEffect(() => {
+        const unlock = (): void => {
+            unlockAudio();
+            window.removeEventListener("pointerdown", unlock);
+            window.removeEventListener("keydown", unlock);
+        };
+        window.addEventListener("pointerdown", unlock, { passive: true });
+        window.addEventListener("keydown", unlock);
+        return () => {
+            window.removeEventListener("pointerdown", unlock);
+            window.removeEventListener("keydown", unlock);
+        };
+    }, [unlockAudio]);
 
     const { locationOn, locationState, toggleLocation } = useLocationSharing({
         sendLocation,
@@ -484,6 +535,9 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
                 onToggleLocation={toggleLocation}
                 onSignOut={signOut}
             />
+            {notificationsUi.ring !== null && (
+                <TimerRing timer={notificationsUi.ring} onStop={stopTimer} />
+            )}
         </main>
     );
 }

@@ -879,3 +879,95 @@ textarea::placeholder {
     background: var(--primary-wash);
     border-color: var(--primary);
 }
+
+/* The timer ring (#90 phase 4) — the one notification the client raises as an
+   interruption in the physical sense. A modal <dialog>, so it sits in the
+   browser's top layer above the settings dialog (and anything that opens
+   later) without a z-index race; the backdrop is the dim. The only action is
+   Stop, so it is the only button. */
+.timer-ring {
+    width: min(26rem, calc(100vw - 2rem));
+    padding: 1.6rem 1.4rem 1.35rem;
+    background: var(--panel);
+    color: var(--text);
+    border: 2px solid var(--primary);
+    border-radius: 12px;
+    text-align: center;
+    box-shadow:
+        0 0 0 1px var(--primary-faint),
+        0 0 32px var(--primary-wash);
+    animation: timer-ring-pulse 1.6s ease-in-out infinite;
+}
+
+.timer-ring::backdrop {
+    background: rgba(0, 0, 0, 0.82);
+}
+
+.timer-ring-eyebrow {
+    margin: 0;
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    opacity: 0.7;
+}
+
+.timer-ring-title {
+    margin: 0.35rem 0 0;
+    font-size: 1.85rem;
+    line-height: 1.15;
+    color: var(--primary);
+    overflow-wrap: anywhere;
+}
+
+.timer-ring-body {
+    margin: 0.6rem 0 0;
+    opacity: 0.85;
+}
+
+.timer-ring-when {
+    margin: 0.9rem 0 0;
+    font-size: 0.85rem;
+    opacity: 0.7;
+}
+
+.timer-ring-stop {
+    width: 100%;
+    margin-top: 1.2rem;
+    padding: 0.9rem 1rem;
+    font: inherit;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--bg);
+    background: var(--primary);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.timer-ring-stop:hover,
+.timer-ring-stop:focus-visible {
+    background: #7defff;
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+@keyframes timer-ring-pulse {
+    0%,
+    100% {
+        box-shadow:
+            0 0 0 1px var(--primary-faint),
+            0 0 24px var(--primary-wash);
+    }
+    50% {
+        box-shadow:
+            0 0 0 2px var(--primary-dim),
+            0 0 48px var(--primary-faint);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .timer-ring {
+        animation: none;
+    }
+}
