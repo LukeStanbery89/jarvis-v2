@@ -728,6 +728,15 @@ that owns one job's life — and the four rules worth knowing here:
   (a claim lives in memory), so the first thing `start()` does is fail it with
   "the server restarted while this run was in progress" — announced like any
   other failure.
+- **A message job runs nothing.** The job's own text is the whole payload: a
+  reminder or a timer needs no model and no tool, and the runner's announcement
+  is what delivers it — which is why `sendNotification` stays unschedulable
+  (one job, one notification). The job's `class` travels with that announcement
+  unchanged, so a `timer` pierces quiet hours while everything else waits.
+- **The boot log names the database.** `App database: <path>` sits beside the
+  checkpoint line, because "the scheduler never fired" and "the row was inserted
+  into a different file" are indistinguishable from the outside — that happened
+  once (2026-10-17) and cost a round trip.
 - **A tool job runs the tool, not the model.** The `tool` payload invokes the
   named tool with the runtime a graph turn would have stamped
   (`configurable.sessionId`/`userId`, the turn's `AbortSignal`), so the quotas,

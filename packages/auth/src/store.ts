@@ -51,14 +51,29 @@ const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
  * The `kind` CHECK is the table refusing to hold a job that could never run: a
  * prompt job without a prompt, or a tool job without a tool.
  */
-const JOBS_SCHEMA = `CREATE TABLE IF NOT EXISTS jobs (
+/**
+ * The `jobs` table's columns and constraints, parameterized by table name.
+ *
+ * A function rather than a literal because the v10 migration has to *rebuild*
+ * this table — SQLite cannot alter a CHECK in place — and the copy lands in a
+ * table that must have exactly this shape. Written once here, both the fresh
+ * schema and the rebuild ask for it, so they cannot drift.
+ *
+ * `class` is the delivery class the job's announcement will carry (2b);
+ * `message` is the payload a reminder or timer actually needs — text with
+ * nothing to run, neither a model nor a tool.
+ */
+function jobsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
     id          TEXT PRIMARY KEY,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     label       TEXT NOT NULL,
-    kind        TEXT NOT NULL CHECK (kind IN ('prompt', 'tool')),
+    class       TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
+    kind        TEXT NOT NULL CHECK (kind IN ('prompt', 'tool', 'message')),
     prompt      TEXT,
     tool_name   TEXT,
     tool_args   TEXT,
+    message     TEXT,
     run_at      TEXT NOT NULL,
     state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', 'cancelled', 'missed')),
     attempts    INTEGER NOT NULL DEFAULT 0,
@@ -66,14 +81,26 @@ const JOBS_SCHEMA = `CREATE TABLE IF NOT EXISTS jobs (
     settled_at  TEXT,
     last_error  TEXT,
     CHECK (
-        (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL) OR
-        (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL)
+        (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL AND message IS NULL) OR
+        (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL AND message IS NULL) OR
+        (kind = 'message' AND message IS NOT NULL AND prompt IS NULL AND tool_name IS NULL)
     )
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_due
+)`;
+}
+
+/**
+ * The `jobs` indexes, kept separate from the table because the v10 rebuild
+ * drops the table (taking its indexes with it) and must put them back after the
+ * swap — a `CREATE INDEX IF NOT EXISTS` run before the drop would be undone by
+ * it, and silently leave the queue unindexed.
+ */
+const JOB_INDEXES = `CREATE INDEX IF NOT EXISTS idx_jobs_due
     ON jobs (run_at) WHERE state = 'pending';
 CREATE INDEX IF NOT EXISTS idx_jobs_user
-    ON jobs (user_id, created_at DESC);
+    ON jobs (user_id, created_at DESC);`;
+
+const JOBS_SCHEMA = `${jobsTable("jobs")};
+${JOB_INDEXES}
 CREATE TABLE IF NOT EXISTS job_runs (
     id          TEXT PRIMARY KEY,
     job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -430,10 +457,12 @@ export interface NotificationLedger {
  *
  * `prompt` runs an agent turn — anything needing judgement ("send me a weather
  * and news summary"). `tool` invokes one tool directly and never touches the
- * model, which is what makes a timer or a "turn the light on" a job rather
- * than a conversation.
+ * model, which is what makes a "turn the light on" a job rather than a
+ * conversation. `message` has no payload to *run* at all: the job's own text is
+ * the whole point, and the runner's announcement is what delivers it — which is
+ * what a reminder or a timer actually is, needing neither a model nor a tool.
  */
-export const JOB_KINDS = ["prompt", "tool"] as const;
+export const JOB_KINDS = ["prompt", "tool", "message"] as const;
 
 /** What a job runs. */
 export type JobKind = (typeof JOB_KINDS)[number];
@@ -478,6 +507,13 @@ export interface AppJob {
     userId: number;
     /** User-facing name ("AC filter"), used in the announcement. */
     label: string;
+    /**
+     * What kind of attention the job asks for (#90) — the delivery class its
+     * announcement carries, which is what decides whether quiet hours may
+     * hold it back. The same closed set as a notification's, because the
+     * announcement *is* one.
+     */
+    class: NotificationClass;
     kind: JobKind;
     /** The instruction, for `kind: "prompt"`. */
     prompt: string | null;
@@ -485,6 +521,8 @@ export interface AppJob {
     toolName: string | null;
     /** That tool's arguments (parsed JSON), or `null`. */
     toolArgs: unknown;
+    /** The text to deliver, for `kind: "message"`. */
+    message: string | null;
     /** When it wants to run, ISO-8601 UTC. */
     runAt: string;
     state: JobState;
@@ -513,12 +551,16 @@ export interface AppJobRun {
 /** The producer-supplied half of a job; identity and times are the store's. */
 export interface CreateJobInput {
     label: string;
+    /** What kind of attention it asks for; the table's default is the quiet class. */
+    class?: NotificationClass;
     kind: JobKind;
     /** Required for `kind: "prompt"`; refused by the table's CHECK otherwise. */
     prompt?: string | null;
     /** Required for `kind: "tool"`. */
     toolName?: string | null;
     toolArgs?: unknown;
+    /** Required for `kind: "message"`: the text the announcement delivers. */
+    message?: string | null;
     runAt: string;
 }
 
@@ -761,10 +803,12 @@ interface JobRow {
     id: string;
     userId: number;
     label: string;
+    class: NotificationClass;
     kind: JobKind;
     prompt: string | null;
     toolName: string | null;
     toolArgs: string | null;
+    message: string | null;
     runAt: string;
     state: JobState;
     attempts: number;
@@ -785,7 +829,7 @@ interface JobRunRow {
 }
 
 /** The job SELECT list, shared by every read (`mapJob` is the other half). */
-const JOB_COLUMNS = `SELECT id, user_id AS userId, label, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError FROM jobs`;
+const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError FROM jobs`;
 
 /** The run SELECT list (`mapJobRun` is the other half). */
 const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error FROM job_runs`;
@@ -888,10 +932,12 @@ function mapJob(row: JobRow): AppJob {
         id: row.id,
         userId: row.userId,
         label: row.label,
+        class: row.class,
         kind: row.kind,
         prompt: row.prompt,
         toolName: row.toolName,
         toolArgs: parseToolArgs(row.toolArgs),
+        message: row.message,
         runAt: row.runAt,
         state: row.state,
         attempts: row.attempts,
@@ -1137,6 +1183,47 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user
         }
         db.pragma("user_version = 9");
     }
+    if (version < 10) {
+        // v10: a job's delivery class, and the `message` payload (#90 phase 2b).
+        //
+        // SQLite cannot alter a CHECK constraint in place, so the table is
+        // rebuilt the way it documents — and with **foreign keys off** for the
+        // duration, because `job_runs` references `jobs`: dropping the old
+        // table with enforcement on would cascade a user's entire run history
+        // away, and an INSERT ... SELECT cannot save it (the cascade fires on
+        // the DROP). Guarded on the column, so a fresh database — which already
+        // has the new shape from SCHEMA — skips the rebuild entirely.
+        if (!hasColumn(db, "jobs", "message")) {
+            db.pragma("foreign_keys = OFF");
+            try {
+                db.exec(`${jobsTable("jobs_v10")};
+INSERT INTO jobs_v10 (
+    id, user_id, label, class, kind, prompt, tool_name, tool_args, message,
+    run_at, state, attempts, created_at, settled_at, last_error
+)
+SELECT id, user_id, label, 'notification', kind, prompt, tool_name, tool_args,
+       NULL, run_at, state, attempts, created_at, settled_at, last_error
+  FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_v10 RENAME TO jobs;
+${JOB_INDEXES}`);
+                // The documented last step: prove the swap left no dangling
+                // reference before declaring the store upgraded. A rebuild that
+                // silently orphaned runs would be worse than a loud failure.
+                const violations = db.pragma("foreign_key_check") as unknown[];
+                if (violations.length > 0) {
+                    throw new Error(
+                        `the jobs rebuild left ${violations.length} foreign-key violation(s)`,
+                    );
+                }
+            } finally {
+                // Restored even when the rebuild throws: the connection must
+                // not be left in the permissive state borrowed for one step.
+                db.pragma("foreign_keys = ON");
+            }
+        }
+        db.pragma("user_version = 10");
+    }
 }
 
 export function openAppDatabase(dbPath: string): AppDatabase {
@@ -1345,7 +1432,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
             insertJob: db.prepare(
-                "INSERT INTO jobs (id, user_id, label, kind, prompt, tool_name, tool_args, run_at, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
             ),
             selectJob: db.prepare(
                 `${JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -1840,12 +1927,17 @@ export class SqliteAppDatabase implements AppDatabase {
             input.id,
             userId,
             input.label,
+            // Explicit rather than leaning on the column default, as for a
+            // notification: the default exists so the v10 rebuild can widen an
+            // existing table, not so the write path has a second home.
+            input.class ?? "notification",
             input.kind,
             input.prompt ?? null,
             input.toolName ?? null,
             input.toolArgs === undefined || input.toolArgs === null
                 ? null
                 : JSON.stringify(input.toolArgs),
+            input.message ?? null,
             input.runAt,
             input.createdAt,
         );

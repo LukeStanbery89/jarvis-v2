@@ -12,7 +12,7 @@
  * 2. the **job's state** — `done`/`failed`/`missed`, stamped with when;
  * 3. one **notification**, whose `kind` says which of the three it was.
  *
- * Two payload kinds, and no third path:
+ * Three payload kinds, and no fourth path:
  *
  * - `prompt` runs an agent turn through `runAgent` — the same seam a socket
  *   turn uses — on a thread named `job:<id>`. That thread is the job's own: it
@@ -22,6 +22,14 @@
  * - `tool` invokes one tool directly with the runtime the graph would have
  *   stamped, so the gates inside that tool (per-user quotas, ownership, quiet
  *   hours) behave exactly as they do in a chat turn.
+ * - `message` runs nothing at all: the job's own text, delivered by the
+ *   announcement. That is what a reminder or a timer actually is — no model
+ *   call, no tool, and (since `sendNotification` is not schedulable) exactly
+ *   one notification rather than two.
+ *
+ * The job's **class** rides along to that announcement unchanged, so quiet
+ * hours are decided by the thing the user scheduled rather than by anything
+ * this module invents.
  *
  * Deliberate limits, all of them policy rather than shortcut: no retries (a
  * failed run says so, and the user re-asks); a run is bounded by the same turn
@@ -136,6 +144,12 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         try {
             const outcome = await notifications.notify(job.userId, {
                 kind,
+                // The job's class travels with its announcement (#90 2b): a
+                // timer's result must pierce quiet hours, a reminder's waits
+                // (until 2b's deferral re-schedules it), and a notification's
+                // simply waits to be read. The runner has no opinion of its
+                // own — the class was chosen when the job was created.
+                class: job.class,
                 priority: "normal",
                 title: clamp(job.label, MAX_NOTIFICATION_TITLE_LENGTH),
                 body: clamp(text, MAX_NOTIFICATION_BODY_LENGTH),
@@ -196,6 +210,15 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         try {
             if (job.kind === "prompt") {
                 return { output: await runPrompt(job, signal) };
+            }
+            if (job.kind === "message") {
+                // Nothing to run: the text *is* the payload, and the
+                // announcement below is what delivers it. This is the branch
+                // that lets a reminder or a timer exist without a model call
+                // and without a tool — the common case, and the one that used
+                // to be modelled as a `sendNotification` tool job (which
+                // announced twice).
+                return { output: job.message ?? "" };
             }
             const resolved = resolveSchedulableTool(tools, job.toolName ?? "");
             if (!resolved.ok) {

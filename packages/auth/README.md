@@ -147,13 +147,19 @@ router and middleware span every ledger and therefore take the full
   the user. `pending` is not an error state — it is the normal outcome for a
   user who was offline — so the table is also the delivery queue's record of
   what still wants attention.
-- `jobs` — one row per scheduled job (#90, v8): `label`, `kind`
-  (`prompt`/`tool`) with the prompt _or_ the tool call (a CHECK refuses a row
-  that has neither, or both), `run_at`, a `state` lifecycle (`pending` →
-  `running` → `done`/`failed`/`cancelled`/`missed`), `attempts`, and
-  `last_error`. Indexed on `(user_id, created_at DESC)` for the owner's list
-  and on `(run_at) WHERE state = 'pending'` — a partial index, because the
-  scheduler's claim feed only ever scans pending work. `missed` is deliberately
+- `jobs` — one row per scheduled job (#90, v8; rebuilt in v10 for `class` and
+  the `message` payload): `label`, `class` (the delivery class its announcement
+  carries — `notification`/`reminder`/`timer`), `kind` (`prompt`/`tool`/
+  `message`) with the prompt, the tool call, _or_ the message text (a CHECK
+  refuses a row whose payload does not match its kind), `run_at`, a `state`
+  lifecycle (`pending` → `running` → `done`/`failed`/`cancelled`/`missed`),
+  `attempts`, and `last_error`. Indexed on `(user_id, created_at DESC)` for the
+  owner's list and on `(run_at) WHERE state = 'pending'` — a partial index,
+  because the scheduler's claim feed only ever scans pending work. The v10
+  rebuild is the documented SQLite dance for widening a CHECK (which cannot be
+  altered in place), run with foreign keys off for the duration: `job_runs`
+  references `jobs`, and dropping the old table with enforcement on would
+  cascade a user's run history away. `missed` is deliberately
   not `failed`: a job whose moment passed while the server was down was never
   attempted.
 - `job_runs` — one row per attempt at a job: `started_at`/`finished_at`, the

@@ -39,8 +39,16 @@ export interface TickSummary {
 
 /** The scheduler seam the process root starts and stops. */
 export interface Scheduler {
-    /** Fails interrupted work, then ticks on an interval until stopped. */
-    start(): void;
+    /**
+     * Fails interrupted work, then ticks on an interval until stopped.
+     *
+     * Resolves once recovery is done and the interval is running — so a caller
+     * (and a test) can tell when boot-recovery has finished. Never rejects: a
+     * recovery failure is logged and the loop still starts, because the rows
+     * it could not settle keep their error for the next boot while due work is
+     * still runnable.
+     */
+    start(): Promise<void>;
     /** Stops ticking. A tick already in flight finishes. */
     stop(): void;
     /** One pass: take on due work (bounded), hand it to the runner. */
@@ -115,7 +123,16 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 
     return {
         async start(): Promise<void> {
-            await recover();
+            try {
+                await recover();
+            } catch (err) {
+                // A failed recovery must not take the queue with it: whatever is
+                // due is still runnable, and the rows it could not settle keep
+                // their state for the next boot rather than being forgotten.
+                logger.error(
+                    `scheduler recovery failed: ${err instanceof Error ? err.stack : String(err)}`,
+                );
+            }
             interval = setInterval(() => {
                 void tick().catch((err: unknown) => {
                     // A tick must never take the process down: an unexpected

@@ -740,7 +740,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(9);
+            expect(check.pragma("user_version", { simple: true })).toBe(10);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
@@ -843,7 +843,159 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(9);
+            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("rebuilds jobs to widen the payload CHECK, keeping jobs and their runs", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            // The v9 shape of the scheduler's tables: `jobs` allows only
+            // `prompt`/`tool` and has no `class`/`message`, and a finished job
+            // *plus its run* are in it. `user_version` stays at 3 so the
+            // intervening migrations still do their work (web_sessions, the
+            // notification class) — the point here is the v10 rebuild of a
+            // populated `jobs`, which is the one that can lose a user's history.
+            const old = new Database(path);
+            old.exec(`
+                CREATE TABLE users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+                    created_at    TEXT NOT NULL
+                );
+                CREATE TABLE devices (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    secret_hash  TEXT NOT NULL,
+                    prefix       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    UNIQUE (user_id, name)
+                );
+                CREATE TABLE sessions (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id      TEXT NOT NULL UNIQUE,
+                    user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                    kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+                    created_at     TEXT NOT NULL,
+                    last_active_at TEXT NOT NULL
+                );
+                CREATE TABLE prefs (
+                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    key        TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, key)
+                );
+                CREATE TABLE notifications (
+                    id              TEXT PRIMARY KEY,
+                    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    kind            TEXT NOT NULL,
+                    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+                    title           TEXT NOT NULL,
+                    body            TEXT,
+                    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
+                    requires_answer INTEGER NOT NULL DEFAULT 0,
+                    dedupe_key      TEXT,
+                    answer          TEXT,
+                    created_at      TEXT NOT NULL,
+                    delivered_at    TEXT,
+                    settled_at      TEXT
+                );
+                CREATE TABLE jobs (
+                    id          TEXT PRIMARY KEY,
+                    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    label       TEXT NOT NULL,
+                    kind        TEXT NOT NULL CHECK (kind IN ('prompt', 'tool')),
+                    prompt      TEXT,
+                    tool_name   TEXT,
+                    tool_args   TEXT,
+                    run_at      TEXT NOT NULL,
+                    state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', 'cancelled', 'missed')),
+                    attempts    INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT NOT NULL,
+                    settled_at  TEXT,
+                    last_error  TEXT,
+                    CHECK (
+                        (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL) OR
+                        (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL)
+                    )
+                );
+                CREATE INDEX idx_jobs_due ON jobs (run_at) WHERE state = 'pending';
+                CREATE INDEX idx_jobs_user ON jobs (user_id, created_at DESC);
+                CREATE TABLE job_runs (
+                    id          TEXT PRIMARY KEY,
+                    job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                    started_at  TEXT NOT NULL,
+                    finished_at TEXT,
+                    state       TEXT NOT NULL CHECK (state IN ('running', 'ok', 'failed')),
+                    output      TEXT,
+                    error       TEXT
+                );
+                CREATE INDEX idx_job_runs_job ON job_runs (job_id, started_at DESC);
+
+                INSERT INTO users (username, password_hash, role, created_at)
+                    VALUES ('luke', 'hash', 'owner', '2026-01-01T00:00:00.000Z');
+                INSERT INTO jobs (id, user_id, label, kind, tool_name, tool_args,
+                                  run_at, state, attempts, created_at, settled_at)
+                    VALUES ('old', 1, 'What time was it', 'tool', 'getCurrentTime', '{}',
+                            '2026-10-01T09:00:00.000Z', 'done', 1,
+                            '2026-10-01T08:59:00.000Z', '2026-10-01T09:00:00.100Z');
+                INSERT INTO job_runs (id, job_id, started_at, finished_at, state, output)
+                    VALUES ('run-old', 'old', '2026-10-01T09:00:00.000Z',
+                            '2026-10-01T09:00:00.100Z', 'ok', '9:00 AM');
+                PRAGMA user_version = 3;
+            `);
+            old.close();
+
+            const upgraded = openAppDatabase(path);
+            // The job survived, and so did its run: dropping the old table with
+            // foreign keys on would have cascaded the history away, which is why
+            // the rebuild borrows a permissive FK setting for one step.
+            expect(upgraded.getJob(1, "old")).toMatchObject({
+                kind: "tool",
+                class: "notification",
+                message: null,
+                state: "done",
+                toolName: "getCurrentTime",
+            });
+            expect(upgraded.listJobRuns("old")).toMatchObject([
+                { id: "run-old", state: "ok", output: "9:00 AM" },
+            ]);
+            // The widened CHECK accepts the payload kind it was rebuilt for.
+            upgraded.createJob(1, {
+                id: "new",
+                label: "Kettle",
+                class: "timer",
+                kind: "message",
+                message: "Take the kettle off.",
+                runAt: "2026-10-20T09:00:00.000Z",
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+            expect(upgraded.getJob(1, "new")?.class).toBe("timer");
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            // The indexes the drop took with it, recreated after the swap — the
+            // queue's partial index is load-bearing for the claim feed.
+            // `id TEXT PRIMARY KEY` brings its own sqlite_autoindex, so the
+            // assertion is about the two the rebuild had to recreate.
+            const indexes = (
+                check.pragma("index_list(jobs)") as { name: string }[]
+            )
+                .map((index) => index.name)
+                .filter((name) => !name.startsWith("sqlite_autoindex_"))
+                .sort();
+            expect(indexes).toEqual(["idx_jobs_due", "idx_jobs_user"]);
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
@@ -920,7 +1072,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(9);
+            expect(check.pragma("user_version", { simple: true })).toBe(10);
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -989,7 +1141,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(9);
+            expect(check.pragma("user_version", { simple: true })).toBe(10);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toHaveLength(1);
             // The v2 migration's named index is gone; the inline constraint's
@@ -1065,7 +1217,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(9);
+            expect(check.pragma("user_version", { simple: true })).toBe(10);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toEqual(["idx_devices_user_name"]);
             check.close();

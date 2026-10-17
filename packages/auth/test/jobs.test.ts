@@ -55,10 +55,12 @@ describe("jobs ledger", () => {
             id: "j1",
             userId,
             label: "Change the AC filter",
+            class: "notification",
             kind: "prompt",
             prompt: "Remind me to change the AC filter.",
             toolName: null,
             toolArgs: null,
+            message: null,
             runAt: "2026-10-20T09:00:00.000Z",
             state: "pending",
             attempts: 0,
@@ -88,6 +90,42 @@ describe("jobs ledger", () => {
             entity_id: "light.kitchen",
         });
         expect(job?.prompt).toBeNull();
+    });
+
+    it("carries a delivery class, defaulting to the quiet one", () => {
+        const { store, userId } = makeStore();
+        store.createJob(userId, promptJob({ id: "quiet" }));
+        store.createJob(userId, {
+            ...promptJob({ id: "loud" }),
+            class: "timer",
+        });
+
+        expect(store.getJob(userId, "quiet")?.class).toBe("notification");
+        expect(store.getJob(userId, "loud")?.class).toBe("timer");
+    });
+
+    it("stores a message job: text with nothing to run", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, {
+            id: "j1",
+            label: "Kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off the heat.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        // No prompt and no tool: the job's own text is the whole payload, which
+        // is what lets a reminder or a timer exist without a model call.
+        expect(created).toMatchObject({
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off the heat.",
+            prompt: null,
+            toolName: null,
+            state: "pending",
+        });
     });
 
     it("refuses a job that could never run", () => {
@@ -124,6 +162,24 @@ describe("jobs ledger", () => {
                 kind: "prompt",
                 prompt: "do it",
                 toolName: "homeAssistant",
+            }),
+        ).toThrow();
+        expect(() =>
+            store.createJob(userId, {
+                ...base,
+                id: "d",
+                label: "x",
+                kind: "message",
+            }),
+        ).toThrow();
+        expect(() =>
+            store.createJob(userId, {
+                ...base,
+                id: "e",
+                label: "x",
+                kind: "message",
+                message: "say this",
+                prompt: "do it",
             }),
         ).toThrow();
     });

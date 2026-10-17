@@ -207,6 +207,13 @@ logger.info(
 
 const store = openAppDatabase(appConfig.appDbPath);
 
+// Say *which* database this process opened, before anything else can be
+// mistaken for "the database". The checkpoint path is logged when the graph
+// comes up; without this line, a job inserted into the file a hand-written
+// `sqlite3` command happened to point at looks exactly like a scheduler that
+// never fires (it happened, on 2026-10-17).
+logger.info(`App database: ${appConfig.appDbPath}`);
+
 // Notifications (#139): the connection registry is built here and handed to
 // the REST surface (which needs it to know whether the user is reachable), the
 // chat server (which fills it in as sockets authenticate), and the agent (the

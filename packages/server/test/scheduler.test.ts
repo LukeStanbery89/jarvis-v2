@@ -14,7 +14,7 @@
  * - and a job's runs are **not** conversations: the thread is `job:<id>`, and
  *   the chat-session ledger never hears about it.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { tool, type ToolRuntime } from "@langchain/core/tools";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
@@ -343,6 +343,15 @@ describe("scheduler: a tool job", () => {
         expect(h.store.listJobRuns("j1")[0].output).toBe(
             "Turned the light on.",
         );
+        // The announcement is part of the contract for a tool job too, not only
+        // for a prompt one — this is the pair the manual smoke test observed.
+        expect(pushed(h.socket)).toEqual([
+            {
+                kind: "job.finished",
+                title: "Kitchen light",
+                body: "Turned the light on.",
+            },
+        ]);
     });
 
     it("refuses to schedule the announcement tool itself", async () => {
@@ -405,6 +414,204 @@ describe("scheduler: a tool job", () => {
         expect(h.store.getJob(h.userId, "j1")?.lastError).toBe(
             "the 'homeAssistant' tool is not available on this server",
         );
+    });
+});
+
+describe("scheduler: a message job", () => {
+    /** Quiet hours covering the harness's fixed clock, in its local time. */
+    function quietAt(at: Date): { start: string; end: string } {
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const clock = (offsetMinutes: number) => {
+            const shifted = new Date(at.getTime() + offsetMinutes * 60_000);
+            return `${pad(shifted.getHours())}:${pad(shifted.getMinutes())}`;
+        };
+        return { start: clock(-60), end: clock(60) };
+    }
+
+    it("delivers the job's own text with no model and no tool", async () => {
+        const { agent, calls } = fakeAgent("should not be used");
+        const recorder = recordingTool("getCurrentTime", "should not be used");
+        const h = harness({
+            at: AT,
+            actor: agent,
+            tools: [recorder.instance],
+        });
+        h.store.createJob(h.userId, {
+            id: "j1",
+            label: "Kettle",
+            kind: "message",
+            message: "Take the kettle off the heat.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "Take the kettle off the heat." },
+        ]);
+        expect(calls).toEqual([]);
+        expect(recorder.calls).toEqual([]);
+        expect(h.store.listJobRuns("j1")[0].output).toBe(
+            "Take the kettle off the heat.",
+        );
+        expect(pushed(h.socket)).toEqual([
+            {
+                kind: "job.finished",
+                title: "Kettle",
+                body: "Take the kettle off the heat.",
+            },
+        ]);
+    });
+
+    it("lets a timer through quiet hours and holds a notification", async () => {
+        const h = harness({ at: AT });
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: quietAt(AT) },
+        ]);
+        h.store.createJob(h.userId, {
+            id: "timer",
+            label: "Kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        h.store.createJob(h.userId, {
+            id: "info",
+            label: "Filter",
+            kind: "message",
+            message: "The filter is in the cupboard.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:01.000Z",
+        });
+
+        await h.scheduler.tick();
+        await h.scheduler.tick();
+
+        // Both ran and recorded their text; the difference is only whether the
+        // announcement was allowed to interrupt. The held one is in the user's
+        // list (pending), which is why being quiet loses nothing.
+        expect(h.store.listJobRuns("timer")[0].state).toBe("ok");
+        expect(h.store.listJobRuns("info")[0].state).toBe("ok");
+        expect(pushed(h.socket)).toEqual([
+            {
+                kind: "job.finished",
+                title: "Kettle",
+                body: "Take the kettle off.",
+            },
+        ]);
+        const stored = h.store.listNotifications(h.userId);
+        expect(stored).toHaveLength(2);
+        expect(stored.map((n) => [n.title, n.class, n.state]).sort()).toEqual([
+            ["Filter", "notification", "pending"],
+            ["Kettle", "timer", "delivered"],
+        ]);
+    });
+});
+
+describe("scheduler: the running loop", () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it("recovers interrupted work before it starts ticking", async () => {
+        const { agent } = fakeAgent("ok");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        h.store.claimJob("j1");
+        h.store.startJobRun({
+            id: "run-old",
+            jobId: "j1",
+            startedAt: "2026-10-20T08:00:00.000Z",
+        });
+
+        vi.useFakeTimers();
+        // No tick has run yet, so the failed row proves recovery is the first
+        // thing `start` does rather than something the first interval catches.
+        await h.scheduler.start();
+        try {
+            expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+                state: "failed",
+                lastError:
+                    "the server restarted while this run was in progress",
+            });
+        } finally {
+            h.scheduler.stop();
+        }
+    });
+
+    it("ticks on the interval, and stops when asked", async () => {
+        const { agent, calls } = fakeAgent("ok");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        vi.useFakeTimers();
+        await h.scheduler.start();
+        try {
+            await vi.advanceTimersByTimeAsync(1_000);
+            expect(calls).toHaveLength(1);
+            expect(h.store.getJob(h.userId, "j1")?.state).toBe("done");
+
+            h.scheduler.stop();
+            h.store.createJob(h.userId, {
+                ...promptJob(),
+                id: "j2",
+                createdAt: "2026-10-15T18:00:01.000Z",
+            });
+            await vi.advanceTimersByTimeAsync(10_000);
+            // Stopped means stopped: the second job is still owed.
+            expect(calls).toHaveLength(1);
+            expect(h.store.getJob(h.userId, "j2")?.state).toBe("pending");
+        } finally {
+            h.scheduler.stop();
+        }
+    });
+
+    it("keeps ticking after a tick throws", async () => {
+        let scans = 0;
+        const ledger = {
+            listRunningJobs: () => [],
+            listDueJobs: () => {
+                scans += 1;
+                if (scans === 1) {
+                    throw new Error("database is locked");
+                }
+                return [];
+            },
+        } as never;
+        const runner: JobRunner = {
+            run: async () => ({ kind: "done", output: "" }),
+            recover: async () => ({ kind: "failed", error: "" }),
+        };
+        const scheduler = createScheduler({
+            ledger,
+            runner,
+            tickMs: 1_000,
+            maxConcurrent: 1,
+        });
+
+        vi.useFakeTimers();
+        await scheduler.start();
+        try {
+            await vi.advanceTimersByTimeAsync(1_000);
+            await vi.advanceTimersByTimeAsync(1_000);
+            // The first tick rejected; the interval kept going rather than
+            // dying with it. A scheduler that stops after one bad tick is the
+            // "nothing happened" failure this loop exists to avoid.
+            expect(scans).toBe(2);
+        } finally {
+            scheduler.stop();
+        }
     });
 });
 
