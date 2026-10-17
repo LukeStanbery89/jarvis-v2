@@ -297,7 +297,6 @@ export function Chat({ app }: ChatProps) {
     return (
         <main className="chat">
             <Sidebar
-                username={credential.username}
                 entries={entries}
                 activeId={activeId}
                 streaming={streaming}

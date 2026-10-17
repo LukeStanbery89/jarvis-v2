@@ -39,6 +39,35 @@ const MONTHS = [
     "December",
 ] as const;
 
+/** The pieces of a clock face, so a caller can render between them. */
+export interface ClockParts {
+    /** The 12-hour hour, without a leading zero (`8`, `12`). */
+    hour: string;
+    /** The minute, always two digits (`07`). */
+    minute: string;
+    /** `AM` or `PM`. */
+    suffix: string;
+}
+
+/**
+ * `8` / `07` / `AM` — the clock split into the parts a face is drawn from.
+ *
+ * The dashboard wants the colon between two spans (it blinks once a second), and
+ * splitting a formatted string back apart would be the kind of parsing that
+ * quietly breaks at midnight. {@link clockText} is this, joined.
+ *
+ * @param at - The instant to render.
+ * @returns The hour, minute and meridiem as separate strings.
+ */
+export function clockParts(at: Date): ClockParts {
+    const hours = at.getHours();
+    return {
+        hour: String(hours % 12 === 0 ? 12 : hours % 12),
+        minute: String(at.getMinutes()).padStart(2, "0"),
+        suffix: hours < 12 ? "AM" : "PM",
+    };
+}
+
 /**
  * `2:20 AM` in the browser's local zone — the only clock a user reads.
  *
@@ -46,11 +75,8 @@ const MONTHS = [
  * @returns The 12-hour time, zero-padded to the minute.
  */
 export function clockText(at: Date): string {
-    const hours = at.getHours();
-    const minutes = at.getMinutes();
-    const hour12 = hours % 12 === 0 ? 12 : hours % 12;
-    const suffix = hours < 12 ? "AM" : "PM";
-    return `${hour12}:${String(minutes).padStart(2, "0")} ${suffix}`;
+    const { hour, minute, suffix } = clockParts(at);
+    return `${hour}:${minute} ${suffix}`;
 }
 
 /**

@@ -14,7 +14,7 @@
  */
 import { useEffect, useState } from "react";
 import { AppLink } from "../../AppLink";
-import { clockText, formatDate } from "../../clock";
+import { clockParts, formatDate } from "../../clock";
 import { describeRunAt, upcomingJobs } from "../../jobs";
 import type { JobsState } from "../../hooks/useJobs";
 
@@ -54,10 +54,18 @@ function useClock(): Date {
 export function Dashboard({ username, jobs, unread }: DashboardProps) {
     const now = useClock();
     const upcoming = upcomingJobs(jobs.jobs, UPCOMING_LIMIT);
+    const at = clockParts(now);
     return (
         <main className="dashboard">
             <header className="dashboard-head">
-                <p className="dashboard-time">{clockText(now)}</p>
+                {/* The colon is its own span so it can blink (#90 phase 6b) —
+                    the classic clock face, and the reason this is drawn from
+                    `clockParts` rather than the joined string. */}
+                <p className="dashboard-time">
+                    {at.hour}
+                    <span className="clock-colon">:</span>
+                    {at.minute} {at.suffix}
+                </p>
                 <p className="dashboard-date">{formatDate(now)}</p>
                 <p className="dashboard-account">{username}</p>
             </header>

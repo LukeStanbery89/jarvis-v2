@@ -308,7 +308,11 @@ export function AppShell({
 
     return (
         <div className="app">
-            <NavBar unread={notifications.unread} status={socket.status} />
+            <NavBar
+                username={credential.username}
+                unread={notifications.unread}
+                status={socket.status}
+            />
             <div className="app-view">{currentView()}</div>
             {toast !== null && (
                 <Toast

@@ -214,10 +214,20 @@ textarea::placeholder {
     box-shadow: 0 0 6px var(--primary-dim);
 }
 
-/* The hamburger is the collapsed form of `.navbar-links`: only one of the two
-   is ever visible, which is also what decides which badge is showing. */
-.navbar-menu {
+/* The hamburger is the collapsed form of `.navbar-links`: only one of the two is
+   ever visible, which is also what decides which badge is showing.
+   `.navbar` in the selector, not for precision but for the cascade: `.icon-btn`
+   (the button's other class) sets `display: inline-flex` and sits later in this
+   file, so a bare `.navbar-menu` here would lose to it and the hamburger would
+   show at every width. */
+.navbar .navbar-menu {
     display: none;
+}
+
+.navbar-user {
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+    white-space: nowrap;
 }
 
 .navbar-drawer {
@@ -236,12 +246,29 @@ textarea::placeholder {
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
 }
 
+/* The account, at the top of the drawer: the bar's user line is hidden at this
+   width, and this is where it went. */
+.navbar-drawer-user {
+    margin: 0 0 0.3rem;
+    padding: 0 0.6rem 0.3rem;
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+    border-bottom: 1px solid var(--primary-border);
+}
+
+.navbar-drawer-links {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
 @media (max-width: 48rem) {
-    .navbar-links {
+    .navbar-links,
+    .navbar-user {
         display: none;
     }
 
-    .navbar-menu {
+    .navbar .navbar-menu {
         display: inline-flex;
     }
 }
@@ -270,10 +297,12 @@ textarea::placeholder {
     overflow-y: auto;
 }
 
+/* The head is a row of state hints and the gear; the account name moved to the
+   top bar (#90 phase 6b), so what is left is right-aligned. */
 .sidebar-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     font-weight: 600;
     color: var(--primary);
 }
@@ -1199,6 +1228,33 @@ textarea::placeholder {
     font-size: 2.25rem;
     font-weight: 600;
     letter-spacing: 0.02em;
+}
+
+/* The colon blinks once a second (#90 phase 6b): the classic clock face, and the
+   only moving part on this page. CSS rather than a state toggle, so
+   `prefers-reduced-motion` below can turn it off; the once-a-second re-render that
+   advances the minute does not restart the animation, so the blink stays even
+   instead of jumping with each render. */
+.clock-colon {
+    animation: clock-blink 1s linear infinite;
+}
+
+@keyframes clock-blink {
+    0%,
+    49% {
+        opacity: 1;
+    }
+
+    50%,
+    100% {
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .clock-colon {
+        animation: none;
+    }
 }
 
 .dashboard-date {

@@ -590,9 +590,9 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/clock.ts` — `clockText` / `formatDate` / `weekdayText` / `describeSpan`: time in the words a person reads, hand-rolled so the tests are exact and shared so a reminder and a job cannot disagree.
 - `src/jobs.ts` — the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM").
 - `src/hooks/useJobs.ts` — the caller's `GET /api/jobs` list: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives.
-- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the connection chip, and the hamburger drawer under 48rem.
+- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the connection chip, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), and the hamburger drawer under 48rem.
 - `src/views/app/Toast.tsx` — the floating notification card: the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
-- `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.
+- `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app) whose colon blinks once a second (`clockParts` + a CSS animation, off under `prefers-reduced-motion`), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.
 - `src/views/PagePlaceholder.tsx` — a page that exists as an address but not yet as content (`/timers`, `/reminders`, `/notifications`).
 - `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, jobs list, prefs read/patch; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.

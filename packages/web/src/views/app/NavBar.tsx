@@ -1,6 +1,6 @@
 /**
- * The app's top bar (#90 phase 6b): the wordmark, the pages, the connection
- * state, and the unread badge.
+ * The app's top bar (#90 phase 6b): the wordmark, the pages, the account, the
+ * connection state, and the unread badge.
  *
  * The wordmark is the way home — it links to the dashboard — so the pages listed
  * here are the four destinations other than it. Under 48rem the links collapse
@@ -9,6 +9,11 @@
  * the count follows whichever affordance is showing the link. Two nodes and one
  * breakpoint, rather than a JavaScript width probe that would disagree with the
  * CSS on the first paint.
+ *
+ * The account name follows the same rule: in the bar's right corner while the
+ * links are visible, and at the top of the drawer when they are not. It used to
+ * live in the chat sidebar, which made it a fact about the conversation rather
+ * than about the app.
  *
  * The connection state lives here rather than in the conversation view: now that
  * the socket outlives a route change it is a fact about the app, and
@@ -45,6 +50,8 @@ const STATUS_SENTENCE: Record<Exclude<ChatStatus, "connected">, string> = {
 
 /** Props for {@link NavBar}. */
 export interface NavBarProps {
+    /** The signed-in account name (the bar on wide screens, the menu on narrow). */
+    username: string;
     /** Notifications neither read nor dismissed (the badge). */
     unread: number;
     /** The socket's lifecycle, for the connection chip. */
@@ -79,7 +86,7 @@ function ConnectionChip({ status }: { status: ChatStatus }) {
  *
  * @param props - See {@link NavBarProps}.
  */
-export function NavBar({ unread, status }: NavBarProps) {
+export function NavBar({ username, unread, status }: NavBarProps) {
     const route = useRoute();
     const [menuOpen, setMenuOpen] = useState(false);
     const barRef = useRef<HTMLElement | null>(null);
@@ -149,6 +156,10 @@ export function NavBar({ unread, status }: NavBarProps) {
             </nav>
             <span className="navbar-end">
                 <ConnectionChip status={status} />
+                {/* The account is the bar's on wide screens and the menu's on
+                    narrow ones (#90 phase 6b): both are rendered, and the one
+                    media query that hides the links hides this too. */}
+                <span className="navbar-user">{username}</span>
                 <button
                     type="button"
                     className="icon-btn navbar-menu"
@@ -171,15 +182,14 @@ export function NavBar({ unread, status }: NavBarProps) {
                 </button>
             </span>
             {menuOpen && (
-                <nav
-                    id="navbar-drawer"
-                    className="navbar-drawer"
-                    aria-label="Pages"
-                >
-                    {LINKS.map((entry) =>
-                        link(entry.to, entry.label, "navbar-drawer-link"),
-                    )}
-                </nav>
+                <div id="navbar-drawer" className="navbar-drawer">
+                    <p className="navbar-drawer-user">{username}</p>
+                    <nav className="navbar-drawer-links" aria-label="Pages">
+                        {LINKS.map((entry) =>
+                            link(entry.to, entry.label, "navbar-drawer-link"),
+                        )}
+                    </nav>
+                </div>
             )}
         </header>
     );

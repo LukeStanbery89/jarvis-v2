@@ -7,7 +7,13 @@
  * written in UTC would be asserting something the app never shows.
  */
 import { describe, expect, it } from "vitest";
-import { clockText, describeSpan, formatDate, weekdayText } from "./clock";
+import {
+    clockParts,
+    clockText,
+    describeSpan,
+    formatDate,
+    weekdayText,
+} from "./clock";
 
 describe("clockText", () => {
     it("renders a 12-hour clock with a zero-padded minute", () => {
@@ -19,6 +25,38 @@ describe("clockText", () => {
         // The two cases a naive `hours % 12` gets wrong.
         expect(clockText(new Date(2026, 9, 17, 0, 0))).toBe("12:00 AM");
         expect(clockText(new Date(2026, 9, 17, 12, 0))).toBe("12:00 PM");
+    });
+});
+
+describe("clockParts", () => {
+    it("splits a clock face without a leading zero on the hour", () => {
+        expect(clockParts(new Date(2026, 9, 17, 8, 7))).toEqual({
+            hour: "8",
+            minute: "07",
+            suffix: "AM",
+        });
+        expect(clockParts(new Date(2026, 9, 17, 14, 30))).toEqual({
+            hour: "2",
+            minute: "30",
+            suffix: "PM",
+        });
+    });
+
+    it("calls midnight 12 AM and noon 12 PM", () => {
+        expect(clockParts(new Date(2026, 9, 17, 0, 5)).hour).toBe("12");
+        expect(clockParts(new Date(2026, 9, 17, 0, 5)).suffix).toBe("AM");
+        expect(clockParts(new Date(2026, 9, 17, 12, 5)).hour).toBe("12");
+        expect(clockParts(new Date(2026, 9, 17, 12, 5)).suffix).toBe("PM");
+    });
+
+    it("joins back into the text form", () => {
+        // The dashboard draws the colon between two of these spans; the list and
+        // the toast read the joined string. One source, so they cannot differ.
+        const at = new Date(2026, 9, 17, 21, 4);
+        const parts = clockParts(at);
+        expect(`${parts.hour}:${parts.minute} ${parts.suffix}`).toBe(
+            clockText(at),
+        );
     });
 });
 

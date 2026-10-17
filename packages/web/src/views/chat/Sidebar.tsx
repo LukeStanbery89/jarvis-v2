@@ -1,7 +1,6 @@
 /**
- * The chat sidebar: account header, the settings gear (with the state hints
- * that must stay visible), the new-chat button, and the merged conversation
- * list.
+ * The chat sidebar: the settings gear (with the state hints that must stay
+ * visible), the new-chat button, and the merged conversation list.
  *
  * Presentational — props in, events out. The four controls that used to live
  * here (location, wake word, desktop notifications, sign out) moved into the
@@ -9,8 +8,8 @@
  * The hints beside it come from the pure modules (`briefLocationState`,
  * `briefWakeState`), so the copy stays node-testable.
  *
- * The account's unread count and the way home are the top bar's since #90 phase
- * 6b: they belong to every page, not to this column.
+ * The account name and the way home are the top bar's since #90 phase 6b: they
+ * belong to every page, not to this column.
  */
 import { Mic, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
 import {
@@ -26,8 +25,6 @@ import {
 
 /** Props for {@link Sidebar}. */
 export interface SidebarProps {
-    /** The signed-in account name (header). */
-    username: string;
     /** Merged conversation rows, newest first. */
     entries: SidebarRow[];
     /** The active conversation id (the highlighted row). */
@@ -60,7 +57,6 @@ export interface SidebarProps {
  * @param props - See {@link SidebarProps}.
  */
 export function Sidebar({
-    username,
     entries,
     activeId,
     streaming,
@@ -83,7 +79,6 @@ export function Sidebar({
     return (
         <aside className="sidebar">
             <div className="sidebar-head">
-                <span>{username}</span>
                 <span className="sidebar-actions">
                     {listening && (
                         <span
