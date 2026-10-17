@@ -16,8 +16,8 @@
  * not have to move for a route change to survive; moving it would also change
  * *when* the microphone listens, which is a decision for its own phase.
  *
- * The chrome — the top bar, the nav and the hamburger — is the next slice; this
- * one exists to change nothing on screen while changing who owns the state.
+ * The chrome is here too: the top bar sits above the view, and the ring renders
+ * over it, because both belong to the app rather than to any page in it.
  */
 import { useEffect } from "react";
 import type { ReactNode } from "react";
@@ -33,6 +33,7 @@ import { useBrowserNotify } from "./hooks/useBrowserNotify";
 import { useChatClient } from "./hooks/useChatClient";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
+import { NavBar } from "./views/app/NavBar";
 import { Chat } from "./views/Chat";
 import { Home } from "./views/Home";
 import { PagePlaceholder } from "./views/PagePlaceholder";
@@ -275,11 +276,12 @@ export function AppShell({
     }
 
     return (
-        <>
-            {currentView()}
+        <div className="app">
+            <NavBar unread={notifications.unread} status={socket.status} />
+            <div className="app-view">{currentView()}</div>
             {notifications.ring !== null && (
                 <TimerRing timer={notifications.ring} onStop={stopTimer} />
             )}
-        </>
+        </div>
     );
 }

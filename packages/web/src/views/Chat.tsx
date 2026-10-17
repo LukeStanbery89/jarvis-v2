@@ -60,8 +60,7 @@ export interface ChatProps {
  */
 export function Chat({ app }: ChatProps) {
     const { credential, onAuthRejected, onSignedOut } = app;
-    const { client, status, isStreaming, cancelTurn, sendLocation } =
-        app.socket;
+    const { client, isStreaming, cancelTurn, sendLocation } = app.socket;
     const {
         threads,
         activeId,
@@ -306,7 +305,6 @@ export function Chat({ app }: ChatProps) {
                 locationState={locationState}
                 wakeAvailable={voiceUi.wakeAvailable}
                 wakeArmed={voiceSnapshot.wakeArmed}
-                unread={notificationsUi.unread}
                 settingsOpen={settingsOpen}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onNewChat={newChat}
@@ -314,14 +312,6 @@ export function Chat({ app }: ChatProps) {
                 onRemoveThread={(id) => void remove(id)}
             />
             <section className="conversation">
-                {status !== "connected" && (
-                    <p className="status" role="status">
-                        {status === "connecting" && "Connecting…"}
-                        {status === "reconnecting" &&
-                            "Connection dropped — reconnecting…"}
-                        {status === "closed" && "Disconnected"}
-                    </p>
-                )}
                 {banner && (
                     <p className="status error" role="alert">
                         {banner}

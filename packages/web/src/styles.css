@@ -112,13 +112,151 @@ textarea::placeholder {
     font-weight: 600;
 }
 
+/* --- App shell and top bar (#90 phase 6b) --- */
+
+/* The bar is a row, the page gets the rest. The chat used to own the viewport
+   (`height: 100dvh` here); it now fills the row the bar leaves, so a page taller
+   than the screen scrolls inside its own region and the bar stays put. */
+.app {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+.app-view {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.navbar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.45rem 0.75rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--primary-border);
+}
+
+.navbar-brand {
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.navbar-links {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.navbar-link,
+.navbar-drawer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    color: var(--primary-dim);
+    text-decoration: none;
+}
+
+.navbar-link:hover,
+.navbar-drawer-link:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* The page the user is on: `aria-current` is set by the link itself, so the
+   mark and the accessibility tree cannot disagree. */
+.navbar-link[aria-current="page"],
+.navbar-drawer-link[aria-current="page"] {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+.navbar-badge {
+    min-width: 1.05rem;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: var(--primary);
+    color: var(--bg);
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1.05rem;
+    text-align: center;
+}
+
+.navbar-end {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-left: auto;
+}
+
+.navbar-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+}
+
+.navbar-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--primary);
+    box-shadow: 0 0 6px var(--primary-dim);
+}
+
+/* The hamburger is the collapsed form of `.navbar-links`: only one of the two
+   is ever visible, which is also what decides which badge is showing. */
+.navbar-menu {
+    display: none;
+}
+
+.navbar-drawer {
+    position: absolute;
+    top: 100%;
+    right: 0.75rem;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 12rem;
+    padding: 0.4rem;
+    background: var(--panel);
+    border: 1px solid var(--primary-border);
+    border-radius: 8px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+}
+
+@media (max-width: 48rem) {
+    .navbar-links {
+        display: none;
+    }
+
+    .navbar-menu {
+        display: inline-flex;
+    }
+}
+
 /* --- Chat layout --- */
 
+/* Fills the row the bar leaves (`flex: 1` rather than a percentage height: the
+   row's height is definite, so the grow is exact and the transcript's own
+   scroll region gets a real box). */
 .chat {
     display: grid;
     grid-template-columns: 16rem 1fr;
     grid-template-rows: 1fr;
-    height: 100dvh;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -138,29 +276,6 @@ textarea::placeholder {
     justify-content: space-between;
     font-weight: 600;
     color: var(--primary);
-}
-
-.sidebar-head-left {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-/* The interim way back to the launcher (#90 phase 6a): the nav rail that
-   replaces it will own this, so it is deliberately plain. */
-.sidebar-home {
-    color: var(--primary-dim);
-    text-decoration: none;
-    font-weight: 400;
-    font-size: 0.85rem;
-    border: 1px solid var(--primary-border);
-    border-radius: 6px;
-    padding: 0.05rem 0.4rem;
-}
-
-.sidebar-home:hover {
-    color: var(--primary);
-    background: var(--primary-wash);
 }
 
 .sidebar nav {

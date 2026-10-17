@@ -1,16 +1,18 @@
 /**
- * The chat sidebar: account header, the settings gear (with its unread badge and
- * the state hints that must stay visible), the new-chat button, and the merged
- * conversation list.
+ * The chat sidebar: account header, the settings gear (with the state hints
+ * that must stay visible), the new-chat button, and the merged conversation
+ * list.
  *
  * Presentational — props in, events out. The four controls that used to live
  * here (location, wake word, desktop notifications, sign out) moved into the
  * settings panel (#143), which is why the only icon button left is the gear.
  * The hints beside it come from the pure modules (`briefLocationState`,
  * `briefWakeState`), so the copy stays node-testable.
+ *
+ * The account's unread count and the way home are the top bar's since #90 phase
+ * 6b: they belong to every page, not to this column.
  */
 import { Mic, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
-import { AppLink } from "../../AppLink";
 import {
     briefLocationState,
     describeLocationState,
@@ -40,8 +42,6 @@ export interface SidebarProps {
     wakeAvailable: boolean;
     /** The controller is actively listening for the wake phrase. */
     wakeArmed: boolean;
-    /** Notifications neither read nor dismissed (the badge over the gear). */
-    unread: number;
     /** Whether the settings panel is showing (the gear's `aria-expanded`). */
     settingsOpen: boolean;
     /** Opens the settings panel. */
@@ -68,7 +68,6 @@ export function Sidebar({
     locationState,
     wakeAvailable,
     wakeArmed,
-    unread,
     settingsOpen,
     onOpenSettings,
     onNewChat,
@@ -84,16 +83,7 @@ export function Sidebar({
     return (
         <aside className="sidebar">
             <div className="sidebar-head">
-                {/* The launcher is at `/` (#90 phase 6a). An in-app link
-                    rather than a plain anchor, so stepping back to it does not
-                    reload the page and drop the conversation. The top bar that
-                    takes this over lands in phase 6b. */}
-                <span className="sidebar-head-left">
-                    <AppLink to="home" className="sidebar-home">
-                        Home
-                    </AppLink>
-                    <span>{username}</span>
-                </span>
+                <span>{username}</span>
                 <span className="sidebar-actions">
                     {listening && (
                         <span
@@ -123,20 +113,11 @@ export function Sidebar({
                         className="icon-btn"
                         aria-expanded={settingsOpen}
                         aria-controls="settings-panel"
-                        aria-label={
-                            unread > 0
-                                ? `Settings, ${unread} unread notification${unread === 1 ? "" : "s"}`
-                                : "Settings"
-                        }
+                        aria-label="Settings"
                         title="Settings"
                         onClick={onOpenSettings}
                     >
                         <SettingsIcon size={16} aria-hidden="true" />
-                        {unread > 0 && (
-                            <span className="icon-badge" aria-hidden="true">
-                                {unread}
-                            </span>
-                        )}
                     </button>
                 </span>
             </div>

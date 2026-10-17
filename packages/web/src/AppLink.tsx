@@ -30,6 +30,8 @@ export interface AppLinkProps {
     className?: string;
     /** Whether this link points at the page the user is on. */
     current?: boolean;
+    /** An accessible name, when the visible text alone does not say enough. */
+    label?: string;
 }
 
 /**
@@ -37,12 +39,19 @@ export interface AppLinkProps {
  *
  * @param props - See {@link AppLinkProps}.
  */
-export function AppLink({ to, children, className, current }: AppLinkProps) {
+export function AppLink({
+    to,
+    children,
+    className,
+    current,
+    label,
+}: AppLinkProps) {
     return (
         <a
             href={ROUTE_PATHS[to]}
             {...(className === undefined ? {} : { className })}
             {...(current === true ? { "aria-current": "page" as const } : {})}
+            {...(label === undefined ? {} : { "aria-label": label })}
             onClick={(event: MouseEvent<HTMLAnchorElement>) => {
                 if (!interceptsNavigation(event)) {
                     return;
