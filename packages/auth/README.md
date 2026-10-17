@@ -66,6 +66,7 @@ only the surface they call:
   retention).
 - `JobLedger` — the scheduler's queue and history (#90) over the `jobs` and
   `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
+  `moveJob` /
   `listJobRuns` / `pruneJobs`, plus the **scheduler-scoped** half
   (`listDueJobs` / `claimJob` / `rescheduleJob` / `startJobRun` /
   `finishJobRun` / `settleJob`)

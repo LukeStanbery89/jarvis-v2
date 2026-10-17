@@ -24,6 +24,7 @@ import {
     MIN_DURATION_SECONDS,
 } from "../src/llm/tools/jobs";
 import { getCurrentTime } from "../src/llm/tools/time";
+import { isSchedulableTool } from "../src/scheduler/tools";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -535,6 +536,155 @@ describe("jobs tools: listJobs and cancelJob", () => {
         expect(await h.call("cancelJob", { id: "job-1" })).toContain(
             "is already cancelled",
         );
+    });
+});
+
+describe("jobs tools: snoozeReminder", () => {
+    it("moves a reminder that has not fired yet, without an attempt", async () => {
+        const h = harness();
+        await h.call("remindMe", { label: "Call Mum", at: "20:00" });
+
+        const text = await h.call("snoozeReminder", {
+            id: "job-1",
+            minutes: 60,
+        });
+
+        const [job] = h.jobs();
+        expect(h.jobs()).toHaveLength(1);
+        expect(job.id).toBe("job-1");
+        expect(new Date(job.runAt).getTime()).toBe(NOW.getTime() + 60 * 60_000);
+        expect(job.attempts).toBe(0);
+        expect(text).toContain('Snoozed "Call Mum" (job-1) to');
+        expect(text).toContain("in 1 hour");
+    });
+
+    it("re-sets a reminder that already ran, with the same text", async () => {
+        const h = harness();
+        await h.call("remindMe", {
+            label: "Call Mum",
+            message: "About the tickets.",
+            at: "20:00",
+        });
+        h.store.claimJob("job-1");
+        h.store.settleJob(
+            "job-1",
+            "done",
+            {},
+            new Date(NOW.getTime() + 1000).toISOString(),
+        );
+
+        const text = await h.call("snoozeReminder", {
+            id: "job-1",
+            minutes: 30,
+        });
+
+        const all = h.store.listJobs(h.userId, { includeSettled: true });
+        const fresh = all.find((job) => job.state === "pending");
+        expect(all).toHaveLength(2);
+        expect(fresh).toMatchObject({
+            class: "reminder",
+            kind: "message",
+            label: "Call Mum",
+            message: "About the tickets.",
+        });
+        expect(fresh?.id).not.toBe("job-1");
+        expect(new Date(fresh?.runAt ?? 0).getTime()).toBe(
+            NOW.getTime() + 30 * 60_000,
+        );
+        expect(text).toContain("was due");
+        expect(text).toContain("set another reminder");
+    });
+
+    it("refuses a job that is running, cancelled, or not a reminder", async () => {
+        const h = harness();
+        await h.call("remindMe", { label: "Running", at: "20:00" });
+        h.store.claimJob("job-1");
+        expect(
+            await h.call("snoozeReminder", { id: "job-1", minutes: 10 }),
+        ).toContain("is running right now");
+
+        await h.call("remindMe", { label: "Gone", at: "21:00" });
+        await h.call("cancelJob", { id: "job-2" });
+        expect(
+            await h.call("snoozeReminder", { id: "job-2", minutes: 10 }),
+        ).toContain("was cancelled");
+
+        await h.call("setTimer", { label: "Pasta", minutes: 5 });
+        expect(
+            await h.call("snoozeReminder", { id: "job-3", minutes: 10 }),
+        ).toContain("only a reminder can be snoozed");
+        await h.call("scheduleTask", {
+            label: "Lights",
+            tool: "getCurrentTime",
+            args: { question: "What time is it?" },
+            inMinutes: 5,
+        });
+        expect(
+            await h.call("snoozeReminder", { id: "job-4", minutes: 10 }),
+        ).toContain("only a reminder can be snoozed");
+    });
+
+    it("treats an unknown id — and another user's — as missing", async () => {
+        const h = harness();
+        const other = h.store.createUser("someone", "hash", "user").id;
+        h.store.createJob(other, {
+            id: "not-yours",
+            label: "Theirs",
+            class: "reminder",
+            kind: "message",
+            message: "Theirs",
+            runAt: "2026-01-02T09:00:00.000Z",
+            createdAt: "2026-01-01T00:00:00.000Z",
+        });
+
+        for (const id of ["job-404", "not-yours"]) {
+            expect(
+                await h.call("snoozeReminder", { id, minutes: 10 }),
+            ).toContain(`There is no job with the id "${id}"`);
+        }
+    });
+
+    it("refuses a snooze duration outside a countdown's range", async () => {
+        const h = harness();
+        await h.call("remindMe", { label: "Call Mum", at: "20:00" });
+
+        expect(
+            await h.call("snoozeReminder", { id: "job-1", minutes: 0 }),
+        ).toContain("must be between");
+        expect(h.jobs()[0].runAt).toBe(
+            new Date(2026, 0, 1, 20, 0).toISOString(),
+        );
+    });
+
+    it("predicts quiet hours for the new moment", async () => {
+        const h = harness({ at: new Date(2026, 0, 1, 23, 30) });
+        h.store.setPrefs(h.userId, [
+            {
+                key: "notify.quietHours",
+                value: { start: "22:00", end: "07:00" },
+            },
+        ]);
+        await h.call("remindMe", { label: "Call Mum", at: "23:45" });
+
+        const text = await h.call("snoozeReminder", {
+            id: "job-1",
+            minutes: 60,
+        });
+
+        expect(text).toContain("wait until 7:00 AM");
+    });
+
+    it("keeps every scheduling tool out of the schedulable allowlist", () => {
+        for (const name of [
+            "setTimer",
+            "remindMe",
+            "scheduleTask",
+            "listJobs",
+            "cancelJob",
+            "snoozeReminder",
+        ]) {
+            expect(isSchedulableTool(name)).toBe(false);
+        }
     });
 });
 

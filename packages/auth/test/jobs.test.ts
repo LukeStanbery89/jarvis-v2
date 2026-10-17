@@ -10,7 +10,7 @@
  *   about not firing a job twice rests on that one statement, so it is tested
  *   directly (claim twice, one winner) rather than assumed.
  * - **Two surfaces, deliberately.** The user-scoped methods (`getJob`,
- *   `listJobs`, `cancelJob`) must never see another account's job, while
+ *   `listJobs`, `cancelJob`, `moveJob`) must never see another account's job, while
  *   `listDueJobs`/`settleJob` are cross-user because the scheduler acts for
  *   every user at once. A test that only exercised one surface would leave the
  *   other free to leak.
@@ -399,6 +399,34 @@ describe("jobs ledger", () => {
         const refused = store.cancelJob(userId, "running");
         expect(refused?.state).toBe("running");
         expect(store.cancelJob(userId, "missing")).toBeNull();
+    });
+
+    it("moves the owner's pending job, and nothing else", () => {
+        const { store, userId } = makeStore();
+        const pepper = store.createUser("pepper", "hash", "user");
+        store.createJob(userId, promptJob({ id: "owed" }));
+        store.createJob(userId, promptJob({ id: "running" }));
+        store.createJob(pepper.id, promptJob({ id: "theirs" }));
+        const theirsBefore = store.getJob(pepper.id, "theirs")?.runAt;
+        store.claimJob("running");
+
+        const moved = store.moveJob(userId, "owed", "2026-10-16T09:00:00.000Z");
+        expect(moved?.runAt).toBe("2026-10-16T09:00:00.000Z");
+        // A move is not an attempt: the job keeps its state and count.
+        expect(moved?.state).toBe("pending");
+        expect(moved?.attempts).toBe(0);
+
+        // A claimed job is being worked on; someone else's is not ours to move.
+        expect(
+            store.moveJob(userId, "running", "2026-10-16T09:00:00.000Z")?.runAt,
+        ).not.toBe("2026-10-16T09:00:00.000Z");
+        expect(
+            store.moveJob(userId, "theirs", "2026-10-16T09:00:00.000Z"),
+        ).toBeNull();
+        expect(
+            store.moveJob(userId, "missing", "2026-10-16T09:00:00.000Z"),
+        ).toBeNull();
+        expect(store.getJob(pepper.id, "theirs")?.runAt).toBe(theirsBefore);
     });
 
     it("evicts settled jobs first, and only reaches pending ones if it must", () => {

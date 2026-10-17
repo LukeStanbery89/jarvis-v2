@@ -2,7 +2,7 @@
  * The scheduling tools (#90 phase 3): the model's way to create, inspect and
  * cancel fire-at-T jobs.
  *
- * Five tools, and their split is the invariant. **The class comes from which
+ * Six tools, and their split is the invariant. **The class comes from which
  * tool was called, never from an argument.** `setTimer` always stores `timer`
  * (it interrupts, even in quiet hours), `remindMe` always stores `reminder` (it
  * waits out the window), and `scheduleTask` always stores `notification` (it is
@@ -93,6 +93,15 @@ export const MIN_DURATION_SECONDS = 1;
  * would be a way to keep breaching them.
  */
 export const MAX_DURATION_MINUTES = 1440;
+
+/**
+ * The short end of a snooze: half a minute.
+ *
+ * A timer may be ten seconds because that is what the user asked the clock
+ * for; a *snooze* is a human-scale "not now", and nothing useful is five
+ * seconds long.
+ */
+export const MIN_SNOOZE_MINUTES = 0.5;
 
 /** How many pending jobs `listJobs` renders at once. */
 export const LIST_LIMIT = 20;
@@ -584,12 +593,103 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         },
     );
 
+    const snoozeReminderTool = tool(
+        async ({ id, minutes }, runtime: ToolRuntime) => {
+            const access = guard(runtime, "snoozeReminder");
+            if (!access.ok) {
+                return access.text;
+            }
+            const at = now();
+            const job = deps.ledger.getJob(access.userId, id);
+            if (job === null) {
+                return `There is no job with the id "${id}". Call listJobs to get the exact id.`;
+            }
+            if (job.class !== "reminder") {
+                return `"${job.label}" is a ${job.class}, not a reminder — only a reminder can be snoozed. A timer is a countdown and a notification is already filed; use cancelJob or remindMe instead.`;
+            }
+            if (
+                !Number.isFinite(minutes) ||
+                minutes < MIN_SNOOZE_MINUTES ||
+                minutes > MAX_DURATION_MINUTES
+            ) {
+                return (
+                    `The reminder was not snoozed: \`minutes\` must be between ` +
+                    `${MIN_SNOOZE_MINUTES} and ${MAX_DURATION_MINUTES}.`
+                );
+            }
+            if (job.state === "cancelled") {
+                return `"${job.label}" was cancelled — set a new reminder with remindMe instead.`;
+            }
+            // A claimed job is mid-run; re-creating it would tell the user
+            // twice for one moment.
+            if (job.state === "running") {
+                return `"${job.label}" is running right now — let it finish. Use remindMe if you need another reminder after it.`;
+            }
+            const runAt = new Date(at.getTime() + minutes * 60_000);
+            if (job.state === "pending") {
+                const moved = deps.ledger.moveJob(
+                    access.userId,
+                    id,
+                    runAt.toISOString(),
+                );
+                if (moved === null || moved.runAt !== runAt.toISOString()) {
+                    return `"${job.label}" is ${moved?.state ?? "running"} now — it cannot be moved. Use remindMe for a new reminder.`;
+                }
+                logger.info(`job ${job.id} snoozed to ${moved.runAt}`);
+                return `Snoozed "${moved.label}" (${moved.id}) to ${formatLocal(runAt, at)}, ${formatRelative(runAt, at)}.${quietNote(access.userId, "reminder", runAt)}`;
+            }
+            // Already had its moment (done/failed/missed): a snooze is a fresh
+            // reminder for the same thing, with the same payload it had.
+            const payload = snoozePayload(job);
+            if (payload === null) {
+                return `"${job.label}" is a ${job.kind} job, and snoozing it would not repeat what it does — use remindMe or scheduleTask instead.`;
+            }
+            const outcome = storeJob(access.userId, {
+                label: job.label,
+                class: "reminder",
+                payload,
+                runAt,
+                at,
+            });
+            if (!outcome.ok) {
+                return `The reminder was not snoozed: ${outcome.reason}`;
+            }
+            return `"${job.label}" was due ${formatLocal(new Date(job.runAt), at)} — set another reminder (job ${outcome.job.id}) for ${formatLocal(runAt, at)}, ${formatRelative(runAt, at)}.${outcome.note}`;
+        },
+        {
+            name: "snoozeReminder",
+            description:
+                "Snoozes a reminder: 'snooze that', 'remind me again in an " +
+                "hour', 'later'. Pass the job id from listJobs and `minutes` " +
+                "from now. A reminder that has not fired yet is moved; one " +
+                "that already ran is set again for the new time with the same " +
+                "text, and the result says which happened. Only a reminder " +
+                "can be snoozed — a timer is a countdown and a notification " +
+                "is already filed, so use cancelJob or remindMe for those. " +
+                "The result also says whether quiet hours will hold it.",
+            schema: z.object({
+                id: z
+                    .string()
+                    .trim()
+                    .min(1)
+                    .describe("The reminder's job id from listJobs."),
+                minutes: z
+                    .number()
+                    .describe(
+                        "How long from now to snooze it, in minutes (at most " +
+                            "1440).",
+                    ),
+            }),
+        },
+    );
+
     return [
         setTimerTool,
         remindMeTool,
         scheduleTaskTool,
         listJobsTool,
         cancelJobTool,
+        snoozeReminderTool,
     ];
 }
 
@@ -631,6 +731,34 @@ function timerDuration(
         };
     }
     return { ok: true, ms };
+}
+
+/**
+ * The payload a settled reminder is re-created with when it is snoozed.
+ *
+ * `message` and `tool` are the two kinds a reminder can hold today; a `prompt`
+ * reminder (only reachable from a future REST surface) is refused rather than
+ * silently turned into a message job, which would run something different from
+ * what was scheduled.
+ */
+function snoozePayload(job: AppJob): JobPayload | null {
+    if (job.kind === "message") {
+        return { kind: "message", message: job.message ?? job.label };
+    }
+    if (job.kind === "tool" && job.toolName !== null) {
+        const args = job.toolArgs;
+        return {
+            kind: "tool",
+            toolName: job.toolName,
+            toolArgs:
+                typeof args === "object" &&
+                args !== null &&
+                !Array.isArray(args)
+                    ? (args as Record<string, unknown>)
+                    : {},
+        };
+    }
+    return null;
 }
 
 /**

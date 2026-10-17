@@ -66,7 +66,7 @@ export interface ToolDeps extends AnalyzeImageDeps {
     notifications?: NotifyToolDeps;
     /**
      * Scheduler wiring (#90 phase 3): the job ledger, the per-user cap, and the
-     * scheduling horizon, which the five scheduling tools create within.
+     * scheduling horizon, which the six scheduling tools create within.
      * Present only when the scheduler itself is running — a tool that could
      * store a job nobody will run is a promise the server cannot keep.
      *

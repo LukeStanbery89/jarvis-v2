@@ -572,6 +572,7 @@ export interface CreateJobInput {
  * deliberate surfaces:
  *
  * - **User-scoped** ({@link getJob} / {@link listJobs} / {@link cancelJob} /
+ *   {@link moveJob} /
  *   {@link listJobRuns}): what the REST layer and the pages use. A foreign id
  *   is indistinguishable from a missing one, as everywhere else.
  * - **Scheduler-scoped** ({@link listDueJobs} / {@link claimJob} /
@@ -685,6 +686,21 @@ export interface JobLedger {
      * cancellable — or `null` when no such job belongs to `userId`.
      */
     cancelJob(userId: number, id: string): AppJob | null;
+    /**
+     * Moves one of the caller's own pending jobs to a new moment — what a
+     * snooze does to a reminder that has not fired yet (#90 phase 3).
+     *
+     * The user-scoped sibling of {@link rescheduleJob}, and separate from it on
+     * purpose: that one is the scheduler's (it acts on an id it has claimed),
+     * while this one acts on the caller's own row and refuses anything that is
+     * not `pending` (a running job is being worked on; a settled one is
+     * history). The `user_id` predicate is the ownership check, in the same
+     * statement as the state check, so there is no read-then-write window.
+     *
+     * @returns The row after the attempt — unchanged when it could not move —
+     * or `null` when no such job belongs to `userId`.
+     */
+    moveJob(userId: number, id: string, runAt: string): AppJob | null;
     /**
      * A job's runs, newest first, for the pages and for tests.
      */
@@ -1300,6 +1316,7 @@ export class SqliteAppDatabase implements AppDatabase {
         rescheduleJob: Database.Statement;
         settleJob: Database.Statement;
         cancelJob: Database.Statement;
+        moveJob: Database.Statement;
         insertJobRun: Database.Statement;
         finishJobRun: Database.Statement;
         failOpenJobRuns: Database.Statement;
@@ -1486,6 +1503,11 @@ export class SqliteAppDatabase implements AppDatabase {
             // Only a pending job is cancellable, and only its owner's.
             cancelJob: db.prepare(
                 "UPDATE jobs SET state = 'cancelled', settled_at = ? WHERE user_id = ? AND id = ? AND state = 'pending'",
+            ),
+            // Snoozing a reminder that has not fired: the owner's pending row
+            // only, in one statement — no attempt counted, nothing announced.
+            moveJob: db.prepare(
+                "UPDATE jobs SET run_at = ? WHERE user_id = ? AND id = ? AND state = 'pending'",
             ),
             insertJobRun: db.prepare(
                 "INSERT INTO job_runs (id, job_id, started_at, state) VALUES (?, ?, ?, 'running')",
@@ -2048,6 +2070,11 @@ export class SqliteAppDatabase implements AppDatabase {
 
     cancelJob(userId: number, id: string): AppJob | null {
         this.statements.cancelJob.run(now(), userId, id);
+        return this.getJob(userId, id);
+    }
+
+    moveJob(userId: number, id: string, runAt: string): AppJob | null {
+        this.statements.moveJob.run(runAt, userId, id);
         return this.getJob(userId, id);
     }
 

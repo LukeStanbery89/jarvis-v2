@@ -773,13 +773,14 @@ Five tools, and their split is the policy: **the class comes from which tool was
 called, never from an argument**, so nothing the model writes can choose how
 loudly the user is interrupted.
 
-| Tool           | Class                                  | Payload       | Time                                     |
-| -------------- | -------------------------------------- | ------------- | ---------------------------------------- |
-| `setTimer`     | `timer` — pierces quiet hours          | message       | `minutes` or `seconds` (1 s – 24 h)      |
-| `remindMe`     | `reminder` — defers out of quiet hours | message       | `at` + optional `onDate`, or `inMinutes` |
-| `scheduleTask` | `notification` — waits                 | one tool call | same as `remindMe`                       |
-| `listJobs`     | —                                      | —             | —                                        |
-| `cancelJob`    | —                                      | —             | —                                        |
+| Tool             | Class                                  | Payload        | Time                                     |
+| ---------------- | -------------------------------------- | -------------- | ---------------------------------------- |
+| `setTimer`       | `timer` — pierces quiet hours          | message        | `minutes` or `seconds` (1 s – 24 h)      |
+| `remindMe`       | `reminder` — defers out of quiet hours | message        | `at` + optional `onDate`, or `inMinutes` |
+| `scheduleTask`   | `notification` — waits                 | one tool call  | same as `remindMe`                       |
+| `snoozeReminder` | keeps the reminder's class             | same as before | `id` + `minutes`                         |
+| `listJobs`       | —                                      | —              | —                                        |
+| `cancelJob`      | —                                      | —              | —                                        |
 
 **Times are words, not timestamps.** The model passes what the user said — a
 24-hour clock time, `today`/`tomorrow`/a weekday/a date, or a delay — and
@@ -810,6 +811,15 @@ then" — from a live read of the prefs, without pre-deferring (the runner owns
 that decision). A timer says it will interrupt; a notification says it will be
 recorded and wait. A job whose text is only its headline arrives as one line,
 not a headline repeated as the body.
+
+**Snooze is a move, not a new kind of thing.** A reminder that has not fired
+moves its own `run_at` (`moveJob`, owner-scoped and pending-only, in one
+statement); one that already had its moment is re-created with the same text for
+the new time. A running reminder is refused (it is being worked on), a cancelled
+one is refused (cancelling was an explicit "don't tell me"), and a timer or a
+notification is refused because only a reminder snoozes. No schema change is
+involved: the notification list's own _snoozed_ state belongs with the list that
+can show it (phase 6).
 
 The tools are registered only when the scheduler is running (`JARVIS_SCHEDULER`
 not `off`, notifications wired): a job nobody can run is a promise the server
