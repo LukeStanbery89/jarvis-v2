@@ -277,6 +277,27 @@ describe("the class carriers (#90)", () => {
             answer: "on it",
         });
     });
+
+    it("carries the job link from whichever side delivered it (#90 phase 5)", () => {
+        // A frame and a record must agree: the link is what a snooze writes to,
+        // and a live reminder is snoozable without waiting for a list refresh.
+        const frame: NotificationFrame["notification"] = {
+            id: "n3",
+            kind: "job.finished",
+            class: "reminder",
+            priority: "normal",
+            title: "Call Mum",
+            createdAt: "2026-10-17T07:20:18.000Z",
+            jobId: "0f3a91bc",
+        };
+        expect(fromFrame(frame).jobId).toBe("0f3a91bc");
+        expect(fromRecord(record({ id: "n4", jobId: "0f3a91bc" })).jobId).toBe(
+            "0f3a91bc",
+        );
+        // A notification no job stands behind carries no key at all, so an
+        // action can tell "nothing to act on" from "act on job x".
+        expect(fromRecord(record({ id: "n5" }))).not.toHaveProperty("jobId");
+    });
 });
 
 describe("selectAlerts and isRinging (#90)", () => {

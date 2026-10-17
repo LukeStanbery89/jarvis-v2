@@ -519,6 +519,27 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 MESSAGE_FOR_KEY.notification,
             );
         });
+
+        it("validates a job-linked notification frame (#90 phase 6a)", () => {
+            // A scheduler announcement carries the job behind it, which is what
+            // lets a client snooze the reminder rather than only acknowledge the
+            // notification it was shown.
+            const frame: ServerFrame = {
+                notification: {
+                    id: "3Ybq0kQmT1xVn8sRzWpLdA",
+                    kind: "job.finished",
+                    class: "reminder",
+                    priority: "normal",
+                    title: "Call Mum",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                    jobId: "0f3a91bc",
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.notification,
+            );
+        });
     });
 
     describe("serializer round-trip", () => {

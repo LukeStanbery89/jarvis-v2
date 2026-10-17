@@ -214,6 +214,7 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
         body?: unknown;
         createdAt?: unknown;
         requiresAnswer?: unknown;
+        jobId?: unknown;
     };
     if (
         typeof n.id !== "string" ||
@@ -244,6 +245,14 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
     ) {
         return null;
     }
+    if (
+        n.jobId !== undefined &&
+        (typeof n.jobId !== "string" ||
+            n.jobId.length === 0 ||
+            n.jobId.length > MAX_NOTIFICATION_ID_LENGTH)
+    ) {
+        return null;
+    }
     return {
         notification: {
             id: n.id,
@@ -256,6 +265,9 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
                 : {}),
             createdAt: n.createdAt,
             ...(n.requiresAnswer === true ? { requiresAnswer: true } : {}),
+            ...(typeof n.jobId === "string" && n.jobId.length > 0
+                ? { jobId: n.jobId }
+                : {}),
         },
     };
 }

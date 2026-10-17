@@ -666,6 +666,17 @@ components:
                                     compilation rather than test anything.
                             requiresAnswer:
                                 type: boolean
+                            jobId:
+                                type: string
+                                minLength: 1
+                                maxLength: 64
+                                description: >-
+                                    The scheduled job this notification is
+                                    about (#90), when a scheduler announcement
+                                    produced it — the id `GET /api/jobs/{id}`
+                                    answers for, and the one a snooze writes
+                                    to. Absent for a notification no job stands
+                                    behind.
             examples:
                 - payload:
                       notification:

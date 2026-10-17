@@ -55,6 +55,15 @@ export interface ClientNotification {
     requiresAnswer?: boolean;
     answer?: string;
     state: NotificationState;
+    /**
+     * The job this notification is about (#90), when a scheduler announcement
+     * produced it — the id `GET /api/jobs/{id}` answers for.
+     *
+     * Carried so an action on a *reminder* has something to write to: snoozing
+     * touches the job, not the notification row, and without the link the
+     * client could only guess which reminder a banner was about.
+     */
+    jobId?: string;
 }
 
 /**
@@ -77,6 +86,7 @@ export function fromFrame(
         ...(frame.body !== undefined ? { body: frame.body } : {}),
         createdAt: frame.createdAt,
         ...(frame.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        ...(frame.jobId !== undefined ? { jobId: frame.jobId } : {}),
         state: "delivered",
     };
 }
@@ -93,6 +103,7 @@ export function fromRecord(record: Notification): ClientNotification {
         createdAt: record.createdAt,
         ...(record.requiresAnswer === true ? { requiresAnswer: true } : {}),
         ...(record.answer !== undefined ? { answer: record.answer } : {}),
+        ...(record.jobId !== undefined ? { jobId: record.jobId } : {}),
         state: record.state,
     };
 }

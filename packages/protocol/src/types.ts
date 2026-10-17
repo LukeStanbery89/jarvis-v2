@@ -182,6 +182,17 @@ export interface NotificationFrame {
          * dismissing). The reply path is the producer's — see #94.
          */
         requiresAnswer?: boolean;
+        /**
+         * The job this notification is about (#90 phase 5), when a scheduler
+         * announcement produced it — the id `GET /api/jobs/{id}` answers for.
+         *
+         * Optional because most notifications have no job behind them, and
+         * bounded like a notification id. It is what lets a client act on the
+         * notification's *subject* rather than on the notification: a fired
+         * reminder can offer snooze, which is a write to the job, not to the
+         * row the user is looking at.
+         */
+        jobId?: string;
     };
 }
 
