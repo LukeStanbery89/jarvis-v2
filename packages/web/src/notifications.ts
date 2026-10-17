@@ -15,7 +15,21 @@
  * State ownership: the wire frame never carries `state` — the record does —
  * so a frame merged over a record the user already read must not un-read it.
  * {@link mergeNotification} encodes exactly that.
+ *
+ * The **delivery class** (#90) is carried through as well, because it decides
+ * which surface a notification gets: a fired `timer` rings in a modal overlay
+ * until it is stopped, a `reminder` waits as a banner, and everything else is
+ * informational. {@link selectAlerts} is the single place that decision is
+ * made, so the overlay and the banner can never disagree about which row is
+ * the one demanding attention.
  */
+import type {
+    NotificationClass,
+    NotificationFrame,
+} from "@lukestanbery/jarvis-protocol";
+import type { Notification } from "./api";
+
+export type { NotificationClass };
 
 /** Lifecycle states, mirroring the REST schema's `Notification.state`. */
 export type NotificationState =
@@ -28,6 +42,12 @@ export type NotificationState =
 export interface ClientNotification {
     id: string;
     kind: string;
+    /**
+     * What kind of attention this asks for (#90), as the server decided it.
+     * Carried into the client rather than inferred from `kind`, because the
+     * ring/banner split must not depend on string-matching a producer's token.
+     */
+    class: NotificationClass;
     priority: string;
     title: string;
     body?: string;
@@ -35,6 +55,46 @@ export interface ClientNotification {
     requiresAnswer?: boolean;
     answer?: string;
     state: NotificationState;
+}
+
+/**
+ * One live `notification` frame as the client stores it.
+ *
+ * A pushed notification is by definition delivered; the record may later say it
+ * was read on another device, which the next fetch wins ({@link mergeNotification}
+ * refuses to un-settle it). Pure and exported so class propagation is tested
+ * here rather than inferred in the React hook.
+ */
+export function fromFrame(
+    frame: NotificationFrame["notification"],
+): ClientNotification {
+    return {
+        id: frame.id,
+        kind: frame.kind,
+        class: frame.class,
+        priority: frame.priority,
+        title: frame.title,
+        ...(frame.body !== undefined ? { body: frame.body } : {}),
+        createdAt: frame.createdAt,
+        ...(frame.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        state: "delivered",
+    };
+}
+
+/** One REST record as the client stores it (state and answer included). */
+export function fromRecord(record: Notification): ClientNotification {
+    return {
+        id: record.id,
+        kind: record.kind,
+        class: record.class,
+        priority: record.priority,
+        title: record.title,
+        ...(record.body !== undefined ? { body: record.body } : {}),
+        createdAt: record.createdAt,
+        ...(record.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        ...(record.answer !== undefined ? { answer: record.answer } : {}),
+        state: record.state,
+    };
 }
 
 /** How many notifications the client keeps in memory (newest first). */
@@ -141,6 +201,112 @@ export function selectBanner(
 }
 
 /**
+ * How long a fired timer keeps the right to ring on next open.
+ *
+ * "Rings until acknowledged" is about the moment, not about a browser that was
+ * closed for a week: a timer that fired within a day still greets the user with
+ * the overlay (and says how late it is), while an older one stays unsettled in
+ * the list so the record is never lost — it just does not start shouting when
+ * the app opens.
+ */
+export const RING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Whether a notification asks for the ring overlay. */
+export function isRinging(
+    notification: ClientNotification,
+    context: { enabled: boolean; now: Date },
+): boolean {
+    // The master switch silences everything, a timer included: a row that
+    // reached this client through the list rather than a push was recorded
+    // *because* the server's gates said "not now".
+    if (!context.enabled) {
+        return false;
+    }
+    if (notification.class !== "timer") {
+        return false;
+    }
+    // Only a timer that actually fired is due. One that failed or was missed
+    // belongs in the list: an overlay whose Stop button stops nothing would be
+    // a lie about what the user is acknowledging.
+    if (notification.kind !== "job.finished") {
+        return false;
+    }
+    if (isSettled(notification.state)) {
+        return false;
+    }
+    const createdAt = Date.parse(notification.createdAt);
+    // An unreadable timestamp cannot be trusted to be "just now", and a timer
+    // is an interruption: fail closed rather than ring for something unknowable.
+    if (Number.isNaN(createdAt)) {
+        return false;
+    }
+    return context.now.getTime() - createdAt <= RING_MAX_AGE_MS;
+}
+
+/** What wants attention right now: the ringing timer and the banner row. */
+export interface AlertSelection {
+    /** The fired timer that should be ringing, or `null`. */
+    ring: ClientNotification | null;
+    /** What the in-app banner shows — never the ring target as well. */
+    banner: ClientNotification | null;
+}
+
+/**
+ * Splits the list into what rings and what reads.
+ *
+ * The ring target is the **oldest** ringing timer, so two timers that fired
+ * minutes apart queue: the one that has been waiting longest is acknowledged
+ * first, and the next takes over when it is stopped. The banner is the newest
+ * unsettled row that is not the ring target, so a firing timer appears in
+ * exactly one place — the thing this split exists to guarantee.
+ */
+export function selectAlerts(
+    list: ClientNotification[],
+    context: { enabled: boolean; now: Date },
+): AlertSelection {
+    let ring: ClientNotification | null = null;
+    for (const item of list) {
+        if (!isRinging(item, context)) {
+            continue;
+        }
+        if (
+            ring === null ||
+            Date.parse(item.createdAt) < Date.parse(ring.createdAt)
+        ) {
+            ring = item;
+        }
+    }
+    const banner = selectBanner(
+        ring === null ? list : list.filter((item) => item.id !== ring.id),
+    );
+    return { ring, banner };
+}
+
+/**
+ * When the notification fired, in the user's own clock, plus how late it is:
+ * `due at 2:20 AM` or `due at 2:20 AM, 3 minutes ago`.
+ *
+ * The instant is rendered in the browser's local zone — a notification's
+ * `createdAt` is a real moment, so "when did this fire" is a local question
+ * even though the server's scheduling rules use its own clock.
+ */
+export function describeDue(
+    notification: Pick<ClientNotification, "createdAt">,
+    now: Date,
+): string {
+    const at = new Date(notification.createdAt);
+    if (Number.isNaN(at.getTime())) {
+        return "due now";
+    }
+    const clock = clockText(at);
+    const lateMs = now.getTime() - at.getTime();
+    if (lateMs < 60_000) {
+        return `due at ${clock}`;
+    }
+    return `due at ${clock}, ${describeAge(lateMs)} ago`;
+}
+
+/**
  * A lifecycle state in plain language, for the list.
  *
  * The distinction that matters to a user asking "why did nothing pop up?" is
@@ -205,6 +371,29 @@ export type NotificationSuppression =
 /** How many notifications are neither read nor dismissed (the badge count). */
 export function unreadCount(list: ClientNotification[]): number {
     return list.filter((item) => !isSettled(item.state)).length;
+}
+
+/** `2:20 AM` in the browser's local zone (the only clock a user reads). */
+function clockText(at: Date): string {
+    const hours = at.getHours();
+    const minutes = at.getMinutes();
+    const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+    const suffix = hours < 12 ? "AM" : "PM";
+    return `${hour12}:${String(minutes).padStart(2, "0")} ${suffix}`;
+}
+
+/** `3 minutes` / `2 hours` / `1 day` — the unit a person would use. */
+function describeAge(ms: number): string {
+    const minutes = Math.floor(ms / 60_000);
+    if (minutes < 60) {
+        return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 36) {
+        return `${hours} hour${hours === 1 ? "" : "s"}`;
+    }
+    const days = Math.round(hours / 24);
+    return `${days} day${days === 1 ? "" : "s"}`;
 }
 
 /** Newest first by `createdAt`; equal timestamps keep insertion order. */

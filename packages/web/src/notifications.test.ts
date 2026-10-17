@@ -10,16 +10,24 @@
 import { describe, expect, it } from "vitest";
 import {
     describeDelivery,
+    describeDue,
     describeNotificationState,
+    fromFrame,
+    fromRecord,
+    isRinging,
     isSettled,
     mergeNotification,
     mergeNotificationPage,
     NOTIFICATION_LIMIT,
+    RING_MAX_AGE_MS,
+    selectAlerts,
     selectBanner,
     settleNotification,
     unreadCount,
 } from "./notifications";
 import type { ClientNotification } from "./notifications";
+import type { Notification } from "./api";
+import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
 
 /** A notification fixture with sensible defaults. */
 function make(
@@ -27,6 +35,7 @@ function make(
 ): ClientNotification {
     return {
         kind: "k",
+        class: "notification",
         priority: "normal",
         title: `title ${overrides.id}`,
         createdAt: "2026-10-15T10:00:00.000Z",
@@ -206,5 +215,230 @@ describe("selectBanner and unreadCount", () => {
         expect(isSettled("read")).toBe(true);
         expect(isSettled("answered")).toBe(true);
         expect(isSettled("dismissed")).toBe(true);
+    });
+});
+
+/** A REST record fixture (the mapper takes the contract type as-is). */
+function record(
+    overrides: Partial<Notification> & { id: string },
+): Notification {
+    return {
+        kind: "job.finished",
+        class: "notification",
+        priority: "normal",
+        title: `title ${overrides.id}`,
+        state: "delivered",
+        createdAt: "2026-10-15T10:00:00.000Z",
+        ...overrides,
+    };
+}
+
+describe("the class carriers (#90)", () => {
+    it("keeps the class and the pushed state from a frame", () => {
+        const frame: NotificationFrame["notification"] = {
+            id: "n1",
+            kind: "job.finished",
+            class: "timer",
+            priority: "normal",
+            title: "kettle",
+            body: "Take it off the heat.",
+            createdAt: "2026-10-17T07:20:18.000Z",
+        };
+
+        expect(fromFrame(frame)).toEqual({
+            id: "n1",
+            kind: "job.finished",
+            class: "timer",
+            priority: "normal",
+            title: "kettle",
+            body: "Take it off the heat.",
+            createdAt: "2026-10-17T07:20:18.000Z",
+            state: "delivered",
+        });
+    });
+
+    it("keeps the class, state, and answer from a record", () => {
+        expect(
+            fromRecord(
+                record({
+                    id: "n2",
+                    kind: "job.finished",
+                    class: "reminder",
+                    title: "Call Mum",
+                    state: "answered",
+                    answer: "on it",
+                }),
+            ),
+        ).toMatchObject({
+            id: "n2",
+            class: "reminder",
+            state: "answered",
+            answer: "on it",
+        });
+    });
+});
+
+describe("selectAlerts and isRinging (#90)", () => {
+    /** Thursday 2026-10-01 18:00 local — the "now" most cases judge against. */
+    const NOW = new Date(2026, 9, 1, 18, 0, 0);
+
+    /** A fired timer, `minutesAgo` before {@link NOW}. */
+    function timer(
+        id: string,
+        minutesAgo: number,
+        overrides: Partial<ClientNotification> = {},
+    ): ClientNotification {
+        return make({
+            id,
+            kind: "job.finished",
+            class: "timer",
+            createdAt: new Date(
+                NOW.getTime() - minutesAgo * 60_000,
+            ).toISOString(),
+            ...overrides,
+        });
+    }
+
+    const enabled = { enabled: true, now: NOW };
+
+    it("rings a fired timer, and does not repeat it as the banner", () => {
+        const list = [timer("kettle", 1)];
+
+        expect(selectAlerts(list, enabled)).toEqual({
+            ring: list[0],
+            banner: null,
+        });
+    });
+
+    it("still banners a newer informational row while a timer rings", () => {
+        const list = [
+            make({
+                id: "info",
+                createdAt: new Date(NOW.getTime() - 30_000).toISOString(),
+            }),
+            timer("kettle", 2),
+        ];
+
+        const alerts = selectAlerts(list, enabled);
+
+        expect(alerts.ring?.id).toBe("kettle");
+        expect(alerts.banner?.id).toBe("info");
+    });
+
+    it("queues two timers oldest first, so the longest wait is acknowledged", () => {
+        const list = [timer("newer", 1), timer("older", 10)];
+
+        expect(selectAlerts(list, enabled).ring?.id).toBe("older");
+    });
+
+    it("rings a timer that was only recorded while no client was connected", () => {
+        // The closed-browser case: the row is `pending`, not `delivered`.
+        const list = [timer("kettle", 5, { state: "pending" })];
+
+        expect(selectAlerts(list, enabled).ring?.id).toBe("kettle");
+    });
+
+    it("does not ring a timer that failed or was missed — it banners", () => {
+        for (const kind of ["job.failed", "job.missed"]) {
+            const list = [timer("kettle", 5, { kind })];
+            const alerts = selectAlerts(list, enabled);
+            expect(alerts.ring).toBeNull();
+            expect(alerts.banner?.id).toBe("kettle");
+        }
+    });
+
+    it("does not ring a timer the user already settled", () => {
+        const list = [timer("kettle", 5, { state: "read" })];
+
+        expect(selectAlerts(list, enabled)).toEqual({
+            ring: null,
+            banner: null,
+        });
+    });
+
+    it("does not ring with the master switch off, but the record still shows", () => {
+        const list = [timer("kettle", 5)];
+
+        const alerts = selectAlerts(list, { enabled: false, now: NOW });
+
+        expect(alerts.ring).toBeNull();
+        expect(alerts.banner?.id).toBe("kettle");
+    });
+
+    it("rings inside the window and stops at its edge", () => {
+        const atEdge = timer("edge", 0, {
+            createdAt: new Date(NOW.getTime() - RING_MAX_AGE_MS).toISOString(),
+        });
+        const tooOld = timer("old", 0, {
+            createdAt: new Date(
+                NOW.getTime() - RING_MAX_AGE_MS - 1,
+            ).toISOString(),
+        });
+
+        expect(isRinging(atEdge, enabled)).toBe(true);
+        expect(isRinging(tooOld, enabled)).toBe(false);
+        expect(selectAlerts([tooOld], enabled).banner?.id).toBe("old");
+    });
+
+    it("does not ring when the timestamp cannot be read", () => {
+        const broken = timer("broken", 1, { createdAt: "not a date" });
+
+        expect(isRinging(broken, enabled)).toBe(false);
+    });
+});
+
+describe("describeDue (#90)", () => {
+    /** Same local clock for every case, so the suite is timezone-proof. */
+    const NOW = new Date(2026, 9, 1, 18, 0, 0);
+
+    it("says when it fired, in the local clock", () => {
+        expect(
+            describeDue(
+                {
+                    createdAt: new Date(NOW.getTime() - 20_000).toISOString(),
+                },
+                NOW,
+            ),
+        ).toBe("due at 5:59 PM");
+    });
+
+    it("adds how late it is once a minute has passed", () => {
+        expect(
+            describeDue(
+                {
+                    createdAt: new Date(
+                        NOW.getTime() - 3 * 60_000,
+                    ).toISOString(),
+                },
+                NOW,
+            ),
+        ).toBe("due at 5:57 PM, 3 minutes ago");
+    });
+
+    it("uses hours and days when that is the natural unit", () => {
+        expect(
+            describeDue(
+                {
+                    createdAt: new Date(
+                        NOW.getTime() - 2 * 3_600_000,
+                    ).toISOString(),
+                },
+                NOW,
+            ),
+        ).toBe("due at 4:00 PM, 2 hours ago");
+        expect(
+            describeDue(
+                {
+                    createdAt: new Date(
+                        NOW.getTime() - 3 * 86_400_000,
+                    ).toISOString(),
+                },
+                NOW,
+            ),
+        ).toBe("due at 6:00 PM, 3 days ago");
+    });
+
+    it("falls back honestly when the record has no readable time", () => {
+        expect(describeDue({ createdAt: "nonsense" }, NOW)).toBe("due now");
     });
 });

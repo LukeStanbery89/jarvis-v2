@@ -8,17 +8,26 @@
  * mount, one optimistic local settle followed by the REST call, and a rollback
  * if the server refuses.
  *
+ * The frame path also re-reads the page when a frame arrives **without a
+ * `class`**: that is not a server bug but a stale Vite pre-bundle of the shared
+ * protocol (its parser copies the shape it was built with), and the record has
+ * the field the frame lost. Settling from the record keeps a timer ringing
+ * instead of rendering it as an ordinary notification, and the development
+ * warning names the cause once.
+ *
  * The token is the component's device credential; a 401 is the caller's
  * problem (the app drops to login), so failures here are surfaced as a short
  * message rather than swallowed or thrown.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { debugLog } from "../debug";
 import {
+    fromFrame,
+    fromRecord,
     mergeNotification,
     mergeNotificationPage,
-    selectBanner,
+    selectAlerts,
     settleNotification,
     unreadCount,
 } from "../notifications";
@@ -28,24 +37,6 @@ import type {
     NotificationSuppression,
 } from "../notifications";
 import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
-
-/** One live frame as the client stores it: state is the record's, not the wire's. */
-export function fromFrame(
-    frame: NotificationFrame["notification"],
-): ClientNotification {
-    return {
-        id: frame.id,
-        kind: frame.kind,
-        priority: frame.priority,
-        title: frame.title,
-        ...(frame.body !== undefined ? { body: frame.body } : {}),
-        createdAt: frame.createdAt,
-        ...(frame.requiresAnswer === true ? { requiresAnswer: true } : {}),
-        // A pushed notification is by definition delivered; the record may
-        // later say it was read on another device, which the next fetch wins.
-        state: "delivered",
-    };
-}
 
 /** What {@link useNotifications} exposes to the view. */
 export interface NotificationsState {
@@ -90,11 +81,15 @@ export interface NotificationsState {
  * Owns the notification list for one signed-in device token.
  *
  * @param token - The device credential the REST calls authenticate with.
+ * @param notifyEnabled - The account's master switch (`notify.enabled`). It
+ *   gates the *ring*, not the list: a suppressed notification is still a
+ *   record the user can read, but nothing may start shouting on its behalf.
  */
 export function useNotifications(options: {
     token: string;
+    notifyEnabled?: boolean;
 }): NotificationsState {
-    const { token } = options;
+    const { token, notifyEnabled = true } = options;
     const [notifications, setNotifications] = useState<ClientNotification[]>(
         [],
     );
@@ -117,7 +112,7 @@ export function useNotifications(options: {
                 setNotifications((current) =>
                     mergeNotificationPage(
                         current,
-                        page.notifications.map(toClientNotification),
+                        page.notifications.map(fromRecord),
                     ),
                 );
                 setLoaded(true);
@@ -142,15 +137,53 @@ export function useNotifications(options: {
         refresh();
     }, [refresh]);
 
+    /** Latest `refresh`, for the frame path (which must not re-subscribe to it). */
+    const refreshRef = useRef(refresh);
+    refreshRef.current = refresh;
+    /** Whether the stale-bundle warning has been said (once per session). */
+    const warnedStaleBundle = useRef(false);
+
     const acceptFrame = useCallback(
         (frame: NotificationFrame["notification"]) => {
             // The one line that answers "did the server actually push it?":
             // if this never appears, the socket or the server's delivery gate
             // is the story, not the UI.
+            //
+            // `class` is read structurally on purpose. A client whose Vite
+            // pre-bundle of the protocol predates the field receives frames
+            // *without* it (the old parser validates and copies the old
+            // shape), so the row is ring-ineligible until a REST fetch
+            // replaces it — which looks exactly like "timers never ring". The
+            // warning below is what turns that into a one-line diagnosis.
+            const frameClass: string | undefined = (frame as { class?: string })
+                .class;
             debugLog(
                 "notify",
-                `frame received id=${frame.id} kind=${frame.kind} priority=${frame.priority}`,
+                `frame received id=${frame.id} kind=${frame.kind} class=${frameClass ?? "MISSING"} priority=${frame.priority}`,
             );
+            if (frameClass === undefined) {
+                // A pre-bundled protocol that predates the field validates and
+                // copies the *old* shape, so the frame arrives classless and a
+                // timer would render as an ordinary notification. The record
+                // has the class, so ask for it rather than guessing; the
+                // warning names the actual cause (once, development only).
+                if (!warnedStaleBundle.current) {
+                    warnedStaleBundle.current = true;
+                    if (import.meta.env.DEV) {
+                        console.warn(
+                            "[jarvis] a notification frame arrived without " +
+                                "`class` — this browser's pre-bundled protocol " +
+                                "is stale. Run `npm run dev:clean -w " +
+                                "@lukestanbery/jarvis-web` and reload.",
+                        );
+                    }
+                }
+                debugLog(
+                    "notify",
+                    "frame carries no class — settling this row from the REST record",
+                );
+                refreshRef.current();
+            }
             setNotifications((current) =>
                 mergeNotification(current, fromFrame(frame)),
             );
@@ -240,7 +273,14 @@ export function useNotifications(options: {
             });
     }, [refresh, token]);
 
-    const banner = useMemo(() => selectBanner(notifications), [notifications]);
+    const banner = useMemo(
+        () =>
+            selectAlerts(notifications, {
+                enabled: notifyEnabled,
+                now: new Date(),
+            }).banner,
+        [notifications, notifyEnabled],
+    );
     const unread = useMemo(() => unreadCount(notifications), [notifications]);
 
     return {
@@ -270,29 +310,4 @@ function replaceNotification(
     previous: ClientNotification,
 ): ClientNotification[] {
     return list.map((item) => (item.id === previous.id ? previous : item));
-}
-
-/** Maps a REST record onto the client shape (state included). */
-function toClientNotification(record: {
-    id: string;
-    kind: string;
-    priority: string;
-    title: string;
-    body?: string;
-    state: string;
-    requiresAnswer?: boolean;
-    answer?: string;
-    createdAt: string;
-}): ClientNotification {
-    return {
-        id: record.id,
-        kind: record.kind,
-        priority: record.priority,
-        title: record.title,
-        ...(record.body !== undefined ? { body: record.body } : {}),
-        createdAt: record.createdAt,
-        ...(record.requiresAnswer === true ? { requiresAnswer: true } : {}),
-        ...(record.answer !== undefined ? { answer: record.answer } : {}),
-        state: record.state as NotificationState,
-    };
 }

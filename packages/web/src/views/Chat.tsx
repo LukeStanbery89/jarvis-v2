@@ -33,6 +33,7 @@ import { useAttachments } from "../hooks/useAttachments";
 import { useNotifications } from "../hooks/useNotifications";
 import { useBrowserNotify } from "../hooks/useBrowserNotify";
 import { usePrefs } from "../hooks/usePrefs";
+import { readNotificationsEnabled } from "../prefs";
 import {
     type ChatMode,
     type ClientCapability,
@@ -149,10 +150,22 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     });
     const { voice, snapshot: voiceSnapshot } = voiceUi;
 
+    // The settings panel (#143): the account's own preferences live on the
+    // server, the browser's four controls on the hooks below — the panel is
+    // where the two are labelled and edited together. Read before the
+    // notification hook, whose ring policy is gated by the master switch.
+    const prefsUi = usePrefs({ token: credential.token });
+    const [settingsOpen, setSettingsOpen] = useState(false);
+
     // Notifications (#139): the list is fetched over REST and merged with the
     // live frames the socket pushes, which is why the hook is called before
-    // the client that feeds it.
-    const notificationsUi = useNotifications({ token: credential.token });
+    // the client that feeds it. `notifyEnabled` is the account's master
+    // switch: a suppressed notification is still a readable record, but
+    // nothing may start ringing on its behalf (#90).
+    const notificationsUi = useNotifications({
+        token: credential.token,
+        notifyEnabled: readNotificationsEnabled(prefsUi.prefs).value,
+    });
     const [notificationsOpen, setNotificationsOpen] = useState(false);
     // The OS channel (#139 phase 2): a second way to interrupt, for the case
     // where the user is not looking at this tab. Clicking an OS notification
@@ -163,12 +176,6 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         loaded: notificationsUi.loaded,
         onOpen: notificationsUi.markRead,
     });
-    // The settings panel (#143): the account's own preferences live on the
-    // server, the browser's four controls on the hooks below — the panel is
-    // where the two are labelled and edited together.
-    const prefsUi = usePrefs({ token: credential.token });
-    const [settingsOpen, setSettingsOpen] = useState(false);
-
     const { client, status, isStreaming, cancelTurn, sendLocation } =
         useChatClient({
             token: credential.token,
