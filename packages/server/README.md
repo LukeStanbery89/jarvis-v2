@@ -949,7 +949,9 @@ fetch; `HEAD` answers 200 without downloading.
   satellite speaker or a phone outranks nothing it cannot do; `hub.ts` is the
   live-socket registry (`ws.ts` fills it on auth, empties it on close) that
   makes "is the user reachable?" answerable at all; `service.ts` is the policy
-  (presence-first, quiet hours from the `notify.quietHours` pref, the delivery
+  (presence-first, quiet hours from the `notify.quietHours` pref — which the
+  notification's `class` decides, and nothing else does, so a timer pierces
+  them while a prioritised notification still waits — and the delivery
   budget above); `channels/inApp.ts` is the one phase-1 channel, pushing the
   stored record as a `notification` frame; `http.ts` is `/api/notifications`
   (list + create + read/dismiss/answer), mounted only when notifications are

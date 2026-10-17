@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     id              TEXT PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     kind            TEXT NOT NULL,
+    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
     priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
     title           TEXT NOT NULL,
     body            TEXT,
@@ -268,6 +269,24 @@ export const NOTIFICATION_PRIORITIES = [
 export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
 
 /**
+ * What kind of attention a notification asks for (#90), in rising order of how
+ * much it may insist.
+ *
+ * Structurally mirrors the protocol's `NOTIFICATION_CLASSES` the same way
+ * {@link NOTIFICATION_PRIORITIES} mirrors the wire's priorities — the server
+ * passes values straight through, so the two packages stay independent. Keep
+ * the tuples in step. The row's CHECK is what actually enforces the set.
+ */
+export const NOTIFICATION_CLASSES = [
+    "notification",
+    "reminder",
+    "timer",
+] as const;
+
+/** What kind of attention a notification asks for. */
+export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
+
+/**
  * Where a notification is in its life (#139).
  *
  * `pending` — recorded but never pushed to a live client (nobody was
@@ -302,6 +321,12 @@ export interface AppNotification {
     userId: number;
     /** Producer-defined category ("job.finished", "reminder", …). */
     kind: string;
+    /**
+     * What kind of attention this asks for (#90). Defaults to `notification`
+     * at the table, so a producer that has no opinion (today: every producer
+     * but the scheduler) stores the quiet class rather than a null.
+     */
+    class: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body: string | null;
@@ -325,6 +350,11 @@ export interface AppNotification {
 /** The producer-supplied half of a notification; identity and times are the store's. */
 export interface CreateNotificationInput {
     kind: string;
+    /**
+     * What kind of attention it asks for; the table's default is
+     * `notification` (quiet), so a caller that has no opinion omits it.
+     */
+    class?: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body?: string | null;
@@ -707,6 +737,7 @@ interface NotificationRow {
     id: string;
     userId: number;
     kind: string;
+    class: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body: string | null;
@@ -723,7 +754,7 @@ interface NotificationRow {
  * The notification SELECT list, shared by every read so a new column cannot
  * reach one query and miss another (`mapNotification` is the other half).
  */
-const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
 
 /** A `jobs` table row as the SELECTs alias it (see {@link mapJob}). */
 interface JobRow {
@@ -818,6 +849,7 @@ function mapNotification(row: NotificationRow): AppNotification {
         id: row.id,
         userId: row.userId,
         kind: row.kind,
+        class: row.class,
         priority: row.priority,
         title: row.title,
         body: row.body,
@@ -907,6 +939,25 @@ const DEFAULT_JOB_PAGE = 50;
  * history is the one list here that genuinely grows per job.
  */
 const DEFAULT_JOB_RUN_PAGE = 20;
+
+/**
+ * Whether `table` already has a column named `column`.
+ *
+ * An additive migration (`ALTER TABLE … ADD COLUMN`) is not idempotent the way
+ * `CREATE TABLE IF NOT EXISTS` is — SQLite has no `ADD COLUMN IF NOT EXISTS`,
+ * and running it twice is an error — so the step that adds a column must ask
+ * first, because it also runs against a fresh database that already has the
+ * column from SCHEMA.
+ */
+function hasColumn(
+    db: Database.Database,
+    table: string,
+    column: string,
+): boolean {
+    const columns = db.pragma(`table_info('${table}')`) as { name: string }[];
+    return columns.some((c) => c.name === column);
+}
+
 /**
  * Whether `devices` already carries a UNIQUE index over exactly
  * `(user_id, name)` — either the named {@link DEVICE_NAME_INDEX} (v2's
@@ -1069,6 +1120,22 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user
         // cannot drift.
         db.exec(JOBS_SCHEMA);
         db.pragma("user_version = 8");
+    }
+    if (version < 9) {
+        // v9: the notification class (#90). Additive rather than a table
+        // rebuild, because the default makes the migration total: every
+        // existing notification becomes the quiet class, so nothing a user
+        // already received changes meaning (and nothing is dropped).
+        //
+        // Guarded because ADD COLUMN is the one step in this function that is
+        // not idempotent — a fresh database already has the column from
+        // SCHEMA, and SQLite has no `ADD COLUMN IF NOT EXISTS`.
+        if (!hasColumn(db, "notifications", "class")) {
+            db.exec(
+                `ALTER TABLE notifications ADD COLUMN class TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer'))`,
+            );
+        }
+        db.pragma("user_version = 9");
     }
 }
 
@@ -1242,7 +1309,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
             insertNotification: db.prepare(
-                "INSERT INTO notifications (id, user_id, kind, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
             ),
             selectNotification: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -1684,6 +1751,11 @@ export class SqliteAppDatabase implements AppDatabase {
             input.id,
             userId,
             input.kind,
+            // The write path is explicit rather than leaning on the column's
+            // default: that default exists to make the v9 migration total (an
+            // existing row becomes the quiet class), and a store whose write
+            // behaviour depended on DDL would be a second place to look.
+            input.class ?? "notification",
             input.priority,
             input.title,
             input.body ?? null,

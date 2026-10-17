@@ -35,12 +35,12 @@ import { randomBytes } from "node:crypto";
 import type {
     AppNotification,
     NotificationLedger,
-    NotificationPriority,
 } from "@lukestanbery/jarvis-auth";
 import { FixedWindowQuota } from "../rate/fixedWindowQuota";
 import { logger } from "../logger";
 import type {
     NotificationChannel,
+    NotificationClass,
     NotificationInput,
     NotifyOutcome,
     NotificationSuppression,
@@ -321,18 +321,33 @@ function isTerminal(notification: AppNotification): boolean {
  * may go out. Reads prefs defensively: an unparseable value is ignored rather
  * than fatal, so a hand-edited pref cannot silently stop all notifications —
  * except `notify.enabled: false`, which is a literal and therefore honoured.
+ *
+ * **The class decides quiet hours, and nothing else does** (#90). A `timer`
+ * pierces them: it is the class the user chose for a moment they chose, and a
+ * timer that waits until morning is not a timer. Every other class waits —
+ * including a *prioritised* one — because two fields answering "may this
+ * interrupt" is two ways to be wrong, and the priority is model-chosen on the
+ * `sendNotification` path (which is how an assistant used to be able to pierce
+ * quiet hours by naming `urgent`). Priority keeps ordering and emphasis; the
+ * class keeps the policy.
+ *
+ * A timer does **not** pierce the master switch. `notify.enabled: false` is a
+ * kill switch the user threw, and a class named by a producer must not be a
+ * way around it — the flow that schedules a timer warns when it is off, so the
+ * silence is announced at the moment of scheduling rather than discovered at
+ * the moment of ringing.
  */
 function suppressionFor(
     store: { getPrefs(userId: number): Record<string, unknown> },
     userId: number,
-    normalized: { priority: NotificationPriority },
+    normalized: { class: NotificationClass },
     at: Date,
 ): NotificationSuppression {
     const prefs = safePrefs(store, userId);
     if (prefs[NOTIFY_ENABLED_PREF] === false) {
         return "disabled";
     }
-    if (!priorityRespectsQuietHours(normalized.priority)) {
+    if (normalized.class === "timer") {
         return null;
     }
     const quietHours = parseQuietHours(prefs[NOTIFY_QUIET_HOURS_PREF]);
@@ -340,20 +355,6 @@ function suppressionFor(
         return "quiet-hours";
     }
     return null;
-}
-
-/** Highest priority still suppressed by quiet hours. */
-const QUIET_HOURS_CEILING: readonly NotificationPriority[] = ["low", "normal"];
-
-/**
- * Whether this priority is subject to quiet hours.
- *
- * A rank comparison (not an equality check) so a priority added to the
- * protocol between `low` and `urgent` inherits the sensible behaviour rather
- * than silently becoming unsuppressable.
- */
-function priorityRespectsQuietHours(priority: NotificationPriority): boolean {
-    return QUIET_HOURS_CEILING.includes(priority);
 }
 
 /** Reads prefs, treating an unexpected store failure as "no prefs set". */

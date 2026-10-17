@@ -46,6 +46,7 @@ export function toNotificationFrame(
         notification: {
             id: notification.id,
             kind: notification.kind,
+            class: notification.class,
             priority: notification.priority,
             title: notification.title,
             ...(notification.body !== null && notification.body.length > 0

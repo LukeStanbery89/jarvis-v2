@@ -23,6 +23,7 @@ const RECORD: AppNotification = {
     id: "n1",
     userId: 7,
     kind: AGENT_NOTIFICATION_KIND,
+    class: "notification",
     priority: "normal",
     title: "Research is ready",
     body: null,

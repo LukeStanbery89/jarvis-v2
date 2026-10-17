@@ -489,6 +489,7 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 notification: {
                     id: "3Ybq0kQmT1xVn8sRzWpLdA",
                     kind: "job.finished",
+                    class: "notification",
                     priority: "normal",
                     title: "The coding agent finished and opened PR #143",
                     body: "4 files changed, tests green.",
@@ -506,6 +507,7 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 notification: {
                     id: "3Ybq0kQmT1xVn8sRzWpLdA",
                     kind: "coding.question",
+                    class: "notification",
                     priority: "high",
                     title: "Which React version?",
                     createdAt: "2026-10-15T18:04:11.000Z",

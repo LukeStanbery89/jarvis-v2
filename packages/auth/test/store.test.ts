@@ -487,6 +487,32 @@ describe("prefs", () => {
 });
 
 describe("notifications", () => {
+    it("defaults the class to the quiet one and stores an explicit class", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        // No opinion: the store writes the quiet class rather than a null, so
+        // every reader has one shape to handle.
+        store.createNotification(user.id, {
+            id: "n1",
+            kind: "job.finished",
+            priority: "normal",
+            title: "quiet by default",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        store.createNotification(user.id, {
+            id: "n2",
+            kind: "timer.fired",
+            class: "timer",
+            priority: "normal",
+            title: "the kettle",
+            createdAt: "2026-10-15T18:00:01.000Z",
+        });
+
+        expect(store.getNotification(user.id, "n1")?.class).toBe(
+            "notification",
+        );
+        expect(store.getNotification(user.id, "n2")?.class).toBe("timer");
+    });
+
     it("creates, lists, and settles notifications for one user", () => {
         const user = store.createUser("luke", "hash", "owner");
         store.createNotification(user.id, {
@@ -714,13 +740,110 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(8);
+            expect(check.pragma("user_version", { simple: true })).toBe(9);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
             expect(
                 indexes.some((i) => i.name === "idx_web_sessions_user"),
             ).toBe(true);
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("adds the notification class to a store that predates it", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            // A store from before #90: the notifications table exists in its
+            // v7 shape (no `class`), and holds a row the user has already
+            // received. The rest of the schema is the v3 shape, so the
+            // intervening migrations still do their work — which is the point:
+            // the class arrives as an additive step on a table that is
+            // already populated, not as part of creating it.
+            const old = new Database(path);
+            old.exec(`
+                CREATE TABLE users (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    role          TEXT NOT NULL CHECK (role IN ('owner', 'user')),
+                    created_at    TEXT NOT NULL
+                );
+                CREATE TABLE devices (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name         TEXT NOT NULL,
+                    secret_hash  TEXT NOT NULL,
+                    prefix       TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    UNIQUE (user_id, name)
+                );
+                CREATE TABLE sessions (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id      TEXT NOT NULL UNIQUE,
+                    user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+                    kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+                    created_at     TEXT NOT NULL,
+                    last_active_at TEXT NOT NULL
+                );
+                CREATE TABLE prefs (
+                    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    key        TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, key)
+                );
+                CREATE TABLE notifications (
+                    id              TEXT PRIMARY KEY,
+                    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    kind            TEXT NOT NULL,
+                    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+                    title           TEXT NOT NULL,
+                    body            TEXT,
+                    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
+                    requires_answer INTEGER NOT NULL DEFAULT 0,
+                    dedupe_key      TEXT,
+                    answer          TEXT,
+                    created_at      TEXT NOT NULL,
+                    delivered_at    TEXT,
+                    settled_at      TEXT
+                );
+                INSERT INTO users (username, password_hash, role, created_at)
+                    VALUES ('luke', 'hash', 'owner', '2026-01-01T00:00:00.000Z');
+                INSERT INTO notifications (id, user_id, kind, priority, title, state, created_at, delivered_at)
+                    VALUES ('old', 1, 'job.finished', 'high', 'sent before the upgrade', 'delivered',
+                            '2026-10-01T09:00:00.000Z', '2026-10-01T09:00:00.000Z');
+                PRAGMA user_version = 3;
+            `);
+            old.close();
+
+            const upgraded = openAppDatabase(path);
+            // The migration is total: a notification the user already received
+            // is not dropped and does not change meaning — it becomes the
+            // quiet class, which is what it was.
+            const existing = upgraded.getNotification(1, "old");
+            expect(existing?.class).toBe("notification");
+            expect(existing?.state).toBe("delivered");
+            expect(existing?.title).toBe("sent before the upgrade");
+            // And the column is usable afterwards.
+            upgraded.createNotification(1, {
+                id: "new",
+                kind: "timer.fired",
+                class: "timer",
+                priority: "normal",
+                title: "after the upgrade",
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+            expect(upgraded.getNotification(1, "new")?.class).toBe("timer");
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(9);
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
@@ -797,7 +920,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(8);
+            expect(check.pragma("user_version", { simple: true })).toBe(9);
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -866,7 +989,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(8);
+            expect(check.pragma("user_version", { simple: true })).toBe(9);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toHaveLength(1);
             // The v2 migration's named index is gone; the inline constraint's
@@ -942,7 +1065,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(8);
+            expect(check.pragma("user_version", { simple: true })).toBe(9);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toEqual(["idx_devices_user_name"]);
             check.close();

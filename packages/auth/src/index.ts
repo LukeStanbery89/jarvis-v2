@@ -29,6 +29,7 @@ export {
     JOB_KINDS,
     JOB_RUN_STATES,
     JOB_STATES,
+    NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
     NOTIFICATION_STATES,
 } from "./store";
@@ -44,6 +45,7 @@ export type {
     JobLedger,
     JobRunState,
     JobState,
+    NotificationClass,
     NotificationLedger,
     NotificationPriority,
     NotificationState,

@@ -136,8 +136,10 @@ router and middleware span every ledger and therefore take the full
   settings stay in the environment. Reached through the `PrefLedger` accessors
   — the reserved home for the per-user integration state the web portal (#24)
   manages, from a consumer (v4 schema, planning-complete) onward.
-- `notifications` — one row per notification (#139, v7): producer `kind` +
-  `priority`, the `title`/`body` text, a `state` lifecycle (`pending` →
+- `notifications` — one row per notification (#139, v7; `class` added in v9,
+  #90): producer `kind` + `class` (the delivery policy — a `timer` pierces
+  quiet hours, everything else waits) + `priority` (display emphasis only), the
+  `title`/`body` text, a `state` lifecycle (`pending` →
   `delivered` → `read`/`answered`/`dismissed`, with `pending` → `read` legal
   for a notification the user found in the list rather than had pushed), an
   optional `requires_answer`, `dedupe_key`, and `answer`, plus the timestamps.

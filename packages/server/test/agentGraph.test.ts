@@ -210,6 +210,7 @@ describe("createAgentGraph", () => {
                         id: "n1",
                         userId,
                         kind: input.kind,
+                        class: input.class ?? "notification",
                         priority: input.priority ?? "normal",
                         title: input.title,
                         body: null,

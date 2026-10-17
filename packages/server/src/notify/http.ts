@@ -22,6 +22,7 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import {
     createCookieSessionProvider,
+    NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
 } from "@lukestanbery/jarvis-auth";
 import type { AppDatabase, AppNotification } from "@lukestanbery/jarvis-auth";
@@ -48,6 +49,7 @@ const MAX_LIMIT = 200;
 export interface NotificationResponse {
     id: string;
     kind: string;
+    class: string;
     priority: string;
     title: string;
     body?: string;
@@ -66,6 +68,7 @@ export function toNotificationResponse(
     return {
         id: notification.id,
         kind: notification.kind,
+        class: notification.class,
         priority: notification.priority,
         title: notification.title,
         ...(notification.body !== null ? { body: notification.body } : {}),
@@ -229,6 +232,7 @@ export function createNotificationRouter(
  */
 function notificationInputFrom(body: unknown): {
     kind: string;
+    class?: AppNotification["class"];
     priority?: AppNotification["priority"];
     title: string;
     body?: string;
@@ -239,6 +243,18 @@ function notificationInputFrom(body: unknown): {
         throw new NotificationInputError("body must be a JSON object");
     }
     const candidate = body as Record<string, unknown>;
+    const notificationClass = candidate.class;
+    if (
+        notificationClass !== undefined &&
+        (typeof notificationClass !== "string" ||
+            !(NOTIFICATION_CLASSES as readonly string[]).includes(
+                notificationClass,
+            ))
+    ) {
+        throw new NotificationInputError(
+            `class must be one of ${NOTIFICATION_CLASSES.join(", ")}`,
+        );
+    }
     const priority = candidate.priority;
     if (
         priority !== undefined &&
@@ -252,6 +268,9 @@ function notificationInputFrom(body: unknown): {
     return {
         kind: requireString(candidate.kind, "kind"),
         title: requireString(candidate.title, "title"),
+        ...(notificationClass !== undefined
+            ? { class: notificationClass as AppNotification["class"] }
+            : {}),
         ...(priority !== undefined
             ? { priority: priority as AppNotification["priority"] }
             : {}),

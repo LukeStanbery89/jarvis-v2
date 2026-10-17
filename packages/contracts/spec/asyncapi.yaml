@@ -603,10 +603,12 @@ components:
                 should match by `id` so a notification is never rendered
                 twice. Delivery is best-effort: a client that was offline sees
                 it in its next list fetch instead, which is why nothing here
-                is required for the notification to exist. `priority` is the
-                client's cue for how loud to be (badge versus speech), and
-                `requiresAnswer` marks a notification a reply retires rather
-                than a read.
+                is required for the notification to exist. `class` is the
+                delivery policy (#90) — a `timer` pierces quiet hours, a
+                `reminder` and a `notification` wait them out — while
+                `priority` is the client's cue for how loud to be (badge
+                versus speech), and `requiresAnswer` marks a notification a
+                reply retires rather than a read.
             payload:
                 type: object
                 additionalProperties: false
@@ -619,6 +621,7 @@ components:
                         required:
                             - id
                             - kind
+                            - class
                             - priority
                             - title
                             - createdAt
@@ -631,6 +634,12 @@ components:
                                 type: string
                                 minLength: 1
                                 maxLength: 64
+                            class:
+                                type: string
+                                enum:
+                                    - notification
+                                    - reminder
+                                    - timer
                             priority:
                                 type: string
                                 enum:
@@ -662,6 +671,7 @@ components:
                       notification:
                           id: 3Ybq0kQmT1xVn8sRzWpLdA
                           kind: job.finished
+                          class: notification
                           priority: normal
                           title: The coding agent finished and opened PR #143
                           body: 4 files changed, tests green. Nothing is merged yet.
