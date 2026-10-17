@@ -389,7 +389,7 @@ export interface paths {
         };
         /**
          * List the caller's notifications
-         * @description Newest first. Dismissed notifications are excluded unless `includeDismissed=true`. `unread` counts everything neither read nor dismissed, for a badge.
+         * @description Newest first. Dismissed notifications are excluded unless `includeDismissed=true`; a `snoozed` one is still listed, since the user should be able to find what they deferred. `unread` counts everything not settled — neither read, answered, dismissed nor snoozed — for a badge.
          */
         get: operations["notificationsList"];
         put?: never;
@@ -533,7 +533,7 @@ export interface paths {
         put?: never;
         /**
          * Snooze a reminder
-         * @description A reminder that has not fired is *moved* (its moment changes, no attempt is counted, nothing is announced); one that already had its moment is *set again* for the new time with the same payload, which is a new job — `action` says which happened, and `previousRunAt` carries the moment the settled one was owed. Only a reminder can be snoozed: a timer is a countdown and a notification is already filed. Cookie-authenticated callers must send `x-csrf-token`.
+         * @description A reminder that has not fired is *moved* (its moment changes, no attempt is counted, nothing is announced); one that already had its moment is *set again* for the new time with the same payload, which is a new job — `action` says which happened, and `previousRunAt` carries the moment the settled one was owed. Only a reminder can be snoozed: a timer is a countdown and a notification is already filed. Snoozing also settles the notification that announced the reminder (`snoozed`), because the deferral *is* the acknowledgement — one request, and the row stops asking for attention (#90 phase 6c). A refused snooze settles nothing. Cookie-authenticated callers must send `x-csrf-token`.
          */
         post: operations["jobsSnooze"];
         delete?: never;
@@ -730,14 +730,14 @@ export interface components {
             title: string;
             body?: string;
             /**
-             * @description `pending` — recorded, never pushed (nobody was connected, the delivery budget was spent, or quiet hours suppressed it), so a client finds it through this list instead. `delivered` — pushed to at least one live socket. `read` / `dismissed` / `answered` are terminal; `answered` is the retirement path for a notification raised with `requiresAnswer`.
+             * @description `pending` — recorded, never pushed (nobody was connected, the delivery budget was spent, or quiet hours suppressed it), so a client finds it through this list instead. `delivered` — pushed to at least one live socket. `read` / `answered` / `dismissed` / `snoozed` are terminal: `answered` is the retirement path for a notification raised with `requiresAnswer`, and `snoozed` is what a reminder the user deferred becomes — the deferral settles the announcement it answered, so a late acknowledgement cannot resurrect it (#90 phase 6c). A `snoozed` row stays in the list, unlike a dismissed one.
              * @enum {string}
              */
-            state: "pending" | "delivered" | "read" | "answered" | "dismissed";
+            state: "pending" | "delivered" | "read" | "answered" | "dismissed" | "snoozed";
             requiresAnswer?: boolean;
             /** @description The user's reply, on an answered notification. */
             answer?: string;
-            /** @description The job this notification is about (#90), when a scheduler announcement produced it. It is what lets a reminder's banner act on the reminder — snooze it — rather than only acknowledge the notification. Absent for a notification no job stands behind. */
+            /** @description The job this notification is about (#90), when a scheduler announcement produced it. It is what lets a reminder's row — or the floating toast, wherever the user is — act on the reminder (snooze it) rather than only acknowledge the notification. Absent for a notification no job stands behind, and nulled if the job is later pruned. */
             jobId?: string;
             /** Format: date-time */
             createdAt: string;
@@ -749,7 +749,7 @@ export interface components {
         /** @description Body of `GET /api/notifications`. */
         NotificationList: {
             notifications: components["schemas"]["Notification"][];
-            /** @description Notifications neither read nor dismissed (a badge count, so it counts past the page size). */
+            /** @description Notifications not settled — neither read, answered, dismissed nor snoozed (a badge count, so it counts past the page size). */
             unread: number;
         };
         /** @description Body of the `read` / `dismiss` / `answer` routes: the notification as it now stands. */

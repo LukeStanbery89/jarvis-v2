@@ -25,6 +25,35 @@ import type {
     WebSessionRow,
 } from "./types";
 
+/**
+ * The notification states a row can never leave (#139, #90 phase 6c).
+ *
+ * `read`, `answered` and `dismissed` are a user's terminal answers. `snoozed`
+ * joined them in #90 phase 6c, when a reminder could be *deferred* rather than
+ * merely read or ignored: the deferral settles the announcement it came from, so
+ * a late duplicate acknowledgement cannot resurrect the row — and the row goes on
+ * saying what actually happened, where `dismissed` would have erased the fact
+ * that it was snoozed.
+ *
+ * Declared up here, above the schema strings, because they are *built* from it:
+ * the table's CHECK names these states, and a `const` read from a template
+ * literal evaluated earlier in the module would throw in its temporal dead zone
+ * at import time. Everything that has to know is derived from this one list —
+ * the CHECK, the settle statement's guard, its `settled_at` stamp, and the unread
+ * count — so widening the set is one edit rather than four.
+ */
+const NOTIFICATION_TERMINAL_STATES = [
+    "read",
+    "answered",
+    "dismissed",
+    "snoozed",
+] as const;
+
+/** The terminal states as SQL literals, for the statements built from them. */
+const NOTIFICATION_TERMINAL_SQL = NOTIFICATION_TERMINAL_STATES.map(
+    (state) => `'${state}'`,
+).join(", ");
+
 const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -89,6 +118,47 @@ function jobsTable(name: string): string {
 }
 
 /**
+ * The `notifications` table (#139), parameterized by table name.
+ *
+ * A function for the same reason {@link jobsTable} is one: the v12 migration has
+ * to *rebuild* this table — SQLite cannot widen a `CHECK` in place, and #90 phase
+ * 6c added `snoozed` to the state set — and the copy has to land in a table with
+ * exactly this shape. Written once, both ask for it, so they cannot drift.
+ *
+ * `job_id` sits last because that is where the v11 `ALTER TABLE` put it: a
+ * rebuilt table lists its columns in this order on the way in, so a migrated
+ * database and a fresh one converge on the same shape rather than merely the
+ * same columns.
+ */
+function notificationsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
+    id              TEXT PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
+    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+    title           TEXT NOT NULL,
+    body            TEXT,
+    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', ${NOTIFICATION_TERMINAL_SQL})),
+    requires_answer INTEGER NOT NULL DEFAULT 0,
+    dedupe_key      TEXT,
+    answer          TEXT,
+    created_at      TEXT NOT NULL,
+    delivered_at    TEXT,
+    settled_at      TEXT,
+    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
+)`;
+}
+
+/**
+ * The `notifications` index, kept separate from the table because the v12 rebuild
+ * drops the table (taking its index with it) and must put it back — the same
+ * reason {@link JOB_INDEXES} exists.
+ */
+const NOTIFICATION_INDEXES = `CREATE INDEX IF NOT EXISTS idx_notifications_user
+    ON notifications (user_id, created_at DESC);`;
+
+/**
  * The `jobs` indexes, kept separate from the table because the v10 rebuild
  * drops the table (taking its indexes with it) and must put them back after the
  * swap — a `CREATE INDEX IF NOT EXISTS` run before the drop would be undone by
@@ -148,25 +218,8 @@ CREATE TABLE IF NOT EXISTS prefs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
-CREATE TABLE IF NOT EXISTS notifications (
-    id              TEXT PRIMARY KEY,
-    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kind            TEXT NOT NULL,
-    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
-    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
-    title           TEXT NOT NULL,
-    body            TEXT,
-    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
-    requires_answer INTEGER NOT NULL DEFAULT 0,
-    dedupe_key      TEXT,
-    answer          TEXT,
-    created_at      TEXT NOT NULL,
-    delivered_at    TEXT,
-    settled_at      TEXT,
-    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS idx_notifications_user
-    ON notifications (user_id, created_at DESC);
+${notificationsTable("notifications")};
+${NOTIFICATION_INDEXES}
 ${JOBS_SCHEMA}
 ${WEB_SESSIONS_SCHEMA}
 `;
@@ -315,15 +368,16 @@ export const NOTIFICATION_CLASSES = [
 export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
 
 /**
- * Where a notification is in its life (#139).
+ * Where a notification is in its life (#139, #90 phase 6c).
  *
  * `pending` — recorded but never pushed to a live client (nobody was
  * connected, the delivery cap was reached, or quiet hours suppressed it), so a
  * client that connects later finds it through the list. `delivered` — pushed
- * to at least one live socket. `read` / `dismissed` / `answered` are terminal
- * from the user's point of view. `answered` is the retirement path for a
- * `requiresAnswer` notification: a reply, not an acknowledgement, is what
- * settles it.
+ * to at least one live socket. Then the terminal states, from the one list that
+ * owns them ({@link NOTIFICATION_TERMINAL_STATES}): `read` and `dismissed` are
+ * the user's answers, `answered` is the retirement path for a `requiresAnswer`
+ * notification (a reply, not an acknowledgement, is what settles it), and
+ * `snoozed` is what a reminder the user deferred becomes.
  *
  * Note that `pending` → `read` is a legal transition: a user who finds the
  * notification in the list and reads it there never needs it delivered.
@@ -331,9 +385,7 @@ export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
 export const NOTIFICATION_STATES = [
     "pending",
     "delivered",
-    "read",
-    "answered",
-    "dismissed",
+    ...NOTIFICATION_TERMINAL_STATES,
 ] as const;
 
 /** A notification's lifecycle state. */
@@ -430,15 +482,28 @@ export interface NotificationLedger {
         userId: number,
         options?: { limit?: number; includeDismissed?: boolean },
     ): AppNotification[];
+    /**
+     * A user's notifications about one job, newest first (#90 phase 6c).
+     *
+     * A job announces once per run, so this is normally exactly one row — but
+     * the caller settling "the announcement for this job" should ask the link
+     * rather than assume an id it does not have, and there is no upper bound the
+     * ledger can promise (a re-created reminder's predecessor announced too).
+     * Unsettled and settled rows both come back; the settle rules are
+     * {@link setNotificationState}'s.
+     */
+    listNotificationsForJob(userId: number, jobId: string): AppNotification[];
     /** How many of a user's notifications are neither read nor dismissed. */
     countUnreadNotifications(userId: number): number;
     /**
      * Moves a notification to `state`, stamping `delivered_at` / `settled_at`
      * as that state implies, optionally recording the user's `answer`.
      *
-     * Terminal states are terminal: a transition out of `read`, `dismissed`,
-     * or `answered` is refused and the existing row returned unchanged, so a
-     * late duplicate ack cannot resurrect a settled notification.
+     * Terminal states are terminal — `read`, `answered`, `dismissed` and
+     * `snoozed` — and a transition out of one is refused, returning the existing
+     * row unchanged: a late duplicate ack cannot resurrect a settled
+     * notification, and neither can a snooze that arrives after the user read
+     * the reminder.
      *
      * @returns The row after the attempt, or `null` when no such notification
      * belongs to `userId`.
@@ -1067,6 +1132,39 @@ function hasColumn(
 }
 
 /**
+ * How many rows anywhere in the database reference a row that does not exist.
+ *
+ * `PRAGMA foreign_key_check` reports every violation in every table, which is the
+ * right scope when the caller wants to know whether *it* introduced one: a
+ * migration compares this count before and after its own work rather than
+ * demanding a database that is already clean.
+ */
+function countForeignKeyViolations(db: Database.Database): number {
+    return (db.pragma("foreign_key_check") as unknown[]).length;
+}
+
+/**
+ * Whether a table's stored DDL mentions `fragment`.
+ *
+ * `hasColumn` answers "does this column exist"; this answers "does this
+ * *constraint* exist", which is what a CHECK rebuild has to guard on — the state
+ * set is not a column of its own. Reading `sqlite_master` is the direct question:
+ * the table's own SQL either names the value or it does not.
+ */
+function tableSqlHas(
+    db: Database.Database,
+    table: string,
+    fragment: string,
+): boolean {
+    const row = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .get(table) as { sql: string | null } | undefined;
+    return row?.sql?.includes(fragment) ?? false;
+}
+
+/**
  * Whether `devices` already carries a UNIQUE index over exactly
  * `(user_id, name)` — either the named {@link DEVICE_NAME_INDEX} (v2's
  * legacy-store migration) or the inline table constraint's automatic index
@@ -1125,7 +1223,80 @@ function hasInlineDeviceNameUniqueIndex(db: Database.Database): boolean {
     return false;
 }
 
-function migrate(db: Database.Database): void {
+/**
+ * What a migration had to change to bring an existing store up to date (#90
+ * phase 6c).
+ *
+ * Reported rather than logged, because the store has no logger: it records facts,
+ * and the process that opened it decides whether to say them (the server does, at
+ * `warn`, because a silent repair is the kind of thing that is only ever learned
+ * the hard way).
+ */
+export interface MigrationReport {
+    /**
+     * Notifications whose `job_id` pointed at a job that no longer exists, nulled
+     * before the v12 rebuild copied them.
+     *
+     * This is the action `ON DELETE SET NULL` would have taken, applied late. It
+     * happens when a job was deleted without foreign keys enforced — the
+     * `sqlite3` CLI leaves them off by default — so the row outlived the thing it
+     * named.
+     */
+    repairedNotificationJobLinks: number;
+    /**
+     * Notifications deleted because their account no longer exists: rows no
+     * account can reach, and what `ON DELETE CASCADE` would have done.
+     */
+    droppedOrphanedNotifications: number;
+}
+
+/** Options for opening or constructing a store. */
+export interface AppDatabaseOptions {
+    /**
+     * Called once per open, and only when a migration had to repair something —
+     * a clean database reports nothing at all.
+     */
+    onMigrationRepair?(report: MigrationReport): void;
+}
+
+/**
+ * Repairs the notification references a bypassed delete left behind (#90 phase
+ * 6c).
+ *
+ * A migration carries rows forward, so it cannot assume they are sound: a job
+ * deleted by hand with `foreign_keys` off leaves a `job_id` pointing at nothing,
+ * and an account deleted the same way leaves a row nobody can read. Both are
+ * repaired to what the schema already promises rather than treated as a failure —
+ * the alternative is a server that refuses to boot on data it could have carried,
+ * which is exactly what happened the first time this shipped.
+ *
+ * Runs inside the caller's transaction. Removing a violation is always legal with
+ * foreign keys enforced, which is why the copy can then be validated with them on.
+ *
+ * @param db - The connection being migrated (foreign keys on).
+ * @returns How many rows each repair touched.
+ */
+function repairNotificationReferences(db: Database.Database): MigrationReport {
+    const repaired = db
+        .prepare(
+            `UPDATE notifications SET job_id = NULL
+              WHERE job_id IS NOT NULL
+                AND job_id NOT IN (SELECT id FROM jobs)`,
+        )
+        .run();
+    const dropped = db
+        .prepare(
+            `DELETE FROM notifications
+              WHERE user_id NOT IN (SELECT id FROM users)`,
+        )
+        .run();
+    return {
+        repairedNotificationJobLinks: repaired.changes,
+        droppedOrphanedNotifications: dropped.changes,
+    };
+}
+
+function migrate(db: Database.Database, options?: AppDatabaseOptions): void {
     const version = db.pragma("user_version", { simple: true }) as number;
     if (version < 1) {
         db.exec(SCHEMA);
@@ -1256,6 +1427,13 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user
         // the DROP). Guarded on the column, so a fresh database — which already
         // has the new shape from SCHEMA — skips the rebuild entirely.
         if (!hasColumn(db, "jobs", "message")) {
+            // The database's own violation count, before the swap: a migration
+            // carries rows forward and cannot assume they are sound, so what it
+            // must prove is that it added nothing — not that everything is
+            // perfect (the v12 rebuild learned this the expensive way, #90 phase
+            // 6c: a job deleted by hand with foreign keys off left an orphan, and
+            // the check below refused to open the store at all).
+            const violationsBefore = countForeignKeyViolations(db);
             db.pragma("foreign_keys = OFF");
             try {
                 db.exec(`${jobsTable("jobs_v10")};
@@ -1269,13 +1447,13 @@ SELECT id, user_id, label, 'notification', kind, prompt, tool_name, tool_args,
 DROP TABLE jobs;
 ALTER TABLE jobs_v10 RENAME TO jobs;
 ${JOB_INDEXES}`);
-                // The documented last step: prove the swap left no dangling
-                // reference before declaring the store upgraded. A rebuild that
-                // silently orphaned runs would be worse than a loud failure.
-                const violations = db.pragma("foreign_key_check") as unknown[];
-                if (violations.length > 0) {
+                // The documented last step, now a comparison: a rebuild that
+                // silently orphaned runs would be worse than a loud failure, and a
+                // pre-existing orphan is not this step's to fix.
+                const violationsAfter = countForeignKeyViolations(db);
+                if (violationsAfter > violationsBefore) {
                     throw new Error(
-                        `the jobs rebuild left ${violations.length} foreign-key violation(s)`,
+                        `the jobs rebuild added ${violationsAfter - violationsBefore} foreign-key violation(s)`,
                     );
                 }
             } finally {
@@ -1305,11 +1483,83 @@ ${JOB_INDEXES}`);
         }
         db.pragma("user_version = 11");
     }
+    if (version < 12) {
+        // v12: `snoozed` as a terminal notification state (#90 phase 6c).
+        //
+        // A rebuild, because SQLite cannot widen a CHECK in place — the same
+        // *shape* of step as v10's, guarded differently: there is no column to
+        // test for (the state set is not a column), so the guard reads the
+        // table's own SQL from `sqlite_master`. Without it a fresh database,
+        // which already has the wider CHECK from SCHEMA, would drop and re-create
+        // an empty table on every open.
+        //
+        // Foreign keys stay **on**, which v10 could not do (its table had a
+        // child, so the DROP would have cascaded) and this one can: nothing
+        // references `notifications`, so the DROP cascades nothing and the INSERT
+        // is validated on the way through. That only works because the references
+        // are repaired *first* — see `repairNotificationReferences`. A migration
+        // carries rows forward and cannot assume they are sound; letting a
+        // dangling link from an unenforced delete refuse the open is how this
+        // shipped broken the first time.
+        if (!tableSqlHas(db, "notifications", "'snoozed'")) {
+            let report: MigrationReport = {
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+            };
+            // One transaction: SQLite makes DDL transactional, so a failure
+            // anywhere in this sequence — the repairs included — leaves the old
+            // table exactly as it was. A half-swapped notification list is the one
+            // outcome this step must not produce.
+            const rebuild = db.transaction((): void => {
+                report = repairNotificationReferences(db);
+                db.exec(`${notificationsTable("notifications_v12")};
+INSERT INTO notifications_v12 (
+    id, user_id, kind, class, priority, title, body, state, requires_answer,
+    dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+)
+SELECT id, user_id, kind, class, priority, title, body, state, requires_answer,
+       dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+  FROM notifications;
+DROP TABLE notifications;
+ALTER TABLE notifications_v12 RENAME TO notifications;
+${NOTIFICATION_INDEXES}`);
+                // A self-check, not a data check: the repairs above are supposed
+                // to leave every reference resolvable, so a violation here means
+                // this migration is wrong rather than the store is corrupt. Scoped
+                // to this table on purpose — the database may hold violations
+                // elsewhere that predate it and are not its business.
+                const dangling = db
+                    .prepare(
+                        `SELECT COUNT(*) AS n FROM notifications n
+                          WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = n.user_id)
+                             OR (n.job_id IS NOT NULL
+                                 AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = n.job_id))`,
+                    )
+                    .get() as { n: number };
+                if (dangling.n > 0) {
+                    throw new Error(
+                        `the notifications rebuild left ${dangling.n} dangling reference(s)`,
+                    );
+                }
+            });
+            rebuild();
+            if (
+                report.repairedNotificationJobLinks > 0 ||
+                report.droppedOrphanedNotifications > 0
+            ) {
+                options?.onMigrationRepair?.(report);
+            }
+        }
+        db.pragma("user_version = 12");
+    }
 }
 
-export function openAppDatabase(dbPath: string): AppDatabase {
+export function openAppDatabase(
+    dbPath: string,
+    options?: AppDatabaseOptions,
+): AppDatabase {
     ensurePrivateStorage(dbPath);
-    const store = new SqliteAppDatabase(new Database(dbPath));
+    const store = new SqliteAppDatabase(new Database(dbPath), options);
     // Belt-and-suspenders chmod: the file was pre-created at 0600, but a
     // library migration that reopens it stays safe even on odd filesystems.
     ensurePrivateFile(dbPath);
@@ -1355,6 +1605,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectNotification: Database.Statement;
         selectNotifications: Database.Statement;
         selectNotificationsWithDismissed: Database.Statement;
+        selectNotificationsForJob: Database.Statement;
         countUnreadNotifications: Database.Statement;
         settleNotification: Database.Statement;
         pruneSettledNotifications: Database.Statement;
@@ -1380,10 +1631,10 @@ export class SqliteAppDatabase implements AppDatabase {
         pruneJobs: Database.Statement;
     };
 
-    constructor(db: Database.Database) {
+    constructor(db: Database.Database, options?: AppDatabaseOptions) {
         this.db = db;
         db.pragma("foreign_keys = ON");
-        migrate(db);
+        migrate(db, options);
         this.statements = {
             insertUser: db.prepare(
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
@@ -1488,18 +1739,24 @@ export class SqliteAppDatabase implements AppDatabase {
             selectNotifications: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND state != 'dismissed' ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             ),
+            // The announcements a job produced (#90 phase 6c). A job announces
+            // once per run, so this is normally one row — but "normally one" is
+            // not a reason to guess an id: the link is the durable fact.
+            selectNotificationsForJob: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND job_id = ? ORDER BY created_at DESC, rowid DESC`,
+            ),
             selectNotificationsWithDismissed: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             ),
             countUnreadNotifications: db.prepare(
-                "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
+                `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
             ),
             // One statement covers every transition: the terminal guard lives
             // in the WHERE clause, so a late duplicate ack touches no row and
             // the caller re-reads the settled one instead. `delivered_at` and
             // `settled_at` are stamped only by the states that imply them.
             settleNotification: db.prepare(
-                "UPDATE notifications SET state = ?, answer = COALESCE(?, answer), delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, settled_at = CASE WHEN ? IN ('read', 'answered', 'dismissed') THEN ? ELSE settled_at END WHERE user_id = ? AND id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
+                `UPDATE notifications SET state = ?, answer = COALESCE(?, answer), delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, settled_at = CASE WHEN ? IN (${NOTIFICATION_TERMINAL_SQL}) THEN ? ELSE settled_at END WHERE user_id = ? AND id = ? AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
             ),
             // Two passes, because the ceiling has to hold for the table and
             // not merely for its settled rows: a client that is repeatedly
@@ -1977,6 +2234,14 @@ export class SqliteAppDatabase implements AppDatabase {
             ? this.statements.selectNotificationsWithDismissed
             : this.statements.selectNotifications;
         const rows = statement.all(userId, limit) as NotificationRow[];
+        return rows.map(mapNotification);
+    }
+
+    listNotificationsForJob(userId: number, jobId: string): AppNotification[] {
+        const rows = this.statements.selectNotificationsForJob.all(
+            userId,
+            jobId,
+        ) as NotificationRow[];
         return rows.map(mapNotification);
     }
 

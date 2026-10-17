@@ -206,7 +206,21 @@ logger.info(
         : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
 );
 
-const store = openAppDatabase(appConfig.appDbPath);
+const store = openAppDatabase(appConfig.appDbPath, {
+    /**
+     * A migration repaired something on the way in (#90 phase 6c).
+     *
+     * At `warn`, and it names the counts: a silent repair of real data is the
+     * kind of thing that is only ever learned the hard way, and the repair is
+     * evidence that something wrote to this database without foreign keys
+     * enforced (the `sqlite3` CLI leaves them off by default).
+     */
+    onMigrationRepair: (report) => {
+        logger.warn(
+            `App database repaired during migration: ${report.repairedNotificationJobLinks} notification job link(s) nulled, ${report.droppedOrphanedNotifications} orphaned notification row(s) dropped`,
+        );
+    },
+});
 
 // Say *which* database this process opened, before anything else can be
 // mistaken for "the database". The checkpoint path is logged when the graph

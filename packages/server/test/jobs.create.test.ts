@@ -249,4 +249,95 @@ describe("the creation policy", () => {
             );
         }
     });
+
+    it("settles the announcement a snooze answered — in both of its shapes", () => {
+        const h = harness();
+        const reminder = h.creator.create(h.userId, {
+            label: "AC filter",
+            class: "reminder",
+            payload: { kind: "message", message: "change the AC filter" },
+            runAt: new Date(NOW.getTime() + 3_600_000),
+            at: NOW,
+        });
+        if (!reminder.ok) {
+            throw new Error("the reminder should have been created");
+        }
+        /** The row the runner would have announced this job with. */
+        const announce = (id: string, at: string): void => {
+            h.store.createNotification(h.userId, {
+                id,
+                kind: "job.finished",
+                class: "reminder",
+                priority: "normal",
+                title: "AC filter",
+                createdAt: at,
+                jobId: reminder.job.id,
+            });
+        };
+
+        announce("first", "2026-01-01T20:05:00.000Z");
+        expect(h.store.countUnreadNotifications(h.userId)).toBe(1);
+
+        const moved = h.creator.snooze(h.userId, reminder.job.id, 15);
+        // Moving the job *and* settling its announcement is one call, which is
+        // what keeps the floating toast from sitting on screen after a snooze
+        // that worked (#90 phase 6c).
+        expect(moved).toMatchObject({ ok: true, action: "moved" });
+        expect(h.store.getNotification(h.userId, "first")?.state).toBe(
+            "snoozed",
+        );
+        expect(h.store.countUnreadNotifications(h.userId)).toBe(0);
+
+        // A reminder that already had its moment is re-created: the row the user
+        // acted on belongs to the job they acted on, and the successor will
+        // announce its own moment when it comes.
+        h.store.claimJob(reminder.job.id);
+        h.store.settleJob(
+            reminder.job.id,
+            "done",
+            {},
+            new Date(NOW.getTime() + 61_000).toISOString(),
+        );
+        announce("second", "2026-01-01T20:06:00.000Z");
+
+        const again = h.creator.snooze(h.userId, reminder.job.id, 15);
+        expect(again).toMatchObject({ ok: true, action: "recreated" });
+        expect(h.store.getNotification(h.userId, "second")?.state).toBe(
+            "snoozed",
+        );
+        expect(
+            h.store.listNotificationsForJob(
+                h.userId,
+                again.ok ? again.job.id : "none",
+            ),
+        ).toEqual([]);
+    });
+
+    it("leaves the announcement where it was when the snooze is refused", () => {
+        const h = harness();
+        const timer = h.createTimer();
+        if (!timer.ok) {
+            throw new Error("the timer should have been created");
+        }
+        h.store.createNotification(h.userId, {
+            id: "announce",
+            kind: "job.finished",
+            class: "timer",
+            priority: "normal",
+            title: "Kettle",
+            createdAt: "2026-01-01T19:06:00.000Z",
+            jobId: timer.job.id,
+        });
+
+        // A timer is not snoozable. The refusal must settle nothing: a row
+        // claiming a deferral nobody made would be worse than an unsettled one.
+        expect(h.creator.snooze(h.userId, timer.job.id, 10)).toMatchObject({
+            ok: false,
+            code: "not-a-reminder",
+        });
+        expect(h.store.getNotification(h.userId, "announce")?.state).toBe(
+            "pending",
+        );
+        expect(h.store.countUnreadNotifications(h.userId)).toBe(1);
+    });
 });

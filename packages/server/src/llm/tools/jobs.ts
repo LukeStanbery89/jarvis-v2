@@ -44,7 +44,11 @@ import {
     MIN_DURATION_SECONDS,
     MIN_SNOOZE_MINUTES,
 } from "../../scheduler/create";
-import type { CreateOutcome, JobPayload } from "../../scheduler/create";
+import type {
+    CreateOutcome,
+    JobCreatorDeps,
+    JobPayload,
+} from "../../scheduler/create";
 import { format12Hour } from "./clock";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
@@ -57,11 +61,13 @@ export { MAX_DURATION_MINUTES, MIN_DURATION_SECONDS, MIN_SNOOZE_MINUTES };
 /** Everything the scheduling tools need, injected at wiring time. */
 export interface JobsToolDeps {
     /**
-     * The job ledger this tool creates into, plus the prefs read the quiet-hours
-     * prediction needs. `AppDatabase` satisfies both halves; tests pass the same
-     * store (structural, so a fake can be narrower).
+     * The ledger every tool reads and writes through — the creation policy's own
+     * seam, named from it rather than restated, so widening it (a snooze now
+     * settles the announcement it answered, #90 phase 6c) cannot leave the tools
+     * behind with a stale subset. `AppDatabase` satisfies it; tests pass the same
+     * store.
      */
-    ledger: JobLedger & { getPrefs(userId: number): Record<string, unknown> };
+    ledger: JobCreatorDeps["ledger"];
     /** How many jobs one account may have pending (`JARVIS_JOB_MAX_PER_USER`). */
     maxPerUser: number;
     /** How far ahead a job may be set (`JARVIS_JOB_MAX_HORIZON_DAYS`). */

@@ -1165,8 +1165,10 @@ paths:
             summary: List the caller's notifications
             description: >-
                 Newest first. Dismissed notifications are excluded unless
-                `includeDismissed=true`. `unread` counts everything neither
-                read nor dismissed, for a badge.
+                `includeDismissed=true`; a `snoozed` one is still listed, since
+                the user should be able to find what they deferred. `unread`
+                counts everything not settled — neither read, answered,
+                dismissed nor snoozed — for a badge.
             tags: [Notifications]
             security:
                 - bearerToken: []
@@ -1652,8 +1654,12 @@ paths:
                 payload, which is a new job — `action` says which happened, and
                 `previousRunAt` carries the moment the settled one was owed.
                 Only a reminder can be snoozed: a timer is a countdown and a
-                notification is already filed. Cookie-authenticated callers
-                must send `x-csrf-token`.
+                notification is already filed. Snoozing also settles the
+                notification that announced the reminder (`snoozed`), because
+                the deferral *is* the acknowledgement — one request, and the row
+                stops asking for attention (#90 phase 6c). A refused snooze
+                settles nothing. Cookie-authenticated callers must send
+                `x-csrf-token`.
             tags: [Jobs]
             security:
                 - bearerToken: []
@@ -2210,10 +2216,15 @@ components:
                         connected, the delivery budget was spent, or quiet
                         hours suppressed it), so a client finds it through
                         this list instead. `delivered` — pushed to at least one
-                        live socket. `read` / `dismissed` / `answered` are
-                        terminal; `answered` is the retirement path for a
-                        notification raised with `requiresAnswer`.
-                    enum: [pending, delivered, read, answered, dismissed]
+                        live socket. `read` / `answered` / `dismissed` /
+                        `snoozed` are terminal: `answered` is the retirement
+                        path for a notification raised with `requiresAnswer`,
+                        and `snoozed` is what a reminder the user deferred
+                        becomes — the deferral settles the announcement it
+                        answered, so a late acknowledgement cannot resurrect it
+                        (#90 phase 6c). A `snoozed` row stays in the list,
+                        unlike a dismissed one.
+                    enum: [pending, delivered, read, answered, dismissed, snoozed]
                 requiresAnswer:
                     type: boolean
                 answer:
@@ -2225,9 +2236,10 @@ components:
                     description: >-
                         The job this notification is about (#90), when a
                         scheduler announcement produced it. It is what lets a
-                        reminder's banner act on the reminder — snooze it —
-                        rather than only acknowledge the notification. Absent
-                        for a notification no job stands behind.
+                        reminder's row — or the floating toast, wherever the user
+                        is — act on the reminder (snooze it) rather than only
+                        acknowledge the notification. Absent for a notification no
+                        job stands behind, and nulled if the job is later pruned.
                     maxLength: 64
                 createdAt:
                     type: string
@@ -2251,8 +2263,9 @@ components:
                     type: integer
                     minimum: 0
                     description: >-
-                        Notifications neither read nor dismissed (a badge
-                        count, so it counts past the page size).
+                        Notifications not settled — neither read, answered,
+                        dismissed nor snoozed (a badge count, so it counts past
+                        the page size).
         NotificationSettlement:
             type: object
             description: >-

@@ -31,7 +31,11 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
 import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
-import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
+import type {
+    AppJob,
+    JobLedger,
+    NotificationLedger,
+} from "@lukestanbery/jarvis-auth";
 import { logger } from "../logger";
 import { format12Hour } from "../llm/tools/clock";
 import {
@@ -77,10 +81,19 @@ const NEW_ID_BYTES = 4;
 export interface JobCreatorDeps {
     /**
      * The job ledger this policy writes through, plus the prefs read the
-     * quiet-hours prediction needs. `AppDatabase` satisfies both halves; tests
-     * pass the same store (structural, so a fake can be narrower).
+     * quiet-hours prediction needs and the notification settling a snooze does
+     * (#90 phase 6c). Named as a `Pick` of the notification ledger rather than
+     * restated, so the seam is the auth package's and cannot drift from it;
+     * `AppDatabase` satisfies all three, and tests pass the same store
+     * (structural, so a fake can be narrower).
      */
-    ledger: JobLedger & { getPrefs(userId: number): Record<string, unknown> };
+    ledger: JobLedger &
+        Pick<
+            NotificationLedger,
+            "listNotificationsForJob" | "setNotificationState"
+        > & {
+            getPrefs(userId: number): Record<string, unknown>;
+        };
     /** How many jobs one account may have pending (`JARVIS_JOB_MAX_PER_USER`). */
     maxPerUser: number;
     /** How far ahead a job may be set (`JARVIS_JOB_MAX_HORIZON_DAYS`). */
@@ -548,6 +561,33 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     }
 
     /**
+     * Settles the announcements a job produced, because the user deferred it
+     * (#90 phase 6c).
+     *
+     * A snoozed reminder is no longer owed an interruption, so the row that
+     * announced it says so instead of staying unsettled — which is precisely what
+     * kept the toast's Snooze button out of phase 6b: a snooze that moved the job
+     * while the card stayed on screen reads as broken. Called only after a move
+     * or a re-creation succeeded; a refused snooze must leave the announcement
+     * where it was.
+     *
+     * The ledger refuses a transition out of a terminal state, so a row the user
+     * had already read or dismissed is left exactly as it is.
+     */
+    function settleAnnouncements(userId: number, jobId: string): void {
+        for (const notification of deps.ledger.listNotificationsForJob(
+            userId,
+            jobId,
+        )) {
+            deps.ledger.setNotificationState(
+                userId,
+                notification.id,
+                "snoozed",
+            );
+        }
+    }
+
+    /**
      * Snoozes a reminder: a pending one moves, a settled one is set again with
      * the payload it had.
      *
@@ -621,6 +661,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 };
             }
             logger.info(`job ${job.id} snoozed to ${moved.runAt}`);
+            settleAnnouncements(userId, id);
             return {
                 ok: true,
                 action: "moved",
@@ -656,6 +697,9 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 job,
             };
         }
+        // The announcement belongs to the job the user acted on, not to its
+        // successor: the new reminder will announce its own moment when it comes.
+        settleAnnouncements(userId, id);
         return {
             ok: true,
             action: "recreated",

@@ -9,7 +9,18 @@ import {
     generateDeviceToken,
     openAppDatabase,
     type AppDatabase,
+    type MigrationReport,
 } from "../src";
+
+/**
+ * The version the migration chain lands on, in one place.
+ *
+ * Every "a pre-v4 store upgrades in place" test asserts the chain reached the
+ * end; naming the number here means adding a migration updates one line rather
+ * than a literal hunt through the file, and the *assertions themselves* still
+ * prove the chain ran (they check the shape and the rows, not just the number).
+ */
+const LATEST_VERSION = 12;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -678,6 +689,78 @@ describe("notifications", () => {
             "p3",
         ]);
     });
+
+    it("settles a snoozed announcement, out of the unread count and out of reach", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        store.createNotification(user.id, {
+            id: "rem",
+            kind: "job.finished",
+            class: "reminder",
+            priority: "normal",
+            title: "AC filter",
+            createdAt: "2026-10-17T18:00:00.000Z",
+        });
+        expect(store.countUnreadNotifications(user.id)).toBe(1);
+
+        const snoozed = store.setNotificationState(user.id, "rem", "snoozed");
+        expect(snoozed?.state).toBe("snoozed");
+        // Settled by the deferral, with the same stamps `dismissed` gets, so it
+        // stops counting as unread the moment the user acts on it (#90 phase 6c).
+        expect(snoozed?.settledAt).not.toBeNull();
+        expect(store.countUnreadNotifications(user.id)).toBe(0);
+        // Terminal like the rest of them: a late acknowledgement cannot move it
+        // again, which is what keeps a deferred reminder from resurrecting.
+        expect(store.setNotificationState(user.id, "rem", "read")?.state).toBe(
+            "snoozed",
+        );
+        // And unlike a dismissed row it stays in the list: "snoozed until 7:00"
+        // is a thing the user should still be able to find.
+        expect(store.listNotifications(user.id).map((n) => n.id)).toEqual([
+            "rem",
+        ]);
+    });
+
+    it("lists the announcements about one job, and only that job's", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        const job = store.createJob(user.id, {
+            id: "job-1",
+            label: "AC filter",
+            class: "reminder",
+            kind: "message",
+            message: "change the AC filter",
+            runAt: "2026-10-18T18:00:00.000Z",
+            createdAt: "2026-10-17T18:00:00.000Z",
+        });
+        // The link is what lets a snooze settle the announcement it answered
+        // without guessing an id (#90 phase 6c): a job announces once per run,
+        // so this is normally one row — "normally" is not a reason to guess.
+        store.createNotification(user.id, {
+            id: "mine",
+            kind: "job.finished",
+            class: "reminder",
+            priority: "normal",
+            title: "AC filter",
+            createdAt: "2026-10-17T18:00:01.000Z",
+            jobId: job.id,
+        });
+        store.createNotification(user.id, {
+            id: "unrelated",
+            kind: "job.finished",
+            priority: "normal",
+            title: "something else",
+            createdAt: "2026-10-17T18:00:02.000Z",
+        });
+
+        expect(
+            store.listNotificationsForJob(user.id, job.id).map((n) => n.id),
+        ).toEqual(["mine"]);
+        expect(store.listNotificationsForJob(user.id, "job-unknown")).toEqual(
+            [],
+        );
+        // Another account cannot reach it through the job id either.
+        const other = store.createUser("someone", "hash", "user");
+        expect(store.listNotificationsForJob(other.id, job.id)).toEqual([]);
+    });
 });
 
 describe("openAppDatabase", () => {
@@ -795,7 +878,9 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(11);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
@@ -898,7 +983,114 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(11);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("rebuilds notifications to widen the state CHECK, keeping rows (v12)", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "app.sqlite");
+        try {
+            // A current store, then wound back to the v11 shape of
+            // `notifications`: the CHECK that predates `snoozed`, holding a
+            // delivered reminder. Downgrading one table is a sharper fixture than
+            // hand-building the whole pre-v4 schema, and the version pragma is
+            // what makes the next open run *this* step.
+            const first = openAppDatabase(path);
+            first.createUser("luke", "hash", "owner");
+            first.createNotification(1, {
+                id: "rem",
+                kind: "job.finished",
+                class: "reminder",
+                priority: "normal",
+                title: "AC filter",
+                createdAt: "2026-10-17T18:00:00.000Z",
+            });
+            first.close();
+
+            const legacy = new Database(path);
+            // Foreign keys off, which is how such a row really gets in: the
+            // `sqlite3` CLI leaves enforcement off, so a job deleted by hand takes
+            // nothing with it. (better-sqlite3 turns them *on* by default, so the
+            // fixture has to say so.)
+            legacy.pragma("foreign_keys = OFF");
+            legacy.exec(`
+                DROP TABLE notifications;
+                CREATE TABLE notifications (
+                    id              TEXT PRIMARY KEY,
+                    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    kind            TEXT NOT NULL,
+                    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
+                    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+                    title           TEXT NOT NULL,
+                    body            TEXT,
+                    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
+                    requires_answer INTEGER NOT NULL DEFAULT 0,
+                    dedupe_key      TEXT,
+                    answer          TEXT,
+                    created_at      TEXT NOT NULL,
+                    delivered_at    TEXT,
+                    settled_at      TEXT,
+                    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX idx_notifications_user ON notifications (user_id, created_at DESC);
+                INSERT INTO notifications (id, user_id, kind, class, priority, title, state, created_at)
+                    VALUES ('rem', 1, 'job.finished', 'reminder', 'normal', 'AC filter', 'delivered', '2026-10-17T18:00:00.000Z');
+                -- The shape of a real store: a job deleted with foreign keys off
+                -- (the sqlite3 CLI leaves them off) leaves this link dangling, and
+                -- the rebuild has to carry the row rather than refuse the open.
+                INSERT INTO notifications (id, user_id, kind, class, priority, title, state, created_at, job_id)
+                    VALUES ('dangling', 1, 'job.finished', 'reminder', 'normal', 'Vanished job', 'delivered', '2026-10-17T18:01:00.000Z', 'job-that-is-gone');
+                PRAGMA user_version = 11;
+            `);
+            legacy.close();
+
+            let reported: MigrationReport | null = null;
+            const upgraded = openAppDatabase(path, {
+                onMigrationRepair: (report) => {
+                    reported = report;
+                },
+            });
+            // The row survived the swap with its meaning intact...
+            const kept = upgraded.getNotification(1, "rem");
+            expect(kept?.state).toBe("delivered");
+            expect(kept?.class).toBe("reminder");
+            expect(kept?.title).toBe("AC filter");
+            // ...and the dangling link was nulled, which is what the schema
+            // promised when it said ON DELETE SET NULL. The alternative — treating
+            // it as a failure — is a server that cannot boot on data it could have
+            // carried.
+            expect(upgraded.getNotification(1, "dangling")?.jobId).toBeNull();
+            expect(upgraded.getNotification(1, "dangling")?.title).toBe(
+                "Vanished job",
+            );
+            expect(reported).toEqual({
+                repairedNotificationJobLinks: 1,
+                droppedOrphanedNotifications: 0,
+            });
+            // The widened CHECK is in force: the state this migration exists for
+            // is now accepted.
+            expect(
+                upgraded.setNotificationState(1, "rem", "snoozed")?.state,
+            ).toBe("snoozed");
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
+            // The pragma is the chain's claim; the stored DDL is the evidence.
+            const table = check
+                .prepare(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'",
+                )
+                .get() as { sql: string };
+            expect(table.sql).toContain("'snoozed'");
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
@@ -1039,7 +1231,9 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(11);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
             // The indexes the drop took with it, recreated after the swap — the
             // queue's partial index is load-bearing for the claim feed.
             // `id TEXT PRIMARY KEY` brings its own sqlite_autoindex, so the
@@ -1127,7 +1321,9 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(11);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -1196,7 +1392,9 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(11);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toHaveLength(1);
             // The v2 migration's named index is gone; the inline constraint's
@@ -1272,7 +1470,9 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(11);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toEqual(["idx_devices_user_name"]);
             check.close();
