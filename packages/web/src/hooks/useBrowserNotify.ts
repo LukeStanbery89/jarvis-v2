@@ -23,7 +23,7 @@ import {
     browserNotifyState,
     describeBrowserNotifyState,
     loadBrowserNotifyPref,
-    notificationBody,
+    notificationOptions,
     saveBrowserNotifyPref,
     shouldAnnounce,
 } from "../browserNotify";
@@ -49,17 +49,23 @@ export interface BrowserNotifyState {
  * Owns the OS-notification preference and announcements.
  *
  * @param username - Whose preference to read/write (per-browser, per-user).
- * @param notifications - The merged list (phase 1) to watch for new arrivals.
- * @param onOpen - Called when the user clicks an OS notification.
+ * @param notifications - The merged list to watch for new arrivals.
+ * @param loaded - Whether the first page load has completed.
+ * @param masterEnabled - The account's `notify.enabled`: the server's kill
+ *   switch outranks the browser's preference, so nothing pops up on behalf of
+ *   an account that asked for silence.
+ * @param onOpen - Called with the clicked notification, so the caller can treat
+ *   a timer as Stop and everything else as "mark read".
  */
 export function useBrowserNotify(options: {
     username: string;
     notifications: ClientNotification[];
     /** Whether the first page load has completed (see `useNotifications`). */
     loaded: boolean;
-    onOpen(id: string): void;
+    masterEnabled: boolean;
+    onOpen(notification: ClientNotification): void;
 }): BrowserNotifyState {
-    const { username, notifications, loaded, onOpen } = options;
+    const { username, notifications, loaded, masterEnabled, onOpen } = options;
     const supported = supportsNotifications();
     const [enabled, setEnabled] = useState(false);
     const [permission, setPermission] = useState<string>(() =>
@@ -152,6 +158,7 @@ export function useBrowserNotify(options: {
         for (const notification of notifications) {
             const announce = shouldAnnounce(notification, {
                 enabled,
+                masterEnabled,
                 permission,
                 hidden,
                 announced: announced.current,
@@ -161,9 +168,9 @@ export function useBrowserNotify(options: {
             }
             announced.current.add(notification.id);
             debugLog("notify", `raising OS notification id=${notification.id}`);
-            raise(notification, () => onOpenRef.current(notification.id));
+            raise(notification, () => onOpenRef.current(notification));
         }
-    }, [enabled, notifications, permission, supported]);
+    }, [enabled, masterEnabled, notifications, permission, supported]);
 
     const state = browserNotifyState(supported, permission, enabled);
     return {
@@ -196,13 +203,10 @@ function supportsNotifications(): boolean {
  */
 function raise(notification: ClientNotification, onClick: () => void): void {
     try {
-        const raised = new Notification(notification.title, {
-            body: notificationBody(notification),
-            // A `tag` collapses same-id duplicates (the default is already to
-            // replace silently rather than re-alert), which is the safety net
-            // behind the announced-ids set.
-            tag: notification.id,
-        });
+        const raised = new Notification(
+            notification.title,
+            notificationOptions(notification),
+        );
         raised.onclick = () => {
             onClick();
             try {

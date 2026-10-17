@@ -159,6 +159,8 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     // notification hook, whose ring policy is gated by the master switch.
     const prefsUi = usePrefs({ token: credential.token });
     const [settingsOpen, setSettingsOpen] = useState(false);
+    /** The account's kill switch: outranks the browser's own preference. */
+    const notificationsEnabled = readNotificationsEnabled(prefsUi.prefs).value;
 
     // Notifications (#139): the list is fetched over REST and merged with the
     // live frames the socket pushes, which is why the hook is called before
@@ -167,7 +169,7 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
     // nothing may start ringing on its behalf (#90).
     const notificationsUi = useNotifications({
         token: credential.token,
-        notifyEnabled: readNotificationsEnabled(prefsUi.prefs).value,
+        notifyEnabled: notificationsEnabled,
     });
     const [notificationsOpen, setNotificationsOpen] = useState(false);
     // The OS channel (#139 phase 2): a second way to interrupt, for the case
@@ -177,7 +179,16 @@ export function Chat({ credential, onAuthRejected, onSignedOut }: ChatProps) {
         username: credential.username,
         notifications: notificationsUi.notifications,
         loaded: notificationsUi.loaded,
-        onOpen: notificationsUi.markRead,
+        masterEnabled: notificationsEnabled,
+        // A timer's OS popup is a Stop: clicking it is an acknowledgement, not
+        // a read. Everything else is the notification list's "mark read".
+        onOpen: (notification) => {
+            if (notification.class === "timer") {
+                stopTimer(notification.id);
+            } else {
+                notificationsUi.markRead(notification.id);
+            }
+        },
     });
     const { client, status, isStreaming, cancelTurn, sendLocation } =
         useChatClient({

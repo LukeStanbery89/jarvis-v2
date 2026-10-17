@@ -15,12 +15,20 @@
  * it — and never twice, since the live frame and the fetched page can both
  * mention the same id.
  *
+ * The second rule arrived with #90: **only announce what the server actually
+ * pushed.** A `pending` row means "recorded, not announced" — quiet hours, the
+ * master switch, the delivery budget, or no client being connected — and the OS
+ * channel must not overrule that decision from the browser. It also means a
+ * timer that fired while this browser was closed does not pop up here: it is
+ * `pending` too, and the in-app ring is what greets the user on the next open.
+ *
  * The preference is per browser, not per account: the underlying permission is
  * granted by a browser to an origin and cannot be synced, so pretending
  * otherwise (a server pref that says "on" while this browser would refuse)
  * would be a lie in the UI. Web Push, which *does* need server-side state, is
  * phase 3 and brings its own per-device record.
  */
+import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
 
 /** What the bell toggle should say and look like. */
 export type BrowserNotifyUiState =
@@ -98,13 +106,19 @@ export function shouldAnnounce(
     notification: { id: string; state: string },
     context: {
         enabled: boolean;
+        /** The account's master switch (`notify.enabled`), not the browser one. */
+        masterEnabled: boolean;
         permission: string;
         hidden: boolean;
         /** Ids already announced in this session. */
         announced: ReadonlySet<string>;
     },
 ): boolean {
-    if (!context.enabled || context.permission !== "granted") {
+    if (
+        !context.enabled ||
+        !context.masterEnabled ||
+        context.permission !== "granted"
+    ) {
         return false;
     }
     if (!context.hidden) {
@@ -113,11 +127,11 @@ export function shouldAnnounce(
     if (context.announced.has(notification.id)) {
         return false;
     }
-    return (
-        notification.state !== "read" &&
-        notification.state !== "answered" &&
-        notification.state !== "dismissed"
-    );
+    // `delivered` is the server saying "this reached a live client"; anything
+    // else was recorded without being pushed, and the browser has no standing
+    // to promote it. Read/dismissed/answered cannot be delivered, so this one
+    // comparison covers the old settled check too.
+    return notification.state === "delivered";
 }
 
 /**
@@ -129,13 +143,42 @@ export function shouldAnnounce(
 export function notificationBody(notification: {
     body?: string;
     requiresAnswer?: boolean;
+    class?: NotificationClass;
 }): string {
     if (notification.body !== undefined && notification.body.length > 0) {
         return notification.body;
     }
+    if (notification.class === "timer") {
+        // A timer with nothing to add is not "a notification": it is time.
+        return "Your timer has finished.";
+    }
     return notification.requiresAnswer === true
         ? "J.A.R.V.I.S. needs your answer."
         : "J.A.R.V.I.S. sent you a notification.";
+}
+
+/**
+ * The `Notification` constructor options for one row.
+ *
+ * Two things are class-specific:
+ *
+ * - a timer's popup is **sticky** (`requireInteraction`), the visual half of
+ *   "rings until acknowledged" — the sound stays ours (Web Audio), so the OS
+ *   only has to keep the card on screen;
+ * - `tag` is the notification id, so a re-raise of the same row replaces its
+ *   popup instead of stacking a second one.
+ */
+export function notificationOptions(notification: {
+    id: string;
+    class: NotificationClass;
+    body?: string;
+    requiresAnswer?: boolean;
+}): { body: string; tag: string; requireInteraction: boolean } {
+    return {
+        body: notificationBody(notification),
+        tag: notification.id,
+        requireInteraction: notification.class === "timer",
+    };
 }
 
 /** The toggle's label and tooltip for a UI state. */
