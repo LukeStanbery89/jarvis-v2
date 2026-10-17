@@ -12,6 +12,10 @@
  *
  * The rest of the policy stays where it already lives:
  *
+ * - **What may be created, and what a snooze may touch** is
+ *   `scheduler/create.ts` (#90 phase 5) — one policy for these tools and the
+ *   REST surface a page uses, so the two doors cannot drift. This file renders
+ *   its outcomes in the model's voice.
  * - **When** is resolved by `scheduler/time.ts` — the model supplies the words
  *   ("08:30", "tomorrow", "in 10 minutes"), never a timestamp. The resolver owns
  *   next-occurrence, past-date and weekday rules, and its zone is the server's
@@ -21,35 +25,34 @@
  *   schema, so an impossible task is refused *now*, while the user is still
  *   here, instead of failing silently at 7am.
  * - **What the user is told** is the announcement the runner makes, with the
- *   job's class. This file only predicts what will happen to it (quiet hours as
- *   they stand) and says so; it never pre-defers, because the runner owns that
- *   decision and reads the prefs live at fire time.
+ *   job's class. This file only relays what the creator predicts will happen to
+ *   it (quiet hours as they stand); it never pre-defers, because the runner owns
+ *   that decision and reads the prefs live at fire time.
  *
  * Every refusal is a returned string in the model's voice, never a throw, so a
  * refused request degrades into something it can relay or correct.
  */
-import { randomBytes } from "node:crypto";
 import { tool, type ToolRuntime } from "@langchain/core/tools";
 import { z } from "zod";
-import {
-    MAX_NOTIFICATION_BODY_LENGTH,
-    MAX_NOTIFICATION_TITLE_LENGTH,
-} from "@lukestanbery/jarvis-protocol";
 import { logger } from "../../logger";
 import { requireSignedInUser } from "./metering";
 import { resolveSchedulableTool } from "../../scheduler/tools";
 import { resolveWhen } from "../../scheduler/time";
 import {
-    NOTIFY_ENABLED_PREF,
-    NOTIFY_QUIET_HOURS_PREF,
-    parseQuietHours,
-    quietHoursEnd,
-    quietHoursHold,
-} from "../../notify/prefs";
+    createJobCreator,
+    MAX_DURATION_MINUTES,
+    MIN_DURATION_SECONDS,
+    MIN_SNOOZE_MINUTES,
+} from "../../scheduler/create";
+import type { CreateOutcome, JobPayload } from "../../scheduler/create";
 import { format12Hour } from "./clock";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
 import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
+
+// Re-exported because these bounds are what a caller reads when it wants to
+// know what a timer may be; their home is the creation policy.
+export { MAX_DURATION_MINUTES, MIN_DURATION_SECONDS, MIN_SNOOZE_MINUTES };
 
 /** Everything the scheduling tools need, injected at wiring time. */
 export interface JobsToolDeps {
@@ -75,51 +78,11 @@ export interface JobsToolDeps {
     newId?: () => string;
 }
 
-/**
- * The shortest timer a user can set: one second.
- *
- * The floor is what the clock can express rather than what felt sensible —
- * "set a timer for ten seconds" is an ordinary thing to ask, and the first
- * live run turned it into a refusal. The scheduler's tick is five seconds, so
- * anything at or above a second lands; the tick may add a few.
- */
-export const MIN_DURATION_SECONDS = 1;
-
-/**
- * The longest timer a user can set: a day.
- *
- * Beyond that a countdown is not what was asked for — a moment tomorrow is a
- * reminder — and the `timer` class pierces quiet hours, so a week-long "timer"
- * would be a way to keep breaching them.
- */
-export const MAX_DURATION_MINUTES = 1440;
-
-/**
- * The short end of a snooze: half a minute.
- *
- * A timer may be ten seconds because that is what the user asked the clock
- * for; a *snooze* is a human-scale "not now", and nothing useful is five
- * seconds long.
- */
-export const MIN_SNOOZE_MINUTES = 0.5;
-
 /** How many pending jobs `listJobs` renders at once. */
 export const LIST_LIMIT = 20;
 
-/** Bytes of randomness in a job id (eight lower-case hex characters). */
-const NEW_ID_BYTES = 4;
-
-/** The payload a creation call stores; the table's CHECK admits exactly one. */
-type JobPayload =
-    | { kind: "message"; message: string }
-    | { kind: "tool"; toolName: string; toolArgs: Record<string, unknown> };
-
-/** A creation attempt: the stored job and its prediction, or why it failed. */
-type ScheduleOutcome =
-    { ok: true; job: AppJob; note: string } | { ok: false; reason: string };
-
 /**
- * Builds the five scheduling tools over the injected ledger.
+ * Builds the six scheduling tools over the injected ledger.
  *
  * Registered only when the scheduler is running (`JARVIS_SCHEDULER` not off and
  * notifications wired): a job nobody can run is a promise the server cannot
@@ -127,18 +90,23 @@ type ScheduleOutcome =
  */
 export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
     const now = deps.now ?? (() => new Date());
-    const newId =
-        deps.newId ?? (() => randomBytes(NEW_ID_BYTES).toString("hex"));
+    /** The shared creation policy — the same instance the REST surface uses. */
+    const creator = createJobCreator({
+        ledger: deps.ledger,
+        maxPerUser: deps.maxPerUser,
+        maxHorizonMs: deps.maxHorizonMs,
+        now: deps.now,
+        newId: deps.newId,
+    });
 
     /**
-     * Stores a job, applying the three bounds that keep the queue meaningful: a
-     * label/message that the announcement can carry, a moment within the
-     * horizon, and room under the per-user cap.
+     * Stores a job through the shared creation policy.
      *
-     * The cap is about **pending** rows (the ledger's default listing), because
-     * that is the work still owed; settled rows are history and the runner's
-     * retention prune evicts them first, so a job accepted here can never be the
-     * row the prune eats.
+     * Thin on purpose: every bound (label, message, horizon, the pending cap,
+     * the timer ceiling) and the quiet-hours prediction live in
+     * `scheduler/create.ts`, so the tools and the pages cannot answer those
+     * questions differently. All this adds is the instant the tools already
+     * have, so `created_at` and the prediction share it.
      */
     function storeJob(
         userId: number,
@@ -149,116 +117,20 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             runAt: Date;
             at: Date;
         },
-    ): ScheduleOutcome {
-        const { label, payload, runAt, at } = request;
-        if (label.length > MAX_NOTIFICATION_TITLE_LENGTH) {
-            return {
-                ok: false,
-                reason: `\`label\` must be at most ${MAX_NOTIFICATION_TITLE_LENGTH} characters — shorten it and try again.`,
-            };
-        }
-        if (
-            payload.kind === "message" &&
-            payload.message.length > MAX_NOTIFICATION_BODY_LENGTH
-        ) {
-            return {
-                ok: false,
-                reason: `\`message\` must be at most ${MAX_NOTIFICATION_BODY_LENGTH} characters — shorten it and try again.`,
-            };
-        }
-        if (runAt.getTime() - at.getTime() > deps.maxHorizonMs) {
-            const days = Math.floor(deps.maxHorizonMs / 86_400_000);
-            return {
-                ok: false,
-                reason: `that is more than ${days} days ahead, further than this server schedules.`,
-            };
-        }
-        const pending = deps.ledger.listJobs(userId, {
-            limit: deps.maxPerUser + 1,
-        }).length;
-        if (pending >= deps.maxPerUser) {
-            return {
-                ok: false,
-                reason: `the user already has ${deps.maxPerUser} jobs scheduled, which is the limit — cancel one with cancelJob first.`,
-            };
-        }
-        let job: AppJob;
-        try {
-            job = deps.ledger.createJob(userId, {
-                id: newId(),
-                createdAt: at.toISOString(),
-                label,
-                class: request.class,
-                kind: payload.kind,
-                ...(payload.kind === "message"
-                    ? { message: payload.message }
-                    : {
-                          toolName: payload.toolName,
-                          toolArgs: payload.toolArgs,
-                      }),
-                runAt: runAt.toISOString(),
-            });
-        } catch (err) {
-            logger.warn(
-                `scheduling a job failed — ${err instanceof Error ? err.message : "unexpected error"}`,
-            );
-            return {
-                ok: false,
-                reason: "the job could not be stored. Tell the user it was not scheduled.",
-            };
-        }
-        logger.info(
-            `job ${job.id} scheduled (${job.class}, ${job.kind}): "${job.label}" → ${job.runAt}`,
-        );
-        return { ok: true, job, note: quietNote(userId, job.class, runAt) };
+    ): CreateOutcome {
+        return creator.create(userId, request);
     }
 
     /**
-     * What quiet hours, as they stand, will do to this job's announcement.
-     *
-     * A prediction, not a promise: the runner reads the prefs live at fire time,
-     * so the user can change them in between. Saying it now is what stops the
-     * model promising an interruption that quiet hours will hold — and the read
-     * is defensive, because a failed prefs read must never undo a job that was
-     * already stored (the note is a courtesy; the row is the fact).
+     * What quiet hours, as they stand, will do to this job's announcement —
+     * the creator's forecast, in the model's voice.
      */
     function quietNote(
         userId: number,
         jobClass: NotificationClass,
         runAt: Date,
     ): string {
-        let prefs: Record<string, unknown>;
-        try {
-            prefs = deps.ledger.getPrefs(userId);
-        } catch (err) {
-            logger.warn(
-                `could not read notification prefs for a quiet-hours prediction — ${err instanceof Error ? err.message : "unexpected error"}`,
-            );
-            return "";
-        }
-        if (prefs[NOTIFY_ENABLED_PREF] === false) {
-            return " Notifications are switched off for this account, so it will be recorded but not pushed — as things stand.";
-        }
-        if (!quietHoursHold(prefs, jobClass, runAt)) {
-            return "";
-        }
-        const window = parseQuietHours(prefs[NOTIFY_QUIET_HOURS_PREF]);
-        if (window === null) {
-            return "";
-        }
-        const span = `${clockText(window.start)}–${clockText(window.end)}`;
-        const end = quietHoursEnd(window, runAt);
-        const endText = format12Hour(end.getHours(), end.getMinutes());
-        switch (jobClass) {
-            case "reminder":
-                return ` It falls inside quiet hours (${span}) as things stand, so it will wait until ${endText} and be announced then.`;
-            case "notification":
-                return ` That is inside quiet hours (${span}) as things stand, so it will be recorded and wait until ${endText} instead of interrupting.`;
-            case "timer":
-                // Unreachable: a timer pierces quiet hours by design, which is
-                // why `quietHoursHold` answers false for it.
-                return "";
-        }
+        return creator.forecastNote(userId, jobClass, runAt);
     }
 
     /** Creation guard shared by the three creating tools. */
@@ -272,7 +144,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
     /** "Reminder scheduled: …" once `storeJob` succeeded. */
     function scheduledText(
         verb: string,
-        outcome: ScheduleOutcome,
+        outcome: CreateOutcome,
         at: Date,
     ): string {
         if (!outcome.ok) {
@@ -600,61 +472,33 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 return access.text;
             }
             const at = now();
-            const job = deps.ledger.getJob(access.userId, id);
-            if (job === null) {
-                return `There is no job with the id "${id}". Call listJobs to get the exact id.`;
-            }
-            if (job.class !== "reminder") {
-                return `"${job.label}" is a ${job.class}, not a reminder — only a reminder can be snoozed. A timer is a countdown and a notification is already filed; use cancelJob or remindMe instead.`;
-            }
-            if (
-                !Number.isFinite(minutes) ||
-                minutes < MIN_SNOOZE_MINUTES ||
-                minutes > MAX_DURATION_MINUTES
-            ) {
-                return (
-                    `The reminder was not snoozed: \`minutes\` must be between ` +
-                    `${MIN_SNOOZE_MINUTES} and ${MAX_DURATION_MINUTES}.`
-                );
-            }
-            if (job.state === "cancelled") {
-                return `"${job.label}" was cancelled — set a new reminder with remindMe instead.`;
-            }
-            // A claimed job is mid-run; re-creating it would tell the user
-            // twice for one moment.
-            if (job.state === "running") {
-                return `"${job.label}" is running right now — let it finish. Use remindMe if you need another reminder after it.`;
-            }
-            const runAt = new Date(at.getTime() + minutes * 60_000);
-            if (job.state === "pending") {
-                const moved = deps.ledger.moveJob(
-                    access.userId,
-                    id,
-                    runAt.toISOString(),
-                );
-                if (moved === null || moved.runAt !== runAt.toISOString()) {
-                    return `"${job.label}" is ${moved?.state ?? "running"} now — it cannot be moved. Use remindMe for a new reminder.`;
+            const result = creator.snooze(access.userId, id, minutes);
+            if (!result.ok) {
+                switch (result.code) {
+                    case "missing":
+                        return `There is no job with the id "${id}". Call listJobs to get the exact id.`;
+                    case "not-a-reminder":
+                        return `"${result.job?.label}" is a ${result.job?.class}, not a reminder — only a reminder can be snoozed. A timer is a countdown and a notification is already filed; use cancelJob or remindMe instead.`;
+                    case "cancelled":
+                        return `${result.reason} Set a new reminder with remindMe instead.`;
+                    case "running":
+                        // A claimed job is mid-run; re-creating it would tell
+                        // the user twice for one moment.
+                        return `${result.reason} Let it finish. Use remindMe if you need another reminder after it.`;
+                    case "cannot-move":
+                        return `${result.reason} Use remindMe for a new reminder.`;
+                    case "not-repeatable":
+                        return `${result.reason} Use remindMe or scheduleTask instead.`;
+                    default:
+                        // `invalid-minutes`, and any creation bound the
+                        // re-created reminder hit.
+                        return `The reminder was not snoozed: ${result.reason}`;
                 }
-                logger.info(`job ${job.id} snoozed to ${moved.runAt}`);
-                return `Snoozed "${moved.label}" (${moved.id}) to ${formatLocal(runAt, at)}, ${formatRelative(runAt, at)}.${quietNote(access.userId, "reminder", runAt)}`;
             }
-            // Already had its moment (done/failed/missed): a snooze is a fresh
-            // reminder for the same thing, with the same payload it had.
-            const payload = snoozePayload(job);
-            if (payload === null) {
-                return `"${job.label}" is a ${job.kind} job, and snoozing it would not repeat what it does — use remindMe or scheduleTask instead.`;
+            if (result.action === "moved") {
+                return `Snoozed "${result.job.label}" (${result.job.id}) to ${formatLocal(result.runAt, at)}, ${formatRelative(result.runAt, at)}.${result.note}`;
             }
-            const outcome = storeJob(access.userId, {
-                label: job.label,
-                class: "reminder",
-                payload,
-                runAt,
-                at,
-            });
-            if (!outcome.ok) {
-                return `The reminder was not snoozed: ${outcome.reason}`;
-            }
-            return `"${job.label}" was due ${formatLocal(new Date(job.runAt), at)} — set another reminder (job ${outcome.job.id}) for ${formatLocal(runAt, at)}, ${formatRelative(runAt, at)}.${outcome.note}`;
+            return `"${result.job.label}" was due ${formatLocal(result.previousRunAt ?? new Date(result.job.runAt), at)} — set another reminder (job ${result.job.id}) for ${formatLocal(result.runAt, at)}, ${formatRelative(result.runAt, at)}.${result.note}`;
         },
         {
             name: "snoozeReminder",
@@ -731,34 +575,6 @@ function timerDuration(
         };
     }
     return { ok: true, ms };
-}
-
-/**
- * The payload a settled reminder is re-created with when it is snoozed.
- *
- * `message` and `tool` are the two kinds a reminder can hold today; a `prompt`
- * reminder (only reachable from a future REST surface) is refused rather than
- * silently turned into a message job, which would run something different from
- * what was scheduled.
- */
-function snoozePayload(job: AppJob): JobPayload | null {
-    if (job.kind === "message") {
-        return { kind: "message", message: job.message ?? job.label };
-    }
-    if (job.kind === "tool" && job.toolName !== null) {
-        const args = job.toolArgs;
-        return {
-            kind: "tool",
-            toolName: job.toolName,
-            toolArgs:
-                typeof args === "object" &&
-                args !== null &&
-                !Array.isArray(args)
-                    ? (args as Record<string, unknown>)
-                    : {},
-        };
-    }
-    return null;
 }
 
 /**
@@ -859,12 +675,6 @@ const WEEKDAYS = [
     "Friday",
     "Saturday",
 ];
-
-/** `"07:30"` → `"7:30 AM"`; only called on a parsed quiet-hours window. */
-function clockText(value: string): string {
-    const [hours, minutes] = value.split(":").map(Number);
-    return format12Hour(hours, minutes);
-}
 
 /**
  * Why `args` would not satisfy `tool`'s own schema, or `null` when it would.

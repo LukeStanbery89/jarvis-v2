@@ -218,6 +218,7 @@ describe("createAgentGraph", () => {
                         requiresAnswer: false,
                         dedupeKey: null,
                         answer: null,
+                        jobId: null,
                         createdAt: "2026-10-16T12:00:00.000Z",
                         deliveredAt: null,
                         settledAt: null,
