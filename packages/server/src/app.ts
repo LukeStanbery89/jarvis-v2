@@ -185,23 +185,58 @@ export function createApp(
         ),
     );
 
+    // `/web` was the chat client's address before it became the app's front
+    // door (#90 phase 6a). One redirect rather than a second mount: serving one
+    // build under two bases means keeping the asset URLs and the CSP right in
+    // both forever, and a bookmark that lands on the app is the whole promise a
+    // redirect makes. It sits ahead of everything else so the app's own
+    // fallback cannot swallow the old path.
+    app.use("/web", (_req, res) => {
+        res.redirect(301, "/");
+    });
+
+    const portalIndex = appConfig.portalDir
+        ? path.join(appConfig.portalDir, "index.html")
+        : null;
+    if (portalIndex && existsSync(portalIndex)) {
+        logger.info(
+            `serving the admin portal from ${appConfig.portalDir} at /admin (index.html found)`,
+        );
+        // The admin surface keeps the strict posture: same-origin scripts,
+        // `img-src 'self' data:`, no worker source. It is the portal's own CSP,
+        // unchanged — only its address moved. (Mounted first, so the app's
+        // wider headers below never reach an admin response.)
+        app.use("/admin", spaSecurityHeaders());
+        // `index: "index.html"` plus `express.static`'s directory handling makes
+        // `GET /admin` a 301 to `/admin/` and then the shell, which is what the
+        // package's `base` expects of its asset URLs.
+        app.use(
+            "/admin",
+            express.static(appConfig.portalDir!, { index: "index.html" }),
+        );
+        app.use("/admin", spaFallback(portalIndex));
+    } else if (appConfig.portalDir) {
+        logger.warn(
+            `admin portal not found at ${appConfig.portalDir}; /admin will 404 (build packages/portal first, or set JARVIS_PORTAL_DIR)`,
+        );
+    }
+
     const webIndex = appConfig.webDir
         ? path.join(appConfig.webDir, "index.html")
         : null;
     const webMounted = Boolean(webIndex && existsSync(webIndex));
     if (webMounted) {
         logger.info(
-            `serving web chat client from ${appConfig.webDir} (index.html found)`,
+            `serving the web app from ${appConfig.webDir} at / (index.html found)`,
         );
-        // The web client renders remote (https) images from the model, dials
-        // the same-origin `/ws` socket, and runs the local speech engine in a
+        // The app renders remote (https) images from the model, dials the
+        // same-origin `/ws` socket, and runs the local speech engine in a
         // same-origin module worker (#84 P3b), so its CSP widens `img-src`
         // beyond the portal's `'self' data:` posture, adds this request's
         // ws/wss origin, declares the worker source, and allows Wasm
         // compilation (`'wasm-unsafe-eval'` — JS eval stays blocked) for the
         // engine's Kaldi binary.
         app.use(
-            "/web",
             spaSecurityHeaders({
                 remoteImages: true,
                 websocketOrigins: true,
@@ -219,41 +254,25 @@ export function createApp(
         // itself never evaluates strings.
         const workerScriptCsp =
             "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'";
-        app.use("/web", (req, res, next) => {
+        app.use((req, res, next) => {
             if (/^\/assets\/vosk\.worker-[A-Za-z0-9_-]+\.js$/.test(req.path)) {
                 res.setHeader("Content-Security-Policy", workerScriptCsp);
             }
             next();
         });
-        // `index: "index.html"` makes `GET /web` itself serve the shell.
-        app.use(
-            "/web",
-            express.static(appConfig.webDir!, { index: "index.html" }),
-        );
-        app.use("/web", spaFallback(webIndex!));
-    } else if (appConfig.webDir) {
-        logger.warn(
-            `web chat client not found at ${appConfig.webDir}; serving without it (build packages/web first, or set JARVIS_WEB_DIR)`,
-        );
-    }
-
-    const portalIndex = appConfig.portalDir
-        ? path.join(appConfig.portalDir, "index.html")
-        : null;
-    if (portalIndex && existsSync(portalIndex)) {
-        logger.info(
-            `serving web portal from ${appConfig.portalDir} (index.html found)`,
-        );
-        app.use(spaSecurityHeaders());
-        // `index: "index.html"` makes `GET /` itself serve the SPA shell.
-        app.use(express.static(appConfig.portalDir!, { index: "index.html" }));
-        app.use(spaFallback(portalIndex, "/web"));
+        app.use(express.static(appConfig.webDir!, { index: "index.html" }));
+        // The fallback skips `/admin`, so an unbuilt or mis-mounted admin
+        // surface is an honest 404 rather than the app's shell wearing the
+        // admin address.
+        app.use(spaFallback(webIndex!, "/admin"));
     } else {
-        if (appConfig.portalDir) {
+        if (appConfig.webDir) {
             logger.warn(
-                `web portal not found at ${appConfig.portalDir}; serving without it (build packages/portal first, or set JARVIS_PORTAL_DIR)`,
+                `web app not found at ${appConfig.webDir}; serving without it (build packages/web first, or set JARVIS_WEB_DIR)`,
             );
         }
+        // Nothing built at all: the historical greeting rather than a bare
+        // Express 404, so a fresh checkout still answers something readable.
         app.get("/", (req, res) => {
             res.send("Hello World");
         });

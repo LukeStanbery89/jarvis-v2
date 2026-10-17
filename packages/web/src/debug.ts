@@ -12,7 +12,7 @@
  * The gate is either `localStorage["jarvis.debug"] === "1"` or a `debug=1`
  * URL query parameter — the localStorage flag survives reloads, and the
  * query parameter survives the "clear site data" habit that wipes storage
- * between tests (`http://localhost:5173/web/?debug=1`). Both read per call,
+ * between tests (`http://localhost:5173/?debug=1`). Both read per call,
  * so a live session picks the flag up without a rebuild. Lines go through
  * `console.log`, not `console.debug`: Chrome's devtools filter hides
  * `console.debug` unless "Verbose" is enabled, which made gated traces

@@ -5,8 +5,8 @@
 `@lukestanbery/jarvis-server` — Express backend server for the J.A.R.V.I.S. AI assistant. Exposes a `GET /health`
 health check, a REST management API (`/api` for accounts/devices/sessions/prefs — device-token **or** cookie auth with
 CSRF), a WebSocket chat endpoint (`/ws`) that accepts prompts and streams back a response, and serves the web
-portal SPA at `/` when it has been built (see "Web portal" below) plus the web chat client at `/web` (see
-"Web chat client").
+web app at `/` when it has been built (see "Web app" below) plus the admin portal at `/admin` (see
+"Admin portal").
 
 ## Stack
 
@@ -42,7 +42,7 @@ Run from `packages/server`:
 
 The canonical REST/WS surface lives in [`packages/contracts/spec/`](../../packages/contracts/spec/) and the generated docs in [`packages/contracts/docs/`](../../packages/contracts/docs/). Update specs, not ad-hoc tables, when routes change.
 
-## Web portal
+## Admin portal (`/admin`)
 
 The server serves the built portal SPA (`@lukestanbery/jarvis-portal`) at `/` via `express.static` plus an SPA
 fallback that replays `index.html` for non-`/api` GET/HEAD requests. It is only mounted when the portal has been
@@ -57,32 +57,33 @@ connect-src 'self'`) plus `X-Content-Type-Options: nosniff`. A `Cache-Control: n
   hash-routed shell fresh.
 - The `/api` namespace is untouched by the fallback, so REST, `/ws`, and `/health` keep working regardless.
 
-## Web chat client
+## Web app (`/`)
 
-The server also serves the built web chat SPA (`@lukestanbery/jarvis-web`) at `/web` via `express.static` plus a
-`/web`-scoped SPA fallback, mounted before the portal mount. It is only mounted when the client has been built and
+The server serves the built web app (`@lukestanbery/jarvis-web`) at `/` via `express.static` plus an
+SPA fallback — it is the front door since #90 phase 6a, and the admin portal moved to `/admin` behind it. It is only mounted when the client has been built and
 `index.html` exists at the configured directory.
 
 - The base directory is `JARVIS_WEB_DIR`, defaulting to `packages/web/dist` (produced by `vite build`); an empty
   string disables it. `AppConfig.webDir` mirrors the env var in tests.
-- The mount widens the portal's strict CSP for the browser client only: `img-src 'self' data: https:` (remote
+- The app's mount widens the admin surface's strict CSP for the app only: `img-src 'self' data: https:` (remote
   images render), a dynamic `connect-src 'self' ws://<host> wss://<host>` built from the request's `Host`
   header so `/ws` can be reached over the socket, `worker-src 'self';` for the local speech engine's
   same-origin module worker (#84 P3b), and `script-src 'self' 'wasm-unsafe-eval'` — the narrow keyword that
-  admits Wasm compile/instantiate without letting JS `eval`/`new Function` through. The portal mount keeps
+  admits Wasm compile/instantiate without letting JS `eval`/`new Function` through. The `/admin` mount keeps
   `img-src 'self' data:` and a static `connect-src 'self'`, and adds no `worker-src` or `'wasm-unsafe-eval'`.
-- The one file that _does_ evaluate strings is the engine's worker entry (`/web/assets/vosk.worker-<hash>.js`):
+- The one file that _does_ evaluate strings is the engine's worker entry (`/assets/vosk.worker-<hash>.js`):
   embind's runtime synthesizes per-method invokers with `new Function` on first call, a second eval site the
   fork cannot remove. That **file** is served with its own
   `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'` — for a
   dedicated worker whose entry script declares a CSP, that policy governs the worker scope _instead of_ the
   owner's, so eval is granted only inside that hashed, same-origin module (which itself still `connect-src`s
   same-origin for the model archive). The page scope never allows eval.
-- Requests under `/web` are skipped by the portal SPA fallback (which is `/web`-boundary aware — `/webfoo` still gets the portal shell), so with the web client unbuilt or disabled `GET /web` is an honest 404, never the portal shell. `GET /web` itself 301s to `/web/` before serving `index.html` (standard `express.static` directory redirect); note that redirect response carries `serve-static`'s own strict `Content-Security-Policy: default-src 'none'` (browsers follow it and get the real headers on the target).
+- `/web*` answers **301 → `/`** (the client's former mount, #90 phase 6a): one redirect rather than a second mount, and a bookmark lands on the app. It is registered ahead of the app's fallback so the old path cannot be swallowed.
+- The app's SPA fallback skips `/admin`, so an unbuilt or disabled admin surface is an honest 404 rather than the app's shell wearing the admin address. Mounted in that order — `/admin` first, then the app at `/` — the admin surface keeps its strict CSP and the app its wider one.
 
 ## Cross-origin and reverse proxy
 
-Only relevant when a browser SPA is served from a **different origin** than the API (issue #63). The default deployments — SPAs served from `/` and `/web`, and the Vite dev server's `/api` + `/ws` proxy — are all same-origin and ignore these settings.
+Only relevant when a browser SPA is served from a **different origin** than the API (issue #63). The default deployments — the app at `/`, the admin portal at `/admin`, and the Vite dev server's `/api` + `/ws` proxy — are all same-origin and ignore these settings.
 
 - `JARVIS_CORS_ORIGINS` is a comma-separated allowlist of **exact** origins. Unset or empty **denies all cross-origin requests** (no `Access-Control-*` header is emitted), so same-origin clients are unaffected. Origins are normalized case-insensitively with a trailing `/` dropped.
 - **No wildcard, ever.** The API is credentialed (bearer token _and_ cookie); browsers reject `Access-Control-Allow-Origin: *` on credentialed requests anyway, and a literal `*` entry is dropped with a warning. A disallowed origin gets no header rather than a 403, so a refusal does not confirm the allowlist exists.
@@ -149,7 +150,7 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
 - `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, the
   portal static serving + SPA fallback capped with a strict CSP (only when `portalDir` holds `index.html`), and
-  (when `webDir` holds `index.html`) the `/web` web chat mount with a widened CSP + `/web`-scoped SPA fallback;
+  (when `webDir` holds `index.html`) the app mount at `/` with a widened CSP + an SPA fallback that skips `/admin`;
   `createHttpsRedirectApp`. Sets `app.set("trust proxy", …)` from `trustProxyCidrs` and mounts
   `createCorsMiddleware` **before** `express.json()` and the contract validator — both orderings are load-bearing.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),

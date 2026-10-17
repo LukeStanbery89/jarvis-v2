@@ -1,8 +1,10 @@
 # @lukestanbery/jarvis-portal
 
 Web admin portal for J.A.R.V.I.S. — a React single-page app (issue #24) that
-the server serves at `/` and that manages the server entirely through the REST
-API from `@lukestanbery/jarvis-server`.
+the server serves at `/admin` (it lived at `/` until #90 phase 6a, when the
+app's front door moved there and the portal became the admin surface) and that
+manages the server entirely through the REST API from
+`@lukestanbery/jarvis-server`.
 
 It is the owner-facing management surface: accounts, devices, sessions, and
 prefs. It authenticates with the browser **cookie session** (`jarvis_session`)

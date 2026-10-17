@@ -102,12 +102,13 @@ export function createWakeStt(
  * The directory the build stages the ORT/openWakeWord wake-word assets into
  * (`packages/web/public/ort/` via `scripts/copy-voice-assets.mjs`).
  *
- * Derives from Vite's `BASE_URL` (`/web/`), which the dev server and the
- * production static mount agree on — the files live at `/web/ort/*` in both.
+ * Derives from Vite's `BASE_URL` (`/` since the app became the front door in
+ * #90 phase 6a), which the dev server and the production static mount agree on
+ * — the files live at `/ort/*` in both.
  *
  * @param baseUrl - The app's base URL override (tests pass one; production
  *   uses Vite's `import.meta.env.BASE_URL`).
- * @returns The asset directory URL, ending in `/`, e.g. `/web/ort/`.
+ * @returns The asset directory URL, ending in `/`, e.g. `/ort/`.
  */
 export function wakeAssetBaseUrl(
     baseUrl: string = import.meta.env.BASE_URL,

@@ -36,10 +36,10 @@ class FakeRecognition {}
 class FakeAudioContext {}
 
 // The dev server serves the staged assets from the page's own origin (Vite
-// serves `publicDir` under `base`), which is the case #123 fixes. The `/web/`
-// path matches production; the unit tests below pass an explicit base, so the
-// origin's own path never matters.
-const DEV_ORIGIN = "http://localhost:5173/web/";
+// serves `publicDir` under `base`), which is the case #123 fixes. Since #90
+// phase 6a the app's base is `/`, so that is production's path too; the unit
+// tests below pass an explicit base, so the origin's own path never matters.
+const DEV_ORIGIN = "http://localhost:5173/";
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -119,14 +119,14 @@ describe("createWakeStt", () => {
 
 describe("wakeAssetBaseUrl", () => {
     it("derives the ort/ directory from the app base", () => {
-        // The `/web` mount both dev and the production static host agree on.
-        expect(wakeAssetBaseUrl("/web/")).toBe("/web/ort/");
-        expect(wakeAssetBaseUrl("/web")).toBe("/web/ort/");
+        // The `/` mount both dev and the production static host agree on.
+        expect(wakeAssetBaseUrl("/")).toBe("/ort/");
+        expect(wakeAssetBaseUrl("")).toBe("/ort/");
     });
 
     it("accepts an origin-qualified base", () => {
-        expect(wakeAssetBaseUrl("https://jarvis.local/web/")).toBe(
-            "https://jarvis.local/web/ort/",
+        expect(wakeAssetBaseUrl("https://jarvis.local/app/")).toBe(
+            "https://jarvis.local/app/ort/",
         );
     });
 });
@@ -176,8 +176,7 @@ describe("createWakeWord", () => {
         // Origin-absolute: that is the whole point — the dev server appends its
         // `?import` query only to specifiers beginning with "." or "/". The
         // expected value is built from `wakeAssetBaseUrl()`, which derives from
-        // Vite's `BASE_URL` — `/web/` under `vite.config.ts`, but `/` here,
-        // since `vitest.config.ts` sets no `base` for this node-env suite.
+        // Vite's `BASE_URL` — `/` under `vite.config.ts` and here.
         expect(options?.wasmPath).toBe(
             `http://localhost:5173${wakeAssetBaseUrl()}`,
         );

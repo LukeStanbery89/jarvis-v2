@@ -18,14 +18,17 @@ const OWW_SRC = path.join(
 );
 
 /**
- * Dev server for the web chat client.
+ * Dev server for the web app.
  *
- * The built SPA is served by the JARVIS server at `/web` (see
- * `packages/server/src/app.ts`), so `base` is `/web/` and every asset and
- * route lives under that prefix. `npm run dev` serves the client on Vite's
- * default port with HMR and proxies `/api` and `/ws` (with WebSocket upgrade)
- * to the running JARVIS server, so the client dials the same same-origin
- * URLs it will use in production.
+ * The built SPA is served by the JARVIS server at `/` (see
+ * `packages/server/src/app.ts`): it is the app's front door, so `base` is `/`
+ * and every asset and route lives directly under the origin. `npm run dev`
+ * serves the app on Vite's default port with HMR and proxies `/api` and `/ws`
+ * (with WebSocket upgrade) to the running JARVIS server, so the app dials the
+ * same same-origin URLs it will use in production.
+ *
+ * (Until #90 phase 6a the client lived at `/web` with `base: "/web/"`, and the
+ * server 301s that path to `/`.)
  *
  * `@lukestanbery/jarvis-protocol` is a linked workspace package whose build
  * output is CommonJS. Linked deps skip Vite's automatic pre-bundling, so in
@@ -45,7 +48,7 @@ export default defineConfig({
             },
         },
     ],
-    base: "/web/",
+    base: "/",
     resolve: {
         // `onnxruntime-web` ships a "use extern wasm" variant that loads its
         // wasm pair from `wasmPaths` at runtime instead of bundling it —

@@ -69,7 +69,7 @@ Four things are worth knowing:
 - **Bootstrap is off by default.** Set `JARVIS_BOOTSTRAP_TOKEN` (in a `.env`
   beside the compose file, or as an environment variable at `up` time) before
   calling `POST /api/bootstrap`; until then it returns `409`.
-- **No SPAs are baked in.** `/` answers `Hello World` and `/web` is unmounted.
+- **No SPAs are baked in.** `/` answers `Hello World` (no app build), `/admin` 404s, and `/web` 301s to `/`.
   To serve them, build them on the host and mount the directories — see below.
 
 #### Serving the SPAs from the image
@@ -90,8 +90,9 @@ environment:
     JARVIS_WEB_DIR: /srv/web
 ```
 
-A directory is mounted only when it contains `index.html`, so a wrong path
-degrades to `Hello World` and a warning rather than failing to boot.
+A directory is mounted only when it contains `index.html`: a wrong path for the
+app degrades to `Hello World` at `/` and a warning, and one for the portal leaves
+`/admin` an honest 404 — each rather than failing to boot.
 
 #### Container environment reference
 
@@ -174,7 +175,7 @@ fail silently either:
 | `JARVIS_TLS_KEY`                         | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`)                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `JARVIS_HTTP_REDIRECT_PORT`              | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `JARVIS_PORTAL_DIR`                      | `packages/portal/dist`                                                          | Built portal SPA root served at `/`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `JARVIS_WEB_DIR`                         | `packages/web/dist`                                                             | Built web chat client root served at `/web`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `JARVIS_WEB_DIR`                         | `packages/web/dist`                                                             | Built web app root served at `/`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `JARVIS_RATE_WINDOW_MS`                  | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `JARVIS_RATE_MAX_FAILURES`               | `10`                                                                            | Attempts per `(ip, username)` before a lockout                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `JARVIS_RATE_MAX_IP_FAILURES`            | `100`                                                                           | Aggregate attempts per IP per window — the cap for `login:<ip>` and `bootstrap:<ip>` keys                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -268,7 +269,7 @@ and conversation checkpoints aren't world-readable on a shared machine.
 ### Cross-origin and reverse proxy
 
 Most deployments never need this section. If the browser loads the SPAs **from this
-server** (the default: `/` and `/web`) or through the Vite dev server's `/api` + `/ws`
+server** (the default: `/` and `/admin`) or through the Vite dev server's `/api` + `/ws`
 proxy, every request is same-origin and the settings below do nothing. They matter
 only when a SPA is served from a _different_ origin than the API (issue #63).
 
@@ -572,7 +573,7 @@ What the surface guarantees:
 - **Reasoning never leaks.** The default VL model is a reasoning model; its
   chain-of-thought is discarded and only the final analysis returns.
 
-The web chat client implements the upload flow (📎, paste, drag-and-drop,
+The web app implements the upload flow (📎, paste, drag-and-drop,
 `data:` previews, one stricter-budget retry on a 413). The protocol and the
 store are client-agnostic — a CLI or camera client can reference attachments
 without touching the wire shape; non-browser clients cannot downscale, so
@@ -894,8 +895,8 @@ table — "web session" is the `jarvis_session` cookie):
 
 | Method   | Path                       | Auth                                | Description                                                                              |
 | -------- | -------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET`    | `/`                        | none                                | Returns the built portal SPA if present, otherwise `Hello World`                         |
-| `GET`    | `/web`                     | none                                | Built web chat client SPA (301s to `/web/`, then serves `index.html`)                    |
+| `GET`    | `/`                        | none                                | The built web app (the front door); `Hello World` when it is not built                   |
+| `GET`    | `/admin`                   | cookie session (its own gate)       | Built admin portal SPA (strict CSP)                                                      |
 | `WS`     | `/ws`                      | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
 | `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header          | Create the first (owner) account + device token                                          |
 | `POST`   | `/api/auth/login`          | none                                | Username + password → a (rotating) device token                                          |
@@ -1078,7 +1079,7 @@ Deployment posture (deliberate):
 
 ## Local STT model serving (#84 P3b)
 
-The web chat client's speech recognition runs **on-device** (issue #84):
+The web app's speech recognition runs **on-device** (issue #84):
 a WASM engine (Vosk) in the browser transcribes the microphone locally, so
 no audio ever leaves the client. The engine needs ~40 MB of model weights;
 the server fetches the archive from its configured upstream on the **first
@@ -1111,12 +1112,12 @@ archive never lands in the Docker image and is never downloaded at boot.
 
 ## Wake-word model serving (#84 P4)
 
-The web chat client's "Hey JARVIS" wake detector (openWakeWord) also runs
+The web app's "Hey JARVIS" wake detector (openWakeWord) also runs
 **on-device**. It needs three small ONNX models (`melspectrogram.onnx`,
 `embedding_model.onnx`, `hey_jarvis_v0.1.onnx` — ~3 MB total); the server
 fetches them from the openWakeWord release host on first request and serves
 them same-origin from `/api/wake/model/:file`, because the upstream commits
-no CORS headers and a `/web`-mounted SPA must load them without them. The
+no CORS headers and an SPA must load them without them. The
 route is an exact per-file allowlist — an unknown name 404s before any
 fetch; `HEAD` answers 200 without downloading.
 

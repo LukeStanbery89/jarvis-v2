@@ -1,10 +1,11 @@
 # @lukestanbery/jarvis-web
 
-Web chat client (SPA) for J.A.R.V.I.S. — a private (published-to-nobody,
-Vite-built) browser client that the server serves at `/web`, alongside the
-admin portal at `/` (issue #12). Sign in, pick a conversation, and chat: the
-server streams the answer and the client renders it — Markdown, tables,
-links, and images — in the browser.
+Web app (SPA) for J.A.R.V.I.S. — a private (published-to-nobody,
+Vite-built) browser client that the server serves at `/`: the app's front door
+since #90 phase 6a, when the admin portal moved to `/admin` and the old `/web`
+address began 301-ing here. Sign in, pick a conversation, and chat: the server
+streams the answer and the client renders it — Markdown, tables, links, and
+images — in the browser.
 
 ## Stack
 
@@ -139,7 +140,7 @@ fastest, most accurate dictation — and falls back to the local WASM engine
 (e.g. Firefox) or the team wants on-device privacy by opting in, running
 fully on-device (no audio egress). The engine's worker script and WASM
 binary ship with the SPA bundle (Vite `?url` assets, served same-origin);
-the `/web` CSP covers them with `worker-src 'self'` and `script-src 'self'
+the app's CSP covers them with `worker-src 'self'` and `script-src 'self'
 'wasm-unsafe-eval'` for the page, while the worker entry script itself is
 served with a worker-scoped `script-src 'self' 'unsafe-eval'` CSP —
 embind's runtime synthesizes method invokers with `new Function`, and a
@@ -223,7 +224,7 @@ error path.
 
 The ORT runtime and mic worklet ship with the SPA build:
 `scripts/copy-voice-assets.mjs` stages `openwakeword-web`'s worklet and
-`onnxruntime-web`'s wasm pair into `public/ort/` (copied to `/web/ort/`,
+`onnxruntime-web`'s wasm pair into `public/ort/` (copied to `/ort/`,
 gitignored, staged by a Vite `buildStart` plugin). Vite resolves the
 ESM-only `openwakeword-web` and `onnxruntime-web`'s "extern wasm" entry
 through config aliases/conditions, so no 28 MB wasm is duplicated into the
@@ -273,7 +274,7 @@ off and the stop button still works.
 
 Two dev-only surfaces support the wake→command work:
 
-- **`/web/?voice-harness=1`** renders an offline replay harness
+- **`/?voice-harness=1`** renders an offline replay harness
   (`src/dev/VoiceHarness.tsx`, lazily imported so it is code-split out of a
   normal page load). Load an audio file — a committed fixture under
   `packages/voice/test/fixtures/`, or your own recording in any format the
@@ -287,7 +288,7 @@ Two dev-only surfaces support the wake→command work:
   pre-bundles `@lukestanbery/jarvis-voice`; after rebuilding that package,
   restart the dev server (or start it with `--force`) or the harness sees a
   stale copy with no new exports._
-- **`/web/?voice-trace=1`** logs each wake session's raw recognizer transcript
+- **`/?voice-trace=1`** logs each wake session's raw recognizer transcript
   and the prompt actually submitted (`[jarvis:voice:trace] raw="…"
 submitted="…"`). It is deliberately a _separate_ switch from
   `?debug=1`/`jarvis.debug` (`src/voiceTrace.ts`): it prints real user speech,
@@ -508,8 +509,8 @@ npm run dev:clean -w @lukestanbery/jarvis-web   # clears the dep cache, restarts
 ```
 
 `dev:clean` is the whole fix — it removes `node_modules/.vite/deps`, so the
-next start re-optimizes against the current build. The built client served by
-the JARVIS server at `/web` has no such cache and is unaffected.
+next start re-optimizes against the current build. The built app served by
+the JARVIS server at `/` has no such cache and is unaffected.
 
 **A change to the protocol needs a fresh pre-bundle.** Vite caches the
 pre-bundled package under `node_modules/.vite/deps`, and a stale bundle silently
@@ -521,13 +522,15 @@ dev server after changing the protocol.
 
 ## Serving
 
-The built `dist/` is served by the server at `/web` (`JARVIS_WEB_DIR`, default
-`packages/web/dist`); the Vite `base` is `/web/` so the build's asset URLs are
-correct under that mount. The server applies a stricter-CSP variant for the
-web mount: `img-src` is widened by `https:` (model-rendered remote images) and
-`connect-src` is pinned to the request's `ws`/`wss` origin. In dev, Vite
-proxies `/api` and `/ws` to `localhost:54321`, so the client dials the same
-same-origin URLs as in production (`src/wsUrl.ts`).
+The built `dist/` is served by the server at `/` (`JARVIS_WEB_DIR`, default
+`packages/web/dist`); the Vite `base` is `/` so the build's asset URLs are
+correct at the origin root. (The admin portal is a separate build served at
+`/admin`; the app's SPA fallback deliberately leaves that path alone.) The
+server applies its widened CSP to the app: `img-src` gains `https:`
+(model-rendered remote images), `connect-src` is pinned to the request's
+`ws`/`wss` origin, and `worker-src`/`'wasm-unsafe-eval'` admit the local speech
+engine. In dev, Vite proxies `/api` and `/ws` to `localhost:54321`, so the app
+dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 
 ## Source layout
 
