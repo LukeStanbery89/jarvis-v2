@@ -42,6 +42,14 @@ describe("systemPromptForCapabilities", () => {
             // same reason — and it matters most for the model that has the
             // tool, so its absence would be silent.
             expect(prompt).toMatch(/sendNotification reaches the user/);
+            // The scheduling rule (#90 phase 3) too: a job is a commitment
+            // kept with nobody watching, so the discipline around it cannot
+            // depend on which client is talking.
+            expect(prompt).toMatch(
+                /use the matching tool rather than promising/,
+            );
+            expect(prompt).toMatch(/ask them instead of guessing/);
+            expect(prompt).toMatch(/never create a second job to replace/);
         }
     });
 

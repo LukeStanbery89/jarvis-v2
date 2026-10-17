@@ -242,6 +242,39 @@ const NOTIFY_RULE =
     "in their notification list rather than that it appeared.";
 
 /**
+ * Scheduling hygiene appended to every conditioned system prompt (#90 phase 3).
+ *
+ * The scheduling tools are the one place the assistant commits to something it
+ * will do *later*, with nobody watching, so the failure mode is not a wrong
+ * answer but a promise kept badly: a guessed time ("you said soon, so 6pm"), a
+ * second job created to "replace" one the model could not find, or a claim that
+ * an interruption will arrive when quiet hours will hold it. The tools refuse
+ * what they can (an ambiguous time, a task that cannot run) and report what
+ * will happen; this paragraph pins the model's half — ask rather than guess,
+ * never compute a timestamp, relay what the result says, and cancel by exact
+ * id. The last sentence is the restraint clause, for the same reason
+ * {@link NOTIFY_RULE} has one: a job nobody asked for is an interruption the
+ * user cannot avoid.
+ */
+const SCHEDULE_RULE =
+    "When the user asks to be reminded of something, to set a timer, or to " +
+    "have something done later, use the matching tool rather than promising " +
+    "it in words: remindMe for something they want to be told (it waits out " +
+    "their quiet hours), setTimer for a countdown they asked for (it " +
+    "interrupts), scheduleTask for running one of your tools later (it is " +
+    "filed quietly). You cannot choose how loudly a job arrives — the tool " +
+    "does. You must be told when: if they gave no time, or said something " +
+    "vague like 'later' or 'soon', ask them instead of guessing, and never " +
+    "send a timestamp — give the time the way the tool asks (a 24-hour " +
+    "clock time, a delay in minutes, and today/tomorrow/a weekday for the " +
+    "day). To move or cancel one, call listJobs for the exact id and then " +
+    "cancelJob or snoozeReminder; never create a second job to replace one " +
+    "you cannot find. The result says when it will run and whether quiet " +
+    "hours will hold it — relay that rather than promising an interruption. " +
+    "Never schedule anything the user did not ask for; a job is a " +
+    "commitment you keep when nobody is watching.";
+
+/**
  * Spoken-word formatting directive appended for voice-mode turns (#83).
  *
  * A voice prompt's effective capabilities are empty, which yields plain
@@ -272,9 +305,10 @@ const VOICE_FORMAT_RULE =
  * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
  * lookups ({@link IMAGE_ANALYSIS_RULE}), Home Assistant calls
  * ({@link HOME_CALL_RULE}), tools-over-memory for research
- * ({@link RESEARCH_RULE}), and notification restraint ({@link NOTIFY_RULE}) —
- * are always appended: all are server concerns, independent of the client's
- * rendering capabilities and of any `LLM_SYSTEM_PROMPT` override. (The Home,
+ * ({@link RESEARCH_RULE}), notification restraint ({@link NOTIFY_RULE}), and
+ * scheduling discipline ({@link SCHEDULE_RULE}) — are always appended: all are
+ * server concerns, independent of the client's rendering capabilities and of
+ * any `LLM_SYSTEM_PROMPT` override. (The Home,
  * research, and notification rules are unconditional even though their tools
  * are optional: a model that cannot see a tool is never misled by instruction
  * it cannot follow.) Capability notes are appended as one paragraph only when
@@ -313,7 +347,7 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}${rendering}${spoken}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;
