@@ -23,7 +23,9 @@ import {
     RING_MAX_AGE_MS,
     selectAlerts,
     selectBanner,
+    selectToast,
     settleNotification,
+    shouldToast,
     unreadCount,
 } from "./notifications";
 import type { ClientNotification } from "./notifications";
@@ -233,6 +235,75 @@ function record(
         ...overrides,
     };
 }
+
+describe("shouldToast and selectToast (#90 phase 6b)", () => {
+    it("toasts a reminder", () => {
+        // A reminder exists for a moment: arriving *is* the event the user asked
+        // to be told about, and it never rings.
+        expect(shouldToast(make({ id: "r", class: "reminder" }))).toBe(true);
+    });
+
+    it("toasts a timer that failed or was missed", () => {
+        // The one timer that does not ring, because there is no moment to
+        // acknowledge — and it is still news.
+        expect(
+            shouldToast(make({ id: "f", class: "timer", kind: "job.failed" })),
+        ).toBe(true);
+        expect(
+            shouldToast(make({ id: "m", class: "timer", kind: "job.missed" })),
+        ).toBe(true);
+    });
+
+    it("leaves an informational notification to the badge", () => {
+        expect(shouldToast(make({ id: "i", class: "notification" }))).toBe(
+            false,
+        );
+    });
+
+    it("shows the newest row worth interrupting for, not the newest row", () => {
+        // The informational row on top must not mask the reminder underneath it.
+        const list = [
+            make({ id: "info", class: "notification" }),
+            make({ id: "reminder", class: "reminder" }),
+            make({ id: "older", class: "reminder" }),
+        ];
+        expect(selectToast(list, { enabled: true })?.id).toBe("reminder");
+    });
+
+    it("skips rows the user already settled", () => {
+        const list = [
+            make({ id: "read", class: "reminder", state: "read" }),
+            make({ id: "dismissed", class: "reminder", state: "dismissed" }),
+        ];
+        expect(selectToast(list, { enabled: true })).toBeNull();
+    });
+
+    it("stays silent while the account's master switch is off", () => {
+        // The switch means "do not interrupt me". The record still exists and
+        // still counts on the badge; only the shouting stops.
+        const list = [make({ id: "r", class: "reminder" })];
+        expect(selectToast(list, { enabled: false })).toBeNull();
+    });
+
+    it("can never show the timer that is ringing", () => {
+        // Structural rather than a check inside the selector: only a fired
+        // `timer` rings (`isRinging`), and only a failed or missed one toasts —
+        // so a fired timer appears in exactly one loud place, the overlay. Pinned
+        // here so a change to either rule has to notice this.
+        const fired = make({
+            id: "kettle",
+            class: "timer",
+            kind: "job.finished",
+            createdAt: "2026-10-17T10:00:00.000Z",
+        });
+        const { ring } = selectAlerts([fired], {
+            enabled: true,
+            now: new Date("2026-10-17T10:05:00.000Z"),
+        });
+        expect(ring?.id).toBe("kettle");
+        expect(selectToast([fired], { enabled: true })).toBeNull();
+    });
+});
 
 describe("the class carriers (#90)", () => {
     it("keeps the class and the pushed state from a frame", () => {

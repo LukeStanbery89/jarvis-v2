@@ -213,6 +213,77 @@ export function selectBanner(
 }
 
 /**
+ * Whether a notification is worth interrupting for (#90 phase 6b).
+ *
+ * Two cases, and the reasoning is the whole policy:
+ *
+ * - A **reminder** exists for a moment, so one that has arrived is exactly what
+ *   the user asked to be told. It waits out quiet hours and it never rings,
+ *   which leaves the badge — too quiet for something a person deliberately
+ *   scheduled — so it toasts.
+ * - A timer that **failed or was missed** is the one timer that does not ring
+ *   (it has no moment to acknowledge) and it is still news: a countdown the user
+ *   set did not happen.
+ *
+ * Everything else deliberately does not toast. An informational notification is
+ * a record to read, and interrupting whatever page the user is on with it would
+ * make every tool that says something a popup; it has the badge and the list.
+ *
+ * @param notification - The row, or the fields that decide (so a frame can be
+ *   asked before it is stored).
+ * @returns True when this row should reach the floating toast.
+ */
+export function shouldToast(
+    notification: Pick<ClientNotification, "class" | "kind">,
+): boolean {
+    if (notification.class === "reminder") {
+        return true;
+    }
+    if (notification.class !== "timer") {
+        return false;
+    }
+    return (
+        notification.kind === "job.failed" || notification.kind === "job.missed"
+    );
+}
+
+/**
+ * The row the floating toast shows, or `null` (#90 phase 6b).
+ *
+ * One at a time — the newest, because the list is newest-first by
+ * {@link mergeNotification}'s contract and the toast is an interruption rather
+ * than a list. Anything older is still in the notification list and still
+ * counted by the badge.
+ *
+ * The account's master switch turns it off entirely: that switch means "do not
+ * interrupt me", and a toast is an interruption. The records still exist and
+ * still count; only the shouting stops.
+ *
+ * A ringing timer needs no exclusion here — it is structurally impossible for
+ * one to qualify (only a fired `timer` rings, and only a failed or missed one
+ * toasts), which the tests pin so the guarantee survives a change to either
+ * rule.
+ *
+ * @param list - The client's notifications, newest first.
+ * @param context - The account's master switch.
+ * @returns The newest notification worth toasting, or `null`.
+ */
+export function selectToast(
+    list: ClientNotification[],
+    context: { enabled: boolean },
+): ClientNotification | null {
+    if (!context.enabled) {
+        return null;
+    }
+    for (const item of list) {
+        if (!isSettled(item.state) && shouldToast(item)) {
+            return item;
+        }
+    }
+    return null;
+}
+
+/**
  * How long a fired timer keeps the right to ring on next open.
  *
  * "Rings until acknowledged" is about the moment, not about a browser that was

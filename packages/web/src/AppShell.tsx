@@ -23,6 +23,7 @@ import { useEffect } from "react";
 import type { ReactNode } from "react";
 import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
 import { readNotificationsEnabled } from "./prefs";
+import { selectToast } from "./notifications";
 import { useRoute } from "./hooks/useRoute";
 import { useThreads } from "./hooks/useThreads";
 import { useAudio } from "./hooks/useAudio";
@@ -36,6 +37,7 @@ import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
 import { Dashboard } from "./views/app/Dashboard";
+import { Toast } from "./views/app/Toast";
 import { Chat } from "./views/Chat";
 import { PagePlaceholder } from "./views/PagePlaceholder";
 import { TimerRing } from "./views/chat/TimerRing";
@@ -259,6 +261,16 @@ export function AppShell({
         };
     }, [audio.unlock]);
 
+    /**
+     * The floating toast (#90 phase 6b): one row, on every page, because a fired
+     * reminder has to reach the user wherever they are. `selectToast` decides
+     * which row (a reminder, or a timer that failed or was missed) and the
+     * account's master switch silences the whole thing, as it does the ring.
+     */
+    const toast = selectToast(notifications.notifications, {
+        enabled: notificationsEnabled,
+    });
+
     const state: AppState = {
         credential,
         onAuthRejected,
@@ -298,6 +310,13 @@ export function AppShell({
         <div className="app">
             <NavBar unread={notifications.unread} status={socket.status} />
             <div className="app-view">{currentView()}</div>
+            {toast !== null && (
+                <Toast
+                    notification={toast}
+                    onMarkRead={notifications.markRead}
+                    onDismiss={notifications.dismiss}
+                />
+            )}
             {notifications.ring !== null && (
                 <TimerRing timer={notifications.ring} onStop={stopTimer} />
             )}

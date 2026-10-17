@@ -318,7 +318,6 @@ export function Chat({ app }: ChatProps) {
                     </p>
                 )}
                 <Notifications
-                    banner={notificationsUi.banner}
                     notifications={notificationsUi.notifications}
                     unread={notificationsUi.unread}
                     open={notificationsOpen}

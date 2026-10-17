@@ -1,23 +1,25 @@
 /**
- * The in-app notification surface (#139): a banner for the newest unsettled
- * notification, and a collapsible list of the rest.
+ * The in-app notification list (#139): a collapsible list of everything the
+ * server has recorded.
  *
  * Presentational only — every action is a prop — so the merge/settle logic
- * stays in `notifications.ts` and the I/O in `useNotifications.ts`. Kept
- * inside the conversation column rather than the sidebar so a notification
- * cannot be missed while the sidebar is collapsed, and so phase 1 needs no
- * sidebar changes at all.
+ * stays in `notifications.ts` and the I/O in `useNotifications.ts`.
+ *
+ * The prominent row used to be a banner above this list. Since #90 phase 6b it is
+ * the floating `Toast` in the shell, which reaches the user on every page instead
+ * of only in the conversation column — so what is left here is the list, and the
+ * list is what a page (rather than a corner card) is for.
  *
  * Priority drives the emphasis, not the visibility: suppressing a `low`
  * notification would mean never showing it. What `high`/`urgent` buy is a
  * stronger border, not a different place in the queue.
  *
- * The **class** (#90) is what a banner says it is — "Timer", "Reminder",
+ * The **class** (#90) is what a row says it is — "Timer", "Reminder",
  * "Notification", plus "failed"/"missed" for a job that did not finish. A fired
  * timer is not here at all: `selectAlerts` hands it to the ring overlay, so a
  * ringing timer never appears twice.
  */
-import { Bell, X } from "lucide-react";
+import { Bell } from "lucide-react";
 import { debugEnabled } from "../../debug";
 import {
     describeDelivery,
@@ -31,9 +33,7 @@ import type {
 
 /** Props for {@link Notifications}. */
 export interface NotificationsProps {
-    /** Newest unsettled notification, or `null` when nothing wants attention. */
-    banner: ClientNotification | null;
-    /** The whole list, newest first (for the expanded panel). */
+    /** The whole list, newest first. */
     notifications: ClientNotification[];
     /** Count of notifications neither read nor dismissed. */
     unread: number;
@@ -62,14 +62,13 @@ export interface NotificationsProps {
 }
 
 /**
- * Renders the badge, the banner, and the list.
+ * Renders the toggle and the list.
  *
- * The badge is always present once there is anything unread, so a user who
- * dismisses the banner still has a way back to the list — dismissing is a
- * courtesy, not a data loss.
+ * The toggle is always present once there is anything unread, so a user who
+ * missed the toast still has a way back to the list — and the count is the
+ * durable half, since the toast comes and goes.
  */
 export function Notifications({
-    banner,
     notifications,
     unread,
     open,
@@ -85,42 +84,6 @@ export function Notifications({
     const showTest = import.meta.env.DEV && debugEnabled();
     return (
         <>
-            {banner && (
-                <div
-                    className={`notification-banner notification-${banner.priority} notification-${banner.class}`}
-                    role="status"
-                >
-                    <div className="notification-text">
-                        <span className="notification-eyebrow">
-                            {describeNotice(banner)}
-                        </span>
-                        <strong>{banner.title}</strong>
-                        {banner.body !== undefined && (
-                            <span> {banner.body}</span>
-                        )}
-                        {banner.requiresAnswer === true && (
-                            <em className="notification-needs-answer">
-                                {" "}
-                                (waiting for your answer)
-                            </em>
-                        )}
-                    </div>
-                    <div className="notification-actions">
-                        <button
-                            type="button"
-                            onClick={() => onMarkRead(banner.id)}
-                        >
-                            Mark read
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => onDismiss(banner.id)}
-                        >
-                            <X size={14} aria-hidden="true" /> Dismiss
-                        </button>
-                    </div>
-                </div>
-            )}
             <button
                 type="button"
                 className="notification-toggle"

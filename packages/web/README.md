@@ -347,10 +347,11 @@ pushed notification is never rendered twice, and a frame can never un-read or
 un-dismiss something the user already settled (the wire frame carries no
 state; the record does).
 
-The surface is a banner for the newest unsettled notification plus a
-collapsible list with a badge, rendered inside the conversation column
-(`src/views/chat/Notifications.tsx`) so a notification cannot be missed while
-the sidebar is collapsed. Reading or dismissing is optimistic — the list
+The surface is the notification list with a badge (`src/views/chat/Notifications.tsx`),
+plus — since #90 phase 6b — a floating toast in the shell
+(`src/views/app/Toast.tsx`) that reaches the user on **every** page, because a
+fired reminder arrives wherever they happen to be. Which rows reach the toast is
+`selectToast`'s decision (see the alert-classes section below), not the list's. Reading or dismissing is optimistic — the list
 updates immediately and rolls back if the server refuses — and a notification
 raised while this client was closed is simply in the list when it next loads,
 which is why nothing here depends on the frame arriving. The list is re-read
@@ -427,23 +428,35 @@ and the REST record have both had it since #90 phase 2a), because it decides
 which surface a row gets. `selectAlerts(list, { enabled, now })` is the single
 place that decision is made, and it returns `{ ring, banner }`:
 
-| Row                                       | Surface                                              | Sound                                      | Exit                                                   |
-| ----------------------------------------- | ---------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
-| `timer`, `job.finished`                   | the modal ring overlay                               | a three-tone chime every 3 s until stopped | **Stop**                                               |
-| `reminder`                                | the banner                                           | none                                       | Dismiss (snooze waits for phase 5's jobs REST surface) |
-| `notification` (incl. agent requests)     | the banner                                           | none                                       | Mark read · Dismiss                                    |
-| `timer` that **failed** or was **missed** | the banner, labelled `Timer failed` / `Timer missed` | none                                       | Mark read · Dismiss                                    |
+| Row                                       | Surface                                         | Sound                                      | Exit                |
+| ----------------------------------------- | ----------------------------------------------- | ------------------------------------------ | ------------------- |
+| `timer`, `job.finished`                   | the modal ring overlay                          | a three-tone chime every 3 s until stopped | **Stop**            |
+| `reminder`                                | the **floating toast**, on any page             | none                                       | Mark read · Dismiss |
+| `notification` (incl. agent requests)     | the badge and the list                          | none                                       | Mark read · Dismiss |
+| `timer` that **failed** or was **missed** | the **floating toast**, labelled `Timer failed` | none                                       | Mark read · Dismiss |
 
 Rules worth knowing, all pure and pinned by tests:
 
 - The ring target is the **oldest** fired timer, so two timers queue instead of
   shouting over each other; when one is stopped the next takes over, and the
   ring loop is idempotent so the hand-over does not restart the pattern.
-- The ring target is never also the banner: a firing timer appears in exactly
-  one place.
+- The ring target is never also the toast, and that is structural rather than a
+  check: only a fired `timer` rings and only a failed or missed one toasts, so a
+  firing timer appears in exactly one loud place (a test pins the pair).
+- `selectToast(list, { enabled })` picks the **newest** row worth interrupting
+  for, one at a time — anything older is still in the list and still counted by
+  the badge. An informational notification deliberately does not toast: it is a
+  record to read, and interrupting whatever page the user is on would make every
+  tool that says something a popup.
+- The master switch silences the toast as it silences the ring: a suppressed row
+  is still a record, but nothing may start shouting on its behalf.
 - Only a timer that **actually fired** rings. A failed or missed one has nothing
   due, and an overlay whose Stop button stopped nothing would misrepresent what
-  the user is acknowledging.
+  the user is acknowledging — so those two are the timer's toast case instead.
+- **Snooze** is the one action still missing from these surfaces: the jobs REST
+  endpoint exists (#90 phase 5), but a snooze moves the job without settling the
+  announcement, so the row would stay on screen after a snooze that worked. The
+  `snoozed` state and the button land together in phase 6c.
 - The account's **master switch** gates the ring. A suppressed row is still a
   record worth reading, but nothing may start shouting on its behalf.
 - A timer keeps the right to ring for **24 h** (`RING_MAX_AGE_MS`): "rings until
@@ -578,6 +591,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/jobs.ts` — the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM").
 - `src/hooks/useJobs.ts` — the caller's `GET /api/jobs` list: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives.
 - `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the connection chip, and the hamburger drawer under 48rem.
+- `src/views/app/Toast.tsx` — the floating notification card: the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
 - `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.
 - `src/views/PagePlaceholder.tsx` — a page that exists as an address but not yet as content (`/timers`, `/reminders`, `/notifications`).
 - `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, jobs list, prefs read/patch; Bearer token).
