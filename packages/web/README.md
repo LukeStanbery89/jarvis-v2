@@ -37,9 +37,9 @@ resolves through `dist/`), so run the root `npm run check` rather than a bare
 
 `npm run dev` proxies `/api`, `/ws` and **`/admin`** to the running JARVIS
 server (`:54321`). The last one is not obvious and worth knowing: the admin
-portal is a _different app_ on the real server, and the launcher links to it —
+portal is a _different app_ on the real server, and the dashboard links to it —
 without the proxy, the dev server would answer `/admin` with _this_ app's shell,
-which renders the launcher (an unknown path), so the link would look like it
+which renders the dashboard (an unknown path), so the link would look like it
 went nowhere while production was perfectly correct. Anything else under `/`
 is this app, on every path it names (Vite's SPA fallback).
 
@@ -50,21 +50,22 @@ Real paths, not hash routes (#90 phase 6a): the server's SPA fallback replays
 without a route on the server, and a URL reads as the page it names. The admin
 portal is a different app at `/admin` and keeps its own hash router.
 
-| Path             | Today                                                                  |
-| ---------------- | ---------------------------------------------------------------------- |
-| `/`              | The launcher: links to the app's pages (a dashboard replaces it)       |
-| `/chat`          | The conversation                                                       |
-| `/timers`        | A placeholder — the list lands with the pages phase                    |
-| `/reminders`     | A placeholder — likewise                                               |
-| `/notifications` | A placeholder — likewise                                               |
-| anything else    | The launcher (a typo or an old link gets the front door, not an error) |
+| Path             | Today                                                                   |
+| ---------------- | ----------------------------------------------------------------------- |
+| `/`              | The dashboard: the clock, what is coming up, the unread count           |
+| `/chat`          | The conversation                                                        |
+| `/timers`        | A placeholder — the list lands with the pages phase                     |
+| `/reminders`     | A placeholder — likewise                                                |
+| `/notifications` | A placeholder — likewise                                                |
+| anything else    | The dashboard (a typo or an old link gets the front door, not an error) |
 
 In-app links are `AppLink`s over the store in `src/router.ts`: a click swaps the
 view with `history.pushState` instead of reloading the document, so Back and
 Forward behave and a modified click still opens a real tab (every path replays
-the shell, so that tab works). Keeping the `/ws` socket connected _across_ a
-swap needs the shell that owns it — that, with the dashboard, is the rest of
-phase 6b.
+the shell, so that tab works). The `/ws` socket survives the swap because
+`src/AppShell.tsx` owns it rather than the view (#90 phase 6b) — which is why a
+turn that is mid-stream keeps landing in the transcript while the user walks to
+another page.
 
 ## Sign-in and credentials
 
@@ -569,10 +570,17 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 
 - `src/main.tsx` — React bootstrap.
 - `src/App.tsx` — sign-in gate, then the page the path names (#90 phase 6a).
-- `src/router.ts` — the app's paths (`/` launcher, `/chat`, `/timers`, `/reminders`, `/notifications`), `routeForPath`, and the store that follows `window.location` (`currentRoute`/`subscribeRoute`/`navigate`, plus the `interceptsNavigation` click rule); `src/AppLink.tsx` is the `<a href>` that claims a plain left click and swaps the view without a reload, and `src/hooks/useRoute.ts` reads the store with `useSyncExternalStore`.
-- `src/views/Home.tsx` — the interim launcher at `/`: links to the app's pages, and the note that a dashboard replaces it. No widgets on purpose — a dashboard needs the shell that owns the socket and the notification state.
+- `src/router.ts` — the app's paths (`/` dashboard, `/chat`, `/timers`, `/reminders`, `/notifications`), `routeForPath`, and the store that follows `window.location` (`currentRoute`/`subscribeRoute`/`navigate`, plus the `interceptsNavigation` click rule); `src/AppLink.tsx` is the `<a href>` that claims a plain left click and swaps the view without a reload, and `src/hooks/useRoute.ts` reads the store with `useSyncExternalStore`.
+- `src/AppShell.tsx` — the signed-in app: the app-level state (socket, transcript, audio, notifications, prefs, jobs) and the switch that renders the page the address names. Everything here has to outlive a route change, and the socket is the load-bearing example.
+- `src/appState.ts` — the type a view receives from the shell (types only, so a view never imports its own parent).
+- `src/hooks/useFrameBus.ts` — publish/subscribe over socket frames: the shell handles what every view needs (transcript, audio) and a view subscribes to the rest (only voice does).
+- `src/clock.ts` — `clockText` / `formatDate` / `weekdayText` / `describeSpan`: time in the words a person reads, hand-rolled so the tests are exact and shared so a reminder and a job cannot disagree.
+- `src/jobs.ts` — the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM").
+- `src/hooks/useJobs.ts` — the caller's `GET /api/jobs` list: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives.
+- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the connection chip, and the hamburger drawer under 48rem.
+- `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.
 - `src/views/PagePlaceholder.tsx` — a page that exists as an address but not yet as content (`/timers`, `/reminders`, `/notifications`).
-- `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, prefs read/patch; Bearer token).
+- `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, jobs list, prefs read/patch; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6; out-of-turn `notification` frames via `onNotification`, #139).

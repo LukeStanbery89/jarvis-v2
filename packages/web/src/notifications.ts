@@ -28,6 +28,7 @@ import type {
     NotificationFrame,
 } from "@lukestanbery/jarvis-protocol";
 import type { Notification } from "./api";
+import { clockText, describeSpan } from "./clock";
 
 export type { NotificationClass };
 
@@ -314,7 +315,7 @@ export function describeDue(
     if (lateMs < 60_000) {
         return `due at ${clock}`;
     }
-    return `due at ${clock}, ${describeAge(lateMs)} ago`;
+    return `due at ${clock}, ${describeSpan(lateMs)} ago`;
 }
 
 /**
@@ -409,29 +410,6 @@ export type NotificationSuppression =
 /** How many notifications are neither read nor dismissed (the badge count). */
 export function unreadCount(list: ClientNotification[]): number {
     return list.filter((item) => !isSettled(item.state)).length;
-}
-
-/** `2:20 AM` in the browser's local zone (the only clock a user reads). */
-function clockText(at: Date): string {
-    const hours = at.getHours();
-    const minutes = at.getMinutes();
-    const hour12 = hours % 12 === 0 ? 12 : hours % 12;
-    const suffix = hours < 12 ? "AM" : "PM";
-    return `${hour12}:${String(minutes).padStart(2, "0")} ${suffix}`;
-}
-
-/** `3 minutes` / `2 hours` / `1 day` — the unit a person would use. */
-function describeAge(ms: number): string {
-    const minutes = Math.floor(ms / 60_000);
-    if (minutes < 60) {
-        return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-    }
-    const hours = Math.floor(minutes / 60);
-    if (hours < 36) {
-        return `${hours} hour${hours === 1 ? "" : "s"}`;
-    }
-    const days = Math.round(hours / 24);
-    return `${days} day${days === 1 ? "" : "s"}`;
 }
 
 /** Newest first by `createdAt`; equal timestamps keep insertion order. */

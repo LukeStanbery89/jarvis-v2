@@ -40,6 +40,15 @@ export type Notification = components["schemas"]["Notification"];
 /** Body of `GET /api/notifications`: the page plus the unread badge count. */
 export type NotificationList = components["schemas"]["NotificationList"];
 
+/**
+ * One scheduled job (#90), as `GET /api/jobs` exposes it. `state` decides
+ * whether it is still owed; `class` decides how loudly it will announce itself.
+ */
+export type Job = components["schemas"]["Job"];
+
+/** Body of `GET /api/jobs`: the work still owed, newest-created first. */
+export type JobList = components["schemas"]["JobList"];
+
 /** Body of `POST /api/notifications`: the record plus what happened to it. */
 export type NotificationDelivery =
     components["schemas"]["NotificationDelivery"];
@@ -266,6 +275,29 @@ export function createApi(
          */
         setPrefs(token: string, patch: Prefs): Promise<Prefs> {
             return request("PUT", "/api/prefs", { token, body: patch });
+        },
+        /**
+         * Lists the caller's scheduled jobs (#90).
+         *
+         * Settled jobs (`done`, `failed`, `cancelled`, `missed`) are history and
+         * are excluded unless asked for, so the default answer is the work still
+         * owed — which is exactly what a dashboard's "coming up" means. As with
+         * the notification list, a 401 is the caller's problem: the app is about
+         * to drop to login.
+         */
+        listJobs(
+            token: string,
+            options: { limit?: number; includeSettled?: boolean } = {},
+        ): Promise<JobList> {
+            const params = new URLSearchParams();
+            if (options.limit !== undefined) {
+                params.set("limit", String(options.limit));
+            }
+            if (options.includeSettled === true) {
+                params.set("includeSettled", "true");
+            }
+            const query = params.size > 0 ? `?${params.toString()}` : "";
+            return request("GET", `/api/jobs${query}`, { token });
         },
     };
 }

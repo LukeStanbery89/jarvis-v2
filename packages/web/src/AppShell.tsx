@@ -31,11 +31,12 @@ import { usePrefs } from "./hooks/usePrefs";
 import { useNotifications } from "./hooks/useNotifications";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
 import { useChatClient } from "./hooks/useChatClient";
+import { useJobs } from "./hooks/useJobs";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
+import { Dashboard } from "./views/app/Dashboard";
 import { Chat } from "./views/Chat";
-import { Home } from "./views/Home";
 import { PagePlaceholder } from "./views/PagePlaceholder";
 import { TimerRing } from "./views/chat/TimerRing";
 
@@ -149,6 +150,11 @@ export function AppShell({
         },
     });
 
+    // The job list lives here because three surfaces read it — the dashboard
+    // now, the Timers and Reminders pages next phase — and because a job that
+    // just ran is a state change the notification frame already announces.
+    const jobs = useJobs({ token: credential.token });
+
     // Frames reach two places: what the shell does for the whole app (the
     // transcript, the audio queue) and whatever a view subscribed to (only a
     // voice session does — see `useFrameBus`).
@@ -160,8 +166,15 @@ export function AppShell({
         // `audio` (#83): voice turns from this client are also spoken
         // server-side; the player renders the binary chunks.
         onAudio: (pcm) => audio.audio.play(pcm),
-        onNotification: (notification) =>
-            notifications.acceptFrame(notification),
+        onNotification: (notification) => {
+            notifications.acceptFrame(notification);
+            // A job that just ran changed the list the dashboard reads (its
+            // state, not its announcement), and this is the one moment a state
+            // change is already being pushed to this client.
+            if (notification.jobId !== undefined) {
+                jobs.refresh();
+            }
+        },
         onFrame: (frame) => {
             // The spoken-audio span carries the sample rate the player decodes
             // at; a text-mode turn never sends it.
@@ -262,7 +275,13 @@ export function AppShell({
     /** The page the address names. */
     function currentView(): ReactNode {
         if (route === "home") {
-            return <Home username={credential.username} />;
+            return (
+                <Dashboard
+                    username={credential.username}
+                    jobs={jobs}
+                    unread={notifications.unread}
+                />
+            );
         }
         if (route === "chat") {
             return <Chat app={state} />;
