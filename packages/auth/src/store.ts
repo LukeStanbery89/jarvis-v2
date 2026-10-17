@@ -162,7 +162,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     answer          TEXT,
     created_at      TEXT NOT NULL,
     delivered_at    TEXT,
-    settled_at      TEXT
+    settled_at      TEXT,
+    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user
     ON notifications (user_id, created_at DESC);
@@ -368,6 +369,16 @@ export interface AppNotification {
     dedupeKey: string | null;
     /** The user's reply, for an answered notification. */
     answer: string | null;
+    /**
+     * The job whose run produced this notification (#90 phase 5), or `null`.
+     *
+     * An announcement about a job is the only notification anything can *act*
+     * on beyond reading it — a reminder banner's snooze needs to name the
+     * reminder it came from — so the link is stored rather than re-derived from
+     * the title. `ON DELETE SET NULL`: jobs are pruned as history, while a
+     * notification the user already received stays true.
+     */
+    jobId: string | null;
     createdAt: string;
     deliveredAt: string | null;
     /** When the notification reached a terminal state. */
@@ -387,6 +398,8 @@ export interface CreateNotificationInput {
     body?: string | null;
     requiresAnswer?: boolean;
     dedupeKey?: string | null;
+    /** The job this notification is about (#90 phase 5), when there is one. */
+    jobId?: string | null;
 }
 
 /**
@@ -702,6 +715,26 @@ export interface JobLedger {
      */
     moveJob(userId: number, id: string, runAt: string): AppJob | null;
     /**
+     * Edits one of the caller's own pending jobs — the REST `PATCH` (#90 phase
+     * 5). Only the label, the message payload's text and the moment are
+     * editable: the class and the kind are what the job *is*, so changing
+     * either is a different job (and a class change is how loudly the user gets
+     * interrupted, which is not something to mutate in place).
+     *
+     * As with {@link moveJob}, the `user_id` predicate is the ownership check
+     * and `state = 'pending'` the state check, in the same statement as the
+     * write — so a foreign id, a claimed job and a settled one all change
+     * nothing.
+     *
+     * @returns The row after the attempt — unchanged when it could not be
+     * edited — or `null` when no such job belongs to `userId`.
+     */
+    editJob(
+        userId: number,
+        id: string,
+        patch: { label?: string; message?: string; runAt?: string },
+    ): AppJob | null;
+    /**
      * A job's runs, newest first, for the pages and for tests.
      */
     listJobRuns(jobId: string, options?: { limit?: number }): AppJobRun[];
@@ -814,6 +847,7 @@ interface NotificationRow {
     requiresAnswer: number;
     dedupeKey: string | null;
     answer: string | null;
+    jobId: string | null;
     createdAt: string;
     deliveredAt: string | null;
     settledAt: string | null;
@@ -823,7 +857,7 @@ interface NotificationRow {
  * The notification SELECT list, shared by every read so a new column cannot
  * reach one query and miss another (`mapNotification` is the other half).
  */
-const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, job_id AS jobId, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
 
 /** A `jobs` table row as the SELECTs alias it (see {@link mapJob}). */
 interface JobRow {
@@ -928,6 +962,7 @@ function mapNotification(row: NotificationRow): AppNotification {
         requiresAnswer: row.requiresAnswer === 1,
         dedupeKey: row.dedupeKey,
         answer: row.answer,
+        jobId: row.jobId,
         createdAt: row.createdAt,
         deliveredAt: row.deliveredAt,
         settledAt: row.settledAt,
@@ -1251,6 +1286,25 @@ ${JOB_INDEXES}`);
         }
         db.pragma("user_version = 10");
     }
+    if (version < 11) {
+        // v11: the notification → job link (#90 phase 5). Additive rather than
+        // a rebuild, because NULL is the total default: every notification a
+        // user already received simply has no job behind it.
+        //
+        // Guarded for the usual reason — ADD COLUMN is the one step here that
+        // is not idempotent, and SCHEMA already carries the column on a fresh
+        // database. The FK is added by ALTER rather than by a table rebuild, so
+        // the column lands last, which is where SCHEMA puts it too: the two
+        // shapes converge exactly. `ON DELETE SET NULL` because jobs are
+        // pruned as history while a notification the user was already shown
+        // stays true — a dangling link would be worse than none.
+        if (!hasColumn(db, "notifications", "job_id")) {
+            db.exec(
+                `ALTER TABLE notifications ADD COLUMN job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL`,
+            );
+        }
+        db.pragma("user_version = 11");
+    }
 }
 
 export function openAppDatabase(dbPath: string): AppDatabase {
@@ -1317,6 +1371,7 @@ export class SqliteAppDatabase implements AppDatabase {
         settleJob: Database.Statement;
         cancelJob: Database.Statement;
         moveJob: Database.Statement;
+        editJob: Database.Statement;
         insertJobRun: Database.Statement;
         finishJobRun: Database.Statement;
         failOpenJobRuns: Database.Statement;
@@ -1425,7 +1480,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
             insertNotification: db.prepare(
-                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, job_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
             ),
             selectNotification: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -1508,6 +1563,14 @@ export class SqliteAppDatabase implements AppDatabase {
             // only, in one statement — no attempt counted, nothing announced.
             moveJob: db.prepare(
                 "UPDATE jobs SET run_at = ? WHERE user_id = ? AND id = ? AND state = 'pending'",
+            ),
+            // The REST edit (#90 phase 5): ownership and pending-only state in
+            // the WHERE clause, and COALESCE so a field the caller did not
+            // mention keeps its value. `message` on a tool job would violate the
+            // table's kind CHECK — the caller refuses that before it gets here,
+            // and the CHECK is the backstop.
+            editJob: db.prepare(
+                "UPDATE jobs SET label = COALESCE(?, label), message = COALESCE(?, message), run_at = COALESCE(?, run_at) WHERE user_id = ? AND id = ? AND state = 'pending'",
             ),
             insertJobRun: db.prepare(
                 "INSERT INTO job_runs (id, job_id, started_at, state) VALUES (?, ?, ?, 'running')",
@@ -1887,6 +1950,7 @@ export class SqliteAppDatabase implements AppDatabase {
             input.body ?? null,
             input.requiresAnswer === true ? 1 : 0,
             input.dedupeKey ?? null,
+            input.jobId ?? null,
             input.createdAt,
         );
         // The row was just written, so a re-read cannot miss; the assertion
@@ -2075,6 +2139,21 @@ export class SqliteAppDatabase implements AppDatabase {
 
     moveJob(userId: number, id: string, runAt: string): AppJob | null {
         this.statements.moveJob.run(runAt, userId, id);
+        return this.getJob(userId, id);
+    }
+
+    editJob(
+        userId: number,
+        id: string,
+        patch: { label?: string; message?: string; runAt?: string },
+    ): AppJob | null {
+        this.statements.editJob.run(
+            patch.label ?? null,
+            patch.message ?? null,
+            patch.runAt ?? null,
+            userId,
+            id,
+        );
         return this.getJob(userId, id);
     }
 

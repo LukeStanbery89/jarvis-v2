@@ -584,6 +584,49 @@ describe("notifications", () => {
         expect(store.getNotification(luke.id, "n1")?.state).toBe("pending");
     });
 
+    it("links a notification to the job that produced it, and lets go when the job is pruned", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        store.createJob(user.id, {
+            id: "j1",
+            label: "kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off the heat.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        store.createNotification(user.id, {
+            id: "n1",
+            kind: "job.finished",
+            class: "timer",
+            priority: "normal",
+            title: "kettle",
+            jobId: "j1",
+            createdAt: "2026-10-20T09:00:01.000Z",
+        });
+        // A producer with no job behind it (the agent's own notification)
+        // omits the key rather than inventing a link.
+        store.createNotification(user.id, {
+            id: "n2",
+            kind: "agent.request",
+            priority: "normal",
+            title: "standalone",
+            createdAt: "2026-10-20T09:00:02.000Z",
+        });
+
+        expect(store.getNotification(user.id, "n1")?.jobId).toBe("j1");
+        expect(store.getNotification(user.id, "n2")?.jobId).toBeNull();
+
+        // Pruning the job takes its history, not the notification the user was
+        // already shown: the link is what goes, and the row stays true.
+        store.pruneJobs(user.id, 0);
+        expect(store.getJob(user.id, "j1")).toBeNull();
+        const kept = store.getNotification(user.id, "n1");
+        expect(kept).not.toBeNull();
+        expect(kept?.jobId).toBeNull();
+        expect(kept?.title).toBe("kettle");
+    });
+
     it("evicts settled rows first, and only reaches pending ones if it must", () => {
         const user = store.createUser("luke", "hash", "owner");
         for (let i = 0; i < 4; i += 1) {
@@ -737,10 +780,22 @@ describe("openAppDatabase", () => {
                 createdAt: "2026-10-15T18:00:00.000Z",
             });
             expect(upgraded.getJob(1, "j1")?.state).toBe("pending");
+            // v11 (#90 phase 5): the notification → job link, on a store that
+            // predates it, works in the same pass — the announcement can name
+            // the job it came from.
+            upgraded.createNotification(1, {
+                id: "linked",
+                kind: "job.finished",
+                priority: "normal",
+                title: "after the upgrade",
+                jobId: "j1",
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+            expect(upgraded.getNotification(1, "linked")?.jobId).toBe("j1");
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            expect(check.pragma("user_version", { simple: true })).toBe(11);
             const indexes = check.pragma("index_list(web_sessions)") as {
                 name: string;
             }[];
@@ -843,7 +898,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            expect(check.pragma("user_version", { simple: true })).toBe(11);
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
@@ -984,7 +1039,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            expect(check.pragma("user_version", { simple: true })).toBe(11);
             // The indexes the drop took with it, recreated after the swap — the
             // queue's partial index is load-bearing for the claim feed.
             // `id TEXT PRIMARY KEY` brings its own sqlite_autoindex, so the
@@ -1072,7 +1127,7 @@ describe("openAppDatabase", () => {
             upgraded.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            expect(check.pragma("user_version", { simple: true })).toBe(11);
             const userIndexes = check.pragma("index_list(users)") as {
                 name: string;
             }[];
@@ -1141,7 +1196,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            expect(check.pragma("user_version", { simple: true })).toBe(11);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toHaveLength(1);
             // The v2 migration's named index is gone; the inline constraint's
@@ -1217,7 +1272,7 @@ describe("device-name unique index convergence (v6)", () => {
             store.close();
 
             const check = new Database(path);
-            expect(check.pragma("user_version", { simple: true })).toBe(10);
+            expect(check.pragma("user_version", { simple: true })).toBe(11);
             const uniques = uniqueUserNameIndexes(check);
             expect(uniques).toEqual(["idx_devices_user_name"]);
             check.close();

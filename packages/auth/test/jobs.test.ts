@@ -429,6 +429,59 @@ describe("jobs ledger", () => {
         expect(store.getJob(pepper.id, "theirs")?.runAt).toBe(theirsBefore);
     });
 
+    it("edits the owner's pending job, and nothing else", () => {
+        const { store, userId } = makeStore();
+        const pepper = store.createUser("pepper", "hash", "user");
+        store.createJob(userId, {
+            id: "kettle",
+            label: "Kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off the heat.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        store.createJob(userId, promptJob({ id: "running" }));
+        store.createJob(pepper.id, promptJob({ id: "theirs" }));
+        store.claimJob("running");
+
+        const edited = store.editJob(userId, "kettle", {
+            label: "Tea",
+            message: "The tea is ready.",
+            runAt: "2026-10-21T09:00:00.000Z",
+        });
+        expect(edited).toMatchObject({
+            label: "Tea",
+            message: "The tea is ready.",
+            runAt: "2026-10-21T09:00:00.000Z",
+            state: "pending",
+        });
+        // An edit is not an attempt, and a field the caller did not mention
+        // keeps the value it had.
+        expect(edited?.attempts).toBe(0);
+        expect(
+            store.editJob(userId, "kettle", { label: "Kettle again" }),
+        ).toMatchObject({
+            label: "Kettle again",
+            message: "The tea is ready.",
+            runAt: "2026-10-21T09:00:00.000Z",
+        });
+
+        // A claimed job is being worked on, someone else's is not ours to edit,
+        // and an id that does not exist belongs to nobody.
+        expect(
+            store.editJob(userId, "running", { label: "too late" })?.label,
+        ).toBe("Change the AC filter");
+        expect(
+            store.editJob(userId, "theirs", { label: "not mine" }),
+        ).toBeNull();
+        expect(store.editJob(userId, "missing", { label: "ghost" })).toBeNull();
+        expect(store.getJob(pepper.id, "theirs")?.label).toBe(
+            "Change the AC filter",
+        );
+        expect(store.getJob(userId, "kettle")?.label).toBe("Kettle again");
+    });
+
     it("evicts settled jobs first, and only reaches pending ones if it must", () => {
         const { store, userId } = makeStore();
         for (let i = 0; i < 4; i += 1) {

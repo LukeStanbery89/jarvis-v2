@@ -66,7 +66,7 @@ only the surface they call:
   retention).
 - `JobLedger` — the scheduler's queue and history (#90) over the `jobs` and
   `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
-  `moveJob` /
+  `moveJob` / `editJob` /
   `listJobRuns` / `pruneJobs`, plus the **scheduler-scoped** half
   (`listDueJobs` / `claimJob` / `rescheduleJob` / `startJobRun` /
   `finishJobRun` / `settleJob`)
@@ -76,8 +76,11 @@ only the surface they call:
   settles it by the id it claimed. `claimJob` is the load-bearing statement —
   `state = 'pending'` sits in its WHERE clause, which is what makes a second
   tick, or a process that restarted mid-run, unable to fire a job twice. The
-  store owns rows and transitions; the server's scheduler owns the _policy_
-  (what may be scheduled, what a run means, deferral, retention).
+  user-scoped state changes (`cancelJob`, `moveJob`, `editJob`) put the same
+  `user_id` + `state = 'pending'` predicates in their own WHERE clauses, so
+  ownership and "still owed" are one statement rather than a read-then-write
+  window. The store owns rows and transitions; the server's scheduler owns the
+  _policy_ (what may be scheduled, what a run means, deferral, retention).
 
 The server's `createApp`/`attachChatServer` are the composition roots; the REST
 router and middleware span every ledger and therefore take the full
@@ -139,8 +142,9 @@ router and middleware span every ledger and therefore take the full
   — the reserved home for the per-user integration state the web portal (#24)
   manages, from a consumer (v4 schema, planning-complete) onward.
 - `notifications` — one row per notification (#139, v7; `class` added in v9,
-  #90): producer `kind` + `class` (the delivery policy — a `timer` pierces
-  quiet hours, everything else waits) + `priority` (display emphasis only), the
+  #90, `job_id` in v11): producer `kind` + `class` (the delivery policy — a
+  `timer` pierces quiet hours, everything else waits) + `priority` (display
+  emphasis only), the
   `title`/`body` text, a `state` lifecycle (`pending` →
   `delivered` → `read`/`answered`/`dismissed`, with `pending` → `read` legal
   for a notification the user found in the list rather than had pushed), an
@@ -148,7 +152,13 @@ router and middleware span every ledger and therefore take the full
   Indexed on `(user_id, created_at DESC)` for the list; cascade-deleted with
   the user. `pending` is not an error state — it is the normal outcome for a
   user who was offline — so the table is also the delivery queue's record of
-  what still wants attention.
+  what still wants attention. `job_id` (nullable, `ON DELETE SET NULL`) is how
+  a scheduler announcement names the job it came from: it is what lets a
+  reminder banner offer _snooze_ rather than only _dismiss_, and it is the one
+  link a notification needs, because everything else it says is already
+  rendered into its text. Jobs are pruned as history while a notification the
+  user was already shown stays true, so the prune clears the link and keeps the
+  row.
 - `jobs` — one row per scheduled job (#90, v8; rebuilt in v10 for `class` and
   the `message` payload): `label`, `class` (the delivery class its announcement
   carries — `notification`/`reminder`/`timer`), `kind` (`prompt`/`tool`/
