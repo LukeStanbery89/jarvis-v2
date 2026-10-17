@@ -850,11 +850,18 @@ textarea::placeholder {
 /* The floating toast (#90 phase 6b): the banner's card, moved out of the
    conversation column so a fired reminder reaches the user on any page. Opaque —
    it sits over page content, and the banner's translucent wash would let text
-   show through. */
+   show through.
+
+   Pinned **top-right** rather than the usual bottom: the conversation's composer
+   owns the bottom of the screen, and a card that covers the send button while
+   someone is typing is a bad trade — with a reminder the card sits there until it
+   is read. Top-right also puts it just under the Notifications item it belongs
+   to. The `top` clears the bar (see `.navbar`: ~3.2rem including its border);
+   either way it renders below the dialogs in the top layer. */
 .toast-stack {
     position: fixed;
+    top: 3.4rem;
     right: 1rem;
-    bottom: 1rem;
     z-index: 5;
     display: flex;
     flex-direction: column;
