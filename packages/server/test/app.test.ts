@@ -198,15 +198,20 @@ describe("web app serving (/)", () => {
         expect(res.text).toContain("JARVIS Web");
     });
 
-    it("redirects the old /web address to /", async () => {
+    it("redirects the old /web address to /chat, keeping the query", async () => {
         // The client's former mount (#90 phase 6a). One redirect, no second
-        // mount: a bookmark lands on the app rather than on a second copy.
+        // mount: a bookmark lands on the app rather than on a second copy. The
+        // query rides along because the documented dev flags (`?debug=1`,
+        // `?voice-harness=1`, `?voice-trace=1`) are read from it.
         const bare = await request(webApp).get("/web");
         expect(bare.status).toBe(301);
-        expect(bare.headers.location).toBe("/");
+        expect(bare.headers.location).toBe("/chat");
         const deep = await request(webApp).get("/web/chat");
         expect(deep.status).toBe(301);
-        expect(deep.headers.location).toBe("/");
+        expect(deep.headers.location).toBe("/chat");
+        const flagged = await request(webApp).get("/web/?voice-trace=1");
+        expect(flagged.status).toBe(301);
+        expect(flagged.headers.location).toBe("/chat?voice-trace=1");
     });
 
     it("widens img-src, permits wasm compile, allows the same-origin ws socket, and declares the worker source for the app", async () => {
@@ -315,12 +320,12 @@ describe("both surfaces mounted", () => {
         );
 
         // An unmatched path belongs to the app (it is the front door), and the
-        // old address still lands there.
+        // old chat address still lands on the chat.
         const unmatched = await request(both).get("/webfoo");
         expect(unmatched.text).toContain("JARVIS Web");
-        const legacy = await request(both).get("/web/chat");
+        const legacy = await request(both).get("/web/");
         expect(legacy.status).toBe(301);
-        expect(legacy.headers.location).toBe("/");
+        expect(legacy.headers.location).toBe("/chat");
     });
 });
 

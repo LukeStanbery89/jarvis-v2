@@ -2,8 +2,8 @@
 
 Web app (SPA) for J.A.R.V.I.S. — a private (published-to-nobody,
 Vite-built) browser client that the server serves at `/`: the app's front door
-since #90 phase 6a, when the admin portal moved to `/admin` and the old `/web`
-address began 301-ing here. Sign in, pick a conversation, and chat: the server
+since #90 phase 6a, when the admin portal moved to `/admin`, the chat moved to
+`/chat`, and the old `/web` address began 301-ing to `/chat`. Sign in, pick a conversation, and chat: the server
 streams the answer and the client renders it — Markdown, tables, links, and
 images — in the browser.
 
@@ -32,6 +32,37 @@ Run from `packages/web`:
 `npm run typecheck` needs `@lukestanbery/jarvis-protocol` built first (it
 resolves through `dist/`), so run the root `npm run check` rather than a bare
 `tsc` in a dependent package.
+
+### What the dev server serves
+
+`npm run dev` proxies `/api`, `/ws` and **`/admin`** to the running JARVIS
+server (`:54321`). The last one is not obvious and worth knowing: the admin
+portal is a _different app_ on the real server, and the launcher links to it —
+without the proxy, the dev server would answer `/admin` with _this_ app's shell,
+which renders the launcher (an unknown path), so the link would look like it
+went nowhere while production was perfectly correct. Anything else under `/`
+is this app, on every path it names (Vite's SPA fallback).
+
+## Pages
+
+Real paths, not hash routes (#90 phase 6a): the server's SPA fallback replays
+`index.html` for any non-`/api` GET, so a deep link and a reload both work
+without a route on the server, and a URL reads as the page it names. The admin
+portal is a different app at `/admin` and keeps its own hash router.
+
+| Path             | Today                                                                  |
+| ---------------- | ---------------------------------------------------------------------- |
+| `/`              | The launcher: links to the app's pages (a dashboard replaces it)       |
+| `/chat`          | The conversation                                                       |
+| `/timers`        | A placeholder — the list lands with the pages phase                    |
+| `/reminders`     | A placeholder — likewise                                               |
+| `/notifications` | A placeholder — likewise                                               |
+| anything else    | The launcher (a typo or an old link gets the front door, not an error) |
+
+Every link is a plain anchor, so navigating is a real page load. That is the
+honest interim shape: swapping views without a reload — and keeping the `/ws`
+socket alive across the swap so a route change cannot drop a stream — needs the
+shell that owns the socket, which lands with the dashboard.
 
 ## Sign-in and credentials
 
@@ -274,7 +305,7 @@ off and the stop button still works.
 
 Two dev-only surfaces support the wake→command work:
 
-- **`/?voice-harness=1`** renders an offline replay harness
+- **`/chat?voice-harness=1`** renders an offline replay harness
   (`src/dev/VoiceHarness.tsx`, lazily imported so it is code-split out of a
   normal page load). Load an audio file — a committed fixture under
   `packages/voice/test/fixtures/`, or your own recording in any format the
@@ -288,7 +319,7 @@ Two dev-only surfaces support the wake→command work:
   pre-bundles `@lukestanbery/jarvis-voice`; after rebuilding that package,
   restart the dev server (or start it with `--force`) or the harness sees a
   stale copy with no new exports._
-- **`/?voice-trace=1`** logs each wake session's raw recognizer transcript
+- **`/chat?voice-trace=1`** logs each wake session's raw recognizer transcript
   and the prompt actually submitted (`[jarvis:voice:trace] raw="…"
 submitted="…"`). It is deliberately a _separate_ switch from
   `?debug=1`/`jarvis.debug` (`src/voiceTrace.ts`): it prints real user speech,
@@ -535,7 +566,10 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 ## Source layout
 
 - `src/main.tsx` — React bootstrap.
-- `src/App.tsx` — sign-in gate ↔ chat routing over the stored credential.
+- `src/App.tsx` — sign-in gate, then the page the path names (#90 phase 6a).
+- `src/router.ts` — the app's paths (`/` launcher, `/chat`, `/timers`, `/reminders`, `/notifications`) and `routeForPath`; the mapping only, because the interim launcher links with plain anchors (the shell that swaps views without a reload uses the same table).
+- `src/views/Home.tsx` — the interim launcher at `/`: links to the app's pages, and the note that a dashboard replaces it. No widgets on purpose — a dashboard needs the shell that owns the socket and the notification state.
+- `src/views/PagePlaceholder.tsx` — a page that exists as an address but not yet as content (`/timers`, `/reminders`, `/notifications`).
 - `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, prefs read/patch; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).
@@ -548,7 +582,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/dev/VoiceHarness.tsx` — the offline replay harness (#121, `?voice-harness=1`), lazily imported.
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
-- `src/views/Login.tsx`, `src/views/Chat.tsx` — the two screens. `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
+- `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
 - `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`, `Notifications.tsx` (#139 banner + list), `Settings.tsx` (#143 panel: account prefs beside this browser's controls).
 - `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `usePrefs` (#143 account prefs read/patch), `useAutoScroll`.
 - `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread.

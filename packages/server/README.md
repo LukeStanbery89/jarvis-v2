@@ -69,7 +69,7 @@ Four things are worth knowing:
 - **Bootstrap is off by default.** Set `JARVIS_BOOTSTRAP_TOKEN` (in a `.env`
   beside the compose file, or as an environment variable at `up` time) before
   calling `POST /api/bootstrap`; until then it returns `409`.
-- **No SPAs are baked in.** `/` answers `Hello World` (no app build), `/admin` 404s, and `/web` 301s to `/`.
+- **No SPAs are baked in.** `/` answers `Hello World` (no app build), `/admin` 404s, and `/web` 301s to `/chat`.
   To serve them, build them on the host and mount the directories — see below.
 
 #### Serving the SPAs from the image

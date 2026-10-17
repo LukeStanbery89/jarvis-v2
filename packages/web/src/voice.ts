@@ -148,7 +148,7 @@ export function wakeAssetBaseUrl(
  *   only ever served over http[s]; a caller in a context without one gets a
  *   loud `ReferenceError` rather than a plausible URL that cannot work).
  * @returns The directory as an absolute URL, e.g.
- *   `http://localhost:5173/web/ort/`. The base's trailing `/`, which ORT
+ *   `http://localhost:5173/ort/`. The base's trailing `/`, which ORT
  *   needs, is preserved rather than added — {@link wakeAssetBaseUrl} always
  *   supplies one.
  */

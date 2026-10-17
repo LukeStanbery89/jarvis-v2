@@ -89,6 +89,19 @@ export default defineConfig({
                 target: "ws://localhost:54321",
                 ws: true,
             },
+            /**
+             * The admin portal is a **different app** on the real server
+             * (`/admin`, cookie auth — see `packages/server/src/app.ts`), and
+             * the launcher links to it. Without this proxy the dev server
+             * answers `/admin` with *this* app's shell, which renders the
+             * launcher (an unknown path), so the link appeared to go nowhere
+             * while production was correct. Proxying keeps dev and production
+             * agreeing on every address the app links to.
+             */
+            "/admin": {
+                target: "http://localhost:54321",
+                changeOrigin: false,
+            },
         },
     },
     build: {

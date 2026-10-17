@@ -83,7 +83,15 @@ export function Sidebar({
     return (
         <aside className="sidebar">
             <div className="sidebar-head">
-                <span>{username}</span>
+                {/* The launcher is at `/` (#90 phase 6a). A link rather than a
+                    view swap, because the swap needs the shell that owns the
+                    socket; a nav rail replaces this when it lands. */}
+                <span className="sidebar-head-left">
+                    <a className="sidebar-home" href="/">
+                        Home
+                    </a>
+                    <span>{username}</span>
+                </span>
                 <span className="sidebar-actions">
                     {listening && (
                         <span

@@ -25,7 +25,8 @@
  * - **Heard vs final.** The interim (partial) text is shown too, so an empty
  *   final can be told apart from "the engine recognized nothing at all".
  *
- * Reachable at `/web/?voice-harness=1`; the module is code-split, so it never
+ * Reachable at `/chat?voice-harness=1` (the flag is read before routing, so
+ * any path serves it); the module is code-split, so it never
  * ships to a normal page load. Load any WAV or browser-decodable audio (an
  * iPhone voice memo's `.m4a` works as-is) — the committed fixtures under
  * `packages/voice/test/fixtures/`, or your own recordings.

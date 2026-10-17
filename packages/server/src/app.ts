@@ -191,8 +191,16 @@ export function createApp(
     // both forever, and a bookmark that lands on the app is the whole promise a
     // redirect makes. It sits ahead of everything else so the app's own
     // fallback cannot swallow the old path.
-    app.use("/web", (_req, res) => {
-        res.redirect(301, "/");
+    //
+    // `/chat` is where the chat lives now — and the query string rides along,
+    // because the documented dev flags (`?debug=1`, `?voice-harness=1`,
+    // `?voice-trace=1`) are read from it, so a bookmark that used one keeps
+    // working. (Until the app's shell routes paths, `/chat` and `/` both serve
+    // the same view; once it does, `/` is the dashboard and this lands on the
+    // chat.)
+    app.use("/web", (req, res) => {
+        const [, query] = req.originalUrl.split("?");
+        res.redirect(301, query ? `/chat?${query}` : "/chat");
     });
 
     const portalIndex = appConfig.portalDir

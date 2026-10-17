@@ -140,6 +140,29 @@ textarea::placeholder {
     color: var(--primary);
 }
 
+.sidebar-head-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* The interim way back to the launcher (#90 phase 6a): the nav rail that
+   replaces it will own this, so it is deliberately plain. */
+.sidebar-home {
+    color: var(--primary-dim);
+    text-decoration: none;
+    font-weight: 400;
+    font-size: 0.85rem;
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    padding: 0.05rem 0.4rem;
+}
+
+.sidebar-home:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
 .sidebar nav {
     display: flex;
     flex-direction: column;
@@ -991,4 +1014,95 @@ textarea::placeholder {
     .timer-ring {
         animation: none;
     }
+}
+
+/* The app's launcher at `/` (#90 phase 6a) — a deliberately thin page: the
+   links to the app's pages, and the note that a dashboard replaces it later. */
+.home {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 3rem 1.25rem;
+}
+
+.home-header h1 {
+    margin: 0;
+    font-size: 1.75rem;
+    letter-spacing: 0.08em;
+}
+
+.home-account {
+    margin: 0.25rem 0 0;
+    color: var(--primary-dim);
+    font-size: 0.9rem;
+}
+
+.home-links {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.75rem;
+}
+
+.home-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.9rem 1rem;
+    text-decoration: none;
+    color: var(--primary);
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-radius: 8px;
+}
+
+.home-link:hover {
+    border-color: var(--primary-dim);
+    box-shadow: 0 0 12px rgba(0, 221, 255, 0.25);
+}
+
+.home-link-label {
+    font-weight: 600;
+}
+
+.home-link-note {
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+}
+
+.home-note {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+}
+
+/* A page that exists as an address but has no content yet (#90 phase 6a). */
+.page-placeholder {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 3rem 1.25rem;
+}
+
+.page-placeholder h1 {
+    margin: 0;
+    font-size: 1.5rem;
+}
+
+.page-placeholder-note {
+    margin: 0;
+    color: var(--primary-dim);
+}
+
+.page-placeholder-state {
+    margin: 0;
+    color: var(--primary-faint);
+    font-size: 0.9rem;
+}
+
+.page-placeholder-links a {
+    color: var(--primary);
 }

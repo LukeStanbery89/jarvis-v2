@@ -78,8 +78,8 @@ SPA fallback — it is the front door since #90 phase 6a, and the admin portal m
   dedicated worker whose entry script declares a CSP, that policy governs the worker scope _instead of_ the
   owner's, so eval is granted only inside that hashed, same-origin module (which itself still `connect-src`s
   same-origin for the model archive). The page scope never allows eval.
-- `/web*` answers **301 → `/`** (the client's former mount, #90 phase 6a): one redirect rather than a second mount, and a bookmark lands on the app. It is registered ahead of the app's fallback so the old path cannot be swallowed.
-- The app's SPA fallback skips `/admin`, so an unbuilt or disabled admin surface is an honest 404 rather than the app's shell wearing the admin address. Mounted in that order — `/admin` first, then the app at `/` — the admin surface keeps its strict CSP and the app its wider one.
+- `/web*` answers **301 → `/chat`** (the client's former mount, #90 phase 6a), query string included: one redirect rather than a second mount, a bookmark lands on the chat, and the documented dev flags (`?debug=1`, `?voice-harness=1`, `?voice-trace=1`) survive. It is registered ahead of the app's fallback so the old path cannot be swallowed.
+- The app's SPA fallback skips `/admin`, so an unbuilt or disabled admin surface is an honest 404 rather than the app's shell wearing the admin address. Mounted in that order — `/admin` first, then the app at `/` — the admin surface keeps its strict CSP and the app its wider one. It also replays `index.html` for any other GET, which is what lets the app route real paths (`/chat`, `/timers`, …) without a server route each.
 
 ## Cross-origin and reverse proxy
 
