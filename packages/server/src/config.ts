@@ -525,7 +525,7 @@ export function defaultWebDir(): string {
 
 /** Default persona the assistant is primed with on every conversation thread. */
 export const DEFAULT_SYSTEM_PROMPT =
-    "You are J.A.R.V.I.S., a helpful, personal AI assistant. " +
+    "You are JARVIS, a helpful, personal AI assistant. " +
     "Answer directly and concisely; avoid unnecessary verbosity, markup, " +
     "and preamble. Never use emojis to convey emotion (smiling, crying, " +
     "frowning, and similar); utilitarian symbols such as checkmarks, X's, " +
