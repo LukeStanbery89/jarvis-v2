@@ -341,11 +341,13 @@ a state the UI should be able to be in.
 notifications through the `Notification` API, for the case where the user is
 not looking at this tab. The rules live in `src/browserNotify.ts` and are all
 refusals: only while the document is **hidden** (a visible tab already has the
-in-app banner, and an OS pop-up beside it is noise), only for something still
-unsettled, only once per id (the live frame and the fetched page both mention
-it), and only when both the user's preference and the browser's permission
-agree. Clicking one focuses this tab and marks it read — that is the entire
-point of the channel.
+in-app banner, and an OS pop-up beside it is noise), only for a row the server
+**actually pushed** (`delivered` — a `pending` row is the server choosing not to
+interrupt, and the browser has no standing to overrule it, #90), only once per
+id (the live frame and the fetched page both mention it), and only when the
+user's preference, the account's master switch, and the browser's permission all
+agree. Clicking one focuses this tab and marks it read — or, for a timer, acts
+as **Stop** — which is the entire point of the channel.
 
 Permission can only be requested from a user gesture, so the toggle's click
 handler is where `requestPermission()` runs; a `denied` browser is reported as
@@ -380,6 +382,74 @@ Everything about raising an OS notification is guarded: an environment with no
 entirely, and a throw from `new Notification` (iOS Safari outside an installed
 PWA, permission revoked in a background tab) is swallowed — the in-app
 notification and the stored record are unaffected.
+
+## Alert classes and the timer ring (#90 phase 4)
+
+Every notification carries a **class** the server decided when the thing was
+scheduled: `timer`, `reminder`, or `notification`. The client carries it too
+(`ClientNotification.class`, mapped in `src/notifications.ts` — the wire frame
+and the REST record have both had it since #90 phase 2a), because it decides
+which surface a row gets. `selectAlerts(list, { enabled, now })` is the single
+place that decision is made, and it returns `{ ring, banner }`:
+
+| Row                                       | Surface                                              | Sound                                      | Exit                                                   |
+| ----------------------------------------- | ---------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
+| `timer`, `job.finished`                   | the modal ring overlay                               | a three-tone chime every 3 s until stopped | **Stop**                                               |
+| `reminder`                                | the banner                                           | none                                       | Dismiss (snooze waits for phase 5's jobs REST surface) |
+| `notification` (incl. agent requests)     | the banner                                           | none                                       | Mark read · Dismiss                                    |
+| `timer` that **failed** or was **missed** | the banner, labelled `Timer failed` / `Timer missed` | none                                       | Mark read · Dismiss                                    |
+
+Rules worth knowing, all pure and pinned by tests:
+
+- The ring target is the **oldest** fired timer, so two timers queue instead of
+  shouting over each other; when one is stopped the next takes over, and the
+  ring loop is idempotent so the hand-over does not restart the pattern.
+- The ring target is never also the banner: a firing timer appears in exactly
+  one place.
+- Only a timer that **actually fired** rings. A failed or missed one has nothing
+  due, and an overlay whose Stop button stopped nothing would misrepresent what
+  the user is acknowledging.
+- The account's **master switch** gates the ring. A suppressed row is still a
+  record worth reading, but nothing may start shouting on its behalf.
+- A timer keeps the right to ring for **24 h** (`RING_MAX_AGE_MS`): "rings until
+  acknowledged" still greets a browser that was closed, without a week-old timer
+  shouting at the next visit. An unreadable timestamp fails closed.
+
+`TimerRing` is a modal `<dialog>`, which is what makes "wherever the user is"
+structural rather than a z-index race: a modal dialog lives in the browser's top
+layer, so the ring covers the settings dialog — and anything that opens later —
+without either component knowing about the other's stacking. Escape is a
+**Stop**, not a way to hide an unacknowledged timer; the tab title becomes
+`⏰ <label>` while it rings; the pulse honours `prefers-reduced-motion`. Stop
+dismisses the row (the durable half) and silences the alarm at once — a failed
+dismissal rolls the row back and the ring resumes with it, so the overlay never
+claims an acknowledgement the server did not get.
+
+**The audio unlock is no longer the mic's alone.** A timer can fire before the
+user has ever touched the mic, and a suspended `AudioContext` is silent — a
+timer nobody hears is the exact failure this phase exists to fix — so the first
+`pointerdown`/`keydown` anywhere resumes it once. A ring requested while the
+context is still suspended starts sounding the moment it resumes; the overlay
+appears either way, because a tab nobody has ever interacted with cannot make
+sound and hiding the timer instead would be worse.
+
+**The alarm is scheduled, not ticked.** A background tab throttles
+`setInterval` (Chrome clamps it to once a minute after five minutes hidden), and
+a timer is most likely to fire while the tab is hidden — exactly when a
+chime-per-tick alarm would go quiet. So `startRing()` queues about two minutes
+of the pattern on the **audio clock**, which is not throttled, and tops it up
+every thirty seconds; a fully throttled top-up still lands well inside the
+window already queued, so the sound never gaps. `stopRing()` stops every queued
+tone, not just the loop, so Stop is immediate even with two minutes of audio in
+flight.
+
+The chime is Web Audio, deliberately ours rather than the OS's: an OS popup's
+sound is the browser's to suppress. A timer's popup also asks to be **sticky**
+(`requireInteraction`) and clicking it is a Stop — but stickiness is the
+browser's to grant, not ours: Chrome on macOS ignores the flag and dismisses the
+banner after a few seconds, while Windows/Linux/ChromeOS and Safari's Web Push
+honour it. The guarantees this client actually owns are the modal overlay, the
+tab title, and the alarm; the OS card is best-effort.
 
 ## Settings panel (#143)
 
@@ -440,6 +510,14 @@ npm run dev:clean -w @lukestanbery/jarvis-web   # clears the dep cache, restarts
 `dev:clean` is the whole fix — it removes `node_modules/.vite/deps`, so the
 next start re-optimizes against the current build. The built client served by
 the JARVIS server at `/web` has no such cache and is unaffected.
+
+**A change to the protocol needs a fresh pre-bundle.** Vite caches the
+pre-bundled package under `node_modules/.vite/deps`, and a stale bundle silently
+keeps the _old parser_: frames then arrive with fields the current protocol
+added missing (a notification frame without `class` was exactly this, 2026-10-17
+— it read as "timers never ring" while the REST list, whose types come from
+contracts, worked). The failure is silent rather than an error, so restart the
+dev server after changing the protocol.
 
 ## Serving
 
