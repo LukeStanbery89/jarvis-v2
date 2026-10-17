@@ -10,6 +10,7 @@
  * `briefWakeState`), so the copy stays node-testable.
  */
 import { Mic, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
+import { AppLink } from "../../AppLink";
 import {
     briefLocationState,
     describeLocationState,
@@ -83,13 +84,14 @@ export function Sidebar({
     return (
         <aside className="sidebar">
             <div className="sidebar-head">
-                {/* The launcher is at `/` (#90 phase 6a). A link rather than a
-                    view swap, because the swap needs the shell that owns the
-                    socket; a nav rail replaces this when it lands. */}
+                {/* The launcher is at `/` (#90 phase 6a). An in-app link
+                    rather than a plain anchor, so stepping back to it does not
+                    reload the page and drop the conversation. The top bar that
+                    takes this over lands in phase 6b. */}
                 <span className="sidebar-head-left">
-                    <a className="sidebar-home" href="/">
+                    <AppLink to="home" className="sidebar-home">
                         Home
-                    </a>
+                    </AppLink>
                     <span>{username}</span>
                 </span>
                 <span className="sidebar-actions">

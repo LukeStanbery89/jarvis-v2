@@ -59,10 +59,12 @@ portal is a different app at `/admin` and keeps its own hash router.
 | `/notifications` | A placeholder — likewise                                               |
 | anything else    | The launcher (a typo or an old link gets the front door, not an error) |
 
-Every link is a plain anchor, so navigating is a real page load. That is the
-honest interim shape: swapping views without a reload — and keeping the `/ws`
-socket alive across the swap so a route change cannot drop a stream — needs the
-shell that owns the socket, which lands with the dashboard.
+In-app links are `AppLink`s over the store in `src/router.ts`: a click swaps the
+view with `history.pushState` instead of reloading the document, so Back and
+Forward behave and a modified click still opens a real tab (every path replays
+the shell, so that tab works). Keeping the `/ws` socket connected _across_ a
+swap needs the shell that owns it — that, with the dashboard, is the rest of
+phase 6b.
 
 ## Sign-in and credentials
 
@@ -567,7 +569,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 
 - `src/main.tsx` — React bootstrap.
 - `src/App.tsx` — sign-in gate, then the page the path names (#90 phase 6a).
-- `src/router.ts` — the app's paths (`/` launcher, `/chat`, `/timers`, `/reminders`, `/notifications`) and `routeForPath`; the mapping only, because the interim launcher links with plain anchors (the shell that swaps views without a reload uses the same table).
+- `src/router.ts` — the app's paths (`/` launcher, `/chat`, `/timers`, `/reminders`, `/notifications`), `routeForPath`, and the store that follows `window.location` (`currentRoute`/`subscribeRoute`/`navigate`, plus the `interceptsNavigation` click rule); `src/AppLink.tsx` is the `<a href>` that claims a plain left click and swaps the view without a reload, and `src/hooks/useRoute.ts` reads the store with `useSyncExternalStore`.
 - `src/views/Home.tsx` — the interim launcher at `/`: links to the app's pages, and the note that a dashboard replaces it. No widgets on purpose — a dashboard needs the shell that owns the socket and the notification state.
 - `src/views/PagePlaceholder.tsx` — a page that exists as an address but not yet as content (`/timers`, `/reminders`, `/notifications`).
 - `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, prefs read/patch; Bearer token).

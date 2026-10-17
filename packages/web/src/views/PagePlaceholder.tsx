@@ -7,7 +7,7 @@
  * plainly beats an empty box that reads as broken, and it keeps the app's URL
  * shape settled while the content catches up.
  */
-import { ROUTE_PATHS } from "../router";
+import { AppLink } from "../AppLink";
 
 /** Props for {@link PagePlaceholder}. */
 export interface PagePlaceholderProps {
@@ -31,9 +31,9 @@ export function PagePlaceholder({ title, note }: PagePlaceholderProps) {
                 This page is not built yet — it arrives in the next phase.
             </p>
             <p className="page-placeholder-links">
-                <a href={ROUTE_PATHS.home}>← Home</a>
+                <AppLink to="home">← Home</AppLink>
                 {" · "}
-                <a href={ROUTE_PATHS.chat}>Chat</a>
+                <AppLink to="chat">Chat</AppLink>
             </p>
         </main>
     );

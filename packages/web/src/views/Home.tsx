@@ -3,32 +3,33 @@
  * links to the app's pages and nothing that pretends to be more.
  *
  * The dashboard the plan calls for (clock, active timers and reminders, the
- * unread count) replaces this later. Building it needs the shell that owns the
- * socket and the notification state, so this page exists to give `/` the right
- * destination *now* rather than to be the destination itself — which is why it
- * carries no widgets that a later phase would have to unpick.
+ * unread count) replaces this in phase 6b. Building it needs the shell that
+ * owns the socket and the notification state, so this page exists to give `/`
+ * the right destination *now* rather than to be the destination itself — which
+ * is why it carries no widgets that the dashboard would have to unpick.
  *
- * The links are plain anchors: a click is a real navigation, the server's
- * fallback serves the shell for the target path, and the app boots on it. That
- * is the honest interim shape — a view swap with no reload needs the shell.
+ * The links are {@link AppLink}s: a click swaps the view in place. The admin
+ * link stays a plain anchor on purpose — that is a different app on the server,
+ * so it deserves a real navigation.
  */
-import { ROUTE_PATHS } from "../router";
+import { AppLink } from "../AppLink";
+import type { AppRoute } from "../router";
 
 /** What the launcher offers, in the order it shows them. */
-const PAGES: { href: string; label: string; note: string }[] = [
-    { href: ROUTE_PATHS.chat, label: "Chat", note: "Talk to JARVIS" },
+const PAGES: { to: AppRoute; label: string; note: string }[] = [
+    { to: "chat", label: "Chat", note: "Talk to JARVIS" },
     {
-        href: ROUTE_PATHS.timers,
+        to: "timers",
         label: "Timers",
         note: "Countdowns that ring until stopped",
     },
     {
-        href: ROUTE_PATHS.reminders,
+        to: "reminders",
         label: "Reminders",
         note: "Things to be told at a time you choose",
     },
     {
-        href: ROUTE_PATHS.notifications,
+        to: "notifications",
         label: "Notifications",
         note: "What JARVIS has to report",
     },
@@ -54,10 +55,10 @@ export function Home({ username }: HomeProps) {
             </header>
             <nav className="home-links" aria-label="Pages">
                 {PAGES.map((page) => (
-                    <a key={page.href} href={page.href} className="home-link">
+                    <AppLink key={page.to} to={page.to} className="home-link">
                         <span className="home-link-label">{page.label}</span>
                         <span className="home-link-note">{page.note}</span>
-                    </a>
+                    </AppLink>
                 ))}
             </nav>
             <p className="home-note">

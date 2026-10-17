@@ -7,12 +7,11 @@
  * clears the credential and drops back to the gate. Sign-out clears the
  * credential but deliberately keeps the per-user transcripts.
  *
- * Routing is a path lookup and nothing more (#90 phase 6a): `/` is the interim
- * launcher, `/chat` is the conversation, and the pages that are not built yet
- * say so. Every link is a plain anchor, so a click is a real navigation and this
- * one read of `location.pathname` is the whole router — the shell that swaps
- * views without a reload (and keeps the socket alive across the swap) lands with
- * the dashboard.
+ * Routing is a live lookup and nothing more (#90 phase 6b): the route comes
+ * from `useRoute()`, which follows `window.location` through the store in
+ * `./router`, so an in-app link swaps the view without a document load and the
+ * browser's Back and Forward work normally. The shell that owns the socket —
+ * and therefore keeps a stream alive across a swap — lands with the dashboard.
  */
 import { useCallback, useState } from "react";
 import type { LoginResult } from "./api";
@@ -22,7 +21,7 @@ import {
     loadCredential,
     type StoredCredential,
 } from "./credentials";
-import { routeForPath } from "./router";
+import { useRoute } from "./hooks/useRoute";
 import { Login } from "./views/Login";
 import { Home } from "./views/Home";
 import { PagePlaceholder } from "./views/PagePlaceholder";
@@ -36,6 +35,11 @@ export function App() {
     const [credential, setCredential] = useState<StoredCredential | null>(() =>
         loadCredential(localStorage),
     );
+    // Called before the sign-in gate returns: hooks run unconditionally, and
+    // the route is needed on both sides of it anyway. The store follows the
+    // address (`hooks/useRoute`), so a link in the app swaps the view without a
+    // document load and Back/Forward arrive through the same subscription.
+    const route = useRoute();
 
     /** Persists a fresh login and enters the app. */
     const onSignedIn = useCallback((result: LoginResult): void => {
@@ -63,9 +67,6 @@ export function App() {
         return <Login onSignedIn={onSignedIn} />;
     }
 
-    // Read once per load: a link is a navigation, so arriving here *is* the
-    // route change.
-    const route = routeForPath(window.location.pathname);
     if (route === "home") {
         return <Home username={credential.username} />;
     }
