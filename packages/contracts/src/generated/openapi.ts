@@ -624,7 +624,12 @@ export interface components {
             title: string;
             body?: string;
             /**
-             * @description How much this may disturb the user. `low` and `normal` respect the caller's quiet hours; `high` and `urgent` bypass them. Defaults to `normal`.
+             * @description What kind of attention this asks for (#90). A `timer` pierces the caller's quiet hours; a `reminder` and a `notification` wait for the window to end. Defaults to `notification` — the quiet class — so a producer with no opinion cannot make an interruption loud by omission. Set by the thing the user asked for (a scheduled reminder, a timer), never by the model.
+             * @enum {string}
+             */
+            class?: "notification" | "reminder" | "timer";
+            /**
+             * @description Display emphasis and ordering only; it does not decide quiet hours (`class` does — #90). Defaults to `normal`.
              * @enum {string}
              */
             priority?: "low" | "normal" | "high" | "urgent";
@@ -637,6 +642,11 @@ export interface components {
         Notification: {
             id: string;
             kind: string;
+            /**
+             * @description What kind of attention this asked for (#90). `timer` pierces quiet hours and rings until acknowledged; `reminder` waits and is snoozable; `notification` is informational.
+             * @enum {string}
+             */
+            class: "notification" | "reminder" | "timer";
             /** @enum {unknown} */
             priority: "low" | "normal" | "high" | "urgent";
             title: string;

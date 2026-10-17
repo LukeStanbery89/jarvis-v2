@@ -25,8 +25,10 @@ npm install @lukestanbery/jarvis-protocol
 | Export                              | Description                                                                                                                                                   |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `type ServerFrame`                  | Union of every frame the server sends to a chat client, including the out-of-turn `notification` frame (#139)                                                 |
-| `type NotificationFrame`            | The proactive-notification payload (#139): `{ notification: { id, kind, priority, title, body?, createdAt, requiresAnswer? } }`                               |
-| `type NotificationPriority`         | `"low" \| "normal" \| "high" \| "urgent"` — how much a notification may disturb the user, derived from `NOTIFICATION_PRIORITIES`                              |
+| `type NotificationFrame`            | The proactive-notification payload (#139): `{ notification: { id, kind, class, priority, title, body?, createdAt, requiresAnswer? } }`                        |
+| `type NotificationClass`            | `"notification" \| "reminder" \| "timer"` (#90) — what kind of attention a notification asks for, derived from `NOTIFICATION_CLASSES`                         |
+| `NOTIFICATION_CLASSES`              | The class tuple the `NotificationClass` union and the parser both derive from                                                                                 |
+| `type NotificationPriority`         | `"low" \| "normal" \| "high" \| "urgent"` — display emphasis only (the _class_ decides quiet hours), derived from `NOTIFICATION_PRIORITIES`                   |
 | `NOTIFICATION_PRIORITIES`           | The priority tuple the `NotificationPriority` union and the parser both derive from                                                                           |
 | `type ClientFrame`                  | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame \| ClientCancelFrame`                              |
 | `type ClientCapability`             | `"markdown" \| "html" \| "image" \| "link" \| "audio" \| "notification"` — what a client declares it can handle, derived from `CLIENT_CAPABILITIES`           |
@@ -107,12 +109,15 @@ JSON text frames over `/ws`:
     - then `{ "chunk": "<text>" }` … then `{ "done": true }`, then (for `audio`-capable sockets) `{ "audioStart": {...} }`, binary PCM chunks, `{ "audioEnd": {...} }`; and
       `{ "authResult": { "user", "device" } }` as the one-frame reply to an
       `auth` handshake,
-    - and `{ "notification": { "id", "kind", "priority", "title", "body", "createdAt", "requiresAnswer" } }`
+    - and `{ "notification": { "id", "kind", "class", "priority", "title", "body", "createdAt", "requiresAnswer" } }`
       (#139) at **any** time — the one frame outside a turn. It is
       pushed to a user's open sockets when the server has something to report
       (a background job finished, a reminder came due, an agent needs an
       answer), so a client must handle it whether or not a prompt is in
-      flight and must not treat it as the reply to one. Delivery is
+      flight and must not treat it as the reply to one. `class` is the
+      delivery policy (#90): a `timer` pierces quiet hours and rings until
+      acknowledged, a `reminder` waits them out and is snoozable, and a
+      `notification` is informational. Delivery is
       best-effort: the durable record lives behind `GET /api/notifications`,
       and a client matches by `id` so nothing renders twice.
 - Invalid input or model failure: `{ "error": "<message>" }` then `{ "done": true }`.

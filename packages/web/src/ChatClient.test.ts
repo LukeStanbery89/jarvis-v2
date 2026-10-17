@@ -694,6 +694,7 @@ describe("notifications (#139)", () => {
         notification: {
             id: "3Ybq0kQmT1xVn8sRzWpLdA",
             kind: "job.finished",
+            class: "notification",
             priority: "normal",
             title: "PR #143 is ready",
             createdAt: "2026-10-15T18:04:11.000Z",

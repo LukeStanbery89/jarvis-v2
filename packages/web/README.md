@@ -361,8 +361,9 @@ expanded list shows a _Send a test notification_ button — it is behind
 `import.meta.env.DEV` as well, so a shipped bundle carries neither the branch
 nor the button. It raises a notification through this browser's own credential
 and prints what the server did with it — pushed to N clients, or recorded only
-because no client was connected, quiet hours held it back, or the delivery
-budget was spent. That single line separates "the server did not push it" from
+because no client was connected, quiet hours held it back (a notification
+waits them out — only a `timer` pierces them, #90), or the delivery budget was
+spent. That single line separates "the server did not push it" from
 "the client received it and did not show it", which is otherwise unresolvable
 from a missing banner; doing the same thing with `curl` also requires a device
 token and the right account, which is exactly the sort of thing that makes a

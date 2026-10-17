@@ -1630,6 +1630,7 @@ describe("notification push wiring (#139)", () => {
                 notification: {
                     id: "n1",
                     kind: "job.finished",
+                    class: "notification",
                     priority: "normal",
                     title: "PR #143 is ready",
                     createdAt: "2026-10-15T18:04:11.000Z",
@@ -1644,6 +1645,7 @@ describe("notification push wiring (#139)", () => {
                 notification: {
                     id: "n1",
                     kind: "job.finished",
+                    class: "notification",
                     priority: "normal",
                     title: "PR #143 is ready",
                     createdAt: "2026-10-15T18:04:11.000Z",
@@ -1702,6 +1704,7 @@ describe("notification push wiring (#139)", () => {
                 notification: {
                     id: "n1",
                     kind: "k",
+                    class: "notification",
                     priority: "low",
                     title: "never sent",
                     createdAt: "2026-10-15T18:04:11.000Z",

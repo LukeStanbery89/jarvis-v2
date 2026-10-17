@@ -93,7 +93,8 @@ export interface AudioEndFrame {
  *
  * The {@link NotificationPriority} union derives from this tuple, so the
  * protocol, the server's routing policy, and the client's presentation cannot
- * drift on what the levels are.
+ * drift on what the levels are. Since #90 these are emphasis and ordering
+ * only; {@link NOTIFICATION_CLASSES} carries the delivery policy.
  */
 export const NOTIFICATION_PRIORITIES = [
     "low",
@@ -105,12 +106,38 @@ export const NOTIFICATION_PRIORITIES = [
 /**
  * How much a notification is allowed to disturb the user.
  *
- * The server's routing policy reads this (#139 phase 1): `low` and `normal`
- * respect quiet hours and coalesce, `high` and `urgent` bypass them. This is
- * the one field a client should use to decide between a silent badge and
- * something that speaks.
+ * Display emphasis and ordering only — it does **not** decide quiet hours
+ * (#90): the {@link NotificationClass} does, so that one field owns the
+ * policy and a producer cannot pierce quiet hours by escalating a priority.
+ * This is the field a client should use to decide whether to badge quietly or
+ * draw attention, within the class's rules.
  */
 export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
+
+/**
+ * What kind of thing is asking for attention (#90), in rising order of how
+ * much it may insist.
+ *
+ * The **class** is what the user asked for; the priority is how loud a
+ * producer chose to make it. They are separate because the class carries
+ * policy a priority cannot express: a `reminder` that lands inside quiet hours
+ * is *deferred* (the job reschedules itself to the end of the window), a
+ * `timer` *pierces* them and rings until acknowledged, and a `notification`
+ * simply waits to be read. `priority` keeps ordering and emphasis.
+ *
+ * It is deliberately not a model-chosen parameter: the class comes from the
+ * thing that was scheduled (the tool the user asked for, or the page), so a
+ * model cannot pierce quiet hours by naming a class — the same reasoning that
+ * keeps `urgent` out of the model's hands.
+ */
+export const NOTIFICATION_CLASSES = [
+    "notification",
+    "reminder",
+    "timer",
+] as const;
+
+/** What kind of attention a notification asks for. */
+export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
 
 /**
  * The payload of a `notification` frame: something JARVIS wants to tell the
@@ -134,6 +161,14 @@ export interface NotificationFrame {
          * token per feature. Free-form but bounded ({@link MAX_NOTIFICATION_KIND_LENGTH}).
          */
         kind: string;
+        /**
+         * What kind of attention this asks for (#90). Required, like
+         * `priority`, and for the same reason: a client should never have to
+         * render a frame whose policy fields are missing, because the fallback
+         * for "unknown" would silently be "quiet" for a timer that was
+         * supposed to be impossible to miss.
+         */
+        class: NotificationClass;
         priority: NotificationPriority;
         /** One-line headline, already written for display. */
         title: string;

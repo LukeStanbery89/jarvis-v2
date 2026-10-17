@@ -314,6 +314,49 @@ export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
 };
 
 /**
+ * Scheduler settings (#90).
+ *
+ * The loop is on by default and switched off with `JARVIS_SCHEDULER=off` (the
+ * `JARVIS_NOTIFY=off` posture: no loop, no tool, no routes, rather than a
+ * surface that does nothing). It needs the notification service to announce
+ * what a run did, so a deployment with notifications off has no scheduler
+ * either.
+ *
+ * `tickMs` is deliberately coarse: the queue is a table, so a scan finds
+ * whatever is due *now*, and a restart has nothing to rebuild. The cost of
+ * coarseness is that a job can run up to one tick late, which is irrelevant
+ * next to the seconds a turn itself takes.
+ *
+ * `maxPerTick` bounds how much work one tick takes on, not how fast the
+ * backlog drains — with the default of one, a hundred due jobs drain over a
+ * hundred ticks rather than pinning the process. Raising it above 1 really does
+ * run turns concurrently, against one model: a home server has one.
+ *
+ * `maxLatenessMs` is the honesty knob: a job whose moment passed while the
+ * server was down runs late if it is within this window, and is recorded as
+ * `missed` (with a notification saying so) if it is not. A reminder that fires
+ * six hours after the fact is not a reminder.
+ */
+export interface SchedulerConfig {
+    /** Interval between scans (`JARVIS_JOB_TICK_MS`), default 5000. */
+    readonly tickMs: number;
+    /** Jobs kept per user (`JARVIS_JOB_MAX_PER_USER`), default 50. */
+    readonly maxPerUser: number;
+    /** Latest a job may run and still be worth running, default 1h. */
+    readonly maxLatenessMs: number;
+    /** Jobs one tick takes on (`JARVIS_JOB_MAX_PER_TICK`), default 1. */
+    readonly maxPerTick: number;
+}
+
+/** LAN-reasonable scheduler defaults: a 5s scan, 50 jobs, an hour of lateness. */
+export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
+    tickMs: 5000,
+    maxPerUser: 50,
+    maxLatenessMs: 60 * 60 * 1000,
+    maxPerTick: 1,
+};
+
+/**
  * Home Assistant connection settings (#15).
  *
  * Both the URL and the long-lived access token are required, and neither has a
@@ -633,6 +676,11 @@ export interface AppConfig {
      * unmounts the REST surface and the delivery wiring.
      */
     readonly notify?: NotifyConfig;
+    /**
+     * Scheduler settings (`JARVIS_JOB_*`); `undefined` disables the whole
+     * surface (`JARVIS_SCHEDULER=off`), as `notify` does for notifications.
+     */
+    readonly scheduler?: SchedulerConfig;
     /**
      * Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values.
      */
@@ -960,6 +1008,31 @@ export function getAppConfig(): AppConfig {
                           "JARVIS_NOTIFY_MAX_PER_USER",
                           process.env.JARVIS_NOTIFY_MAX_PER_USER,
                           DEFAULT_NOTIFY_CONFIG.maxPerUser,
+                      ),
+                  },
+        scheduler:
+            process.env.JARVIS_SCHEDULER === "off"
+                ? undefined
+                : {
+                      tickMs: numberOr(
+                          "JARVIS_JOB_TICK_MS",
+                          process.env.JARVIS_JOB_TICK_MS,
+                          DEFAULT_SCHEDULER_CONFIG.tickMs,
+                      ),
+                      maxPerUser: numberOr(
+                          "JARVIS_JOB_MAX_PER_USER",
+                          process.env.JARVIS_JOB_MAX_PER_USER,
+                          DEFAULT_SCHEDULER_CONFIG.maxPerUser,
+                      ),
+                      maxLatenessMs: numberOr(
+                          "JARVIS_JOB_MAX_LATENESS_MS",
+                          process.env.JARVIS_JOB_MAX_LATENESS_MS,
+                          DEFAULT_SCHEDULER_CONFIG.maxLatenessMs,
+                      ),
+                      maxPerTick: numberOr(
+                          "JARVIS_JOB_MAX_PER_TICK",
+                          process.env.JARVIS_JOB_MAX_PER_TICK,
+                          DEFAULT_SCHEDULER_CONFIG.maxPerTick,
                       ),
                   },
         attachments:

@@ -34,6 +34,58 @@ const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
     expires_at  TEXT NOT NULL
 );`;
 
+/**
+ * The scheduler's tables (#90): one row per scheduled job, one per run.
+ *
+ * A constant rather than an inline string because it is needed twice — by
+ * {@link SCHEMA} for a fresh database and by the v8 migration for an existing
+ * one — and the two must agree on the shape (the same reason
+ * {@link WEB_SESSIONS_SCHEMA} is one).
+ *
+ * `job_runs` is the job's *observable* history: what a run produced, when, and
+ * why it failed. The model's own context does not live here — it lives in the
+ * LangGraph checkpoint, under a `job:<id>` thread that never enters the
+ * chat-thread ledger, which is what keeps a job's runs from appearing as
+ * conversations.
+ *
+ * The `kind` CHECK is the table refusing to hold a job that could never run: a
+ * prompt job without a prompt, or a tool job without a tool.
+ */
+const JOBS_SCHEMA = `CREATE TABLE IF NOT EXISTS jobs (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label       TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('prompt', 'tool')),
+    prompt      TEXT,
+    tool_name   TEXT,
+    tool_args   TEXT,
+    run_at      TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', 'cancelled', 'missed')),
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    settled_at  TEXT,
+    last_error  TEXT,
+    CHECK (
+        (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL) OR
+        (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL)
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_due
+    ON jobs (run_at) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_jobs_user
+    ON jobs (user_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS job_runs (
+    id          TEXT PRIMARY KEY,
+    job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    state       TEXT NOT NULL CHECK (state IN ('running', 'ok', 'failed')),
+    output      TEXT,
+    error       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_job
+    ON job_runs (job_id, started_at DESC);`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +125,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     id              TEXT PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     kind            TEXT NOT NULL,
+    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
     priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
     title           TEXT NOT NULL,
     body            TEXT,
@@ -86,6 +139,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user
     ON notifications (user_id, created_at DESC);
+${JOBS_SCHEMA}
 ${WEB_SESSIONS_SCHEMA}
 `;
 
@@ -215,6 +269,24 @@ export const NOTIFICATION_PRIORITIES = [
 export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
 
 /**
+ * What kind of attention a notification asks for (#90), in rising order of how
+ * much it may insist.
+ *
+ * Structurally mirrors the protocol's `NOTIFICATION_CLASSES` the same way
+ * {@link NOTIFICATION_PRIORITIES} mirrors the wire's priorities — the server
+ * passes values straight through, so the two packages stay independent. Keep
+ * the tuples in step. The row's CHECK is what actually enforces the set.
+ */
+export const NOTIFICATION_CLASSES = [
+    "notification",
+    "reminder",
+    "timer",
+] as const;
+
+/** What kind of attention a notification asks for. */
+export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
+
+/**
  * Where a notification is in its life (#139).
  *
  * `pending` — recorded but never pushed to a live client (nobody was
@@ -249,6 +321,12 @@ export interface AppNotification {
     userId: number;
     /** Producer-defined category ("job.finished", "reminder", …). */
     kind: string;
+    /**
+     * What kind of attention this asks for (#90). Defaults to `notification`
+     * at the table, so a producer that has no opinion (today: every producer
+     * but the scheduler) stores the quiet class rather than a null.
+     */
+    class: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body: string | null;
@@ -272,6 +350,11 @@ export interface AppNotification {
 /** The producer-supplied half of a notification; identity and times are the store's. */
 export interface CreateNotificationInput {
     kind: string;
+    /**
+     * What kind of attention it asks for; the table's default is
+     * `notification` (quiet), so a caller that has no opinion omits it.
+     */
+    class?: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body?: string | null;
@@ -343,6 +426,229 @@ export interface NotificationLedger {
 }
 
 /**
+ * What a job runs when it fires (#90).
+ *
+ * `prompt` runs an agent turn — anything needing judgement ("send me a weather
+ * and news summary"). `tool` invokes one tool directly and never touches the
+ * model, which is what makes a timer or a "turn the light on" a job rather
+ * than a conversation.
+ */
+export const JOB_KINDS = ["prompt", "tool"] as const;
+
+/** What a job runs. */
+export type JobKind = (typeof JOB_KINDS)[number];
+
+/**
+ * Where a job is in its life.
+ *
+ * `pending` is the only state a job is *owed* in — it is the queue. `running`
+ * is claimed and in flight; `done`, `failed`, `cancelled` and `missed` are
+ * terminal. `missed` is distinct from `failed` on purpose: a job whose moment
+ * passed while the server was down did not fail, it was never attempted, and
+ * the two want different words in front of the user.
+ */
+export const JOB_STATES = [
+    "pending",
+    "running",
+    "done",
+    "failed",
+    "cancelled",
+    "missed",
+] as const;
+
+/** A job's lifecycle state. */
+export type JobState = (typeof JOB_STATES)[number];
+
+/** How one attempt at a job ended. */
+export const JOB_RUN_STATES = ["running", "ok", "failed"] as const;
+
+/** A run's state. */
+export type JobRunState = (typeof JOB_RUN_STATES)[number];
+
+/**
+ * One scheduled job (#90) as the store returns it.
+ *
+ * `toolArgs` is the tool call's arguments, already parsed, or `null` for a
+ * prompt job — the ledger round-trips `tool_args` the way `PrefLedger` does
+ * `value_json`, so the server validates the arguments and the store only holds
+ * them.
+ */
+export interface AppJob {
+    id: string;
+    userId: number;
+    /** User-facing name ("AC filter"), used in the announcement. */
+    label: string;
+    kind: JobKind;
+    /** The instruction, for `kind: "prompt"`. */
+    prompt: string | null;
+    /** The tool to call, for `kind: "tool"`. */
+    toolName: string | null;
+    /** That tool's arguments (parsed JSON), or `null`. */
+    toolArgs: unknown;
+    /** When it wants to run, ISO-8601 UTC. */
+    runAt: string;
+    state: JobState;
+    /** How many times it has been claimed (a claim is an attempt). */
+    attempts: number;
+    createdAt: string;
+    /** When it reached a terminal state. */
+    settledAt: string | null;
+    /** Why the last attempt failed, for a `failed` job. */
+    lastError: string | null;
+}
+
+/** One attempt at one job, as the store returns it. */
+export interface AppJobRun {
+    id: string;
+    jobId: string;
+    startedAt: string;
+    finishedAt: string | null;
+    state: JobRunState;
+    /** What the run produced (the reply, or the tool's result text). */
+    output: string | null;
+    /** Why the run failed, when it did. */
+    error: string | null;
+}
+
+/** The producer-supplied half of a job; identity and times are the store's. */
+export interface CreateJobInput {
+    label: string;
+    kind: JobKind;
+    /** Required for `kind: "prompt"`; refused by the table's CHECK otherwise. */
+    prompt?: string | null;
+    /** Required for `kind: "tool"`. */
+    toolName?: string | null;
+    toolArgs?: unknown;
+    runAt: string;
+}
+
+/**
+ * Job-rows ledger: the scheduler's queue and history (#90).
+ *
+ * Unlike {@link NotificationLedger} — whose every method scopes by `userId`,
+ * because a notification is only ever read for its owner — this ledger has two
+ * deliberate surfaces:
+ *
+ * - **User-scoped** ({@link getJob} / {@link listJobs} / {@link cancelJob} /
+ *   {@link listJobRuns}): what the REST layer and the pages use. A foreign id
+ *   is indistinguishable from a missing one, as everywhere else.
+ * - **Scheduler-scoped** ({@link listDueJobs} / {@link claimJob} /
+ *   {@link settleJob} / {@link startJobRun} / {@link finishJobRun}): the
+ *   process acts *for every user*, so it selects due work across accounts and
+ *   settles it by the id it claimed. Nothing here is reachable from a request
+ *   handler; the scheduler is the only caller.
+ *
+ * The store owns rows and transitions; the *policy* (what may be scheduled,
+ * what a run means, retention, deferral) lives in the server's scheduler.
+ */
+export interface JobLedger {
+    /**
+     * Inserts a job and returns the stored row.
+     *
+     * The caller has already validated the payload; the table's CHECK rejects a
+     * mismatched `kind`/`prompt`/`tool_name` combination rather than storing a
+     * job that could never run.
+     */
+    createJob(
+        userId: number,
+        input: CreateJobInput & { id: string; createdAt: string },
+    ): AppJob;
+    /** One job, or `null` when it is missing or another user's. */
+    getJob(userId: number, id: string): AppJob | null;
+    /**
+     * A user's jobs, newest-created first. Settled jobs are hidden by default
+     * (they are history); `limit` caps the page.
+     */
+    listJobs(
+        userId: number,
+        options?: { limit?: number; includeSettled?: boolean },
+    ): AppJob[];
+    /**
+     * Every user's `pending` jobs whose `run_at` has arrived, oldest first —
+     * the scheduler's claim feed. Cross-user by design (see the interface doc).
+     */
+    listDueJobs(at: string, limit: number): AppJob[];
+    /**
+     * Every job currently `running`, across users — the recovery feed.
+     *
+     * A job is `running` only while a claim holds it, and a claim lives in the
+     * claiming process's memory, so at boot any `running` row was left behind
+     * by a process that died mid-run. What to do about that is the scheduler's
+     * policy (phase 1: fail it and say so), which is why the store only
+     * reports them.
+     */
+    listRunningJobs(limit: number): AppJob[];
+    /**
+     * Closes every still-open run of a job, recording why. This is the trace of
+     * an attempt that never finished — the process making it died — and a run
+     * row left saying `running` forever would be a lie about a dead process.
+     *
+     * @returns The number of run rows closed.
+     */
+    failOpenJobRuns(jobId: string, error: string, at: string): number;
+    /**
+     * Claims one job for this process: `pending` → `running`, counting the
+     * attempt. The transition is in the WHERE clause, so a second claim — from
+     * another tick, or from a process that restarted mid-run — touches no row.
+     *
+     * @returns `true` when *this* caller won the job.
+     */
+    claimJob(id: string): boolean;
+    /**
+     * Records the start of one attempt.
+     *
+     * Called after {@link claimJob}, so a claimed job always has a run row: an
+     * attempt that leaves no trace would be the "nothing happened" this whole
+     * area exists to remove.
+     */
+    startJobRun(input: { id: string; jobId: string; startedAt: string }): void;
+    /** Finishes one attempt, recording what it produced or why it failed. */
+    finishJobRun(
+        runId: string,
+        state: Exclude<JobRunState, "running">,
+        result: { output?: string; error?: string },
+        at: string,
+    ): void;
+    /**
+     * Moves a claimed job to a terminal state, stamping `settled_at`.
+     *
+     * Scheduler-scoped: it takes an id, not a user, because the caller holds a
+     * claim on that id. Terminal states are terminal — a settle of an already
+     * settled job returns the existing row unchanged — so a late duplicate
+     * cannot rewrite history.
+     */
+    settleJob(
+        id: string,
+        state: Exclude<JobState, "pending" | "running">,
+        options: { error?: string },
+        at: string,
+    ): AppJob | null;
+    /**
+     * Cancels one of the caller's own jobs (the only user-reachable state
+     * change). Only a `pending` job is cancellable: one already running is
+     * being worked on, and its result is on its way.
+     *
+     * @returns The row after the attempt — unchanged when it was not
+     * cancellable — or `null` when no such job belongs to `userId`.
+     */
+    cancelJob(userId: number, id: string): AppJob | null;
+    /**
+     * A job's runs, newest first, for the pages and for tests.
+     */
+    listJobRuns(jobId: string, options?: { limit?: number }): AppJobRun[];
+    /**
+     * Trims a user's jobs to the newest `keep`, so a long-lived instance cannot
+     * grow the table without bound. Settled rows are evicted first — a
+     * `pending` job is work still owed, so it is the last thing a prune takes,
+     * though (as with notifications) it is not exempt: a store nobody's jobs
+     * ever settle in would otherwise grow forever.
+     *
+     * @returns The number of rows deleted.
+     */
+    pruneJobs(userId: number, keep: number): number;
+}
+
+/**
  * Session-rows ledger: the WS chat sessions (one per `thread_id`).
  */
 export interface SessionLedger {
@@ -377,7 +683,8 @@ export type AppDatabase = UserLedger &
     WebSessionLedger &
     PrefLedger &
     SessionLedger &
-    NotificationLedger & {
+    NotificationLedger &
+    JobLedger & {
         /** Releases the underlying connection. */
         close(): void;
     };
@@ -430,6 +737,7 @@ interface NotificationRow {
     id: string;
     userId: number;
     kind: string;
+    class: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body: string | null;
@@ -446,7 +754,44 @@ interface NotificationRow {
  * The notification SELECT list, shared by every read so a new column cannot
  * reach one query and miss another (`mapNotification` is the other half).
  */
-const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+
+/** A `jobs` table row as the SELECTs alias it (see {@link mapJob}). */
+interface JobRow {
+    id: string;
+    userId: number;
+    label: string;
+    kind: JobKind;
+    prompt: string | null;
+    toolName: string | null;
+    toolArgs: string | null;
+    runAt: string;
+    state: JobState;
+    attempts: number;
+    createdAt: string;
+    settledAt: string | null;
+    lastError: string | null;
+}
+
+/** A `job_runs` table row (see {@link mapJobRun}). */
+interface JobRunRow {
+    id: string;
+    jobId: string;
+    startedAt: string;
+    finishedAt: string | null;
+    state: JobRunState;
+    output: string | null;
+    error: string | null;
+}
+
+/** The job SELECT list, shared by every read (`mapJob` is the other half). */
+const JOB_COLUMNS = `SELECT id, user_id AS userId, label, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError FROM jobs`;
+
+/** The run SELECT list (`mapJobRun` is the other half). */
+const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error FROM job_runs`;
+
+/** The states a job never returns from — settled, in the ledger's terms. */
+const SETTLED_JOB_STATES = `('done', 'failed', 'cancelled', 'missed')`;
 
 /**
  * Whether a rejected statement is better-sqlite3's UNIQUE-constraint
@@ -504,6 +849,7 @@ function mapNotification(row: NotificationRow): AppNotification {
         id: row.id,
         userId: row.userId,
         kind: row.kind,
+        class: row.class,
         priority: row.priority,
         title: row.title,
         body: row.body,
@@ -517,9 +863,59 @@ function mapNotification(row: NotificationRow): AppNotification {
     };
 }
 
+/**
+ * Parses a stored `tool_args` blob.
+ *
+ * A value that will not parse comes back as its raw text rather than as
+ * `null`, the way `getPrefs` treats a corrupt `value_json`: a run has to be
+ * able to say *why* it could not proceed, and a silent `null` would turn a
+ * corrupt row into "this job needs no arguments".
+ */
+function parseToolArgs(value: string | null): unknown {
+    if (value === null) {
+        return null;
+    }
+    try {
+        return JSON.parse(value) as unknown;
+    } catch {
+        return value;
+    }
+}
+
+/** Maps a `jobs` row onto the ledger's public shape. */
+function mapJob(row: JobRow): AppJob {
+    return {
+        id: row.id,
+        userId: row.userId,
+        label: row.label,
+        kind: row.kind,
+        prompt: row.prompt,
+        toolName: row.toolName,
+        toolArgs: parseToolArgs(row.toolArgs),
+        runAt: row.runAt,
+        state: row.state,
+        attempts: row.attempts,
+        createdAt: row.createdAt,
+        settledAt: row.settledAt,
+        lastError: row.lastError,
+    };
+}
+
+/** Maps a `job_runs` row onto the ledger's public shape. */
+function mapJobRun(row: JobRunRow): AppJobRun {
+    return {
+        id: row.id,
+        jobId: row.jobId,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+        state: row.state,
+        output: row.output,
+        error: row.error,
+    };
+}
+
 /** The named `(user_id, name)` index the v2 migration creates on legacy stores. */
 const DEVICE_NAME_INDEX = "idx_devices_user_name";
-
 /**
  * How many notifications a list call returns when the caller does not say.
  *
@@ -527,6 +923,41 @@ const DEVICE_NAME_INDEX = "idx_devices_user_name";
  * busy day of background work.
  */
 const DEFAULT_NOTIFICATION_PAGE = 50;
+
+/**
+ * How many jobs a list call returns when the caller does not say.
+ *
+ * The same order of magnitude as a notification page: enough for an active
+ * account's scheduled work, small enough to render in one go.
+ */
+const DEFAULT_JOB_PAGE = 50;
+
+/**
+ * How many runs of one job a history call returns.
+ *
+ * A job is a repeating thing by nature (recurrence is phase 8), so the run
+ * history is the one list here that genuinely grows per job.
+ */
+const DEFAULT_JOB_RUN_PAGE = 20;
+
+/**
+ * Whether `table` already has a column named `column`.
+ *
+ * An additive migration (`ALTER TABLE … ADD COLUMN`) is not idempotent the way
+ * `CREATE TABLE IF NOT EXISTS` is — SQLite has no `ADD COLUMN IF NOT EXISTS`,
+ * and running it twice is an error — so the step that adds a column must ask
+ * first, because it also runs against a fresh database that already has the
+ * column from SCHEMA.
+ */
+function hasColumn(
+    db: Database.Database,
+    table: string,
+    column: string,
+): boolean {
+    const columns = db.pragma(`table_info('${table}')`) as { name: string }[];
+    return columns.some((c) => c.name === column);
+}
+
 /**
  * Whether `devices` already carries a UNIQUE index over exactly
  * `(user_id, name)` — either the named {@link DEVICE_NAME_INDEX} (v2's
@@ -682,6 +1113,30 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user
     ON notifications (user_id, created_at DESC);`);
         db.pragma("user_version = 7");
     }
+    if (version < 8) {
+        // v8: the scheduler's tables (#90). A fresh database gets them from
+        // SCHEMA; this branch brings an existing one to the same shape. The
+        // DDL comes from the same constant SCHEMA interpolates, so the two
+        // cannot drift.
+        db.exec(JOBS_SCHEMA);
+        db.pragma("user_version = 8");
+    }
+    if (version < 9) {
+        // v9: the notification class (#90). Additive rather than a table
+        // rebuild, because the default makes the migration total: every
+        // existing notification becomes the quiet class, so nothing a user
+        // already received changes meaning (and nothing is dropped).
+        //
+        // Guarded because ADD COLUMN is the one step in this function that is
+        // not idempotent — a fresh database already has the column from
+        // SCHEMA, and SQLite has no `ADD COLUMN IF NOT EXISTS`.
+        if (!hasColumn(db, "notifications", "class")) {
+            db.exec(
+                `ALTER TABLE notifications ADD COLUMN class TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer'))`,
+            );
+        }
+        db.pragma("user_version = 9");
+    }
 }
 
 export function openAppDatabase(dbPath: string): AppDatabase {
@@ -736,6 +1191,22 @@ export class SqliteAppDatabase implements AppDatabase {
         settleNotification: Database.Statement;
         pruneSettledNotifications: Database.Statement;
         pruneNotifications: Database.Statement;
+        insertJob: Database.Statement;
+        selectJob: Database.Statement;
+        selectJobById: Database.Statement;
+        selectJobs: Database.Statement;
+        selectJobsWithSettled: Database.Statement;
+        selectDueJobs: Database.Statement;
+        selectRunningJobs: Database.Statement;
+        claimJob: Database.Statement;
+        settleJob: Database.Statement;
+        cancelJob: Database.Statement;
+        insertJobRun: Database.Statement;
+        finishJobRun: Database.Statement;
+        failOpenJobRuns: Database.Statement;
+        selectJobRuns: Database.Statement;
+        pruneSettledJobs: Database.Statement;
+        pruneJobs: Database.Statement;
     };
 
     constructor(db: Database.Database) {
@@ -838,7 +1309,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
             insertNotification: db.prepare(
-                "INSERT INTO notifications (id, user_id, kind, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
             ),
             selectNotification: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -872,6 +1343,67 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             pruneNotifications: db.prepare(
                 "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
+            ),
+            insertJob: db.prepare(
+                "INSERT INTO jobs (id, user_id, label, kind, prompt, tool_name, tool_args, run_at, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            ),
+            selectJob: db.prepare(
+                `${JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
+            ),
+            selectJobById: db.prepare(`${JOB_COLUMNS} WHERE id = ?`),
+            selectJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE user_id = ? AND state NOT IN ${SETTLED_JOB_STATES} ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            selectJobsWithSettled: db.prepare(
+                `${JOB_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // The claim feed: due work across every account, oldest first, so
+            // the scheduler works through a backlog in the order it arrived.
+            selectDueJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE state = 'pending' AND run_at <= ? ORDER BY run_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // The recovery feed: any `running` row belongs to a process that
+            // died (a claim is in-memory), so the loop's boot pass asks for
+            // them and decides what they mean.
+            selectRunningJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE state = 'running' ORDER BY run_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // The claim *is* the transition: `state = 'pending'` in the WHERE
+            // clause means a second claim — another tick, or a process that
+            // restarted mid-run — touches no row and cannot double-fire a job.
+            claimJob: db.prepare(
+                "UPDATE jobs SET state = 'running', attempts = attempts + 1 WHERE id = ? AND state = 'pending'",
+            ),
+            // Terminal states are terminal, so a late duplicate settle cannot
+            // rewrite history; the caller re-reads the settled row instead.
+            settleJob: db.prepare(
+                `UPDATE jobs SET state = ?, last_error = ?, settled_at = ? WHERE id = ? AND state NOT IN ${SETTLED_JOB_STATES}`,
+            ),
+            // Only a pending job is cancellable, and only its owner's.
+            cancelJob: db.prepare(
+                "UPDATE jobs SET state = 'cancelled', settled_at = ? WHERE user_id = ? AND id = ? AND state = 'pending'",
+            ),
+            insertJobRun: db.prepare(
+                "INSERT INTO job_runs (id, job_id, started_at, state) VALUES (?, ?, ?, 'running')",
+            ),
+            finishJobRun: db.prepare(
+                "UPDATE job_runs SET state = ?, output = ?, error = ?, finished_at = ? WHERE id = ?",
+            ),
+            failOpenJobRuns: db.prepare(
+                "UPDATE job_runs SET state = 'failed', error = ?, finished_at = ? WHERE job_id = ? AND state = 'running'",
+            ),
+            selectJobRuns: db.prepare(
+                `${JOB_RUN_COLUMNS} WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // Two passes for the same reason notifications prune in two: the
+            // ceiling has to hold for the table, and only when settled rows
+            // cannot absorb the cut is a `pending` job — work still owed —
+            // taken with them.
+            pruneSettledJobs: db.prepare(
+                `DELETE FROM jobs WHERE user_id = ? AND state NOT IN ${SETTLED_JOB_STATES} AND id NOT IN (SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)`,
+            ),
+            pruneJobs: db.prepare(
+                "DELETE FROM jobs WHERE user_id = ? AND id NOT IN (SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
         };
     }
@@ -1219,6 +1751,11 @@ export class SqliteAppDatabase implements AppDatabase {
             input.id,
             userId,
             input.kind,
+            // The write path is explicit rather than leaning on the column's
+            // default: that default exists to make the v9 migration total (an
+            // existing row becomes the quiet class), and a store whose write
+            // behaviour depended on DDL would be a second place to look.
+            input.class ?? "notification",
             input.priority,
             input.title,
             input.body ?? null,
@@ -1293,6 +1830,140 @@ export class SqliteAppDatabase implements AppDatabase {
             limit,
         );
         return settled.changes + excess.changes;
+    }
+
+    createJob(
+        userId: number,
+        input: CreateJobInput & { id: string; createdAt: string },
+    ): AppJob {
+        this.statements.insertJob.run(
+            input.id,
+            userId,
+            input.label,
+            input.kind,
+            input.prompt ?? null,
+            input.toolName ?? null,
+            input.toolArgs === undefined || input.toolArgs === null
+                ? null
+                : JSON.stringify(input.toolArgs),
+            input.runAt,
+            input.createdAt,
+        );
+        // Just written, so a re-read cannot miss; the assertion documents that
+        // rather than papering over a null with a fake row.
+        const created = this.getJob(userId, input.id);
+        if (created === null) {
+            throw new Error("job insert vanished");
+        }
+        return created;
+    }
+
+    getJob(userId: number, id: string): AppJob | null {
+        const row = this.statements.selectJob.get(userId, id) as
+            JobRow | undefined;
+        return row ? mapJob(row) : null;
+    }
+
+    listJobs(
+        userId: number,
+        options: { limit?: number; includeSettled?: boolean } = {},
+    ): AppJob[] {
+        const limit = Math.max(1, options.limit ?? DEFAULT_JOB_PAGE);
+        const statement = options.includeSettled
+            ? this.statements.selectJobsWithSettled
+            : this.statements.selectJobs;
+        const rows = statement.all(userId, limit) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    listDueJobs(at: string, limit: number): AppJob[] {
+        const rows = this.statements.selectDueJobs.all(
+            at,
+            Math.max(1, limit),
+        ) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    listRunningJobs(limit: number): AppJob[] {
+        const rows = this.statements.selectRunningJobs.all(
+            Math.max(1, limit),
+        ) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    failOpenJobRuns(jobId: string, error: string, at: string): number {
+        return this.statements.failOpenJobRuns.run(error, at, jobId).changes;
+    }
+
+    claimJob(id: string): boolean {
+        return this.statements.claimJob.run(id).changes === 1;
+    }
+
+    startJobRun(input: { id: string; jobId: string; startedAt: string }): void {
+        this.statements.insertJobRun.run(
+            input.id,
+            input.jobId,
+            input.startedAt,
+        );
+    }
+
+    finishJobRun(
+        runId: string,
+        state: Exclude<JobRunState, "running">,
+        result: { output?: string; error?: string },
+        at: string,
+    ): void {
+        this.statements.finishJobRun.run(
+            state,
+            result.output ?? null,
+            result.error ?? null,
+            at,
+            runId,
+        );
+    }
+
+    settleJob(
+        id: string,
+        state: Exclude<JobState, "pending" | "running">,
+        options: { error?: string },
+        at: string,
+    ): AppJob | null {
+        this.statements.settleJob.run(state, options.error ?? null, at, id);
+        return this.jobById(id);
+    }
+
+    cancelJob(userId: number, id: string): AppJob | null {
+        this.statements.cancelJob.run(now(), userId, id);
+        return this.getJob(userId, id);
+    }
+
+    listJobRuns(jobId: string, options: { limit?: number } = {}): AppJobRun[] {
+        const rows = this.statements.selectJobRuns.all(
+            jobId,
+            Math.max(1, options.limit ?? DEFAULT_JOB_RUN_PAGE),
+        ) as JobRunRow[];
+        return rows.map(mapJobRun);
+    }
+
+    pruneJobs(userId: number, keep: number): number {
+        const limit = Math.max(0, keep);
+        const settled = this.statements.pruneSettledJobs.run(
+            userId,
+            userId,
+            limit,
+        );
+        const excess = this.statements.pruneJobs.run(userId, userId, limit);
+        return settled.changes + excess.changes;
+    }
+
+    /**
+     * A job by id, with no owner filter — the scheduler's read, for the row it
+     * has just settled. Deliberately not on {@link JobLedger}: a request
+     * handler must never reach a job by id alone.
+     */
+    private jobById(id: string): AppJob | null {
+        const row = this.statements.selectJobById.get(id) as JobRow | undefined;
+        return row ? mapJob(row) : null;
     }
 
     close(): void {

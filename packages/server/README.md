@@ -118,6 +118,11 @@ fail silently either:
 | `JARVIS_NOTIFY`                          | (unset)                                                                         | `off` removes the notification surface entirely (#139) — no `/api/notifications` routes and no delivery wiring                                                                                                                                                                                                                                                                                                                                       |
 | `JARVIS_NOTIFY_DELIVERIES_PER_MIN`       | `20`                                                                            | Pushes allowed per user per minute; over budget a notification is still recorded and listed, just not pushed                                                                                                                                                                                                                                                                                                                                         |
 | `JARVIS_NOTIFY_MAX_PER_USER`             | `200`                                                                           | Notifications kept per user; settled rows are evicted first, then the oldest survivor, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                            |
+| `JARVIS_SCHEDULER`                       | (unset)                                                                         | `off` removes the scheduler entirely (#90) — no tick loop, no `jobs` tool (phase 3); `JARVIS_NOTIFY=off` removes it too, since a run's outcome is announced through the notification service                                                                                                                                                                                                                                                         |
+| `JARVIS_JOB_TICK_MS`                     | `5000`                                                                          | How often the scheduler scans for due jobs; coarse on purpose, so a job can start up to one tick late and a restart has nothing to rebuild                                                                                                                                                                                                                                                                                                           |
+| `JARVIS_JOB_MAX_PER_USER`                | `50`                                                                            | Jobs kept per user; settled rows are evicted first, then the oldest pending one, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_JOB_MAX_LATENESS_MS`             | `3600000`                                                                       | How late a job may be and still run; past it the job is recorded (and announced) as `missed` rather than attempted, because a reminder that fires six hours after the fact is not a reminder                                                                                                                                                                                                                                                         |
+| `JARVIS_JOB_MAX_PER_TICK`                | `1`                                                                             | Jobs one tick takes on; above 1 the runs really do go concurrently, against one model — a home server has one                                                                                                                                                                                                                                                                                                                                        |
 | `LLM_BASE_URL`                           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `LLM_MODEL`                              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `LLM_TEMPERATURE`                        | `0.15`                                                                          | Sampling temperature                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -676,6 +681,67 @@ so a hand-edited database can never silence a user for the day; the write check
 is the strict counterpart. Both live in `packages/server/src/notify/prefs.ts`,
 one definition, so a new pref shape cannot have two.
 
+## Scheduler (#90)
+
+The assistant (and, from phase 3, its `jobs` tool) can schedule work for later.
+The queue is the `jobs` table in the app database — there is no in-memory
+pending set — which is what makes a restart free: the loop simply scans for
+what is due _now_, however the process got here.
+
+```
+   chat turn                          the loop (one coarse tick)
+   ┌──────────────────────┐           ┌──────────────────────────────────────────┐
+   │ the jobs tool        │           │ listDueJobs(now)  ← the partial index    │
+   │  (phase 3)           │           │      │                                   │
+   └──────────┬───────────┘           │      ▼  at most JARVIS_JOB_MAX_PER_TICK  │
+              │ creates               │   claim (pending → running, atomic)      │
+              ▼                       │      │                                   │
+   ┌───────────────────────────────┐  │      ▼                                   │
+   │ jobs  (queue + state)         │◄─┤   execute: prompt → runAgent(job:<id>)   │
+   │ job_runs  (what happened)     │  │            tool   → tool.invoke(runtime) │
+   └───────────────────────────────┘  │      │                                   │
+              ▲                       │      ▼  run row + settled job + ONE       │
+              │ 1:N                   │   notification (job.finished/failed/missed)│
+              └───────────────────────┴──────────────────────────────────────────┘
+```
+
+**A job is not a conversation.** Its runs execute on a `job:<id>` thread that
+never claims a row in the `sessions` ledger, so they never appear in a client's
+thread list; the checkpoint still gives the job memory across its own runs, and
+`job_runs` is the history a page will read (phase 7).
+
+Everything a run must not get wrong is in `scheduler/runner.ts` — the module
+that owns one job's life — and the four rules worth knowing here:
+
+- **One outcome, always announced.** Every path ends in a run row, a settled
+  job, and exactly one notification: `job.finished` with the reply,
+  `job.failed` with the reason, or `job.missed` when its moment passed while
+  the server was down. A scheduled job that does nothing visible is the
+  "nothing happened" class #139 exists to remove, and a _scheduled_ one has
+  nobody watching to notice.
+- **A claim is the transition.** `state = 'pending'` lives in the claim's WHERE
+  clause, so a second tick — or a process that restarted mid-run — touches no
+  row. The same statement is why an overlapping tick is safe.
+- **Lateness is honest.** Within `JARVIS_JOB_MAX_LATENESS_MS` a job runs late;
+  beyond it, it is `missed` and says so rather than firing into a moment that
+  has passed. A `running` row found at boot was left by a process that died
+  (a claim lives in memory), so the first thing `start()` does is fail it with
+  "the server restarted while this run was in progress" — announced like any
+  other failure.
+- **A tool job runs the tool, not the model.** The `tool` payload invokes the
+  named tool with the runtime a graph turn would have stamped
+  (`configurable.sessionId`/`userId`, the turn's `AbortSignal`), so the quotas,
+  ownership checks and quiet-hours policy inside that tool apply unchanged. The
+  allowlist in `scheduler/tools.ts` decides what may be named — it excludes
+  `sendNotification` (the runner already announces every run, so scheduling the
+  notification tool would announce twice) — and it is checked again at fire
+  time, because a server's configuration can change between scheduling and
+  firing.
+
+Phase 1 has no creation path: a job is a row (insert one with `sqlite3` to
+watch the loop work). The `jobs` tool lands in phase 3, the REST surface and
+pages after that, and recurrence (per-job timezones, DST, retries) last.
+
 ## Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
@@ -920,7 +986,9 @@ fetch; `HEAD` answers 200 without downloading.
   satellite speaker or a phone outranks nothing it cannot do; `hub.ts` is the
   live-socket registry (`ws.ts` fills it on auth, empties it on close) that
   makes "is the user reachable?" answerable at all; `service.ts` is the policy
-  (presence-first, quiet hours from the `notify.quietHours` pref, the delivery
+  (presence-first, quiet hours from the `notify.quietHours` pref — which the
+  notification's `class` decides, and nothing else does, so a timer pierces
+  them while a prioritised notification still waits — and the delivery
   budget above); `channels/inApp.ts` is the one phase-1 channel, pushing the
   stored record as a `notification` frame; `http.ts` is `/api/notifications`
   (list + create + read/dismiss/answer), mounted only when notifications are

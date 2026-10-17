@@ -157,6 +157,7 @@ describe("parseFrame: notification frames (#139)", () => {
         notification: {
             id: "abc123",
             kind: "job.finished",
+            class: "notification",
             priority: "normal",
             title: "PR #143 is ready",
             body: "4 files changed.",
@@ -175,6 +176,7 @@ describe("parseFrame: notification frames (#139)", () => {
                     notification: {
                         id: "a",
                         kind: "k",
+                        class: "reminder",
                         priority: "low",
                         title: "t",
                         createdAt: "2026-10-15T18:04:11.000Z",
@@ -185,6 +187,7 @@ describe("parseFrame: notification frames (#139)", () => {
             notification: {
                 id: "a",
                 kind: "k",
+                class: "reminder",
                 priority: "low",
                 title: "t",
                 createdAt: "2026-10-15T18:04:11.000Z",
@@ -225,6 +228,8 @@ describe("parseFrame: notification frames (#139)", () => {
             { ...valid.notification, kind: "" },
             { ...valid.notification, title: "" },
             { ...valid.notification, createdAt: undefined },
+            { ...valid.notification, class: undefined },
+            { ...valid.notification, class: "alarm" },
             { ...valid.notification, priority: undefined },
             { ...valid.notification, priority: "eventually" },
             { ...valid.notification, title: "x".repeat(201) },
