@@ -683,7 +683,7 @@ one definition, so a new pref shape cannot have two.
 
 ## Scheduler (#90)
 
-The assistant (and, from phase 3, its `jobs` tool) can schedule work for later.
+The assistant's scheduling tools (#90 phase 3) can set work for later.
 The queue is the `jobs` table in the app database — there is no in-memory
 pending set — which is what makes a restart free: the loop simply scans for
 what is due _now_, however the process got here.
@@ -691,8 +691,8 @@ what is due _now_, however the process got here.
 ```
    chat turn                          the loop (one coarse tick)
    ┌──────────────────────┐           ┌──────────────────────────────────────────┐
-   │ the jobs tool        │           │ listDueJobs(now)  ← the partial index    │
-   │  (phase 3)           │           │      │                                   │
+   │ the scheduling tools │           │ listDueJobs(now)  ← the partial index    │
+   │  (setTimer etc.)     │           │      │                                   │
    └──────────┬───────────┘           │      ▼  at most JARVIS_JOB_MAX_PER_TICK  │
               │ creates               │   claim (pending → running, atomic)      │
               ▼                       │      │                                   │
@@ -767,9 +767,54 @@ notification`. Silence at `info` therefore means it was delivered (the
   time, because a server's configuration can change between scheduling and
   firing.
 
-Phase 1 has no creation path: a job is a row (insert one with `sqlite3` to
-watch the loop work). The `jobs` tool lands in phase 3, the REST surface and
-pages after that, and recurrence (per-job timezones, DST, retries) last.
+### The scheduling tools (#90 phase 3)
+
+Five tools, and their split is the policy: **the class comes from which tool was
+called, never from an argument**, so nothing the model writes can choose how
+loudly the user is interrupted.
+
+| Tool           | Class                                  | Payload       | Time                                     |
+| -------------- | -------------------------------------- | ------------- | ---------------------------------------- |
+| `setTimer`     | `timer` — pierces quiet hours          | message       | `minutes` or `seconds` (1 s – 24 h)      |
+| `remindMe`     | `reminder` — defers out of quiet hours | message       | `at` + optional `onDate`, or `inMinutes` |
+| `scheduleTask` | `notification` — waits                 | one tool call | same as `remindMe`                       |
+| `listJobs`     | —                                      | —             | —                                        |
+| `cancelJob`    | —                                      | —             | —                                        |
+
+**Times are words, not timestamps.** The model passes what the user said — a
+24-hour clock time, `today`/`tomorrow`/a weekday/a date, or a delay — and
+`scheduler/time.ts` turns that into one instant in the server's local zone: a
+bare clock time means the next time the clock reads that, a time that passed
+seconds ago still means today, a weekday rolls forward, and an explicit past
+date is refused. That is also why the prompt tells the model not to convert
+times itself.
+
+**Impossible tasks fail at creation.** `scheduleTask` checks the requested tool
+against `scheduler/tools.ts` (so `sendNotification`, `analyzeImage`, and the
+scheduling tools themselves are refused) _and_ against that tool's own schema, so
+"the homeAssistant tool needs different arguments — entity_id: …" arrives while
+the user is still in the conversation rather than at the due moment with nobody
+watching. The runner re-resolves the tool when it fires, because a server's
+configuration can change in between.
+
+**The bounds are the queue's.** `JARVIS_JOB_MAX_PER_USER` caps _pending_ rows
+(the runner's retention prune evicts settled rows first, so a job the tool
+accepted cannot be the row the prune eats), `JARVIS_JOB_MAX_HORIZON_DAYS`
+(default 366) refuses a moment too far out to be anything but a typo, and a
+label or message longer than a notification can carry is refused rather than
+truncated. Every refusal is model-facing text and leaves no row behind.
+
+**The result says what will happen, not what was asked.** A reminder that lands
+inside quiet hours is told so — "it will wait until 7:00 AM and be announced
+then" — from a live read of the prefs, without pre-deferring (the runner owns
+that decision). A timer says it will interrupt; a notification says it will be
+recorded and wait. A job whose text is only its headline arrives as one line,
+not a headline repeated as the body.
+
+The tools are registered only when the scheduler is running (`JARVIS_SCHEDULER`
+not `off`, notifications wired): a job nobody can run is a promise the server
+cannot keep. The REST surface and pages come next (phases 5–7), and recurrence
+(per-job timezones, DST, retries) last.
 
 ## Endpoints
 

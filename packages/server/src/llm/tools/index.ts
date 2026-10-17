@@ -19,6 +19,7 @@ import { createGetWeatherTool } from "./getWeather";
 import { createHomeAssistantTool } from "./homeAssistant";
 import { createWikipediaTool } from "./wikipedia";
 import { createNotifyTool } from "./notify";
+import { createJobsTools } from "./jobs";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
@@ -26,6 +27,7 @@ import type { WeatherDeps } from "./getWeather";
 import type { HomeAssistantDeps } from "./homeAssistant";
 import type { WikipediaDeps } from "./wikipedia";
 import type { NotifyToolDeps } from "./notify";
+import type { JobsToolDeps } from "./jobs";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -62,6 +64,17 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * and with `JARVIS_NOTIFY=off` there is no service to call.
      */
     notifications?: NotifyToolDeps;
+    /**
+     * Scheduler wiring (#90 phase 3): the job ledger, the per-user cap, and the
+     * scheduling horizon, which the five scheduling tools create within.
+     * Present only when the scheduler itself is running — a tool that could
+     * store a job nobody will run is a promise the server cannot keep.
+     *
+     * `tools` is omitted on purpose: {@link createTools} fills it with the
+     * instances built before the scheduling tools, so `scheduleTask` can
+     * validate a requested tool without ever seeing itself.
+     */
+    jobs?: Omit<JobsToolDeps, "tools">;
 }
 
 /**
@@ -96,6 +109,12 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
         // The only tool whose *result* is an interruption (#139), so it is
         // registered last and reads as an exception among lookups.
         tools.push(createNotifyTool(deps.notifications));
+    }
+    if (deps.jobs) {
+        // Last, and given a snapshot of everything above: a scheduling tool
+        // validates the tool it is asked to schedule against that list, and the
+        // scheduler's allowlist keeps the scheduling tools themselves out of it.
+        tools.push(...createJobsTools({ ...deps.jobs, tools: [...tools] }));
     }
     return tools;
 }

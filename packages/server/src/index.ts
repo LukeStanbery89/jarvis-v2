@@ -243,6 +243,19 @@ initAgentGraph({
     ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
     ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
     ...(notifications ? { notifications: { service: notifications } } : {}),
+    // The scheduling tools (#90 phase 3) create rows in the same queue the
+    // scheduler drains, so they are wired exactly when the loop is: storing a
+    // job nobody would run is a promise the server cannot keep. The horizon is
+    // the config's days as an instant, because the tools compare moments.
+    ...(appConfig.scheduler && notifications
+        ? {
+              jobs: {
+                  ledger: store,
+                  maxPerUser: appConfig.scheduler.maxPerUser,
+                  maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
+              },
+          }
+        : {}),
 });
 
 // The scheduler (#90): one loop over the `jobs` table, running each due job

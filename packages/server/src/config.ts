@@ -346,6 +346,12 @@ export interface SchedulerConfig {
     readonly maxLatenessMs: number;
     /** Jobs one tick takes on (`JARVIS_JOB_MAX_PER_TICK`), default 1. */
     readonly maxPerTick: number;
+    /**
+     * How far ahead a job may be set (`JARVIS_JOB_MAX_HORIZON_DAYS`), default
+     * 366: a scheduling tool refuses a moment beyond it rather than storing a
+     * row that can only be a mistake (a wrong year, a stray digit).
+     */
+    readonly maxHorizonDays: number;
 }
 
 /** LAN-reasonable scheduler defaults: a 5s scan, 50 jobs, an hour of lateness. */
@@ -354,6 +360,7 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     maxPerUser: 50,
     maxLatenessMs: 60 * 60 * 1000,
     maxPerTick: 1,
+    maxHorizonDays: 366,
 };
 
 /**
@@ -1033,6 +1040,11 @@ export function getAppConfig(): AppConfig {
                           "JARVIS_JOB_MAX_PER_TICK",
                           process.env.JARVIS_JOB_MAX_PER_TICK,
                           DEFAULT_SCHEDULER_CONFIG.maxPerTick,
+                      ),
+                      maxHorizonDays: numberOr(
+                          "JARVIS_JOB_MAX_HORIZON_DAYS",
+                          process.env.JARVIS_JOB_MAX_HORIZON_DAYS,
+                          DEFAULT_SCHEDULER_CONFIG.maxHorizonDays,
                       ),
                   },
         attachments:

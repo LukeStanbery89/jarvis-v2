@@ -11,6 +11,7 @@ import {
     DEFAULT_HOST,
     DEFAULT_PORT,
     DEFAULT_RATE_LIMIT_CONFIG,
+    DEFAULT_SCHEDULER_CONFIG,
     DEFAULT_TURN_TIMEOUT_MS,
     DEFAULT_WEATHER_CALLS_PER_MIN,
     DEFAULT_WEATHER_TIMEOUT_MS,
@@ -38,6 +39,7 @@ afterEach(() => {
     delete process.env.JARVIS_AGENT_MAX_TURNS;
     delete process.env.JARVIS_DB_PATH;
     delete process.env.JARVIS_TURN_TIMEOUT_MS;
+    delete process.env.JARVIS_JOB_MAX_HORIZON_DAYS;
     delete process.env.JARVIS_BOOTSTRAP_TOKEN;
     delete process.env.JARVIS_HOST;
     delete process.env.JARVIS_TLS_CERT;
@@ -467,5 +469,19 @@ describe("cross-origin configuration (#63)", () => {
             "10.0.0.5",
             "192.168.0.0/16",
         ]);
+    });
+});
+
+describe("scheduler settings (#90)", () => {
+    it("defaults the scheduling horizon to a year", () => {
+        expect(getAppConfig().scheduler?.maxHorizonDays).toBe(
+            DEFAULT_SCHEDULER_CONFIG.maxHorizonDays,
+        );
+    });
+
+    it("reads the horizon from JARVIS_JOB_MAX_HORIZON_DAYS", () => {
+        process.env.JARVIS_JOB_MAX_HORIZON_DAYS = "30";
+
+        expect(getAppConfig().scheduler?.maxHorizonDays).toBe(30);
     });
 });

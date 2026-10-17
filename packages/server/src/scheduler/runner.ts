@@ -173,7 +173,13 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 class: job.class,
                 priority: "normal",
                 title: clamp(job.label, MAX_NOTIFICATION_TITLE_LENGTH),
-                body: clamp(text, MAX_NOTIFICATION_BODY_LENGTH),
+                // A message job's text is often the label itself ("Call Mum",
+                // with no detail to add). Passing it as the body would render
+                // the same line twice in the banner, so a message that is only
+                // the headline is sent as one.
+                ...(text === job.label
+                    ? {}
+                    : { body: clamp(text, MAX_NOTIFICATION_BODY_LENGTH) }),
             });
             if (outcome.suppressed === null) {
                 logger.debug(

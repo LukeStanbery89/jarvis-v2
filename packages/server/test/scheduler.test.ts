@@ -27,6 +27,7 @@ import { createInAppChannel } from "../src/notify/channels/inApp";
 import { createNotificationService } from "../src/notify/service";
 import type { NotificationService } from "../src/notify/service";
 import { createJobRunner, jobThreadId } from "../src/scheduler/runner";
+import { createJobsTools } from "../src/llm/tools/jobs";
 import type { JobAgentRunner, JobRunner } from "../src/scheduler/runner";
 import { createScheduler } from "../src/scheduler/loop";
 import { logger } from "../src/logger";
@@ -489,6 +490,28 @@ describe("scheduler: a message job", () => {
         ]);
     });
 
+    it("does not repeat the headline when the text is only the headline", async () => {
+        // The scheduling tools default a reminder's message to its label, so a
+        // job created as just "Call Mum" has nothing to add to the banner.
+        const h = harness({ at: AT });
+        h.store.createJob(h.userId, {
+            id: "j1",
+            label: "Call Mum",
+            kind: "message",
+            message: "Call Mum",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        await h.scheduler.tick();
+
+        expect(pushed(h.socket)).toEqual([
+            { kind: "job.finished", title: "Call Mum" },
+        ]);
+        // The full text is still recorded — the run row is the durable half.
+        expect(h.store.listJobRuns("j1")[0].output).toBe("Call Mum");
+    });
+
     it("lets a timer through quiet hours and holds a notification", async () => {
         const h = harness({ at: AT });
         h.store.setPrefs(h.userId, [
@@ -532,6 +555,43 @@ describe("scheduler: a message job", () => {
         expect(stored.map((n) => [n.title, n.class, n.state]).sort()).toEqual([
             ["Filter", "notification", "pending"],
             ["Kettle", "timer", "delivered"],
+        ]);
+    });
+});
+
+describe("scheduler: a job created by the scheduling tools", () => {
+    it("runs with the class its tool chose", async () => {
+        const at = new Date(AT);
+        const h = harness({ at });
+        const remindMe = createJobsTools({
+            ledger: h.store,
+            maxPerUser: 5,
+            maxHorizonMs: 366 * 86_400_000,
+            tools: [],
+            now: () => at,
+            newId: () => "job1",
+        }).find((instance) => instance.name === "remindMe");
+        if (remindMe === undefined) {
+            throw new Error("remindMe is not registered");
+        }
+
+        const text = (await remindMe.invoke(
+            { label: "Call Mum", inMinutes: 1 },
+            { configurable: { userId: h.userId } },
+        )) as string;
+        expect(text).toContain("Reminder scheduled");
+
+        // The queue the tool wrote to is the one the loop drains.
+        at.setTime(at.getTime() + 60_000);
+        await h.scheduler.tick();
+
+        const stored = h.store.listNotifications(h.userId);
+        expect(stored.map((n) => [n.title, n.class])).toEqual([
+            ["Call Mum", "reminder"],
+        ]);
+        // A job with no detail beyond its headline arrives as one line.
+        expect(pushed(h.socket)).toEqual([
+            { kind: "job.finished", title: "Call Mum" },
         ]);
     });
 });
