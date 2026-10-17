@@ -277,6 +277,9 @@ describe("scheduler: a prompt job", () => {
                 body: "The filter is in the cupboard.",
             },
         ]);
+        // The announcement names the job it came from (#90 phase 5): it is what
+        // lets a reminder's banner offer snooze rather than only dismiss.
+        expect(h.store.listNotifications(h.userId)[0]?.jobId).toBe("j1");
     });
 
     it("keeps a job's runs out of the chat-thread ledger", async () => {

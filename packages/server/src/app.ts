@@ -16,6 +16,8 @@ import {
 import { createCorsMiddleware } from "./http/cors";
 import { createAttachmentRouter } from "./http/attachmentRoutes";
 import { createNotificationRouter } from "./notify/http";
+import { createJobRouter } from "./scheduler/http";
+import type { JobCreator } from "./scheduler/create";
 import type { NotificationService } from "./notify/service";
 import type { AttachmentStore } from "./attachments/store";
 import type { InFlightLimiter } from "./attachments/limiters";
@@ -77,6 +79,7 @@ export function createApp(
     attachments?: AttachmentStore,
     inFlight?: InFlightLimiter,
     notifications?: NotificationService,
+    jobs?: JobCreator,
 ) {
     const app = express();
 
@@ -147,6 +150,14 @@ export function createApp(
             "/api",
             createNotificationRouter(store, notifications, appConfig),
         );
+    }
+
+    // Scheduled jobs (#90 phase 5): the surface a page manages timers and
+    // reminders through. Wired exactly when the scheduler is —
+    // `JARVIS_SCHEDULER=off` (or `JARVIS_NOTIFY=off`, which unmounts the loop)
+    // leaves no endpoint rather than one that cannot honour what it stores.
+    if (jobs) {
+        app.use("/api", createJobRouter(store, jobs, appConfig));
     }
 
     // The local STT model route (#84 P3b): the client-side WASM engine's

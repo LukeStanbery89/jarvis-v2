@@ -173,6 +173,11 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 class: job.class,
                 priority: "normal",
                 title: clamp(job.label, MAX_NOTIFICATION_TITLE_LENGTH),
+                // The job this announcement is about (#90 phase 5). Stored so a
+                // reminder's banner can offer *snooze* rather than only
+                // *dismiss* — the client would otherwise have to guess which
+                // job a row came from.
+                jobId: job.id,
                 // A message job's text is often the label itself ("Call Mum",
                 // with no detail to add). Passing it as the body would render
                 // the same line twice in the banner, so a message that is only

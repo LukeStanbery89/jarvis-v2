@@ -38,6 +38,7 @@ import { KokoroTtsProvider } from "./tts/kokoro";
 import { createNotificationHub } from "./notify/hub";
 import { createInAppChannel } from "./notify/channels/inApp";
 import { createNotificationService } from "./notify/service";
+import { createJobCreator } from "./scheduler/create";
 import { createJobRunner } from "./scheduler/runner";
 import { createScheduler } from "./scheduler/loop";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
@@ -281,12 +282,24 @@ const scheduler =
           })
         : undefined;
 
+// The jobs REST surface (#90 phase 5): the same creation policy the tools use,
+// over the same ledger, so a page and the model cannot schedule different things.
+const jobCreator =
+    appConfig.scheduler && notifications
+        ? createJobCreator({
+              ledger: store,
+              maxPerUser: appConfig.scheduler.maxPerUser,
+              maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
+          })
+        : undefined;
+
 const webApp = createApp(
     store,
     appConfig,
     attachments,
     inFlight,
     notifications,
+    jobCreator,
 );
 
 const { server } = createJarvisServer(webApp, {

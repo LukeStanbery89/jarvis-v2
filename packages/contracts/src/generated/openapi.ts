@@ -464,6 +464,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's scheduled jobs
+         * @description Newest-created first. Settled jobs (`done`, `failed`, `cancelled`, `missed`) are history and are excluded unless `includeSettled=true`, so the default answer is the work still owed.
+         */
+        get: operations["jobsList"];
+        put?: never;
+        /**
+         * Schedule a job for the caller
+         * @description Creates a `message` job — text with nothing to run, which is what a timer or a reminder actually needs. `class` is the caller's to name here, because a page is the user's own hand, and it decides how loudly the announcement arrives: a `timer` pierces quiet hours, a `reminder` and a `notification` wait for the window to end. (The model cannot name a class — its own tools each own one — because that would be a way to pierce quiet hours by asking.) `runAt` is an instant, the output of a picker; the model speaks times as words through its tools instead. A moment in the past, a `timer` more than a day ahead, a moment beyond `JARVIS_JOB_MAX_HORIZON_DAYS`, and a full queue are each refused. `quiet` on the response is what will happen to the announcement as the prefs stand today — a prediction, because the prefs are read again when it fires. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        post: operations["jobsCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * One job and its run history
+         * @description The job plus every attempt at it, newest first — what a detail view reads. A job that belongs to another account is answered 404, the same as one that does not exist.
+         */
+        get: operations["jobsGet"];
+        put?: never;
+        post?: never;
+        /**
+         * Cancel a pending job
+         * @description Only a job that has not started can be cancelled: one already running is being worked on, and its result is on its way. The cancelled job comes back as it now stands (`state: cancelled`). Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        delete: operations["jobsDelete"];
+        options?: never;
+        head?: never;
+        /**
+         * Edit a pending job
+         * @description Only `label`, `message` and `runAt` — and only while the job is `pending`. Its `class` and `kind` are what the job *is*: changing either means cancelling and scheduling another, which is also what keeps a reminder from being edited into a timer (a class change is how loudly the user gets interrupted). An empty patch, a `message` on a job that has none (a tool or prompt job), a refused moment, and a job that has already started are each answered rather than ignored. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        patch: operations["jobsUpdate"];
+        trace?: never;
+    };
+    "/api/jobs/{id}/snooze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snooze a reminder
+         * @description A reminder that has not fired is *moved* (its moment changes, no attempt is counted, nothing is announced); one that already had its moment is *set again* for the new time with the same payload, which is a new job — `action` says which happened, and `previousRunAt` carries the moment the settled one was owed. Only a reminder can be snoozed: a timer is a countdown and a notification is already filed. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        post: operations["jobsSnooze"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -659,6 +737,8 @@ export interface components {
             requiresAnswer?: boolean;
             /** @description The user's reply, on an answered notification. */
             answer?: string;
+            /** @description The job this notification is about (#90), when a scheduler announcement produced it. It is what lets a reminder's banner act on the reminder — snooze it — rather than only acknowledge the notification. Absent for a notification no job stands behind. */
+            jobId?: string;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -684,6 +764,137 @@ export interface components {
             /** @description `null` when it was delivered, otherwise the reason nothing was pushed: `disabled`, `quiet-hours`, `absent` (no live socket), or `cap`. */
             suppressed: ("disabled" | "quiet-hours" | "absent" | "cap") | null;
         };
+        /** @description Body of `POST /api/jobs`. A page-created job is always a `message` job: text with nothing to run, which is all a timer or a reminder needs. Scheduling a *tool* or a *prompt* stays with the model's tools, where the allowlist and the target tool's own schema are checked before the row is written. */
+        JobCreateRequest: {
+            /** @description The headline the user sees ("Kettle", "Call Mum"), at most the protocol's notification-title bound because it becomes the announcement's title. */
+            label: string;
+            /**
+             * @description How loudly the announcement arrives. `timer` pierces quiet hours and rings until it is stopped; `reminder` waits out the window and can be snoozed; `notification` is filed and read at leisure.
+             * @enum {string}
+             */
+            class: "notification" | "reminder" | "timer";
+            /** @description The detail delivered under the headline. Omitted means the label itself is the message. */
+            message?: string;
+            /**
+             * Format: date-time
+             * @description The instant the job is owed at, in ISO-8601 (the picker's output). Must be in the future, within `JARVIS_JOB_MAX_HORIZON_DAYS`, and — for a `timer` — no more than a day ahead.
+             */
+            runAt: string;
+        };
+        /** @description Body of `PATCH /api/jobs/{id}`. At least one field is required; `class` and `kind` are absent on purpose, because changing either is a different job rather than an edit. */
+        JobUpdateRequest: {
+            label?: string;
+            /** @description Only for a job that is itself a message job — a tool or prompt job has no text to edit and answers 400. */
+            message?: string;
+            /**
+             * Format: date-time
+             * @description A new moment for a job that has not started. Refused in the past, beyond the horizon, and beyond a day for a `timer`.
+             */
+            runAt?: string;
+        };
+        /** @description Body of `POST /api/jobs/{id}/snooze`. */
+        JobSnoozeRequest: {
+            /** @description How long from now to snooze, in minutes. The short end is half a minute: a snooze is a human-scale "not now". */
+            minutes: number;
+        };
+        /** @description What the caller's quiet hours, as they stand, will do to this job's announcement. A prediction, not a promise: the window is read again when the job fires, so a change in between changes the outcome. */
+        QuietForecast: {
+            /**
+             * @description `clear` — nothing will hold it. `disabled` — the account's `notify.enabled` is off, so the announcement will be recorded but not pushed. `held` — the moment falls inside quiet hours for a class that respects them, and the announcement waits until `until` (for a `reminder`, the job itself does).
+             * @enum {string}
+             */
+            state: "clear" | "disabled" | "held";
+            /**
+             * Format: date-time
+             * @description When a `held` announcement comes back.
+             */
+            until?: string;
+            /** @description The quiet window as the user set it (`22:00–07:00`), present when `held`. */
+            window?: string;
+        };
+        /** @description One scheduled job, as the API exposes it. */
+        Job: {
+            id: string;
+            label: string;
+            /**
+             * @description The delivery class the job's announcement carries (#90) — `timer` pierces quiet hours, `reminder` and `notification` wait.
+             * @enum {string}
+             */
+            class: "notification" | "reminder" | "timer";
+            /**
+             * @description What the job does when it fires: `message` delivers text (a timer or reminder, no model and no tool), `tool` invokes one allowlisted tool, `prompt` runs a turn.
+             * @enum {string}
+             */
+            kind: "prompt" | "tool" | "message";
+            /**
+             * @description `pending` — owed. `running` — claimed by the scheduler right now. `done` / `failed` — it ran, with the result in its runs. `cancelled` — the user called it off. `missed` — its moment passed while the server was down, so it was never attempted.
+             * @enum {string}
+             */
+            state: "pending" | "running" | "done" | "failed" | "cancelled" | "missed";
+            /** Format: date-time */
+            runAt: string;
+            attempts: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            settledAt?: string;
+            /** @description Why a failed run failed. */
+            lastError?: string;
+            /** @description The text a `message` job delivers. */
+            message?: string;
+            /** @description The tool a `tool` job runs. */
+            toolName?: string;
+            /** @description The prompt a `prompt` job runs. */
+            prompt?: string;
+        };
+        /** @description One attempt at a job — the history a detail view reads. */
+        JobRun: {
+            id: string;
+            /** @enum {string} */
+            state: "running" | "ok" | "failed";
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            finishedAt?: string;
+            /** @description What the attempt produced — a prompt job's reply, a tool job's result text. */
+            output?: string;
+            /** @description Why it failed, when it did. */
+            error?: string;
+        };
+        /** @description Body of `GET /api/jobs`. */
+        JobList: {
+            jobs: components["schemas"]["Job"][];
+        };
+        /** @description Body of `GET /api/jobs/{id}`. */
+        JobDetail: {
+            job: components["schemas"]["Job"];
+            /** @description Every attempt at this job, newest first. */
+            runs: components["schemas"]["JobRun"][];
+        };
+        /** @description Body of `POST /api/jobs` and `PATCH /api/jobs/{id}`: the job as it now stands, plus what quiet hours will do to it. */
+        JobSaved: {
+            job: components["schemas"]["Job"];
+            quiet: components["schemas"]["QuietForecast"];
+        };
+        /** @description Body of `DELETE /api/jobs/{id}`. */
+        JobCancelled: {
+            job: components["schemas"]["Job"];
+        };
+        /** @description Body of `POST /api/jobs/{id}/snooze`. */
+        JobSnoozed: {
+            /**
+             * @description `moved` — the reminder had not fired, so its own moment changed. `recreated` — it already had its moment, so a new reminder carries the same payload.
+             * @enum {string}
+             */
+            action: "moved" | "recreated";
+            job: components["schemas"]["Job"];
+            quiet: components["schemas"]["QuietForecast"];
+            /**
+             * Format: date-time
+             * @description When a `recreated` reminder was previously owed; absent for `moved`.
+             */
+            previousRunAt?: string;
+        };
     };
     responses: never;
     parameters: {
@@ -697,6 +908,8 @@ export interface components {
         PathWakeFile: string;
         /** @description The notification's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
         PathNotificationId: string;
+        /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+        PathJobId: string;
         /** @description The `JARVIS_BOOTSTRAP_TOKEN` secret that gates first-owner setup. Optional at the shape layer on purpose: a missing or mismatched secret is an authorization outcome (403, or 409 when setup is disabled), decided by the server — not a request-shape violation. */
         XBootstrapToken: string;
         /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
@@ -2237,6 +2450,326 @@ export interface operations {
                 };
             };
             /** @description The notification is already settled. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    jobsList: {
+        parameters: {
+            query?: {
+                /** @description Page size (1–200, default 50). Out-of-range or unparsable values fall back to the default rather than failing the request. */
+                limit?: number;
+                /** @description Include jobs that have already settled. */
+                includeSettled?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's jobs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobList"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    jobsCreate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored job and its quiet-hours forecast. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSaved"];
+                };
+            };
+            /** @description Missing or malformed field, a `class` that is not a class, a label or message over the protocol's bound, a moment already passed, or a timer set more than a day ahead. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The per-user pending cap (`JARVIS_JOB_MAX_PER_USER`) is reached; cancel one first. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    jobsGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job and its runs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDetail"];
+                };
+            };
+            /** @description A malformed job id (over-long). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such job for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    jobsDelete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cancelled job. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobCancelled"];
+                };
+            };
+            /** @description A malformed job id (over-long). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such job for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The job is running or has settled — there is nothing to cancel. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    jobsUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description The job as it now stands, and its forecast. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSaved"];
+                };
+            };
+            /** @description An empty patch, an uneditable field (`class`, `kind`), a malformed or over-long value, or a moment already passed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such job for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The job is no longer `pending` — it is running or has settled — so it cannot be edited. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    jobsSnooze: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobSnoozeRequest"];
+            };
+        };
+        responses: {
+            /** @description The snoozed (or re-created) reminder. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobSnoozed"];
+                };
+            };
+            /** @description `minutes` missing or outside its range, or the job is not a reminder. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such job for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The reminder was cancelled, is running, lost a race to a claim, or holds a payload a snooze could not repeat (a prompt job). */
             409: {
                 headers: {
                     [name: string]: unknown;

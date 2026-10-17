@@ -53,6 +53,10 @@ tags:
       description: Device tokens and their lifecycle.
     - name: Health
       description: Machine health checks.
+    - name: Jobs
+      description: >-
+          Scheduled jobs (#90) — timers, reminders and tasks that fire at a
+          time of the user's choosing, with their run history.
     - name: Notifications
       description: >-
           JARVIS's outbound messages to a user (#139) — recorded, listed, and
@@ -1386,6 +1390,316 @@ paths:
                         application/json:
                             schema:
                                 $ref: "#/components/schemas/Error"
+    /api/jobs:
+        get:
+            operationId: jobsList
+            summary: List the caller's scheduled jobs
+            description: >-
+                Newest-created first. Settled jobs (`done`, `failed`,
+                `cancelled`, `missed`) are history and are excluded unless
+                `includeSettled=true`, so the default answer is the work still
+                owed.
+            tags: [Jobs]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - name: limit
+                  in: query
+                  required: false
+                  description: >-
+                      Page size (1–200, default 50). Out-of-range or
+                      unparsable values fall back to the default rather than
+                      failing the request.
+                  schema:
+                      type: integer
+                      minimum: 1
+                      maximum: 200
+                - name: includeSettled
+                  in: query
+                  required: false
+                  description: Include jobs that have already settled.
+                  schema:
+                      type: boolean
+            responses:
+                "200":
+                    description: The caller's jobs.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/JobList"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        post:
+            operationId: jobsCreate
+            summary: Schedule a job for the caller
+            description: >-
+                Creates a `message` job — text with nothing to run, which is
+                what a timer or a reminder actually needs. `class` is the
+                caller's to name here, because a page is the user's own hand,
+                and it decides how loudly the announcement arrives: a `timer`
+                pierces quiet hours, a `reminder` and a `notification` wait for
+                the window to end. (The model cannot name a class — its own
+                tools each own one — because that would be a way to pierce
+                quiet hours by asking.) `runAt` is an instant, the output of a
+                picker; the model speaks times as words through its tools
+                instead. A moment in the past, a `timer` more than a day ahead,
+                a moment beyond `JARVIS_JOB_MAX_HORIZON_DAYS`, and a full queue
+                are each refused. `quiet` on the response is what will happen
+                to the announcement as the prefs stand today — a prediction,
+                because the prefs are read again when it fires.
+                Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Jobs]
+            security:
+                - bearerToken: []
+                - session: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/JobCreateRequest"
+            responses:
+                "201":
+                    description: The stored job and its quiet-hours forecast.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/JobSaved"
+                "400":
+                    description: >-
+                        Missing or malformed field, a `class` that is not a
+                        class, a label or message over the protocol's bound, a
+                        moment already passed, or a timer set more than a day
+                        ahead.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: >-
+                        The per-user pending cap
+                        (`JARVIS_JOB_MAX_PER_USER`) is reached; cancel one
+                        first.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/jobs/{id}:
+        parameters:
+            - $ref: "#/components/parameters/PathJobId"
+        get:
+            operationId: jobsGet
+            summary: One job and its run history
+            description: >-
+                The job plus every attempt at it, newest first — what a detail
+                view reads. A job that belongs to another account is answered
+                404, the same as one that does not exist.
+            tags: [Jobs]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The job and its runs.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/JobDetail"
+                "400":
+                    description: A malformed job id (over-long).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such job for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        patch:
+            operationId: jobsUpdate
+            summary: Edit a pending job
+            description: >-
+                Only `label`, `message` and `runAt` — and only while the job is
+                `pending`. Its `class` and `kind` are what the job *is*:
+                changing either means cancelling and scheduling another, which
+                is also what keeps a reminder from being edited into a timer
+                (a class change is how loudly the user gets interrupted). An
+                empty patch, a `message` on a job that has none (a tool or
+                prompt job), a refused moment, and a job that has already
+                started are each answered rather than ignored.
+                Cookie-authenticated callers must send `x-csrf-token`.
+            tags: [Jobs]
+            security:
+                - bearerToken: []
+                - session: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/JobUpdateRequest"
+            responses:
+                "200":
+                    description: The job as it now stands, and its forecast.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/JobSaved"
+                "400":
+                    description: >-
+                        An empty patch, an uneditable field (`class`, `kind`),
+                        a malformed or over-long value, or a moment already
+                        passed.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such job for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: >-
+                        The job is no longer `pending` — it is running or has
+                        settled — so it cannot be edited.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+        delete:
+            operationId: jobsDelete
+            summary: Cancel a pending job
+            description: >-
+                Only a job that has not started can be cancelled: one already
+                running is being worked on, and its result is on its way. The
+                cancelled job comes back as it now stands (`state:
+                cancelled`). Cookie-authenticated callers must send
+                `x-csrf-token`.
+            tags: [Jobs]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The cancelled job.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/JobCancelled"
+                "400":
+                    description: A malformed job id (over-long).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such job for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: >-
+                        The job is running or has settled — there is nothing
+                        to cancel.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/jobs/{id}/snooze:
+        parameters:
+            - $ref: "#/components/parameters/PathJobId"
+        post:
+            operationId: jobsSnooze
+            summary: Snooze a reminder
+            description: >-
+                A reminder that has not fired is *moved* (its moment changes,
+                no attempt is counted, nothing is announced); one that already
+                had its moment is *set again* for the new time with the same
+                payload, which is a new job — `action` says which happened, and
+                `previousRunAt` carries the moment the settled one was owed.
+                Only a reminder can be snoozed: a timer is a countdown and a
+                notification is already filed. Cookie-authenticated callers
+                must send `x-csrf-token`.
+            tags: [Jobs]
+            security:
+                - bearerToken: []
+                - session: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/JobSnoozeRequest"
+            responses:
+                "200":
+                    description: The snoozed (or re-created) reminder.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/JobSnoozed"
+                "400":
+                    description: >-
+                        `minutes` missing or outside its range, or the job is
+                        not a reminder.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such job for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "409":
+                    description: >-
+                        The reminder was cancelled, is running, lost a race to
+                        a claim, or holds a payload a snooze could not repeat
+                        (a prompt job).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
 components:
     securitySchemes:
         bearerToken:
@@ -1454,6 +1768,18 @@ components:
                 The notification's opaque id, as returned by the list route.
                 Ids belong to one account: an id owned by somebody else is
                 answered 404, the same as one that does not exist.
+            schema:
+                type: string
+                minLength: 1
+                maxLength: 64
+        PathJobId:
+            name: id
+            in: path
+            required: true
+            description: >-
+                The job's opaque id, as returned by the list route. Ids belong
+                to one account: an id owned by somebody else is answered 404,
+                the same as one that does not exist.
             schema:
                 type: string
                 minLength: 1
@@ -1894,6 +2220,15 @@ components:
                     type: string
                     description: The user's reply, on an answered notification.
                     maxLength: 2000
+                jobId:
+                    type: string
+                    description: >-
+                        The job this notification is about (#90), when a
+                        scheduler announcement produced it. It is what lets a
+                        reminder's banner act on the reminder — snooze it —
+                        rather than only acknowledge the notification. Absent
+                        for a notification no job stands behind.
+                    maxLength: 64
                 createdAt:
                     type: string
                     format: date-time
@@ -1947,3 +2282,263 @@ components:
                         - type: string
                           enum: [disabled, quiet-hours, absent, cap]
                         - type: "null"
+        JobCreateRequest:
+            type: object
+            description: >-
+                Body of `POST /api/jobs`. A page-created job is always a
+                `message` job: text with nothing to run, which is all a timer
+                or a reminder needs. Scheduling a *tool* or a *prompt* stays
+                with the model's tools, where the allowlist and the target
+                tool's own schema are checked before the row is written.
+            required: [label, class, runAt]
+            properties:
+                label:
+                    type: string
+                    description: >-
+                        The headline the user sees ("Kettle", "Call Mum"), at
+                        most the protocol's notification-title bound because it
+                        becomes the announcement's title.
+                    minLength: 1
+                    maxLength: 200
+                class:
+                    type: string
+                    description: >-
+                        How loudly the announcement arrives. `timer` pierces
+                        quiet hours and rings until it is stopped; `reminder`
+                        waits out the window and can be snoozed; `notification`
+                        is filed and read at leisure.
+                    enum: [notification, reminder, timer]
+                message:
+                    type: string
+                    description: >-
+                        The detail delivered under the headline. Omitted means
+                        the label itself is the message.
+                    maxLength: 2000
+                runAt:
+                    type: string
+                    format: date-time
+                    description: >-
+                        The instant the job is owed at, in ISO-8601 (the
+                        picker's output). Must be in the future, within
+                        `JARVIS_JOB_MAX_HORIZON_DAYS`, and — for a `timer` —
+                        no more than a day ahead.
+        JobUpdateRequest:
+            type: object
+            description: >-
+                Body of `PATCH /api/jobs/{id}`. At least one field is required;
+                `class` and `kind` are absent on purpose, because changing
+                either is a different job rather than an edit.
+            minProperties: 1
+            properties:
+                label:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                message:
+                    type: string
+                    description: >-
+                        Only for a job that is itself a message job — a tool or
+                        prompt job has no text to edit and answers 400.
+                    minLength: 1
+                    maxLength: 2000
+                runAt:
+                    type: string
+                    format: date-time
+                    description: >-
+                        A new moment for a job that has not started. Refused in
+                        the past, beyond the horizon, and beyond a day for a
+                        `timer`.
+        JobSnoozeRequest:
+            type: object
+            description: Body of `POST /api/jobs/{id}/snooze`.
+            required: [minutes]
+            properties:
+                minutes:
+                    type: number
+                    description: >-
+                        How long from now to snooze, in minutes. The short end
+                        is half a minute: a snooze is a human-scale "not now".
+                    minimum: 0.5
+                    maximum: 1440
+        QuietForecast:
+            type: object
+            description: >-
+                What the caller's quiet hours, as they stand, will do to this
+                job's announcement. A prediction, not a promise: the window is
+                read again when the job fires, so a change in between changes
+                the outcome.
+            required: [state]
+            properties:
+                state:
+                    type: string
+                    description: >-
+                        `clear` — nothing will hold it. `disabled` — the
+                        account's `notify.enabled` is off, so the announcement
+                        will be recorded but not pushed. `held` — the moment
+                        falls inside quiet hours for a class that respects them,
+                        and the announcement waits until `until` (for a
+                        `reminder`, the job itself does).
+                    enum: [clear, disabled, held]
+                until:
+                    type: string
+                    format: date-time
+                    description: When a `held` announcement comes back.
+                window:
+                    type: string
+                    description: >-
+                        The quiet window as the user set it (`22:00–07:00`),
+                        present when `held`.
+        Job:
+            type: object
+            description: One scheduled job, as the API exposes it.
+            required:
+                [id, label, class, kind, state, runAt, attempts, createdAt]
+            properties:
+                id:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                label:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                class:
+                    type: string
+                    description: >-
+                        The delivery class the job's announcement carries (#90)
+                        — `timer` pierces quiet hours, `reminder` and
+                        `notification` wait.
+                    enum: [notification, reminder, timer]
+                kind:
+                    type: string
+                    description: >-
+                        What the job does when it fires: `message` delivers text
+                        (a timer or reminder, no model and no tool), `tool`
+                        invokes one allowlisted tool, `prompt` runs a turn.
+                    enum: [prompt, tool, message]
+                state:
+                    type: string
+                    description: >-
+                        `pending` — owed. `running` — claimed by the scheduler
+                        right now. `done` / `failed` — it ran, with the result
+                        in its runs. `cancelled` — the user called it off.
+                        `missed` — its moment passed while the server was down,
+                        so it was never attempted.
+                    enum: [pending, running, done, failed, cancelled, missed]
+                runAt:
+                    type: string
+                    format: date-time
+                attempts:
+                    type: integer
+                    minimum: 0
+                createdAt:
+                    type: string
+                    format: date-time
+                settledAt:
+                    type: string
+                    format: date-time
+                lastError:
+                    type: string
+                    description: Why a failed run failed.
+                    maxLength: 2000
+                message:
+                    type: string
+                    description: The text a `message` job delivers.
+                    maxLength: 2000
+                toolName:
+                    type: string
+                    description: The tool a `tool` job runs.
+                    maxLength: 64
+                prompt:
+                    type: string
+                    description: The prompt a `prompt` job runs.
+                    maxLength: 2000
+        JobRun:
+            type: object
+            description: One attempt at a job — the history a detail view reads.
+            required: [id, state, startedAt]
+            properties:
+                id:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                state:
+                    type: string
+                    enum: [running, ok, failed]
+                startedAt:
+                    type: string
+                    format: date-time
+                finishedAt:
+                    type: string
+                    format: date-time
+                output:
+                    type: string
+                    description: >-
+                        What the attempt produced — a prompt job's reply, a tool
+                        job's result text.
+                    maxLength: 2000
+                error:
+                    type: string
+                    description: Why it failed, when it did.
+                    maxLength: 2000
+        JobList:
+            type: object
+            description: Body of `GET /api/jobs`.
+            required: [jobs]
+            properties:
+                jobs:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/Job"
+        JobDetail:
+            type: object
+            description: Body of `GET /api/jobs/{id}`.
+            required: [job, runs]
+            properties:
+                job:
+                    $ref: "#/components/schemas/Job"
+                runs:
+                    type: array
+                    description: Every attempt at this job, newest first.
+                    items:
+                        $ref: "#/components/schemas/JobRun"
+        JobSaved:
+            type: object
+            description: >-
+                Body of `POST /api/jobs` and `PATCH /api/jobs/{id}`: the job as
+                it now stands, plus what quiet hours will do to it.
+            required: [job, quiet]
+            properties:
+                job:
+                    $ref: "#/components/schemas/Job"
+                quiet:
+                    $ref: "#/components/schemas/QuietForecast"
+        JobCancelled:
+            type: object
+            description: Body of `DELETE /api/jobs/{id}`.
+            required: [job]
+            properties:
+                job:
+                    $ref: "#/components/schemas/Job"
+        JobSnoozed:
+            type: object
+            description: Body of `POST /api/jobs/{id}/snooze`.
+            required: [action, job, quiet]
+            properties:
+                action:
+                    type: string
+                    description: >-
+                        `moved` — the reminder had not fired, so its own moment
+                        changed. `recreated` — it already had its moment, so a
+                        new reminder carries the same payload.
+                    enum: [moved, recreated]
+                job:
+                    $ref: "#/components/schemas/Job"
+                quiet:
+                    $ref: "#/components/schemas/QuietForecast"
+                previousRunAt:
+                    type: string
+                    format: date-time
+                    description: >-
+                        When a `recreated` reminder was previously owed; absent
+                        for `moved`.

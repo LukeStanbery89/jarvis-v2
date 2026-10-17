@@ -823,8 +823,64 @@ can show it (phase 6).
 
 The tools are registered only when the scheduler is running (`JARVIS_SCHEDULER`
 not `off`, notifications wired): a job nobody can run is a promise the server
-cannot keep. The REST surface and pages come next (phases 5–7), and recurrence
-(per-job timezones, DST, retries) last.
+cannot keep. The pages come next (phases 6–7), and recurrence (per-job
+timezones, DST, retries) last.
+
+### Managing jobs over REST (#90 phase 5)
+
+`/api/jobs` is the surface a page manages timers and reminders through, and it
+is **the same policy as the tools**, not a second one: `scheduler/create.ts`
+owns what a job may be (the label/message bounds, the horizon, the per-user cap
+on pending rows, the timer's day ceiling), what an edit may touch, what a snooze
+means, and the quiet-hours forecast. The tools render its answers in the model's
+voice; the routes map its refusal codes onto status codes. Mounted only when
+the scheduler is wired, so `JARVIS_SCHEDULER=off` leaves no endpoint rather than
+one that cannot honour what it stores.
+
+| Method   | Path                    | Description                                                                    |
+| -------- | ----------------------- | ------------------------------------------------------------------------------ |
+| `GET`    | `/api/jobs`             | The caller's jobs, newest first (settled ones only with `includeSettled=true`) |
+| `POST`   | `/api/jobs`             | Schedule a `message` job: `{ label, class, message?, runAt }`                  |
+| `GET`    | `/api/jobs/{id}`        | One job plus its run history (`{ job, runs }`)                                 |
+| `PATCH`  | `/api/jobs/{id}`        | Edit `label`, `message` or `runAt` while the job is still `pending`            |
+| `DELETE` | `/api/jobs/{id}`        | Cancel a `pending` job                                                         |
+| `POST`   | `/api/jobs/{id}/snooze` | `{ minutes }` — move a pending reminder, or set a settled one again            |
+
+Three things about that surface are worth stating, because each is a decision
+rather than an implementation detail:
+
+- **A page may name a class; the model may not.** `class` is accepted in the
+  create body because a page is the user's own hand — a form that offers "timer"
+  and "reminder" is the user choosing how loudly to be interrupted. The model's
+  tools each own their class and expose no such argument, because a model that
+  could name one could pierce quiet hours by asking.
+- **A page-created job is always a `message` job.** Text with nothing to run is
+  what a timer or a reminder actually needs. Scheduling a _tool_ or a _prompt_
+  stays with the model's tools, where the allowlist and the target tool's own
+  schema are checked before the row is written — a stored tool call is a durable
+  capability, and a REST form has no schema to validate one against.
+- **Times are instants here, words there.** `runAt` is an ISO-8601 instant (the
+  output of a picker), while the model speaks times as words through its tools.
+  Both end at one instant, but only the words need the resolver. A moment in the
+  past, a `timer` more than a day out, and a moment beyond
+  `JARVIS_JOB_MAX_HORIZON_DAYS` are refused — the first is the only one the
+  natural-language path can never produce, and it is exactly what a date picker
+  can.
+
+`quiet` on the create/edit/snooze response is what the caller's prefs will do to
+that announcement as they stand: `clear`, `disabled` (the account switch is
+off — the job still runs), or `held` with the instant it comes back on. It is a
+prediction, not a promise: the runner reads the prefs again when the job fires,
+and a change in between changes the outcome.
+
+The link that makes the surface useful to the _notification_ list is
+`notifications.job_id` (schema v11): the runner stamps each announcement with
+the job that produced it, and `GET /api/notifications` returns it as `jobId`. It
+is what lets a fired reminder's banner offer _snooze_ rather than only
+_dismiss_ — the client would otherwise have to guess which job a row came from,
+and a job is pruned as history while the notification the user was shown stays.
+The WS `notification` frame does not carry it yet; the list refresh does, and the
+frame field lands with the buttons that read it (phase 6).
 
 ## Endpoints
 
@@ -852,6 +908,12 @@ table — "web session" is the `jarvis_session` cookie):
 | `PATCH`  | `/api/users/{id}`          | device token or web session (owner) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409) |
 | `GET`    | `/api/sessions`            | device token or web session         | List sessions (owner sees all, with `userId`)                                            |
 | `DELETE` | `/api/sessions/{threadId}` | device token or web session         | Delete the caller's owned session (owner: any)                                           |
+| `GET`    | `/api/jobs`                | device token or web session         | List scheduled jobs, newest first (`includeSettled=true` for history)                    |
+| `POST`   | `/api/jobs`                | device token or web session         | Schedule a message job (`label`, `class`, `message?`, `runAt`), with a quiet forecast    |
+| `GET`    | `/api/jobs/{id}`           | device token or web session         | One job and its run history                                                              |
+| `PATCH`  | `/api/jobs/{id}`           | device token or web session         | Edit a pending job's `label`/`message`/`runAt`                                           |
+| `DELETE` | `/api/jobs/{id}`           | device token or web session         | Cancel a pending job                                                                     |
+| `POST`   | `/api/jobs/{id}/snooze`    | device token or web session         | Snooze a reminder (`minutes`): move it, or set a settled one again                       |
 
 "Device token" auth is `Authorization: Bearer <token>`; the web session is the
 `jarvis_session` cookie (+ `x-csrf-token` on state changes).

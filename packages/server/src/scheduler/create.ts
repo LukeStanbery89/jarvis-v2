@@ -217,16 +217,6 @@ export interface JobCreator {
         jobClass: NotificationClass,
         runAt: Date,
     ): QuietForecast;
-    /**
-     * The forecast as the sentence a model relays, which is the same text the
-     * tools appended before this was a module. Empty when there is nothing to
-     * say.
-     */
-    forecastNote(
-        userId: number,
-        jobClass: NotificationClass,
-        runAt: Date,
-    ): string;
     /** Edits a pending job's label, message or moment. */
     edit(
         userId: number,
@@ -676,7 +666,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
         };
     }
 
-    return { create, forecast, forecastNote, edit, snooze };
+    return { create, forecast, edit, snooze };
 }
 
 /**

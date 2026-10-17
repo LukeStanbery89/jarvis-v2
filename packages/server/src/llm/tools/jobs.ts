@@ -103,10 +103,10 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
      * Stores a job through the shared creation policy.
      *
      * Thin on purpose: every bound (label, message, horizon, the pending cap,
-     * the timer ceiling) and the quiet-hours prediction live in
-     * `scheduler/create.ts`, so the tools and the pages cannot answer those
-     * questions differently. All this adds is the instant the tools already
-     * have, so `created_at` and the prediction share it.
+     * the timer ceiling) and the quiet-hours forecast — which the tools append
+     * to their replies — live in `scheduler/create.ts`, so the tools and the
+     * pages cannot answer those questions differently. All this adds is the
+     * instant the tools already have, so `created_at` and the forecast share it.
      */
     function storeJob(
         userId: number,
@@ -119,18 +119,6 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         },
     ): CreateOutcome {
         return creator.create(userId, request);
-    }
-
-    /**
-     * What quiet hours, as they stand, will do to this job's announcement —
-     * the creator's forecast, in the model's voice.
-     */
-    function quietNote(
-        userId: number,
-        jobClass: NotificationClass,
-        runAt: Date,
-    ): string {
-        return creator.forecastNote(userId, jobClass, runAt);
     }
 
     /** Creation guard shared by the three creating tools. */

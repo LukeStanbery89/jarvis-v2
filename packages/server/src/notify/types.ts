@@ -67,6 +67,13 @@ export interface NotificationInput {
      * exists for the user, this one replaces it instead of stacking.
      */
     dedupeKey?: string;
+    /**
+     * The job this notification is about (#90 phase 5), when a producer has
+     * one — the scheduler's announcement of a run. It is what lets a reminder
+     * banner offer *snooze* rather than only *dismiss*: the row names the
+     * reminder it came from instead of the client guessing from the title.
+     */
+    jobId?: string;
 }
 
 /** What one delivery attempt achieved, for the caller and the tests. */
@@ -171,7 +178,7 @@ export function normalizeNotificationInput(
         "kind" | "class" | "priority" | "title" | "requiresAnswer"
     >
 > &
-    Pick<NotificationInput, "body" | "dedupeKey"> {
+    Pick<NotificationInput, "body" | "dedupeKey" | "jobId"> {
     const kind = input.kind?.trim() ?? "";
     const title = input.title?.trim() ?? "";
     const notificationClass = input.class ?? "notification";
@@ -220,6 +227,7 @@ export function normalizeNotificationInput(
         ...(dedupeKey !== undefined && dedupeKey.length > 0
             ? { dedupeKey }
             : {}),
+        ...(input.jobId !== undefined ? { jobId: input.jobId } : {}),
     };
 }
 
