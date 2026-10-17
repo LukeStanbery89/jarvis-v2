@@ -575,7 +575,8 @@ export interface CreateJobInput {
  *   {@link listJobRuns}): what the REST layer and the pages use. A foreign id
  *   is indistinguishable from a missing one, as everywhere else.
  * - **Scheduler-scoped** ({@link listDueJobs} / {@link claimJob} /
- *   {@link settleJob} / {@link startJobRun} / {@link finishJobRun}): the
+ *   {@link rescheduleJob} / {@link settleJob} / {@link startJobRun} /
+ *   {@link finishJobRun}): the
  *   process acts *for every user*, so it selects due work across accounts and
  *   settles it by the id it claimed. Nothing here is reachable from a request
  *   handler; the scheduler is the only caller.
@@ -665,6 +666,16 @@ export interface JobLedger {
         options: { error?: string },
         at: string,
     ): AppJob | null;
+    /**
+     * Moves a still-pending job's moment — how a reminder defers itself out of
+     * quiet hours (#90 2b).
+     *
+     * Only a `pending` job can be moved, and that is the whole safety property:
+     * a claimed job is being worked on, so its moment is history. The caller
+     * re-reads the row either way, so a refused move shows up as an unchanged
+     * `runAt` rather than as an exception.
+     */
+    rescheduleJob(id: string, runAt: string): AppJob | null;
     /**
      * Cancels one of the caller's own jobs (the only user-reachable state
      * change). Only a `pending` job is cancellable: one already running is
@@ -1286,6 +1297,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectDueJobs: Database.Statement;
         selectRunningJobs: Database.Statement;
         claimJob: Database.Statement;
+        rescheduleJob: Database.Statement;
         settleJob: Database.Statement;
         cancelJob: Database.Statement;
         insertJobRun: Database.Statement;
@@ -1454,6 +1466,11 @@ export class SqliteAppDatabase implements AppDatabase {
             // them and decides what they mean.
             selectRunningJobs: db.prepare(
                 `${JOB_COLUMNS} WHERE state = 'running' ORDER BY run_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // A deferral is not a claim: the job keeps its attempt count and
+            // its pending state, and only its moment moves.
+            rescheduleJob: db.prepare(
+                "UPDATE jobs SET run_at = ? WHERE id = ? AND state = 'pending'",
             ),
             // The claim *is* the transition: `state = 'pending'` in the WHERE
             // clause means a second claim — another tick, or a process that
@@ -1989,6 +2006,11 @@ export class SqliteAppDatabase implements AppDatabase {
 
     claimJob(id: string): boolean {
         return this.statements.claimJob.run(id).changes === 1;
+    }
+
+    rescheduleJob(id: string, runAt: string): AppJob | null {
+        this.statements.rescheduleJob.run(runAt, id);
+        return this.jobById(id);
     }
 
     startJobRun(input: { id: string; jobId: string; startedAt: string }): void {

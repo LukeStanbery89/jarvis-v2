@@ -733,6 +733,26 @@ that owns one job's life — and the four rules worth knowing here:
   is what delivers it — which is why `sendNotification` stays unschedulable
   (one job, one notification). The job's `class` travels with that announcement
   unchanged, so a `timer` pierces quiet hours while everything else waits.
+- **The log says whether the user was actually told.** A run's announcement is
+  logged at `info` whenever it was _recorded but not pushed_, with the reason:
+  `job notif1 "Filter" recorded only (quiet-hours) — quiet hours hold a
+notification`. Silence at `info` therefore means it was delivered (the
+  delivery itself is a `debug` line), so "it ran but nothing appeared" is
+  answered by the log rather than by a debug rerun.
+- **A reminder defers itself out of quiet hours.** Rather than being held (and
+  forgotten) or firing into a sleeping house, a `reminder` that lands inside the
+  window moves its own `run_at` to the moment the window closes — the loop
+  already owns the clock, so no second timer is involved — and keeps its attempt
+  count at zero, because nothing was attempted. A `timer` pierces instead, and a
+  `notification` records its announcement and waits to be read. The window
+  arithmetic and the "which class is held" answer live in `notify/prefs.ts`, so
+  the service and the scheduler cannot disagree about when quiet hours end. The
+  window is read **live**, never copied onto the job: moving quiet hours before
+  a reminder's moment changes the decision, extending them over an
+  already-deferred moment defers it again, and clearing them does not bring the
+  job forward — the original moment is not retained, so a deferral is one-way.
+  With `notify.enabled: false` there is nothing to defer _for_, so the job runs
+  at its own moment and the record is produced then rather than hours late.
 - **The boot log names the database.** `App database: <path>` sits beside the
   checkpoint line, because "the scheduler never fired" and "the row was inserted
   into a different file" are indistinguishable from the outside — that happened

@@ -270,6 +270,32 @@ describe("jobs ledger", () => {
         expect(store.getJob(userId, "j1")?.attempts).toBe(0);
     });
 
+    it("moves a pending job's moment, and only a pending one's", () => {
+        const { store, userId } = makeStore();
+        store.createJob(userId, promptJob({ id: "pending" }));
+        store.createJob(userId, promptJob({ id: "running" }));
+        store.claimJob("running");
+
+        const moved = store.rescheduleJob(
+            "pending",
+            "2026-10-21T07:00:00.000Z",
+        );
+        expect(moved?.runAt).toBe("2026-10-21T07:00:00.000Z");
+        expect(moved?.state).toBe("pending");
+        // A deferral is not an attempt: nothing was tried.
+        expect(moved?.attempts).toBe(0);
+
+        // A claimed job is being worked on, so its moment is history.
+        const refused = store.rescheduleJob(
+            "running",
+            "2026-10-21T07:00:00.000Z",
+        );
+        expect(refused?.runAt).toBe("2026-10-20T09:00:00.000Z");
+        expect(
+            store.rescheduleJob("missing", "2026-10-21T07:00:00.000Z"),
+        ).toBeNull();
+    });
+
     it("records a run's start and outcome", () => {
         const { store, userId } = makeStore();
         store.createJob(userId, promptJob());

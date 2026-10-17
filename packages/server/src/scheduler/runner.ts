@@ -29,7 +29,8 @@
  *
  * The job's **class** rides along to that announcement unchanged, so quiet
  * hours are decided by the thing the user scheduled rather than by anything
- * this module invents.
+ * this module invents — and a `reminder` that lands inside them does not run at
+ * all: it moves itself to the moment the window closes (`deferralFor`).
  *
  * Deliberate limits, all of them policy rather than shortcut: no retries (a
  * failed run says so, and the user re-asks); a run is bounded by the same turn
@@ -47,6 +48,14 @@ import { runAgent } from "../agent";
 import { createKeyedLock } from "../keyedLock";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
+import type { NotificationSuppression } from "../notify/types";
+import {
+    NOTIFY_ENABLED_PREF,
+    NOTIFY_QUIET_HOURS_PREF,
+    parseQuietHours,
+    quietHoursEnd,
+    quietHoursHold,
+} from "../notify/prefs";
 import { resolveSchedulableTool } from "./tools";
 
 /** The agent seam, narrow enough to stub in tests (no model, no graph). */
@@ -73,6 +82,11 @@ export function jobThreadId(jobId: string): string {
  */
 export type RunOutcome =
     | { kind: "skipped"; reason: string }
+    /**
+     * A reminder moved itself out of quiet hours: nothing ran, nothing was
+     * announced, and the job is still `pending` at its new moment.
+     */
+    | { kind: "deferred"; until: string }
     | { kind: "missed" }
     | { kind: "done"; output: string }
     | { kind: "failed"; error: string };
@@ -90,7 +104,14 @@ export interface JobRunner {
 
 /** Everything the runner needs; all process-level wiring. */
 export interface JobRunnerOptions {
-    ledger: JobLedger;
+    /**
+     * The jobs ledger, plus the read a deferral needs: a reminder has to know
+     * whether quiet hours are in force before it runs. The auth package's
+     * `AppDatabase` satisfies both halves; tests pass the same store.
+     */
+    ledger: JobLedger & {
+        getPrefs(userId: number): Record<string, unknown>;
+    };
     notifications: NotificationService;
     /** The tool instances the agent graph was built with. */
     tools: readonly StructuredToolInterface[];
@@ -154,9 +175,22 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 title: clamp(job.label, MAX_NOTIFICATION_TITLE_LENGTH),
                 body: clamp(text, MAX_NOTIFICATION_BODY_LENGTH),
             });
-            logger.debug(
-                `job ${job.id} announced (${kind}): delivered=${outcome.delivered} suppressed=${String(outcome.suppressed)}`,
-            );
+            if (outcome.suppressed === null) {
+                logger.debug(
+                    `job ${job.id} announced (${kind}) → delivered to ${outcome.delivered} client(s)`,
+                );
+            } else {
+                // The default-level answer to the question a scheduled job
+                // exists to raise: did the user hear about it, and if not, why?
+                // Silence at `info` therefore means "delivered" — an
+                // announcement that went nowhere can no longer be quiet.
+                logger.info(
+                    `job ${job.id} "${job.label}" recorded only (${outcome.suppressed}) — ${whyRecorded(
+                        outcome.suppressed,
+                        job.class,
+                    )}`,
+                );
+            }
         } catch (err) {
             // The record is the durable half: an announcement that failed must
             // not make a completed run look like a failed one.
@@ -266,6 +300,57 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         return output;
     }
 
+    /**
+     * The instant a reminder defers to, or `null` when it should run now.
+     *
+     * **Reminders only**, which is the class decision (#90): a `timer` pierces
+     * quiet hours instead of being postponed (a timer that waits until morning
+     * is not a timer), and a `notification` records its announcement and waits
+     * to be read. A reminder is the one class whose whole point is "at this
+     * moment — but quietly if I am asleep", so it moves itself to the end of the
+     * window rather than being held indefinitely.
+     *
+     * Prefs are read defensively: a failed read means "run it now", never
+     * "defer it silently". A reminder that vanished because a read threw would
+     * be exactly the unexplained silence this area exists to remove.
+     *
+     * **The window is read live, never copied onto the job.** What the job
+     * stores is its class, and a deferral overwrites its `run_at`; so changing
+     * quiet hours between scheduling and firing changes *this* decision (and a
+     * deferred job re-evaluates when its new moment arrives, deferring again if
+     * the window has been extended over it). The move is one-way: the original
+     * moment is not retained, so clearing quiet hours cannot bring a deferred
+     * reminder forward again — it runs where it was moved to.
+     */
+    function deferralFor(job: AppJob, at: Date): Date | null {
+        if (job.class !== "reminder") {
+            return null;
+        }
+        let prefs: Record<string, unknown>;
+        try {
+            prefs = ledger.getPrefs(job.userId);
+        } catch (err) {
+            logger.warn(
+                `could not read prefs for job ${job.id}; running it now: ${
+                    err instanceof Error ? err.message : String(err)
+                }`,
+            );
+            return null;
+        }
+        // The master switch is a kill switch, not a quiet hour: with
+        // notifications off there is nothing to defer *for* — the announcement
+        // would be recorded either way — so the job runs at its own moment and
+        // its record is produced then, rather than hours late for no reason.
+        if (prefs[NOTIFY_ENABLED_PREF] === false) {
+            return null;
+        }
+        if (!quietHoursHold(prefs, job.class, at)) {
+            return null;
+        }
+        const window = parseQuietHours(prefs[NOTIFY_QUIET_HOURS_PREF]);
+        return window === null ? null : quietHoursEnd(window, at);
+    }
+
     return {
         async run(job: AppJob): Promise<RunOutcome> {
             const key = jobThreadId(job.id);
@@ -293,6 +378,19 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                         `job ${job.id} "${job.label}" missed (${formatDelay(latenessMs)} late)`,
                     );
                     return { kind: "missed" };
+                }
+                const deferredTo = deferralFor(job, at);
+                if (deferredTo !== null) {
+                    // Not a claim: no attempt, no run row, no notification —
+                    // just a different moment for the same pending job.
+                    ledger.rescheduleJob(job.id, deferredTo.toISOString());
+                    logger.info(
+                        `job ${job.id} "${job.label}" deferred to ${deferredTo.toISOString()} (quiet hours)`,
+                    );
+                    return {
+                        kind: "deferred",
+                        until: deferredTo.toISOString(),
+                    };
                 }
                 if (!ledger.claimJob(job.id)) {
                     return {
@@ -371,6 +469,30 @@ function failureText(
     return err instanceof Error && err.message.length > 0
         ? err.message
         : "the run failed";
+}
+
+/**
+ * The human half of a suppression reason, for the log line.
+ *
+ * The token alone (`quiet-hours`) is greppable but opaque to someone reading a
+ * log for the first time; the prose is what makes "why didn't that appear?"
+ * answerable without a debug rerun. Exhaustive over the reasons on purpose, so
+ * a new one cannot be added without someone deciding how to say it.
+ */
+function whyRecorded(
+    reason: NonNullable<NotificationSuppression>,
+    jobClass: AppJob["class"],
+): string {
+    switch (reason) {
+        case "quiet-hours":
+            return `quiet hours hold a ${jobClass}`;
+        case "disabled":
+            return "notifications are off for this account";
+        case "absent":
+            return "no client was connected";
+        case "cap":
+            return "the delivery budget for this minute was spent";
+    }
 }
 
 /** Trims to `max` so an over-long reply cannot fail the notification write. */

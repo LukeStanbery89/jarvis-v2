@@ -47,12 +47,7 @@ import type {
 } from "./types";
 import { normalizeNotificationInput, validateAnswer } from "./types";
 import type { NotificationHub } from "./hub";
-import {
-    NOTIFY_ENABLED_PREF,
-    NOTIFY_QUIET_HOURS_PREF,
-    parseQuietHours,
-    type QuietHours,
-} from "./prefs";
+import { NOTIFY_ENABLED_PREF, quietHoursHold } from "./prefs";
 
 /** How the service is configured for this process. */
 export interface NotificationServiceOptions {
@@ -346,8 +341,10 @@ function suppressionFor(
     if (normalized.class === "timer") {
         return null;
     }
-    const quietHours = parseQuietHours(prefs[NOTIFY_QUIET_HOURS_PREF]);
-    if (quietHours !== null && withinQuietHours(quietHours, at)) {
+    // One home for the window arithmetic and for which class is exempt
+    // (`prefs.ts`), because the scheduler asks the same question when it decides
+    // whether a reminder should defer itself out of the window.
+    if (quietHoursHold(prefs, normalized.class, at)) {
         return "quiet-hours";
     }
     return null;
@@ -375,21 +372,6 @@ function safePrefs(
  * a wrap check (`at >= start || at < end`) when `start > end`, and a plain
  * range when it does not (`12:00`–`13:00`).
  */
-function withinQuietHours(window: QuietHours, at: Date): boolean {
-    const minutes = at.getHours() * 60 + at.getMinutes();
-    const start = clockMinutes(window.start);
-    const end = clockMinutes(window.end);
-    return start < end
-        ? minutes >= start && minutes < end
-        : minutes >= start || minutes < end;
-}
-
-/** `"HH:MM"` → minutes past midnight. */
-function clockMinutes(value: string): number {
-    const [hours, minutes] = value.split(":");
-    return Number(hours) * 60 + Number(minutes);
-}
-
 /**
  * Trims a user's notifications to `maxPerUser`.
  *

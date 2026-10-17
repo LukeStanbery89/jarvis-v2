@@ -67,7 +67,8 @@ only the surface they call:
 - `JobLedger` — the scheduler's queue and history (#90) over the `jobs` and
   `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
   `listJobRuns` / `pruneJobs`, plus the **scheduler-scoped** half
-  (`listDueJobs` / `claimJob` / `startJobRun` / `finishJobRun` / `settleJob`)
+  (`listDueJobs` / `claimJob` / `rescheduleJob` / `startJobRun` /
+  `finishJobRun` / `settleJob`)
   that no request handler may reach. This is the one ledger with two surfaces
   on purpose: a job belongs to one user, but the scheduler is a _process_
   acting for every user at once, so it selects due work across accounts and

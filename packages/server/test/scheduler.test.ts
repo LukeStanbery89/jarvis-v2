@@ -29,6 +29,12 @@ import type { NotificationService } from "../src/notify/service";
 import { createJobRunner, jobThreadId } from "../src/scheduler/runner";
 import type { JobAgentRunner, JobRunner } from "../src/scheduler/runner";
 import { createScheduler } from "../src/scheduler/loop";
+import { logger } from "../src/logger";
+import {
+    parseQuietHours,
+    quietHoursEnd,
+    type QuietHours,
+} from "../src/notify/prefs";
 import type { Scheduler } from "../src/scheduler/loop";
 import type { AgentEvent } from "../src/agent";
 
@@ -197,6 +203,35 @@ function toolJob(name: string, args: unknown = {}): CreateJobInput {
 
 /** The instant every test's clock sits at: one second after the jobs' due time. */
 const AT = new Date("2026-10-20T09:00:01.000Z");
+
+/** `"HH:MM"` for a local instant, which is how a window is written. */
+function clockOf(at: Date): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** A parsed window from a fixture, failing loudly rather than typing it away. */
+function windowOf(value: unknown): QuietHours {
+    const window = parseQuietHours(value);
+    if (window === null) {
+        throw new Error("test fixture is not a valid quiet-hours window");
+    }
+    return window;
+}
+
+/**
+ * A quiet-hours window covering `at`, in the server's local time (which is what
+ * quiet hours are evaluated against). Two hours wide, so the instant sits
+ * comfortably inside it.
+ */
+function quietAt(at: Date): { start: string; end: string } {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const clock = (offsetMinutes: number) => {
+        const shifted = new Date(at.getTime() + offsetMinutes * 60_000);
+        return `${pad(shifted.getHours())}:${pad(shifted.getMinutes())}`;
+    };
+    return { start: clock(-60), end: clock(60) };
+}
 
 describe("scheduler: a prompt job", () => {
     it("runs the turn, records the reply, and announces it", async () => {
@@ -418,16 +453,6 @@ describe("scheduler: a tool job", () => {
 });
 
 describe("scheduler: a message job", () => {
-    /** Quiet hours covering the harness's fixed clock, in its local time. */
-    function quietAt(at: Date): { start: string; end: string } {
-        const pad = (n: number) => String(n).padStart(2, "0");
-        const clock = (offsetMinutes: number) => {
-            const shifted = new Date(at.getTime() + offsetMinutes * 60_000);
-            return `${pad(shifted.getHours())}:${pad(shifted.getMinutes())}`;
-        };
-        return { start: clock(-60), end: clock(60) };
-    }
-
     it("delivers the job's own text with no model and no tool", async () => {
         const { agent, calls } = fakeAgent("should not be used");
         const recorder = recordingTool("getCurrentTime", "should not be used");
@@ -508,6 +533,41 @@ describe("scheduler: a message job", () => {
             ["Filter", "notification", "pending"],
             ["Kettle", "timer", "delivered"],
         ]);
+    });
+});
+
+describe("scheduler: what the log says", () => {
+    it("says at info when an announcement was recorded but not pushed", async () => {
+        const info = vi
+            .spyOn(logger, "info")
+            .mockImplementation(() => undefined);
+        try {
+            const h = harness({ at: AT });
+            h.store.setPrefs(h.userId, [
+                { key: "notify.quietHours", value: quietAt(AT) },
+            ]);
+            h.store.createJob(h.userId, {
+                id: "j1",
+                label: "Filter",
+                kind: "message",
+                message: "Change the filter.",
+                runAt: "2026-10-20T09:00:00.000Z",
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+
+            await h.scheduler.tick();
+
+            const lines = info.mock.calls
+                .map((call) => String(call[0]))
+                .join("\n");
+            // The reason, in prose, at the level the server actually runs at:
+            // without this, "it ran but nothing appeared" was a question only a
+            // debug rerun — or the user — could answer.
+            expect(lines).toMatch(/recorded only \(quiet-hours\)/);
+            expect(lines).toMatch(/quiet hours hold a notification/);
+        } finally {
+            info.mockRestore();
+        }
     });
 });
 
@@ -612,6 +672,201 @@ describe("scheduler: the running loop", () => {
         } finally {
             scheduler.stop();
         }
+    });
+});
+
+describe("scheduler: a reminder defers out of quiet hours", () => {
+    it("moves itself to the window's end instead of firing", async () => {
+        // A clock this test owns, so it can move to the window's end later
+        // without touching the module-level AT every other test shares.
+        const at = new Date(AT);
+        const h = harness({ at });
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: quietAt(at) },
+        ]);
+        h.store.createJob(h.userId, {
+            id: "r1",
+            label: "Filter",
+            class: "reminder",
+            kind: "message",
+            message: "Change the filter.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        const first = await h.scheduler.tick();
+
+        expect(first.outcomes).toHaveLength(1);
+        expect(first.outcomes[0].kind).toBe("deferred");
+        const runAt = h.store.getJob(h.userId, "r1")?.runAt ?? "";
+        // Nothing ran and nothing was said: no attempt, no run row, no
+        // notification — the job is simply owed at a later moment.
+        expect(h.store.getJob(h.userId, "r1")).toMatchObject({
+            state: "pending",
+            attempts: 0,
+        });
+        expect(runAt).not.toBe("2026-10-20T09:00:00.000Z");
+        expect(h.store.listJobRuns("r1")).toEqual([]);
+        expect(pushed(h.socket)).toEqual([]);
+
+        // When that moment arrives the window is over, so the reminder is
+        // delivered — the whole point of deferring rather than holding it.
+        at.setTime(new Date(runAt).getTime() + 1_000);
+        const second = await h.scheduler.tick();
+
+        expect(second.outcomes).toEqual([
+            { kind: "done", output: "Change the filter." },
+        ]);
+        expect(h.store.getJob(h.userId, "r1")?.state).toBe("done");
+        expect(pushed(h.socket)).toEqual([
+            {
+                kind: "job.finished",
+                title: "Filter",
+                body: "Change the filter.",
+            },
+        ]);
+    });
+
+    /** A reminder job due at the shared fixture moment. */
+    function reminder(h: ReturnType<typeof harness>, id = "r1") {
+        h.store.createJob(h.userId, {
+            id,
+            label: "Filter",
+            class: "reminder",
+            kind: "message",
+            message: "Change the filter.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+    }
+
+    it("uses the window as it is when the job is evaluated, not as it was when created", async () => {
+        const at = new Date(AT);
+        const h = harness({ at });
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: quietAt(at) },
+        ]);
+        reminder(h);
+        // The user moves the window to end later, before the job is evaluated.
+        const moved = quietAt(new Date(at.getTime() + 30 * 60_000));
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: moved },
+        ]);
+
+        await h.scheduler.tick();
+
+        // The new window decides, and the deferred moment is the *new* end.
+        const runAt = h.store.getJob(h.userId, "r1")?.runAt ?? "";
+        expect(runAt).toBe(quietHoursEnd(windowOf(moved), at).toISOString());
+        expect(runAt).not.toBe(
+            quietHoursEnd(windowOf(quietAt(at)), at).toISOString(),
+        );
+    });
+
+    it("defers again when the window is extended past the deferred moment", async () => {
+        const at = new Date(AT);
+        const h = harness({ at });
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: quietAt(at) },
+        ]);
+        reminder(h);
+        await h.scheduler.tick();
+        const first = h.store.getJob(h.userId, "r1")?.runAt ?? "";
+
+        // The window is extended so it now covers the moment the job moved to.
+        const window = {
+            start: clockOf(new Date(at.getTime() - 60 * 60_000)),
+            end: clockOf(new Date(new Date(first).getTime() + 30 * 60_000)),
+        };
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: window },
+        ]);
+
+        at.setTime(new Date(first).getTime());
+        const second = await h.scheduler.tick();
+
+        expect(second.outcomes).toEqual([
+            {
+                kind: "deferred",
+                until: quietHoursEnd(windowOf(window), at).toISOString(),
+            },
+        ]);
+        // Later than it was, still owed, still unsaid.
+        expect(
+            new Date(h.store.getJob(h.userId, "r1")?.runAt ?? 0).getTime(),
+        ).toBeGreaterThan(new Date(first).getTime());
+        expect(pushed(h.socket)).toEqual([]);
+    });
+
+    it("does not come back early when quiet hours are removed", async () => {
+        const at = new Date(AT);
+        const h = harness({ at });
+        h.store.setPrefs(h.userId, [
+            { key: "notify.quietHours", value: quietAt(at) },
+        ]);
+        reminder(h);
+        await h.scheduler.tick();
+        const deferredTo = h.store.getJob(h.userId, "r1")?.runAt ?? "";
+
+        // Quiet hours off: the deferral already happened, and the original
+        // moment is not retained, so there is nothing to bring forward.
+        h.store.setPrefs(h.userId, [{ key: "notify.quietHours", value: null }]);
+        await h.scheduler.tick();
+        expect(h.store.getJob(h.userId, "r1")).toMatchObject({
+            state: "pending",
+            runAt: deferredTo,
+        });
+        expect(pushed(h.socket)).toEqual([]);
+
+        // It runs where it was moved to.
+        at.setTime(new Date(deferredTo).getTime() + 1_000);
+        const summary = await h.scheduler.tick();
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "Change the filter." },
+        ]);
+    });
+
+    it("runs at its own moment when notifications are switched off", async () => {
+        const at = new Date(AT);
+        const h = harness({ at });
+        h.store.setPrefs(h.userId, [
+            { key: "notify.enabled", value: false },
+            { key: "notify.quietHours", value: quietAt(at) },
+        ]);
+        reminder(h);
+
+        const summary = await h.scheduler.tick();
+
+        // Nothing to defer *for*: the announcement would be recorded either way,
+        // so the record is produced at the moment asked for, not hours late.
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "Change the filter." },
+        ]);
+        const stored = h.store.listNotifications(h.userId);
+        expect(stored).toHaveLength(1);
+        expect(stored[0].state).toBe("pending");
+    });
+
+    it("runs immediately when quiet hours are not in force", async () => {
+        const at = new Date(AT);
+        const h = harness({ at });
+        // The same reminder with no window configured: the class alone delays
+        // nothing, so this is the control for the test above.
+        h.store.createJob(h.userId, {
+            id: "r1",
+            label: "Filter",
+            class: "reminder",
+            kind: "message",
+            message: "Change the filter.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "Change the filter." },
+        ]);
     });
 });
 

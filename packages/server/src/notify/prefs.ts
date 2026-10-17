@@ -14,7 +14,16 @@
  * {@link parseQuietHours}'s shape plus a reportable reason — with one
  * deliberate asymmetry: a zero-length window is *tolerated* on read (as "no
  * quiet hours") but refused on write, since there is no reason to store one.
+ *
+ * A third caller arrived with #90: the scheduler needs the same window
+ * arithmetic to know when a deferred reminder may come back
+ * ({@link quietHoursEnd}) and whether the window holds a given class at all
+ * ({@link quietHoursHold}, also used by `service.ts`). Keeping that here means
+ * there is one implementation of "is it quiet now", not two that disagree at
+ * midnight.
  */
+
+import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
 
 /** Notifications master switch: `false` interrupts nothing, `null`/absent = on. */
 export const NOTIFY_ENABLED_PREF = "notify.enabled";
@@ -63,6 +72,78 @@ export function parseQuietHours(value: unknown): QuietHours | null {
  * Validates a `notify.enabled` write: a boolean, or `null` to clear it back to
  * the default (on).
  */
+/**
+ * Whether `at` falls in the window, handling the wrap-past-midnight case.
+ *
+ * `22:00`–`07:00` is the common shape and spans midnight, so the comparison is
+ * a wrap check (`at >= start || at < end`) when `start > end`, and a plain
+ * range when it does not (`12:00`–`13:00`). Half-open: the end minute is
+ * already outside, so a window that ends at `07:00` is over at `07:00`.
+ */
+export function withinQuietHours(window: QuietHours, at: Date): boolean {
+    const minutes = at.getHours() * 60 + at.getMinutes();
+    const start = clockMinutes(window.start);
+    const end = clockMinutes(window.end);
+    return start < end
+        ? minutes >= start && minutes < end
+        : minutes >= start || minutes < end;
+}
+
+/** `"HH:MM"` → minutes past midnight. */
+function clockMinutes(value: string): number {
+    const [hours, minutes] = value.split(":");
+    return Number(hours) * 60 + Number(minutes);
+}
+
+/**
+ * When the window next closes at or after `at` — the instant a deferred
+ * reminder should come back.
+ *
+ * Computed on the local wall clock, like the window itself: today's `end`, or
+ * tomorrow's when today's has already passed (the normal case after midnight in
+ * a wrapping window). Wall-clock rather than an instant offset so that an hour
+ * of the day means the same thing across a DST change; a full calendar
+ * (per-job timezones, DST-aware recurrence) is phase 8's problem, not this
+ * one's.
+ */
+export function quietHoursEnd(window: QuietHours, at: Date): Date {
+    const end = new Date(at);
+    end.setHours(
+        Math.floor(clockMinutes(window.end) / 60),
+        clockMinutes(window.end) % 60,
+        0,
+        0,
+    );
+    if (end.getTime() <= at.getTime()) {
+        end.setDate(end.getDate() + 1);
+    }
+    return end;
+}
+
+/**
+ * Whether quiet hours hold a notification of `notificationClass` at `at`.
+ *
+ * The single answer, shared by the two readers of the policy: the notification
+ * service (which suppresses the push) and the scheduler (which defers a
+ * reminder to {@link quietHoursEnd}). A `timer` pierces — it is the class the
+ * user chose for a moment they chose — and every other class waits.
+ *
+ * The **master switch** is deliberately not part of this question: it is a kill
+ * switch rather than a quiet hour, and each caller checks it first, because the
+ * two mean different things to the user ("not now" versus "nothing at all").
+ */
+export function quietHoursHold(
+    prefs: Record<string, unknown>,
+    notificationClass: NotificationClass,
+    at: Date,
+): boolean {
+    if (notificationClass === "timer") {
+        return false;
+    }
+    const window = parseQuietHours(prefs[NOTIFY_QUIET_HOURS_PREF]);
+    return window !== null && withinQuietHours(window, at);
+}
+
 export function validateEnabledPref(value: unknown): string | null {
     if (value === null || typeof value === "boolean") {
         return null;
