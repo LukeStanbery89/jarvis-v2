@@ -236,6 +236,32 @@ function record(
     };
 }
 
+describe("the snoozed state (#90 phase 6c)", () => {
+    it("is settled: not unread, and a frame cannot un-settle it", () => {
+        const list = [make({ id: "r", class: "reminder", state: "snoozed" })];
+        expect(isSettled("snoozed")).toBe(true);
+        expect(unreadCount(list)).toBe(0);
+        // The server's own push can race the snooze: the record's state wins, or
+        // the row would start asking for attention again.
+        expect(
+            mergeNotification(list, make({ id: "r", class: "reminder" }))[0]
+                .state,
+        ).toBe("snoozed");
+    });
+
+    it("does not toast, because the deferral was the acknowledgement", () => {
+        const list = [
+            make({ id: "r", class: "reminder", state: "snoozed" }),
+            make({ id: "read", class: "reminder", state: "read" }),
+        ];
+        expect(selectToast(list, { enabled: true })).toBeNull();
+    });
+
+    it("reads as `snoozed` in the list's state column", () => {
+        expect(describeNotificationState("snoozed")).toBe("snoozed");
+    });
+});
+
 describe("shouldToast and selectToast (#90 phase 6b)", () => {
     it("toasts a reminder", () => {
         // A reminder exists for a moment: arriving *is* the event the user asked

@@ -2224,7 +2224,8 @@ components:
                         answered, so a late acknowledgement cannot resurrect it
                         (#90 phase 6c). A `snoozed` row stays in the list,
                         unlike a dismissed one.
-                    enum: [pending, delivered, read, answered, dismissed, snoozed]
+                    enum:
+                        [pending, delivered, read, answered, dismissed, snoozed]
                 requiresAnswer:
                     type: boolean
                 answer:

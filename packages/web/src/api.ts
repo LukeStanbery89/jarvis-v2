@@ -49,6 +49,16 @@ export type Job = components["schemas"]["Job"];
 /** Body of `GET /api/jobs`: the work still owed, newest-created first. */
 export type JobList = components["schemas"]["JobList"];
 
+/**
+ * Body of `POST /api/jobs/{id}/snooze` (#90): the job's new moment, which of the
+ * two things happened (`moved` / `recreated`), and what quiet hours will do to the
+ * new time.
+ */
+export type JobSnoozed = components["schemas"]["JobSnoozed"];
+
+/** Body of `DELETE /api/jobs/{id}` (#90): the job as it now stands. */
+export type JobCancelled = components["schemas"]["JobCancelled"];
+
 /** Body of `POST /api/notifications`: the record plus what happened to it. */
 export type NotificationDelivery =
     components["schemas"]["NotificationDelivery"];
@@ -298,6 +308,44 @@ export function createApi(
             }
             const query = params.size > 0 ? `?${params.toString()}` : "";
             return request("GET", `/api/jobs${query}`, { token });
+        },
+        /**
+         * Snoozes a reminder (#90 phase 6c): a pending one's moment moves, one
+         * that already had its moment is set again for the new time with the same
+         * payload.
+         *
+         * The same call also settles the notification that announced it —
+         * `snoozed`, server-side, because the deferral *is* the acknowledgement.
+         * That is why the client settles its row locally instead of posting a
+         * second request: one action, one request, and the row stops asking.
+         *
+         * @param minutes - How long from now. The short end is the server's
+         *   (`MIN_SNOOZE_MINUTES`); the presets the UI offers are `SNOOZE_PRESETS`.
+         */
+        snoozeJob(
+            token: string,
+            id: string,
+            minutes: number,
+        ): Promise<JobSnoozed> {
+            return request(
+                "POST",
+                `/api/jobs/${encodeURIComponent(id)}/snooze`,
+                { token, body: { minutes } },
+            );
+        },
+        /**
+         * Cancels one of the caller's jobs (#90). Idempotent on the server's side
+         * of the ledger (an already-cancelled row is refused rather than
+         * rewritten), and a foreign id is a 404.
+         *
+         * A settled job is history and cannot be cancelled — the caller's
+         * `GET /api/jobs` list only carries rows still owed, so the button is only
+         * ever offered where it applies.
+         */
+        cancelJob(token: string, id: string): Promise<JobCancelled> {
+            return request("DELETE", `/api/jobs/${encodeURIComponent(id)}`, {
+                token,
+            });
         },
     };
 }

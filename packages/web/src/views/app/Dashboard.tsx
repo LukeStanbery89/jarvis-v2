@@ -12,10 +12,10 @@
  * two links into the pages that manage it. Create and edit forms are phase 7
  * work; this is a dashboard, not a console.
  */
-import { useEffect, useState } from "react";
 import { AppLink } from "../../AppLink";
 import { clockParts, formatDate } from "../../clock";
 import { describeRunAt, upcomingJobs } from "../../jobs";
+import { useClock } from "../../hooks/useClock";
 import type { JobsState } from "../../hooks/useJobs";
 
 /** How many jobs "coming up" lists before the pages take over. */
@@ -32,28 +32,13 @@ export interface DashboardProps {
 }
 
 /**
- * The current time, re-read every second.
- *
- * A leaf-only concern: nothing above this component needs to know the clock
- * moved, and nothing below it needs more than the value.
- */
-function useClock(): Date {
-    const [now, setNow] = useState(() => new Date());
-    useEffect(() => {
-        const timer = setInterval(() => setNow(new Date()), 1000);
-        return () => clearInterval(timer);
-    }, []);
-    return now;
-}
-
-/**
  * The dashboard.
  *
  * @param props - See {@link DashboardProps}.
  */
 export function Dashboard({ username, jobs, unread }: DashboardProps) {
     const now = useClock();
-    const upcoming = upcomingJobs(jobs.jobs, UPCOMING_LIMIT);
+    const upcoming = upcomingJobs(jobs.jobs, { limit: UPCOMING_LIMIT });
     const at = clockParts(now);
     return (
         <main className="dashboard">

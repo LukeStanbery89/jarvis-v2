@@ -61,6 +61,16 @@ export interface NotificationsState {
     /** Dismisses one, optimistically. */
     dismiss(id: string): void;
     /**
+     * Settles one row as `snoozed`, locally (#90 phase 6c).
+     *
+     * No request of its own, on purpose: the call that *made* it a snooze is the
+     * job's (`POST /api/jobs/{id}/snooze`), which settles the row server-side in
+     * the same breath — the deferral is the acknowledgement. This is the client's
+     * half, applied once that call has succeeded, so there is nothing to roll
+     * back and nothing to double-post.
+     */
+    markSnoozed(id: string): void;
+    /**
      * Re-reads the page. Called when the client recovers a dropped connection
      * (`onReconnected`), since a notification raised while the socket was down
      * was pushed to nobody and the list is the only place it can appear.
@@ -241,6 +251,20 @@ export function useNotifications(options: {
         [settle, token],
     );
 
+    /**
+     * Settles one row as `snoozed` (#90 phase 6c).
+     *
+     * Local only — the request that caused it was the *job's* snooze, which
+     * settles this row server-side. Nothing to roll back: it is applied after
+     * that call reported success.
+     */
+    const markSnoozed = useCallback((id: string) => {
+        debugLog("notify", `snoozed id=${id}`);
+        setNotifications((current) =>
+            settleNotification(current, id, "snoozed"),
+        );
+    }, []);
+
     const sendTest = useCallback(() => {
         setLastTest(null);
         api.createNotification(token, {
@@ -296,6 +320,7 @@ export function useNotifications(options: {
         acceptFrame,
         markRead,
         dismiss,
+        markSnoozed,
         refresh,
         sendTest,
         lastTest,

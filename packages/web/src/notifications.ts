@@ -34,7 +34,7 @@ export type { NotificationClass };
 
 /** Lifecycle states, mirroring the REST schema's `Notification.state`. */
 export type NotificationState =
-    "pending" | "delivered" | "read" | "answered" | "dismissed";
+    "pending" | "delivered" | "read" | "answered" | "dismissed" | "snoozed";
 
 /**
  * A notification as the client holds it: the live frame's fields, plus the
@@ -116,10 +116,18 @@ export const NOTIFICATION_LIMIT = 50;
  * Whether a state is final from the user's point of view.
  *
  * `pending` and `delivered` still want attention; the rest are done, and are
- * what {@link mergeNotification} refuses to overwrite.
+ * what {@link mergeNotification} refuses to overwrite. `snoozed` (#90 phase 6c)
+ * is final in exactly that sense: the deferral *is* the acknowledgement, so a row
+ * the user snoozed must not start asking again — and it must not count as unread,
+ * or the badge would keep the deferral in front of them.
  */
 export function isSettled(state: NotificationState): boolean {
-    return state === "read" || state === "answered" || state === "dismissed";
+    return (
+        state === "read" ||
+        state === "answered" ||
+        state === "dismissed" ||
+        state === "snoozed"
+    );
 }
 
 /**
@@ -444,6 +452,11 @@ export function describeNotificationState(state: NotificationState): string {
             return "answered";
         case "dismissed":
             return "dismissed";
+        case "snoozed":
+            // Bare, because the page that lists a snoozed row knows which job it
+            // came from and can say "until 7:00 AM" (`describeSnooze`) — this
+            // function has only the state to go on.
+            return "snoozed";
     }
 }
 

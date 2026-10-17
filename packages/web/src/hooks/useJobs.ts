@@ -32,10 +32,30 @@ export interface JobsState {
     loading: boolean;
     /** Whether the first read has come back (see the dashboard's "Loading…"). */
     loaded: boolean;
-    /** Why the last read failed, if it did. */
+    /** Why the last read or write failed, if it did. */
     error: string | null;
     /** Re-reads the list now (the visibility change, a `jobId` frame). */
     refresh(): void;
+    /**
+     * Cancels one job and re-reads the list (#90 phase 6c).
+     *
+     * @returns True when it landed; false when the server refused, with `error`
+     *   set — a value rather than a throw, because every caller has something to
+     *   do either way and an unhandled rejection is not a UI.
+     */
+    cancel(id: string): Promise<boolean>;
+    /**
+     * Snoozes one reminder and re-reads the list (#90 phase 6c).
+     *
+     * The same request settles the notification that announced it, server-side
+     * (the deferral *is* the acknowledgement), so a caller that has the row to
+     * hand should settle it locally once this resolves true.
+     *
+     * @param minutes - How long from now.
+     * @returns True when it landed; false when the server refused, with `error`
+     *   set.
+     */
+    snooze(id: string, minutes: number): Promise<boolean>;
 }
 
 /**
@@ -112,5 +132,46 @@ export function useJobs(options: { token: string }): JobsState {
         };
     }, [refresh]);
 
-    return { jobs, loading, loaded, error, refresh };
+    /**
+     * Runs one mutation, re-reads the list, and reports rather than throws.
+     *
+     * Both mutations need exactly this: the write, the re-read (the list is the
+     * server's answer, not the client's guess — a snooze of a settled reminder
+     * creates a *new* job, so patching locally would be inventing an id), and a
+     * value the caller can branch on.
+     */
+    const mutate = useCallback(
+        async (call: () => Promise<unknown>): Promise<boolean> => {
+            try {
+                await call();
+                setError(null);
+                refresh();
+                return true;
+            } catch (err: unknown) {
+                // A 401 means the credential is dead: the app is about to drop
+                // to login, so a jobs error would be noise.
+                if (err instanceof ApiError && err.status === 401) {
+                    return false;
+                }
+                setError(
+                    err instanceof Error ? err.message : "the request failed",
+                );
+                return false;
+            }
+        },
+        [refresh],
+    );
+
+    const cancel = useCallback(
+        (id: string) => mutate(() => api.cancelJob(token, id)),
+        [mutate, token],
+    );
+
+    const snooze = useCallback(
+        (id: string, minutes: number) =>
+            mutate(() => api.snoozeJob(token, id, minutes)),
+        [mutate, token],
+    );
+
+    return { jobs, loading, loaded, error, refresh, cancel, snooze };
 }

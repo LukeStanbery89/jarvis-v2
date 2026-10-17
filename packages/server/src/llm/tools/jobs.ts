@@ -51,7 +51,7 @@ import type {
 } from "../../scheduler/create";
 import { format12Hour } from "./clock";
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
+import type { AppJob } from "@lukestanbery/jarvis-auth";
 import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
 
 // Re-exported because these bounds are what a caller reads when it wants to
