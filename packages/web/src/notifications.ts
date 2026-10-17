@@ -307,6 +307,33 @@ export function describeDue(
 }
 
 /**
+ * The short label a notification shows above its title: what kind of thing it
+ * is, plus how a scheduled one ended.
+ *
+ * The class is the server's decision and the outcome is the producer's `kind`,
+ * so this is presentation only — but it is the line that makes a banner say
+ * "Timer failed" rather than leaving the user to infer it from a body that
+ * mentions a tool. Pure and exported for tests.
+ */
+export function describeNotice(
+    notification: Pick<ClientNotification, "class" | "kind">,
+): string {
+    const outcome =
+        notification.kind === "job.failed"
+            ? "failed"
+            : notification.kind === "job.missed"
+              ? "missed"
+              : null;
+    const noun =
+        notification.class === "timer"
+            ? "Timer"
+            : notification.class === "reminder"
+              ? "Reminder"
+              : "Notification";
+    return outcome === null ? noun : `${noun} ${outcome}`;
+}
+
+/**
  * A lifecycle state in plain language, for the list.
  *
  * The distinction that matters to a user asking "why did nothing pop up?" is

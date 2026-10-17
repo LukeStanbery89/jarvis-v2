@@ -8,14 +8,20 @@
  * cannot be missed while the sidebar is collapsed, and so phase 1 needs no
  * sidebar changes at all.
  *
- * Priority drives the styling, not the visibility: phase 1 has exactly one
- * channel, so suppressing a `low` notification would mean never showing it.
- * What `high`/`urgent` buy here is emphasis.
+ * Priority drives the emphasis, not the visibility: suppressing a `low`
+ * notification would mean never showing it. What `high`/`urgent` buy is a
+ * stronger border, not a different place in the queue.
+ *
+ * The **class** (#90) is what a banner says it is — "Timer", "Reminder",
+ * "Notification", plus "failed"/"missed" for a job that did not finish. A fired
+ * timer is not here at all: `selectAlerts` hands it to the ring overlay, so a
+ * ringing timer never appears twice.
  */
 import { Bell, X } from "lucide-react";
 import { debugEnabled } from "../../debug";
 import {
     describeDelivery,
+    describeNotice,
     describeNotificationState,
 } from "../../notifications";
 import type {
@@ -81,10 +87,13 @@ export function Notifications({
         <>
             {banner && (
                 <div
-                    className={`notification-banner notification-${banner.priority}`}
+                    className={`notification-banner notification-${banner.priority} notification-${banner.class}`}
                     role="status"
                 >
                     <div className="notification-text">
+                        <span className="notification-eyebrow">
+                            {describeNotice(banner)}
+                        </span>
                         <strong>{banner.title}</strong>
                         {banner.body !== undefined && (
                             <span> {banner.body}</span>
@@ -150,11 +159,14 @@ export function Notifications({
                     {notifications.map((item) => (
                         <li
                             key={item.id}
-                            className={`notification-item notification-${item.priority}${
+                            className={`notification-item notification-${item.priority} notification-${item.class}${
                                 item.state === "dismissed" ? " dismissed" : ""
                             }`}
                         >
                             <div className="notification-text">
+                                <span className="notification-eyebrow">
+                                    {describeNotice(item)}
+                                </span>
                                 <strong>{item.title}</strong>
                                 {item.body !== undefined && (
                                     <span> {item.body}</span>

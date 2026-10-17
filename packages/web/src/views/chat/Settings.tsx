@@ -227,6 +227,11 @@ export function Settings(props: SettingsProps) {
                                 switch either way to replace it.
                             </p>
                         )}
+                        <p className="settings-note">
+                            Timers ring through quiet hours; reminders and
+                            notifications wait for them to end. This switch
+                            silences all three.
+                        </p>
 
                         <label className="settings-row">
                             <input
@@ -279,8 +284,8 @@ export function Settings(props: SettingsProps) {
                             <p className="settings-note">
                                 {`${window.start} → ${window.end}`}
                                 {enabled.value
-                                    ? " — low and normal priorities wait until it ends"
-                                    : " — nothing is pushed anyway while notifications are off"}
+                                    ? " — reminders and notifications wait until it ends; timers still ring"
+                                    : " — nothing is pushed while notifications are off, timers included"}
                             </p>
                         )}
                         {windowError !== null && (

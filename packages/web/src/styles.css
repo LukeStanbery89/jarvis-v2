@@ -583,9 +583,11 @@ textarea::placeholder {
     animation: spin 1s linear infinite;
 }
 
-/* Notifications (#139): a banner for the newest unsettled notification and a
-   collapsible list. Priority tints the border; nothing is hidden by priority,
-   because phase 1 has no second channel to fall back to. */
+/* Notifications (#139, #90): a banner for the newest unsettled notification and
+   a collapsible list. Priority tints the border; nothing is hidden by priority.
+   The class (#90) decides the surface — a fired timer rings in the modal
+   overlay above instead of appearing here at all — while a timer that failed
+   or was missed still banners, labelled as such. */
 .notification-banner {
     display: flex;
     align-items: center;
@@ -612,6 +614,15 @@ textarea::placeholder {
 
 .notification-text {
     flex: 1;
+}
+
+.notification-eyebrow {
+    display: block;
+    margin-bottom: 0.05rem;
+    color: var(--primary-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
 }
 
 .notification-needs-answer {
@@ -686,6 +697,16 @@ textarea::placeholder {
 
 .notification-item:last-child {
     border-bottom: none;
+}
+
+.notification-item.notification-timer,
+.notification-banner.notification-timer {
+    border-left-color: var(--primary);
+}
+
+.notification-item.notification-reminder,
+.notification-banner.notification-reminder {
+    border-left-style: dashed;
 }
 
 .notification-item.dismissed {

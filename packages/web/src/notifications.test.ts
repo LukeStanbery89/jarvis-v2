@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
     describeDelivery,
     describeDue,
+    describeNotice,
     describeNotificationState,
     fromFrame,
     fromRecord,
@@ -440,5 +441,27 @@ describe("describeDue (#90)", () => {
 
     it("falls back honestly when the record has no readable time", () => {
         expect(describeDue({ createdAt: "nonsense" }, NOW)).toBe("due now");
+    });
+});
+
+describe("describeNotice (#90)", () => {
+    it("names the class, and how a scheduled one ended", () => {
+        expect(describeNotice({ class: "timer", kind: "job.finished" })).toBe(
+            "Timer",
+        );
+        expect(
+            describeNotice({ class: "reminder", kind: "job.finished" }),
+        ).toBe("Reminder");
+        expect(
+            describeNotice({ class: "notification", kind: "agent.request" }),
+        ).toBe("Notification");
+        // A failed or missed job has nothing due, so the label carries the
+        // outcome rather than leaving the body to explain it.
+        expect(describeNotice({ class: "timer", kind: "job.failed" })).toBe(
+            "Timer failed",
+        );
+        expect(describeNotice({ class: "reminder", kind: "job.missed" })).toBe(
+            "Reminder missed",
+        );
     });
 });
