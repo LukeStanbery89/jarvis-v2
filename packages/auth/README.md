@@ -142,11 +142,13 @@ router and middleware span every ledger and therefore take the full
   — the reserved home for the per-user integration state the web portal (#24)
   manages, from a consumer (v4 schema, planning-complete) onward.
 - `notifications` — one row per notification (#139, v7; `class` added in v9,
-  #90, `job_id` in v11): producer `kind` + `class` (the delivery policy — a
-  `timer` pierces quiet hours, everything else waits) + `priority` (display
+  `job_id` in v11, the state CHECK widened in v12 — both #90): producer `kind` +
+  `class` (the delivery policy — a `timer` pierces quiet hours, everything else
+  waits) + `priority` (display
   emphasis only), the
   `title`/`body` text, a `state` lifecycle (`pending` →
-  `delivered` → `read`/`answered`/`dismissed`, with `pending` → `read` legal
+  `delivered` → then the terminal set: `read`/`answered`/`dismissed`/**`snoozed`**,
+  with `pending` → `read` legal
   for a notification the user found in the list rather than had pushed), an
   optional `requires_answer`, `dedupe_key`, and `answer`, plus the timestamps.
   Indexed on `(user_id, created_at DESC)` for the list; cascade-deleted with
@@ -154,7 +156,9 @@ router and middleware span every ledger and therefore take the full
   user who was offline — so the table is also the delivery queue's record of
   what still wants attention. `job_id` (nullable, `ON DELETE SET NULL`) is how
   a scheduler announcement names the job it came from: it is what lets a
-  reminder banner offer _snooze_ rather than only _dismiss_, and it is the one
+  reminder row offer _snooze_ rather than only _dismiss_ (and what settles that
+  row when the snooze lands — `listNotificationsForJob` is how the server finds
+  it without guessing an id), and it is the one
   link a notification needs, because everything else it says is already
   rendered into its text. Jobs are pruned as history while a notification the
   user was already shown stays true, so the prune clears the link and keeps the

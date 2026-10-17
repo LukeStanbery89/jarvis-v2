@@ -29,6 +29,7 @@
  * phase 3 and brings its own per-device record.
  */
 import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
+import { describeBody } from "./notifications";
 
 /** What the bell toggle should say and look like. */
 export type BrowserNotifyUiState =
@@ -137,16 +138,20 @@ export function shouldAnnounce(
 /**
  * The line under an OS notification's title.
  *
- * Body when there is one, otherwise a hint at what the notification wants —
- * an announcement with no second line reads as a truncated title.
+ * Body when there is one that says something the title does not
+ * ({@link describeBody} — a restated headline is dropped, and an announcement with
+ * no second line reads as a truncated title), otherwise a hint at what the
+ * notification wants.
  */
 export function notificationBody(notification: {
+    title?: string;
     body?: string;
     requiresAnswer?: boolean;
     class?: NotificationClass;
 }): string {
-    if (notification.body !== undefined && notification.body.length > 0) {
-        return notification.body;
+    const body = describeBody(notification);
+    if (body !== null) {
+        return body;
     }
     if (notification.class === "timer") {
         // A timer with nothing to add is not "a notification": it is time.
@@ -171,6 +176,11 @@ export function notificationBody(notification: {
 export function notificationOptions(notification: {
     id: string;
     class: NotificationClass;
+    /**
+     * The headline, so the body can be checked against it ({@link describeBody}):
+     * a popup whose two lines are one sentence twice reads worse than one line.
+     */
+    title?: string;
     body?: string;
     requiresAnswer?: boolean;
 }): { body: string; tag: string; requireInteraction: boolean } {

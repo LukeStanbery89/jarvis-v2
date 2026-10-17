@@ -255,40 +255,36 @@ export function shouldToast(
     );
 }
 
+/** How many toasts the corner shows at once (#90 phases 6b–6c). */
+export const TOAST_LIMIT = 3;
+
 /**
- * The row the floating toast shows, or `null` (#90 phase 6b).
+ * The rows the floating toast stack shows, newest first, or none (#90 phase 6c).
  *
- * One at a time — the newest, because the list is newest-first by
- * {@link mergeNotification}'s contract and the toast is an interruption rather
- * than a list. Anything older is still in the notification list and still
- * counted by the badge.
+ * One at a time was phase 6b's rule, and it reads as a bug the first time several
+ * reminders land in the same minute: the newest takes the corner and the rest are
+ * only a badge. The *selection* rule is unchanged — {@link shouldToast}, unsettled,
+ * and never the timer that is ringing (structurally impossible, which the tests
+ * pin) — so what changed is where it stops: at {@link TOAST_LIMIT} rather than at
+ * the first match. Anything past the limit is still in the list and still counted.
  *
- * The account's master switch turns it off entirely: that switch means "do not
- * interrupt me", and a toast is an interruption. The records still exist and
- * still count; only the shouting stops.
- *
- * A ringing timer needs no exclusion here — it is structurally impossible for
- * one to qualify (only a fired `timer` rings, and only a failed or missed one
- * toasts), which the tests pin so the guarantee survives a change to either
- * rule.
+ * The account's master switch turns the whole corner off: it means "do not
+ * interrupt me", and a toast is an interruption.
  *
  * @param list - The client's notifications, newest first.
  * @param context - The account's master switch.
- * @returns The newest notification worth toasting, or `null`.
+ * @returns Up to {@link TOAST_LIMIT} rows to show, newest first.
  */
-export function selectToast(
+export function selectToasts(
     list: ClientNotification[],
     context: { enabled: boolean },
-): ClientNotification | null {
+): ClientNotification[] {
     if (!context.enabled) {
-        return null;
+        return [];
     }
-    for (const item of list) {
-        if (!isSettled(item.state) && shouldToast(item)) {
-            return item;
-        }
-    }
-    return null;
+    return list
+        .filter((item) => !isSettled(item.state) && shouldToast(item))
+        .slice(0, TOAST_LIMIT);
 }
 
 /**
@@ -371,6 +367,77 @@ export function selectAlerts(
         ring === null ? list : list.filter((item) => item.id !== ring.id),
     );
     return { ring, banner };
+}
+
+/**
+ * The lead-ins a model writes when it restates a headline rather than adding to it.
+ *
+ * A reminder is one sentence, and a two-field design invites writing it twice:
+ * headline "Do a test" over body "Remind me to do a test". These are the phrasings
+ * that carry nothing the headline lacks — anything else is kept, because the body
+ * exists for detail the headline cannot hold.
+ */
+const RESTATEMENT_LEAD_INS = [
+    "remind me to",
+    "remind me that",
+    "remind me",
+    "reminder:",
+    "reminder",
+    "remember to",
+    "don't forget to",
+    "do not forget to",
+    "don't forget",
+    "don't let me forget to",
+] as const;
+
+/** Lower-case, one space between words, no trailing sentence punctuation. */
+function normalizeText(text: string): string {
+    return text
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/[.!?…]+$/, "");
+}
+
+/**
+ * A notification's body, or `null` when it only repeats its title (#90 phase 6c).
+ *
+ * The rule is deliberately narrow, because the failure it prevents is cosmetic and
+ * the damage a wrong guess could do is not: the body is dropped when it *is* the
+ * title after normalisation, or when it is the title behind one of
+ * {@link RESTATEMENT_LEAD_INS}. A body that says anything else survives — "change
+ * the AC filter in the hall" under "AC filter" is exactly what the field is for.
+ *
+ * One home for the decision, so the floating card, the list and the OS popup cannot
+ * disagree about what a notification says. A caller with no title to compare
+ * against (an OS popup built from a partial row) keeps the body.
+ *
+ * @param notification - The row, or whatever part of it the caller holds.
+ * @returns The body to render, or `null` when the title says it all.
+ */
+export function describeBody(notification: {
+    title?: string;
+    body?: string;
+}): string | null {
+    const body = notification.body;
+    if (body === undefined || body.trim() === "") {
+        return null;
+    }
+    const title =
+        notification.title === undefined
+            ? ""
+            : normalizeText(notification.title);
+    if (title === "") {
+        return body;
+    }
+    const normalized = normalizeText(body);
+    if (
+        normalized === title ||
+        RESTATEMENT_LEAD_INS.some((lead) => normalized === `${lead} ${title}`)
+    ) {
+        return null;
+    }
+    return body;
 }
 
 /**

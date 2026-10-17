@@ -19,9 +19,10 @@
  */
 import { debugEnabled } from "../../debug";
 import { describeSnooze, snoozeUntil } from "../../jobs";
-import { snoozeReminder } from "../../snooze";
+import { snoozeReminder, snoozeRequestFor } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
 import {
+    describeBody,
     describeDelivery,
     describeNotice,
     describeNotificationState,
@@ -65,6 +66,8 @@ function NotificationRow({
     onSnooze,
 }: NotificationRowProps) {
     const settled = isSettled(item.state);
+    // The title says it all for most reminders (#90 phase 6c) — see `describeBody`.
+    const body = describeBody(item);
     // The state column holds a sentence for a snoozed row, because "snoozed" alone
     // is the half of it the user did not ask about.
     const state =
@@ -82,7 +85,7 @@ function NotificationRow({
                     {describeNotice(item)}
                 </span>
                 <strong>{item.title}</strong>
-                {item.body !== undefined && <span> {item.body}</span>}
+                {body !== null && <span> {body}</span>}
                 {item.requiresAnswer === true && (
                     <em className="notification-needs-answer">
                         {" "}
@@ -146,7 +149,10 @@ export function NotificationsPage({
      * that reported success.
      */
     function snooze(item: ClientNotification, minutes: number): void {
-        snoozeReminder({ notifications, jobs }, item, minutes);
+        const request = snoozeRequestFor(item, minutes);
+        if (request !== null) {
+            snoozeReminder({ notifications, jobs }, request);
+        }
     }
 
     return (

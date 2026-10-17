@@ -803,7 +803,8 @@ textarea::placeholder {
     flex-shrink: 0;
 }
 
-.notification-actions button {
+.notification-actions button,
+.job-actions button {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
@@ -876,6 +877,71 @@ textarea::placeholder {
     border-left-style: dashed;
 }
 
+.job-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.job-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-left-width: 3px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+/* The class decides how loudly a job arrives, and it reads the same here as it
+   does in the notification list: a reminder's edge is dashed, a timer's is solid
+   and bright. */
+.job-reminder {
+    border-left-style: dashed;
+}
+
+.job-timer {
+    border-left-color: var(--primary);
+}
+
+.job-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.job-eyebrow {
+    display: block;
+    margin-bottom: 0.05rem;
+    color: var(--primary-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.job-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+
+.job-when {
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.job-empty {
+    padding: 0.5rem 0.75rem;
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+}
+
 /* The floating toast (#90 phase 6b): the banner's card, moved out of the
    conversation column so a fired reminder reaches the user on any page. Opaque —
    it sits over page content, and the banner's translucent wash would let text
@@ -896,29 +962,76 @@ textarea::placeholder {
     flex-direction: column;
     gap: 0.5rem;
     max-width: min(26rem, calc(100vw - 2rem));
+    /* Newest first, so a new card lands at the top and pushes the older ones
+       down. The bound is the viewport's: past three cards on a short window the
+       stack would run off the bottom, and scrolling is better than clipping. */
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
 }
 
 .toast-stack .notification-banner {
     margin: 0;
     background: var(--panel);
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.7);
+    /* A corner card **stacks**. The banner's single row was designed for the
+       conversation column, which had the whole width; four actions and a title
+       do not fit in 26rem, and forcing them into one row wrapped the title to a
+       word per line and pushed the last button off screen. */
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    /* It arrives rather than appearing: a card that interrupts whatever page you
+       are on should move a little, or it reads as a glitch. Deliberately only on
+       the way *in* — the way out is a click, and the click is its own feedback.
+       The element is keyed by notification id, so a queued row that replaces a
+       settled one animates too. */
+    animation: toast-in 160ms ease-out;
 }
 
-/* The way into the list, dressed as the two buttons beside it. It is a link
-   rather than a button on purpose: it changes the page, which is what a
-   navigation should do. */
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-0.4rem);
+    }
+
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .toast-stack .notification-banner {
+        animation: none;
+    }
+}
+
+/* In a column the text must not grow (a `flex: 1` there is a *height* basis of
+   zero) — it is the width it needs, and `min-width: 0` lets it wrap inside the
+   card rather than push it wider. */
+.toast-stack .notification-text {
+    flex: none;
+    min-width: 0;
+}
+
+.toast-stack .notification-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+/* The way into the list: a quiet link rather than a fourth button. It changes the
+   page, which is what a navigation does, and it is the least urgent thing in the
+   card — so it should not compete with the three actions above it. */
 .toast-link {
-    padding: 0.2rem 0.5rem;
-    border: 1px solid var(--primary-border);
-    border-radius: 4px;
-    color: var(--primary);
+    padding: 0.2rem;
+    color: var(--primary-dim);
     font-size: 0.75rem;
     text-decoration: none;
     white-space: nowrap;
 }
 
 .toast-link:hover {
-    background: var(--primary-wash);
+    color: var(--primary);
 }
 
 .notification-item.dismissed {
@@ -1401,35 +1514,5 @@ textarea::placeholder {
 }
 
 .dashboard-links a {
-    color: var(--primary);
-}
-
-/* A page that exists as an address but has no content yet (#90 phase 6b). */
-.page-placeholder {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    max-width: 40rem;
-    margin: 0 auto;
-    padding: 3rem 1.25rem;
-}
-
-.page-placeholder h1 {
-    margin: 0;
-    font-size: 1.5rem;
-}
-
-.page-placeholder-note {
-    margin: 0;
-    color: var(--primary-dim);
-}
-
-.page-placeholder-state {
-    margin: 0;
-    color: var(--primary-faint);
-    font-size: 0.9rem;
-}
-
-.page-placeholder-links a {
     color: var(--primary);
 }

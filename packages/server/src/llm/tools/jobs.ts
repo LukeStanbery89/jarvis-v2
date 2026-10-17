@@ -161,8 +161,11 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         .trim()
         .optional()
         .describe(
-            "Optional detail delivered under the headline. Leave it out " +
-                "when the headline says enough.",
+            "Optional *extra* detail delivered under the headline — never a " +
+                "restatement of it. Leave it out whenever the headline already " +
+                "says the whole thing, which is the usual case: a reminder is " +
+                "usually just its headline, and writing the same instruction " +
+                "twice reads as a stutter.",
         );
 
     const setTimerTool = tool(

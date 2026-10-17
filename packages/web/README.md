@@ -54,9 +54,9 @@ portal is a different app at `/admin` and keeps its own hash router.
 | ---------------- | ----------------------------------------------------------------------- |
 | `/`              | The dashboard: the clock, what is coming up, the unread count           |
 | `/chat`          | The conversation                                                        |
-| `/timers`        | A placeholder — the list lands with the pages phase                     |
-| `/reminders`     | A placeholder — likewise                                                |
-| `/notifications` | A placeholder — likewise                                                |
+| `/timers`        | The countdowns still running, with Cancel                               |
+| `/reminders`     | What the assistant owes you, with Cancel and **Snooze**                 |
+| `/notifications` | Everything recorded, with Mark read · Dismiss · Snooze                  |
 | anything else    | The dashboard (a typo or an old link gets the front door, not an error) |
 
 In-app links are `AppLink`s over the store in `src/router.ts`: a click swaps the
@@ -351,7 +351,7 @@ The surface is the notification list with a badge (`src/views/chat/Notifications
 plus — since #90 phase 6b — a floating toast in the shell
 (`src/views/app/Toast.tsx`) that reaches the user on **every** page, because a
 fired reminder arrives wherever they happen to be. Which rows reach the toast is
-`selectToast`'s decision (see the alert-classes section below), not the list's. Reading or dismissing is optimistic — the list
+`selectToasts`' decision (see the alert-classes section below), not the list's. Reading or dismissing is optimistic — the list
 updates immediately and rolls back if the server refuses — and a notification
 raised while this client was closed is simply in the list when it next loads,
 which is why nothing here depends on the frame arriving. The list is re-read
@@ -443,9 +443,9 @@ Rules worth knowing, all pure and pinned by tests:
 - The ring target is never also the toast, and that is structural rather than a
   check: only a fired `timer` rings and only a failed or missed one toasts, so a
   firing timer appears in exactly one loud place (a test pins the pair).
-- `selectToast(list, { enabled })` picks the **newest** row worth interrupting
-  for, one at a time — anything older is still in the list and still counted by
-  the badge. An informational notification deliberately does not toast: it is a
+- `selectToasts(list, { enabled })` picks every row worth interrupting for, up to
+  `TOAST_LIMIT` (3), newest first. Anything past the limit is still in the list and
+  still counted by the badge, and the master switch empties the corner entirely. An informational notification deliberately does not toast: it is a
   record to read, and interrupting whatever page the user is on would make every
   tool that says something a popup.
 - The master switch silences the toast as it silences the ring: a suppressed row
@@ -453,10 +453,15 @@ Rules worth knowing, all pure and pinned by tests:
 - Only a timer that **actually fired** rings. A failed or missed one has nothing
   due, and an overlay whose Stop button stopped nothing would misrepresent what
   the user is acknowledging — so those two are the timer's toast case instead.
-- **Snooze** is the one action still missing from these surfaces: the jobs REST
-  endpoint exists (#90 phase 5), but a snooze moves the job without settling the
-  announcement, so the row would stay on screen after a snooze that worked. The
-  `snoozed` state and the button land together in phase 6c.
+- **Snooze** (the reminder table's escape hatch) is the toast's third action, and
+  it is one request end to end: `POST /api/jobs/{id}/snooze` moves the reminder
+  _and_ settles the announcement it came from (`snoozed`), because the deferral is
+  the acknowledgement. `src/snooze.ts` is the client's join of those two halves:
+  the row is settled locally once the call reports success, and the notification
+  list is re-read either way — a snooze from the reminder list settles a row that
+  page never held. The three offsets are `SNOOZE_PRESETS` (in an hour, tomorrow,
+  next week), shared by `views/app/SnoozeMenu.tsx` so the surfaces that offer a
+  snooze cannot offer different choices in a different order.
 - The account's **master switch** gates the ring. A suppressed row is still a
   record worth reading, but nothing may start shouting on its behalf.
 - A timer keeps the right to ring for **24 h** (`RING_MAX_AGE_MS`): "rings until
@@ -591,9 +596,13 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/jobs.ts` — the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM").
 - `src/hooks/useJobs.ts` — the caller's `GET /api/jobs` list: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives.
 - `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the connection chip, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), and the hamburger drawer under 48rem.
-- `src/views/app/Toast.tsx` — the floating notification card: the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
+- `src/views/app/Toast.tsx` — the floating notification **stack** (up to `TOAST_LIMIT` cards, newest first): the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
 - `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app) whose colon blinks once a second (`clockParts` + a CSS animation, off under `prefers-reduced-motion`), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.
-- `src/views/PagePlaceholder.tsx` — a page that exists as an address but not yet as content (`/timers`, `/reminders`, `/notifications`).
+- `src/views/app/NotificationsPage.tsx` — `/notifications`: every recorded row with the actions it allows (Mark read · Dismiss · Snooze) and the dev-only test button. "Snoozed until 7:00 PM" is `snoozeUntil` + `describeSnooze`, the join through the row's `jobId`.
+- `src/views/app/JobsPages.tsx` — `/timers` and `/reminders`: the same list twice, filtered by class, with Cancel and (for a reminder) Snooze. Read-only on purpose — creating and editing are phase 7's forms.
+- `src/views/app/SnoozeMenu.tsx` — the snooze control: one button, three presets, shared by the toast, the notifications page and the reminder list.
+- `src/snooze.ts` — the client's half of a deferral: one job call (which settles the announcement server-side too), then the local settle plus a re-read of the list for the surfaces that never held the row.
+- `src/hooks/useClock.ts` — the ticking clock a leaf owns (`useClock`), so the dashboard's 1 Hz and a list's countdown never re-render the shell.
 - `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss, jobs list, prefs read/patch; Bearer token).
 - `src/credentials.ts` — per-user localStorage credential store.
 - `src/threads.ts` — client-side transcript store (pure helpers + persistence).

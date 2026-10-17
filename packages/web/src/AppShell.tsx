@@ -23,8 +23,8 @@ import { useEffect } from "react";
 import type { ReactNode } from "react";
 import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
 import { readNotificationsEnabled } from "./prefs";
-import { selectToast } from "./notifications";
-import { snoozeReminder } from "./snooze";
+import { selectToasts } from "./notifications";
+import { snoozeReminder, snoozeRequestFor } from "./snooze";
 import { useRoute } from "./hooks/useRoute";
 import { useThreads } from "./hooks/useThreads";
 import { useAudio } from "./hooks/useAudio";
@@ -39,9 +39,9 @@ import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
 import { Dashboard } from "./views/app/Dashboard";
 import { NotificationsPage } from "./views/app/NotificationsPage";
-import { Toast } from "./views/app/Toast";
+import { RemindersPage, TimersPage } from "./views/app/JobsPages";
+import { ToastStack } from "./views/app/Toast";
 import { Chat } from "./views/Chat";
-import { PagePlaceholder } from "./views/PagePlaceholder";
 import { TimerRing } from "./views/chat/TimerRing";
 
 /**
@@ -57,25 +57,6 @@ const CHAT_CAPABILITIES: ClientCapability[] = [
     // notifications, so the server may push them to its sockets.
     "notification",
 ];
-
-/**
- * The pages that exist as addresses before they exist as content (#90 phases
- * 6b–6c): the two job lists, which land in their own slice. Kept beside the
- * switch, because the copy belongs to the placeholder and not to the router.
- */
-const PENDING_PAGES: Record<
-    "timers" | "reminders",
-    { title: string; note: string }
-> = {
-    timers: {
-        title: "Timers",
-        note: "Every countdown you have running, and how long is left.",
-    },
-    reminders: {
-        title: "Reminders",
-        note: "What the assistant will remind you about, and when.",
-    },
-};
 
 /** Props for {@link AppShell}. */
 export interface AppShellProps {
@@ -260,12 +241,14 @@ export function AppShell({
     }, [audio.unlock]);
 
     /**
-     * The floating toast (#90 phase 6b): one row, on every page, because a fired
-     * reminder has to reach the user wherever they are. `selectToast` decides
-     * which row (a reminder, or a timer that failed or was missed) and the
-     * account's master switch silences the whole thing, as it does the ring.
+     * The floating toast stack (#90 phases 6b–6c): up to `TOAST_LIMIT` rows, on
+     * every page, because a fired reminder has to reach the user wherever they are
+     * — and several in the same minute is the normal case, not the edge case.
+     * `selectToasts` decides which (reminders, and timers that failed or were
+     * missed) and the account's master switch silences the whole thing, as it does
+     * the ring.
      */
-    const toast = selectToast(notifications.notifications, {
+    const toasts = selectToasts(notifications.notifications, {
         enabled: notificationsEnabled,
     });
 
@@ -301,12 +284,12 @@ export function AppShell({
                 <NotificationsPage notifications={notifications} jobs={jobs} />
             );
         }
-        return (
-            <PagePlaceholder
-                title={PENDING_PAGES[route].title}
-                note={PENDING_PAGES[route].note}
-            />
-        );
+        if (route === "timers") {
+            return <TimersPage jobs={jobs} notifications={notifications} />;
+        }
+        // The last route standing: every path the app links to is a real page
+        // now, so there is no placeholder left to fall through to.
+        return <RemindersPage jobs={jobs} notifications={notifications} />;
     }
 
     return (
@@ -317,14 +300,17 @@ export function AppShell({
                 status={socket.status}
             />
             <div className="app-view">{currentView()}</div>
-            {toast !== null && (
-                <Toast
-                    notification={toast}
+            {toasts.length > 0 && (
+                <ToastStack
+                    toasts={toasts}
                     onMarkRead={notifications.markRead}
                     onDismiss={notifications.dismiss}
-                    onSnooze={(minutes) =>
-                        snoozeReminder({ notifications, jobs }, toast, minutes)
-                    }
+                    onSnooze={(notification, minutes) => {
+                        const request = snoozeRequestFor(notification, minutes);
+                        if (request !== null) {
+                            snoozeReminder({ notifications, jobs }, request);
+                        }
+                    }}
                 />
             )}
             {notifications.ring !== null && (

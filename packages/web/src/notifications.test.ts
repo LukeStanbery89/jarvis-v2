@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    describeBody,
     describeDelivery,
     describeDue,
     describeNotice,
@@ -23,7 +24,8 @@ import {
     RING_MAX_AGE_MS,
     selectAlerts,
     selectBanner,
-    selectToast,
+    TOAST_LIMIT,
+    selectToasts,
     settleNotification,
     shouldToast,
     unreadCount,
@@ -254,7 +256,7 @@ describe("the snoozed state (#90 phase 6c)", () => {
             make({ id: "r", class: "reminder", state: "snoozed" }),
             make({ id: "read", class: "reminder", state: "read" }),
         ];
-        expect(selectToast(list, { enabled: true })).toBeNull();
+        expect(selectToasts(list, { enabled: true })).toEqual([]);
     });
 
     it("reads as `snoozed` in the list's state column", () => {
@@ -262,7 +264,67 @@ describe("the snoozed state (#90 phase 6c)", () => {
     });
 });
 
-describe("shouldToast and selectToast (#90 phase 6b)", () => {
+describe("describeBody (#90 phase 6c)", () => {
+    it("drops a body that is the title again", () => {
+        // The plain duplicate: the model filled both fields with one sentence.
+        expect(
+            describeBody({ title: "Call Mum", body: "call mum." }),
+        ).toBeNull();
+        expect(describeBody({ title: "Kettle", body: "  KETTLE " })).toBeNull();
+    });
+
+    it("drops a body that is the title behind a reminder turn of phrase", () => {
+        // The case that prompted this: "Do a test" over "Remind me to do a test".
+        expect(
+            describeBody({
+                title: "Do a test",
+                body: "Remind me to do a test",
+            }),
+        ).toBeNull();
+        expect(
+            describeBody({
+                title: "Take the bins out",
+                body: "don't forget to take the bins out!",
+            }),
+        ).toBeNull();
+    });
+
+    it("keeps a body that carries anything the title does not", () => {
+        // The rule has to be narrow: this is exactly what the field is for, and a
+        // looser test ("the body mentions the title") would eat it.
+        expect(
+            describeBody({
+                title: "AC filter",
+                body: "Change the AC filter in the hall",
+            }),
+        ).toBe("Change the AC filter in the hall");
+        expect(
+            describeBody({ title: "Printer", body: "3 files changed." }),
+        ).toBe("3 files changed.");
+    });
+
+    it("has nothing to say about an absent or empty body", () => {
+        expect(describeBody({ title: "Kettle" })).toBeNull();
+        expect(describeBody({ title: "Kettle", body: "" })).toBeNull();
+        expect(describeBody({ title: "Kettle", body: "   " })).toBeNull();
+    });
+
+    it("keeps the body when there is no title to compare against", () => {
+        // An OS popup built from a partial row: nothing to judge redundancy by, so
+        // the body is the best available line.
+        expect(describeBody({ body: "4 files changed." })).toBe(
+            "4 files changed.",
+        );
+    });
+
+    it("returns the original text, not the normalised form", () => {
+        expect(describeBody({ title: "Kettle", body: "Boils in 2 min." })).toBe(
+            "Boils in 2 min.",
+        );
+    });
+});
+
+describe("shouldToast and selectToasts (#90 phases 6b–6c)", () => {
     it("toasts a reminder", () => {
         // A reminder exists for a moment: arriving *is* the event the user asked
         // to be told about, and it never rings.
@@ -286,14 +348,26 @@ describe("shouldToast and selectToast (#90 phase 6b)", () => {
         );
     });
 
-    it("shows the newest row worth interrupting for, not the newest row", () => {
-        // The informational row on top must not mask the reminder underneath it.
+    it("shows every row worth interrupting for, newest first", () => {
+        // Several reminders in the same minute is the normal case: showing one and
+        // leaving the rest to the badge is what made them look lost (#90 phase 6c).
         const list = [
             make({ id: "info", class: "notification" }),
             make({ id: "reminder", class: "reminder" }),
             make({ id: "older", class: "reminder" }),
         ];
-        expect(selectToast(list, { enabled: true })?.id).toBe("reminder");
+        expect(
+            selectToasts(list, { enabled: true }).map((row) => row.id),
+        ).toEqual(["reminder", "older"]);
+    });
+
+    it("stops at the limit, however many are owed", () => {
+        // Past the limit the list and the badge are the answer; a corner with ten
+        // cards is a wall, not a notification.
+        const list = Array.from({ length: TOAST_LIMIT + 4 }, (_, index) =>
+            make({ id: `r${index}`, class: "reminder" }),
+        );
+        expect(selectToasts(list, { enabled: true })).toHaveLength(TOAST_LIMIT);
     });
 
     it("skips rows the user already settled", () => {
@@ -301,14 +375,14 @@ describe("shouldToast and selectToast (#90 phase 6b)", () => {
             make({ id: "read", class: "reminder", state: "read" }),
             make({ id: "dismissed", class: "reminder", state: "dismissed" }),
         ];
-        expect(selectToast(list, { enabled: true })).toBeNull();
+        expect(selectToasts(list, { enabled: true })).toEqual([]);
     });
 
     it("stays silent while the account's master switch is off", () => {
         // The switch means "do not interrupt me". The record still exists and
         // still counts on the badge; only the shouting stops.
         const list = [make({ id: "r", class: "reminder" })];
-        expect(selectToast(list, { enabled: false })).toBeNull();
+        expect(selectToasts(list, { enabled: false })).toEqual([]);
     });
 
     it("can never show the timer that is ringing", () => {
@@ -327,7 +401,7 @@ describe("shouldToast and selectToast (#90 phase 6b)", () => {
             now: new Date("2026-10-17T10:05:00.000Z"),
         });
         expect(ring?.id).toBe("kettle");
-        expect(selectToast([fired], { enabled: true })).toBeNull();
+        expect(selectToasts([fired], { enabled: true })).toEqual([]);
     });
 });
 

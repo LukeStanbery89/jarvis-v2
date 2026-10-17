@@ -267,7 +267,10 @@ const SCHEDULE_RULE =
     "vague like 'later' or 'soon', ask them instead of guessing, and never " +
     "send a timestamp — give the time the way the tool asks (a 24-hour " +
     "clock time, a delay in minutes, and today/tomorrow/a weekday for the " +
-    "day). To move or cancel one, call listJobs for the exact id and then " +
+    "day). A job's `label` is the one line the user reads when it fires, and " +
+    "`message` is only for detail that line cannot carry: never write the " +
+    "same instruction twice. To move or cancel one, call listJobs for the " +
+    "exact id and then " +
     "cancelJob or snoozeReminder; never create a second job to replace one " +
     "you cannot find. The result says when it will run and whether quiet " +
     "hours will hold it — relay that rather than promising an interruption. " +
