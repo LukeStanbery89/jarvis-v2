@@ -1205,6 +1205,63 @@ textarea::placeholder {
     }
 }
 
+/* --- The app's list pages (#90 phase 6c) --- */
+
+/* One shell for the pages that are lists (notifications, timers, reminders).
+   The dashboard keeps its own: it is a glance rather than a list, and it leads
+   with the clock. */
+.page {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    width: 100%;
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 2rem 1.25rem;
+}
+
+.page-head h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    letter-spacing: 0.06em;
+}
+
+.page-note {
+    margin: 0.2rem 0 0;
+    color: var(--primary-dim);
+    font-size: 0.9rem;
+}
+
+.page-error {
+    margin: 0;
+    color: var(--error);
+}
+
+/* The snooze control (#90 phase 6c): one button, and its three presets when
+   asked for. Inline, so it sits with whatever actions the row already has; the
+   buttons themselves are styled by the row's own action rules. */
+.snooze {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.snooze-options {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 0.25rem;
+    padding: 0.3rem;
+    background: var(--panel);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
 /* --- The dashboard (#90 phase 6b) --- */
 
 .dashboard {

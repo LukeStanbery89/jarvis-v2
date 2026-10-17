@@ -38,7 +38,6 @@ import type { ChatMode } from "@lukestanbery/jarvis-protocol";
 import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
-import { Notifications } from "./chat/Notifications";
 import { Settings } from "./chat/Settings";
 
 /** One chat turn runner (typed or voice-origin), shared via `runTurnRef`. */
@@ -158,7 +157,6 @@ export function Chat({ app }: ChatProps) {
     );
 
     const [settingsOpen, setSettingsOpen] = useState(false);
-    const [notificationsOpen, setNotificationsOpen] = useState(false);
 
     const { locationOn, locationState, toggleLocation } = useLocationSharing({
         sendLocation,
@@ -316,26 +314,6 @@ export function Chat({ app }: ChatProps) {
                         {banner}
                     </p>
                 )}
-                <Notifications
-                    notifications={notificationsUi.notifications}
-                    unread={notificationsUi.unread}
-                    open={notificationsOpen}
-                    onToggle={() => {
-                        const opening = !notificationsOpen;
-                        setNotificationsOpen(opening);
-                        if (opening) {
-                            // Opening the list is the user asking "what is
-                            // there?" — and a held-back notification has no
-                            // push to announce it, so the fetch is the only way
-                            // it ever appears.
-                            notificationsUi.refresh();
-                        }
-                    }}
-                    onMarkRead={notificationsUi.markRead}
-                    onDismiss={notificationsUi.dismiss}
-                    onSendTest={notificationsUi.sendTest}
-                    lastTest={notificationsUi.lastTest}
-                />
                 <Transcript
                     messages={transcriptMessages}
                     previews={previews}

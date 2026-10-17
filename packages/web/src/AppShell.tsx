@@ -24,6 +24,7 @@ import type { ReactNode } from "react";
 import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
 import { readNotificationsEnabled } from "./prefs";
 import { selectToast } from "./notifications";
+import { snoozeReminder } from "./snooze";
 import { useRoute } from "./hooks/useRoute";
 import { useThreads } from "./hooks/useThreads";
 import { useAudio } from "./hooks/useAudio";
@@ -37,6 +38,7 @@ import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
 import { Dashboard } from "./views/app/Dashboard";
+import { NotificationsPage } from "./views/app/NotificationsPage";
 import { Toast } from "./views/app/Toast";
 import { Chat } from "./views/Chat";
 import { PagePlaceholder } from "./views/PagePlaceholder";
@@ -57,12 +59,12 @@ const CHAT_CAPABILITIES: ClientCapability[] = [
 ];
 
 /**
- * The pages that exist as addresses before they exist as content (#90 phase
- * 6b). Kept beside the switch, because the copy belongs to the placeholder and
- * not to the router.
+ * The pages that exist as addresses before they exist as content (#90 phases
+ * 6b–6c): the two job lists, which land in their own slice. Kept beside the
+ * switch, because the copy belongs to the placeholder and not to the router.
  */
 const PENDING_PAGES: Record<
-    "timers" | "reminders" | "notifications",
+    "timers" | "reminders",
     { title: string; note: string }
 > = {
     timers: {
@@ -72,10 +74,6 @@ const PENDING_PAGES: Record<
     reminders: {
         title: "Reminders",
         note: "What the assistant will remind you about, and when.",
-    },
-    notifications: {
-        title: "Notifications",
-        note: "What JARVIS has reported, newest first.",
     },
 };
 
@@ -298,6 +296,11 @@ export function AppShell({
         if (route === "chat") {
             return <Chat app={state} />;
         }
+        if (route === "notifications") {
+            return (
+                <NotificationsPage notifications={notifications} jobs={jobs} />
+            );
+        }
         return (
             <PagePlaceholder
                 title={PENDING_PAGES[route].title}
@@ -319,6 +322,9 @@ export function AppShell({
                     notification={toast}
                     onMarkRead={notifications.markRead}
                     onDismiss={notifications.dismiss}
+                    onSnooze={(minutes) =>
+                        snoozeReminder({ notifications, jobs }, toast, minutes)
+                    }
                 />
             )}
             {notifications.ring !== null && (
