@@ -4,15 +4,16 @@
  * This used to be the app's composition root. Since #90 phase 6b the shell owns
  * everything that has to survive a route change — the socket, the transcript,
  * the audio player, the notification list and the account's preferences — and
- * hands them to a view as one {@link AppState}. Phase 6d added the microphone
- * and the location share to that list, so what is left here is what the chat
- * *shows*: `runTurn` is now the shell's (a spoken turn can start anywhere) and
- * this view renders the transcript, the sidebar's session rows and the composer.
+ * hands them to a view as one {@link AppState}. Phase 6d added the microphone,
+ * the location share and the settings panel to that list, so what is left here
+ * is what the chat *shows*: `runTurn` is the shell's (a spoken turn can start
+ * anywhere), the gear is in the top bar, and this view renders the transcript,
+ * the sidebar's session rows and the composer.
  *
  * The chat is the detailed view of a voice session — the live partial
  * transcript, the stage, and a failed session's reason — while the bar carries
- * the app-level state of one (see `NavBar`). Both read the same snapshot, so
- * they cannot disagree.
+ * the app-level state of one (see `NavBar`). Both read the same snapshot and the
+ * same `voiceStatusLine`, so they cannot disagree.
  *
  * Transcript state is a reducer over the pure `threads.ts` helpers (owned by the
  * shell now), persisted (throttled) to localStorage under the signed-in user's
@@ -26,13 +27,12 @@ import { api, ApiError } from "../api";
 import { mergeSessions } from "../sidebar";
 import { determineReady } from "../attachments";
 import { useSessions } from "../hooks/useSessions";
-import { voiceStatusText } from "../hooks/useVoiceSession";
+import { voiceStatusLine } from "../hooks/useVoiceSession";
 import { useAttachments } from "../hooks/useAttachments";
 import type { AppState } from "../appState";
 import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
-import { Settings } from "./chat/Settings";
 
 /** Props for {@link Chat}. */
 export interface ChatProps {
@@ -45,20 +45,17 @@ export interface ChatProps {
  * `/ws` chat socket and the REST session list.
  */
 export function Chat({ app }: ChatProps) {
-    const { credential, onAuthRejected, onSignedOut } = app;
-    const { client, cancelTurn } = app.socket;
+    const { credential, onAuthRejected } = app;
+    const { cancelTurn } = app.socket;
     // The turn runner is the shell's: a spoken turn takes the identical path
     // from any page, and the composer is just the typed door to it.
     const runTurn = app.runTurn;
     const { threads, activeId, activeIdRef, openThread, newChat, dispatch } =
         app.threads;
-    // The player, the notification list, the preference map, the microphone and
-    // the location share belong to the shell; this view only reads them.
+    // The player, the microphone and the location share belong to the shell;
+    // this view only reads them.
     const { audio, speaking: audioSpeaking, stop: stopAudio } = app.audio;
-    const prefsUi = app.prefs;
-    const browserNotify = app.browserNotify;
     const voiceUi = app.voice;
-    const { locationOn, locationState, toggleLocation } = app.location;
 
     const { rows, refreshSessions } = useSessions({
         token: credential.token,
@@ -67,7 +64,6 @@ export function Chat({ app }: ChatProps) {
     });
 
     const [banner, setBanner] = useState<string | null>(null);
-    const [settingsOpen, setSettingsOpen] = useState(false);
 
     const { pending, previews, attachFiles, detachChip, clearPending } =
         useAttachments({ token: credential.token, onError: setBanner });
@@ -83,10 +79,7 @@ export function Chat({ app }: ChatProps) {
     const transcriptMessages = activeThread?.messages ?? [];
 
     /** Status-line text for the current voice session (null hides it). */
-    const voiceStatus =
-        voiceSnapshot.state === "speaking" || audioSpeaking
-            ? "Speaking…"
-            : voiceStatusText(voiceSnapshot);
+    const voiceStatus = voiceStatusLine(voiceSnapshot, audioSpeaking);
 
     /** Deletes a conversation server-side and locally. */
     async function remove(id: string): Promise<void> {
@@ -149,34 +142,12 @@ export function Chat({ app }: ChatProps) {
         cancelTurn();
     }
 
-    /** Signs out: tear down the socket, clear the credential. */
-    function signOut(): void {
-        client?.close();
-        onSignedOut();
-    }
-
-    /**
-     * Flips the wake-word toggle and persists it (#84 P4). The gesture also
-     * unlocks the audio context so the match cue is audible.
-     */
-    function toggleWake(): void {
-        if (voiceUi.toggleWake()) {
-            audio.unlock();
-        }
-    }
-
     return (
         <main className="chat">
             <Sidebar
                 entries={entries}
                 activeId={activeId}
                 streaming={app.turning}
-                locationOn={locationOn}
-                locationState={locationState}
-                wakeAvailable={voiceUi.wakeAvailable}
-                wakeArmed={voiceSnapshot.wakeArmed}
-                settingsOpen={settingsOpen}
-                onOpenSettings={() => setSettingsOpen(true)}
                 onNewChat={newChat}
                 onOpenThread={openThread}
                 onRemoveThread={(id) => void remove(id)}
@@ -224,27 +195,6 @@ export function Chat({ app }: ChatProps) {
                     />
                 )}
             </section>
-            <Settings
-                open={settingsOpen}
-                onClose={() => setSettingsOpen(false)}
-                prefs={prefsUi.prefs}
-                prefsLoaded={prefsUi.loaded}
-                prefsSaving={prefsUi.saving}
-                prefsError={prefsUi.error}
-                onPatchPrefs={prefsUi.patch}
-                browserNotifyAvailable={browserNotify.available}
-                browserNotifyOn={browserNotify.enabled}
-                browserNotifyLabel={browserNotify.label}
-                onToggleBrowserNotify={browserNotify.toggle}
-                wakeAvailable={voiceUi.wakeAvailable}
-                wakeOn={voiceUi.wakeOn}
-                wakeArmed={voiceSnapshot.wakeArmed}
-                onToggleWake={toggleWake}
-                locationOn={locationOn}
-                locationState={locationState}
-                onToggleLocation={toggleLocation}
-                onSignOut={signOut}
-            />
         </main>
     );
 }

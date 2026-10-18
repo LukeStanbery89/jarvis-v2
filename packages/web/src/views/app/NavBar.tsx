@@ -1,6 +1,7 @@
 /**
- * The app's top bar (#90 phase 6b): the wordmark, the pages, the account, the
- * connection state, and the unread badge.
+ * The app's top bar (#90 phases 6b, 6d): the wordmark, the pages, the account,
+ * and the state of the app — the connection, the microphone, the location share
+ * — with the settings gear at the end of it.
  *
  * The wordmark is the way home — it links to the dashboard — so the pages listed
  * here are the four destinations other than it. Under 48rem the links collapse
@@ -15,12 +16,17 @@
  * live in the chat sidebar, which made it a fact about the conversation rather
  * than about the app.
  *
- * The connection state lives here rather than in the conversation view: now that
- * the socket outlives a route change it is a fact about the app, and
- * "reconnecting…" should be visible from every page.
+ * **The state chips obey one rule: a chip renders only when it has something to
+ * say.** That is why the connection chip is silent while connected, and why the
+ * microphone and location chips are absent in their resting states — the bar is
+ * not a dashboard of healthy subsystems. What it does show is exactly the states
+ * a user must not have to go looking for: a dropped socket, an open microphone,
+ * a share that is not delivering, and a voice session that failed. Phase 6d
+ * brought the last three here with the gear, because the microphone and the
+ * location share are the app's now and every page is a place they can be live.
  */
 import { useEffect, useRef, useState } from "react";
-import { Menu, X } from "lucide-react";
+import { MapPin, Menu, Mic, Settings as SettingsIcon, X } from "lucide-react";
 import { AppLink } from "../../AppLink";
 import { useRoute } from "../../hooks/useRoute";
 import type { ChatStatus } from "../../ChatClient";
@@ -56,6 +62,22 @@ export interface NavBarProps {
     unread: number;
     /** The socket's lifecycle, for the connection chip. */
     status: ChatStatus;
+    /** Whether the settings panel is showing (the gear's `aria-expanded`). */
+    settingsOpen: boolean;
+    /** Opens the settings panel (the gear, wherever it is being rendered). */
+    onOpenSettings(): void;
+    /** The voice session's status line, or `null` when there is nothing to say. */
+    voiceStatus: string | null;
+    /** Whether the wake detector is live (a microphone that is on). */
+    voiceListening: boolean;
+    /** What the microphone is doing, for its tooltip (`describeWakeState`). */
+    voiceLabel: string;
+    /** A voice session that ended in failure, shown in place of the label. */
+    voiceError: string | null;
+    /** The location share's hint word, or `null` when there is nothing to say. */
+    locationHint: string | null;
+    /** The full sentence behind the hint (its tooltip). */
+    locationSentence: string;
 }
 
 /**
@@ -82,11 +104,103 @@ function ConnectionChip({ status }: { status: ChatStatus }) {
 }
 
 /**
+ * The microphone chip (#90 phase 6d): the wake detector, a running session, or a
+ * session that failed — whichever is true, and absent when none is.
+ *
+ * The blink is the "live" part, exactly as it was in the sidebar: an armed
+ * detector is an open microphone, and a static icon would read as decoration.
+ * While a session is running its stage is the text, so the icon stops blinking
+ * and speaks for itself ("Listening…" is a better answer than a pulse).
+ */
+function MicrophoneChip({
+    listening,
+    status,
+    label,
+    error,
+}: {
+    listening: boolean;
+    status: string | null;
+    label: string;
+    error: string | null;
+}) {
+    if (!listening && status === null && error === null) {
+        return null;
+    }
+    const title = error ?? label;
+    return (
+        <span
+            className={error === null ? "navbar-state" : "navbar-state error"}
+            role="status"
+            title={title}
+            aria-label={title}
+        >
+            <Mic
+                size={14}
+                className={
+                    listening && status === null
+                        ? "navbar-state-icon listening"
+                        : "navbar-state-icon"
+                }
+                aria-hidden="true"
+            />
+            {status}
+        </span>
+    );
+}
+
+/**
+ * The location chip (#90 phase 6d): what the share is doing, in a word.
+ *
+ * Present only while it is on and has something to say — "Locating…", or a
+ * refusal the user should not have to open a panel to discover. The rotation
+ * runs the same "how on earth is it delivering?" question the pin does
+ * (`briefLocationState`), and the sentence behind the word is the tooltip.
+ */
+function LocationChip({
+    hint,
+    sentence,
+}: {
+    hint: string | null;
+    sentence: string;
+}) {
+    if (hint === null) {
+        return null;
+    }
+    return (
+        <span
+            className="navbar-state"
+            role="status"
+            title={sentence}
+            aria-label={sentence}
+        >
+            <MapPin
+                size={14}
+                className="navbar-state-icon"
+                aria-hidden="true"
+            />
+            {hint}
+        </span>
+    );
+}
+
+/**
  * The top bar.
  *
  * @param props - See {@link NavBarProps}.
  */
-export function NavBar({ username, unread, status }: NavBarProps) {
+export function NavBar({
+    username,
+    unread,
+    status,
+    settingsOpen,
+    onOpenSettings,
+    voiceStatus,
+    voiceListening,
+    voiceLabel,
+    voiceError,
+    locationHint,
+    locationSentence,
+}: NavBarProps) {
     const route = useRoute();
     const [menuOpen, setMenuOpen] = useState(false);
     const barRef = useRef<HTMLElement | null>(null);
@@ -156,10 +270,28 @@ export function NavBar({ username, unread, status }: NavBarProps) {
             </nav>
             <span className="navbar-end">
                 <ConnectionChip status={status} />
+                <MicrophoneChip
+                    listening={voiceListening}
+                    status={voiceStatus}
+                    label={voiceLabel}
+                    error={voiceError}
+                />
+                <LocationChip hint={locationHint} sentence={locationSentence} />
                 {/* The account is the bar's on wide screens and the menu's on
                     narrow ones (#90 phase 6b): both are rendered, and the one
                     media query that hides the links hides this too. */}
                 <span className="navbar-user">{username}</span>
+                <button
+                    type="button"
+                    className="icon-btn"
+                    aria-expanded={settingsOpen}
+                    aria-controls="settings-panel"
+                    aria-label="Settings"
+                    title="Settings"
+                    onClick={onOpenSettings}
+                >
+                    <SettingsIcon size={16} aria-hidden="true" />
+                </button>
                 <button
                     type="button"
                     className="icon-btn navbar-menu"

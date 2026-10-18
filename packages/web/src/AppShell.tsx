@@ -31,6 +31,8 @@ import { readNotificationsEnabled } from "./prefs";
 import { selectToasts } from "./notifications";
 import { snoozeReminder, snoozeRequestFor } from "./snooze";
 import { navigate } from "./router";
+import { briefLocationState, describeLocationState } from "./location";
+import { describeWakeState, wakeIsListening } from "./sidebar";
 import { useRoute } from "./hooks/useRoute";
 import { useThreads } from "./hooks/useThreads";
 import { useAudio } from "./hooks/useAudio";
@@ -39,7 +41,7 @@ import { useNotifications } from "./hooks/useNotifications";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
 import { useChatClient } from "./hooks/useChatClient";
 import { useJobs } from "./hooks/useJobs";
-import { useVoiceSession } from "./hooks/useVoiceSession";
+import { useVoiceSession, voiceStatusLine } from "./hooks/useVoiceSession";
 import { useLocationSharing } from "./hooks/useLocationSharing";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
@@ -49,7 +51,8 @@ import { NotificationsPage } from "./views/app/NotificationsPage";
 import { RemindersPage, TimersPage } from "./views/app/JobsPages";
 import { ToastStack } from "./views/app/Toast";
 import { Chat } from "./views/Chat";
-import { TimerRing } from "./views/chat/TimerRing";
+import { Settings } from "./views/app/Settings";
+import { TimerRing } from "./views/app/TimerRing";
 
 /**
  * The capabilities this client announces in its `hello` frame. Module-level so
@@ -87,6 +90,8 @@ export function AppShell({
     const route = useRoute();
     /** Whether a turn is in flight, typed or spoken (the composer's state). */
     const [turning, setTurning] = useState(false);
+    /** Whether the settings panel is showing (the bar's gear owns it now). */
+    const [settingsOpen, setSettingsOpen] = useState(false);
 
     const threads = useThreads(credential.username);
     const audio = useAudio();
@@ -323,6 +328,35 @@ export function AppShell({
     }
 
     /**
+     * Flips the wake-word toggle and persists it (#84 P4). The gesture also
+     * unlocks the audio context so the match cue is audible.
+     *
+     * The shell's, because the panel that holds the toggle is the shell's now
+     * (#90 phase 6d) — and because the microphone it arms is the app's.
+     */
+    function toggleWake(): void {
+        if (voice.toggleWake()) {
+            audio.unlock();
+        }
+    }
+
+    /**
+     * What the bar says about the microphone and the location share (#90 phase
+     * 6d). Derived here rather than inside `NavBar` so the copy keeps one home
+     * (`describeWakeState`, `voiceStatusLine`, `briefLocationState`) and the bar
+     * stays a reader of strings — the same reason the chat's status line reads
+     * `voiceStatusLine` rather than composing its own sentence.
+     */
+    const voiceStatus = voiceStatusLine(voice.snapshot, audio.speaking);
+    const voiceListening = wakeIsListening(
+        voice.wakeAvailable,
+        voice.wakeArmed,
+    );
+    const locationHint = location.locationOn
+        ? briefLocationState(location.locationState)
+        : null;
+
+    /**
      * A timer's ring belongs to the alert selection, not to a click: it starts
      * when a fired timer becomes the ring target (or when the next one takes
      * over after a Stop) and stops the moment nothing is owed. The player's
@@ -419,6 +453,17 @@ export function AppShell({
                 username={credential.username}
                 unread={notifications.unread}
                 status={socket.status}
+                settingsOpen={settingsOpen}
+                onOpenSettings={() => setSettingsOpen(true)}
+                voiceStatus={voiceStatus}
+                voiceListening={voiceListening}
+                voiceLabel={describeWakeState(
+                    voice.wakeAvailable,
+                    voice.wakeArmed,
+                )}
+                voiceError={voice.voiceErrorText}
+                locationHint={locationHint}
+                locationSentence={describeLocationState(location.locationState)}
             />
             <div className="app-view">{currentView()}</div>
             {toasts.length > 0 && (
@@ -437,6 +482,33 @@ export function AppShell({
             {notifications.ring !== null && (
                 <TimerRing timer={notifications.ring} onStop={stopTimer} />
             )}
+            {/* The settings panel (#143) is the app's, not the chat's (#90 phase
+                6d): the gear lives in the bar, so the dialog it opens has to be
+                renderable from every page. */}
+            <Settings
+                open={settingsOpen}
+                onClose={() => setSettingsOpen(false)}
+                prefs={prefs.prefs}
+                prefsLoaded={prefs.loaded}
+                prefsSaving={prefs.saving}
+                prefsError={prefs.error}
+                onPatchPrefs={prefs.patch}
+                browserNotifyAvailable={browserNotify.available}
+                browserNotifyOn={browserNotify.enabled}
+                browserNotifyLabel={browserNotify.label}
+                onToggleBrowserNotify={browserNotify.toggle}
+                wakeAvailable={voice.wakeAvailable}
+                wakeOn={voice.wakeOn}
+                wakeArmed={voice.snapshot.wakeArmed}
+                onToggleWake={toggleWake}
+                locationOn={location.locationOn}
+                locationState={location.locationState}
+                onToggleLocation={location.toggleLocation}
+                onSignOut={() => {
+                    socket.client?.close();
+                    onSignedOut();
+                }}
+            />
         </div>
     );
 }

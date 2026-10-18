@@ -147,7 +147,7 @@ out over the shell's socket from whatever page the user is on. The location
 pin lives in the **settings panel** under
 "This browser" (#143) and is the visible opt-out (persisted in localStorage —
 an explicit "0" suppresses sharing). While sharing is on but not delivering,
-the sidebar says so in a word beside the gear (`Locating…` / `Location denied`
+the bar says so in a word (`Locating…` / `Location denied`
 / `Location failed` / `Location unavailable`), so a declined permission prompt
 is never silent. On success, coordinates are
 rounded to four decimals (~11 m), and the result ships as a `location`
@@ -253,7 +253,7 @@ openwakeword-web running under the WASM STT engine's runtime). The detector
 belongs to the app (#90 phase 6d): once armed it listens on **every page**, and
 a match taken on `/timers` submits into the open thread exactly as one taken in
 the chat does — with no thread open it mints one and goes to it. While armed,
-the sidebar shows a blinking microphone beside the gear, because an open
+the **bar** shows a blinking red microphone, because an open
 microphone is not something to have to open a panel to discover (a static
 icon under `prefers-reduced-motion`), and
 the detector holds a 16 kHz mic open continuously; a match plays a short blip
@@ -366,11 +366,13 @@ pushed notification is never rendered twice, and a frame can never un-read or
 un-dismiss something the user already settled (the wire frame carries no
 state; the record does).
 
-The surface is the notification list with a badge (`src/views/chat/Notifications.tsx`),
-plus — since #90 phase 6b — a floating toast in the shell
-(`src/views/app/Toast.tsx`) that reaches the user on **every** page, because a
-fired reminder arrives wherever they happen to be. Which rows reach the toast is
-`selectToasts`' decision (see the alert-classes section below), not the list's. Reading or dismissing is optimistic — the list
+The surfaces are the notifications page at `/notifications`
+(`src/views/app/NotificationsPage.tsx`, where Mark read · Dismiss · Snooze live),
+the unread badge in the top bar, and — since #90 phase 6b — a floating toast in
+the shell (`src/views/app/Toast.tsx`) that reaches the user on **every** page,
+because a fired reminder arrives wherever they happen to be. Which rows reach
+the toast is `selectToasts`' decision (see the alert-classes section below), not
+the list's. Reading or dismissing is optimistic — the list
 updates immediately and rolls back if the server refuses — and a notification
 raised while this client was closed is simply in the list when it next loads,
 which is why nothing here depends on the frame arriving. The list is re-read
@@ -525,9 +527,12 @@ tab title, and the alarm; the OS card is best-effort.
 
 ## Settings panel (#143)
 
-A gear in the sidebar head opens a settings panel holding the controls that
+A gear in the **top bar** opens a settings panel holding the controls that
 used to sit as four icon buttons beside the account name (location, wake word,
-desktop notifications, sign out). It is a native `<dialog showModal()>` — so
+desktop notifications, sign out). The gear moved there in #90 phase 6d: the
+microphone and the location share it governs are the app's, so the panel that
+holds their toggles has to be reachable from every page, not only while the
+chat is on screen. It is a native `<dialog showModal()>` — so
 Escape, the focus trap, and restoring focus to the gear are the platform's job
 rather than a hand-rolled key handler — and it is organized by **where a
 setting lives**, because that is the part a user has to know:
@@ -556,9 +561,9 @@ guessing a rollback.
 
 Zeros worth knowing: the panel writes single-key patches, so it never touches
 integration prefs; it never calls `DELETE /api/prefs`, which would clear the
-whole map; quiet hours are switched off by writing `null`; and the badge over
-the gear is an _addition_ to the badge on the notification list, not a
-replacement, so nothing depends on the sidebar being on screen.
+whole map; quiet hours are switched off by writing `null`; and the unread count
+rides both the Notifications link and the hamburger, whichever is showing, so
+nothing depends on the chat being on screen.
 
 ## Dev-server gotcha: the linked protocol package
 
@@ -608,13 +613,14 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/main.tsx` — React bootstrap.
 - `src/App.tsx` — sign-in gate, then the page the path names (#90 phase 6a).
 - `src/router.ts` — the app's paths (`/` dashboard, `/chat`, `/timers`, `/reminders`, `/notifications`), `routeForPath`, and the store that follows `window.location` (`currentRoute`/`subscribeRoute`/`navigate`, plus the `interceptsNavigation` click rule); `src/AppLink.tsx` is the `<a href>` that claims a plain left click and swaps the view without a reload, and `src/hooks/useRoute.ts` reads the store with `useSyncExternalStore`.
-- `src/AppShell.tsx` — the signed-in app: the app-level state (socket, transcript, audio, notifications, prefs, jobs) and the switch that renders the page the address names. Everything here has to outlive a route change, and the socket is the load-bearing example.
+- `src/AppShell.tsx` — the signed-in app: the app-level state (socket, transcript, audio, notifications, prefs, jobs, and since 6d the microphone, the location share and the one turn runner both the composer and a wake match submit through), the settings panel, and the switch that renders the page the address names. Everything here has to outlive a route change, and the socket is the load-bearing example.
 - `src/appState.ts` — the type a view receives from the shell (types only, so a view never imports its own parent).
-- `src/hooks/useFrameBus.ts` — publish/subscribe over socket frames: the shell handles what every view needs (transcript, audio) and a view subscribes to the rest (only voice does).
 - `src/clock.ts` — `clockText` / `formatDate` / `weekdayText` / `describeSpan`: time in the words a person reads, hand-rolled so the tests are exact and shared so a reminder and a job cannot disagree.
 - `src/jobs.ts` — the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM").
 - `src/hooks/useJobs.ts` — the caller's `GET /api/jobs` list: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives.
-- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the connection chip, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), and the hamburger drawer under 48rem.
+- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and the hamburger drawer under 48rem.
+- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which. The gear in the bar opens it from any page (#90 phase 6d).
+- `src/views/app/TimerRing.tsx` — the ring a fired `timer` gets (#90 phase 4): a modal `<dialog>` with **Stop** as its one exit, so it covers anything else in the top layer without a z-index race.
 - `src/views/app/Toast.tsx` — the floating notification **stack** (up to `TOAST_LIMIT` cards, newest first): the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
 - `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app) whose colon blinks once a second (`clockParts` + a CSS animation, off under `prefers-reduced-motion`), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.
 - `src/views/app/NotificationsPage.tsx` — `/notifications`: every recorded row with the actions it allows (Mark read · Dismiss · Snooze) and the dev-only test button. "Snoozed until 7:00 PM" is `snoozeUntil` + `describeSnooze`, the join through the row's `jobId`.
@@ -634,9 +640,9 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/dev/VoiceHarness.tsx` — the offline replay harness (#121, `?voice-harness=1`), lazily imported.
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
-- `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` is the composition root: it keeps the chat-turn orchestration (`runTurn`/`send`/`remove`/sign-out/wake-arm) and wires the socket frames to the reducer, over the hooks below and `src/views/chat/*`.
-- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`, `Notifications.tsx` (#139 banner + list), `Settings.tsx` (#143 panel: account prefs beside this browser's controls).
-- `src/hooks/` — the chat hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `usePrefs` (#143 account prefs read/patch), `useAutoScroll`.
+- `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` renders the conversation: its sidebar rows (`useSessions`), the transcript, the composer, and the error/wake/voice status lines — the turn itself is the shell's `runTurn`, and the gear and the panel it opens are the shell's too (#90 phase 6d).
+- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx`, `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
+- `src/hooks/` — the hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing`, `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `usePrefs` (#143 account prefs read/patch), `useJobs` (#90 job list), `useClock`, `useRoute`, `useAutoScroll`.
 - `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread.
 - `src/prefs.ts` — pure account-preference helpers (settings panel): read `notify.enabled`/`notify.quietHours` the way the server does (an unreadable stored value reads as not in effect, flagged rather than hidden), validate a typed window, and build the one-key patches the panel writes.
 - `src/browserNotify.ts` — pure desktop-notification rules (#139 phase 2): the announce decision (hidden tab, unsettled, not already announced, preference _and_ permission), the toggle's UI state, and this browser's stored preference.

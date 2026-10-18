@@ -1,27 +1,15 @@
 /**
- * The chat sidebar: the settings gear (with the state hints that must stay
- * visible), the new-chat button, and the merged conversation list.
+ * The chat sidebar: the new-chat button and the merged conversation list.
  *
- * Presentational — props in, events out. The four controls that used to live
- * here (location, wake word, desktop notifications, sign out) moved into the
- * settings panel (#143), which is why the only icon button left is the gear.
- * The hints beside it come from the pure modules (`briefLocationState`,
- * `briefWakeState`), so the copy stays node-testable.
- *
- * The account name and the way home are the top bar's since #90 phase 6b: they
- * belong to every page, not to this column.
+ * Presentational — props in, events out. The settings gear moved to the top bar
+ * in #90 phase 6d, along with the two state hints it used to carry: the
+ * microphone and the location share belong to the app now, so *every* page has
+ * to be able to say they are live, not just this column. What is left here is
+ * what the sidebar is actually about — the conversations — which is why the
+ * head it used to have is gone rather than empty.
  */
-import { Mic, Settings as SettingsIcon, SquarePen, Trash2 } from "lucide-react";
-import {
-    briefLocationState,
-    describeLocationState,
-    type LocationUiState,
-} from "../../location";
-import {
-    describeWakeState,
-    wakeIsListening,
-    type SidebarRow,
-} from "../../sidebar";
+import { SquarePen, Trash2 } from "lucide-react";
+import type { SidebarRow } from "../../sidebar";
 
 /** Props for {@link Sidebar}. */
 export interface SidebarProps {
@@ -31,18 +19,6 @@ export interface SidebarProps {
     activeId: string | null;
     /** A turn is streaming (thread switching is disabled). */
     streaming: boolean;
-    /** The location-sharing preference. */
-    locationOn: boolean;
-    /** Why the location state hint says what it says. */
-    locationState: LocationUiState;
-    /** Local wake engines exist and the server serves the model. */
-    wakeAvailable: boolean;
-    /** The controller is actively listening for the wake phrase. */
-    wakeArmed: boolean;
-    /** Whether the settings panel is showing (the gear's `aria-expanded`). */
-    settingsOpen: boolean;
-    /** Opens the settings panel. */
-    onOpenSettings(): void;
     /** Starts a fresh conversation. */
     onNewChat(): void;
     /** Opens a conversation. */
@@ -60,62 +36,12 @@ export function Sidebar({
     entries,
     activeId,
     streaming,
-    locationOn,
-    locationState,
-    wakeAvailable,
-    wakeArmed,
-    settingsOpen,
-    onOpenSettings,
     onNewChat,
     onOpenThread,
     onRemoveThread,
 }: SidebarProps) {
-    // Two states must stay visible while the panel is closed: a live wake
-    // detector (a microphone that is on) and a location share that is not
-    // delivering. Everything else moved into the panel with its control.
-    const wakeStateText = describeWakeState(wakeAvailable, wakeArmed);
-    const listening = wakeIsListening(wakeAvailable, wakeArmed);
-    const locationHint = locationOn ? briefLocationState(locationState) : null;
     return (
         <aside className="sidebar">
-            <div className="sidebar-head">
-                <span className="sidebar-actions">
-                    {listening && (
-                        <span
-                            className="sidebar-state"
-                            role="status"
-                            aria-label={wakeStateText}
-                            title={wakeStateText}
-                        >
-                            <Mic
-                                size={14}
-                                className="sidebar-state-icon"
-                                aria-hidden="true"
-                            />
-                        </span>
-                    )}
-                    {locationHint !== null && (
-                        <span
-                            className="sidebar-state"
-                            role="status"
-                            title={describeLocationState(locationState)}
-                        >
-                            {locationHint}
-                        </span>
-                    )}
-                    <button
-                        type="button"
-                        className="icon-btn"
-                        aria-expanded={settingsOpen}
-                        aria-controls="settings-panel"
-                        aria-label="Settings"
-                        title="Settings"
-                        onClick={onOpenSettings}
-                    >
-                        <SettingsIcon size={16} aria-hidden="true" />
-                    </button>
-                </span>
-            </div>
             <button
                 type="button"
                 className="new-chat"

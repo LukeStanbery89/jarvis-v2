@@ -297,16 +297,6 @@ textarea::placeholder {
     overflow-y: auto;
 }
 
-/* The head is a row of state hints and the gear; the account name moved to the
-   top bar (#90 phase 6b), so what is left is right-aligned. */
-.sidebar-head {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    font-weight: 600;
-    color: var(--primary);
-}
-
 .sidebar nav {
     display: flex;
     flex-direction: column;
@@ -586,24 +576,37 @@ textarea::placeholder {
     gap: 6px;
 }
 
-/* A state that must stay visible while the settings panel is closed (#143):
-   a live wake detector, or a location share that is not delivering. Small and
-   secondary — the control itself lives in the panel. */
-.sidebar-state {
+/* A state that must stay visible while its control is out of sight (#143, #90
+   phase 6d): a live wake detector, a location share that is not delivering, a
+   voice session that failed. Small and secondary — the control itself lives in
+   the settings panel — and it sits in the bar rather than the chat's sidebar,
+   because the microphone and the share belong to the app, and *every* page is a
+   place they can be live. */
+.navbar-state {
     display: inline-flex;
     align-items: center;
-    font-size: 0.68rem;
-    font-weight: 400;
+    gap: 0.3rem;
+    font-size: 0.78rem;
     color: var(--primary-dim);
     white-space: nowrap;
 }
 
-/* An armed wake detector is an open microphone, so it says so from the sidebar
-   rather than only inside the panel. The blink is the "live" part — a static
-   icon would read as a decoration — and reduced-motion keeps the icon without
-   the pulse. */
-.sidebar-state-icon {
-    color: var(--primary);
+.navbar-state.error {
+    color: var(--error);
+}
+
+.navbar-state-icon {
+    color: var(--primary-dim);
+}
+
+/* An armed wake detector is an open microphone, so it says so from the bar. Red
+   is the convention for a microphone that is on — and the blink is the "live"
+   part, because a static icon would read as a decoration. A *failed* session is
+   red too, but never blinks: red and pulsing means live, red holding still
+   beside a sentence means it broke. Reduced-motion keeps the icon (and the
+   colour) without the pulse. */
+.navbar-state-icon.listening {
+    color: var(--error);
     animation: jarvis-listening 1.4s ease-in-out infinite;
 }
 
@@ -619,7 +622,7 @@ textarea::placeholder {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .sidebar-state-icon {
+    .navbar-state-icon.listening {
         animation: none;
     }
 }
