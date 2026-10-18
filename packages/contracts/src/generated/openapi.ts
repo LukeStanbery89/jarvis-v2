@@ -794,7 +794,7 @@ export interface components {
         };
         /** @description Body of `POST /api/jobs/{id}/snooze`. */
         JobSnoozeRequest: {
-            /** @description How long from now to snooze, in minutes. The short end is half a minute: a snooze is a human-scale "not now". */
+            /** @description How long from now to snooze, in minutes. The short end is half a minute: a snooze is a human-scale "not now". The long end is a week — the classification table's furthest preset ("next week"), and the longest a deferral can be. */
             minutes: number;
         };
         /** @description What the caller's quiet hours, as they stand, will do to this job's announcement. A prediction, not a promise: the window is read again when the job fires, so a change in between changes the outcome. */

@@ -135,3 +135,103 @@ describe("createApi prefs", () => {
         });
     });
 });
+
+describe("createApi jobs", () => {
+    it("asks for the settled rows too, in one bounded read", async () => {
+        // The pages show pending and history from one call (see `useJobs`): the
+        // server has no settled-only page, and a user's table is capped below the
+        // limit, so this is "everything".
+        const { fetch, calls } = fetchJson(200, { jobs: [] });
+        const page = await createApi(fetch).listJobs("tok", {
+            limit: 200,
+            includeSettled: true,
+        });
+        expect(page.jobs).toEqual([]);
+        expect(calls[0].path).toBe("/api/jobs?limit=200&includeSettled=true");
+        expect(
+            (calls[0].init.headers as Record<string, string>).authorization,
+        ).toBe("Bearer tok");
+    });
+
+    it("creates a job with the page's own class and moment", async () => {
+        const saved = {
+            job: { id: "job-1", label: "Kettle", class: "timer" },
+            quiet: { state: "clear" },
+        };
+        const { fetch, calls } = fetchJson(201, saved);
+        const answer = await createApi(fetch).createJob("tok", {
+            label: "Kettle",
+            class: "timer",
+            runAt: "2026-10-18T12:10:00.000Z",
+        });
+        expect(answer.quiet).toEqual({ state: "clear" });
+        expect(calls[0].path).toBe("/api/jobs");
+        expect(calls[0].init.method).toBe("POST");
+        const body = JSON.parse(String(calls[0].init.body)) as Record<
+            string,
+            unknown
+        >;
+        expect(body).toEqual({
+            label: "Kettle",
+            class: "timer",
+            runAt: "2026-10-18T12:10:00.000Z",
+        });
+    });
+
+    it("PATCHes only the fields an edit may touch, on an encoded id", async () => {
+        const { fetch, calls } = fetchJson(200, {
+            job: { id: "job/1", label: "Kettle" },
+            quiet: { state: "disabled" },
+        });
+        const answer = await createApi(fetch).updateJob("tok", "job/1", {
+            runAt: "2026-10-18T13:10:00.000Z",
+        });
+        expect(answer.quiet.state).toBe("disabled");
+        expect(calls[0].path).toBe("/api/jobs/job%2F1");
+        expect(calls[0].init.method).toBe("PATCH");
+        const body = JSON.parse(String(calls[0].init.body)) as Record<
+            string,
+            unknown
+        >;
+        expect(body).toEqual({ runAt: "2026-10-18T13:10:00.000Z" });
+    });
+
+    it("reads one job's run history, and surfaces the server's refusal", async () => {
+        const { fetch, calls } = fetchJson(200, {
+            job: { id: "job-1", label: "Kettle" },
+            runs: [
+                {
+                    id: "run-1",
+                    state: "ok",
+                    startedAt: "2026-10-18T12:10:00.000Z",
+                    output: "Kettle",
+                },
+            ],
+        });
+        const detail = await createApi(fetch).getJob("tok", "job-1");
+        expect(detail.runs[0]?.output).toBe("Kettle");
+        expect(calls[0].path).toBe("/api/jobs/job-1");
+        expect(calls[0].init.method).toBe("GET");
+
+        const { fetch: missing } = fetchJson(404, { error: "job not found" });
+        await expect(createApi(missing).getJob("tok", "gone")).rejects.toThrow(
+            "job not found",
+        );
+    });
+
+    it("reports an edit refusal in the server's own words", async () => {
+        // The form shows this sentence, so the assertion is on the message rather
+        // than on a status: a page cannot improve on "a reminder is not a timer".
+        const { fetch } = fetchJson(400, {
+            error: "class and kind cannot be edited — cancel the job and create another",
+        });
+        const attempt = createApi(fetch).updateJob("tok", "job-1", {
+            label: "Kettle",
+        });
+        await expect(attempt).rejects.toBeInstanceOf(ApiError);
+        await attempt.catch((e: ApiError) => {
+            expect(e.status).toBe(400);
+            expect(e.message).toMatch(/cannot be edited/);
+        });
+    });
+});

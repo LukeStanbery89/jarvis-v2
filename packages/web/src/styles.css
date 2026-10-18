@@ -945,6 +945,48 @@ textarea::placeholder {
     font-size: 0.8rem;
 }
 
+/* A settled row (#90 phase 7): history, so it steps back — no class edge, dimmer
+   text — and its eyebrow names what happened ("done", "missed", "cancelled")
+   where an owed row's names the class. */
+.job-settled {
+    background: transparent;
+    border-left-color: var(--primary-border);
+    color: var(--primary-dim);
+}
+
+.job-settled strong {
+    font-weight: 600;
+}
+
+/* Why a failed or missed job failed, in the server's own words. Wrapped rather
+   than clipped: the reason is the whole point of the row. */
+.job-error {
+    color: var(--error);
+}
+
+/* The history disclosure: closed by default, so the work still owed keeps the
+   screen. */
+.job-history {
+    font-size: 0.85rem;
+}
+
+.job-history summary {
+    padding: 0.2rem 0;
+    color: var(--primary-dim);
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.job-history summary:hover {
+    color: var(--primary);
+}
+
+.job-history .job-list {
+    margin-top: 0.4rem;
+}
+
 /* The floating toast (#90 phase 6b): the banner's card, moved out of the
    conversation column so a fired reminder reaches the user on any page. Opaque —
    it sits over page content, and the banner's translucent wash would let text
@@ -1229,6 +1271,178 @@ textarea::placeholder {
     border-color: var(--primary);
 }
 
+/* The job form (#90 phase 7): the same dialog shape as the settings panel —
+   a modal in the top layer, so Escape, the backdrop and focus are the platform's
+   — with one field per row and the moment phrased the way the row will read it
+   back. */
+.job-form {
+    width: min(24rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
+    padding: 1rem 1.1rem 1.25rem;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 10px;
+}
+
+.job-form::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.job-form-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+}
+
+.job-form-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+}
+
+.job-form-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+}
+
+/* The label over the control, rather than beside it: the name and the detail are
+   sentences the user types, and a two-column form shrinks them both. */
+.job-form-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--primary-dim);
+}
+
+.job-form-row input,
+.job-form-row select {
+    padding: 0.3rem 0.45rem;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 5px;
+    font: inherit;
+    font-size: 0.88rem;
+    letter-spacing: normal;
+    text-transform: none;
+}
+
+.job-form-row input:focus,
+.job-form-row select:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.job-form-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.job-form-chip {
+    padding: 0.2rem 0.5rem;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--primary-dim);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 999px;
+    cursor: pointer;
+}
+
+.job-form-chip:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* The preset the current length matches, so the chips and the fields cannot look
+   like two different answers. */
+.job-form-chip.current {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--primary-wash);
+}
+
+.job-form-custom {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.job-form-custom input {
+    width: 5.5rem;
+}
+
+.job-form-note {
+    margin: 0;
+    font-size: 0.74rem;
+    line-height: 1.4;
+    color: var(--primary-faint);
+}
+
+.job-form-error {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--error);
+}
+
+.job-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+}
+
+.job-form-actions button {
+    padding: 0.3rem 0.8rem;
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--primary-dim);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.job-form-actions button:hover:not(:disabled) {
+    color: var(--primary);
+    background: var(--primary-wash);
+    border-color: var(--primary);
+}
+
+/* The save button is the form's one commitment: it reads as the primary action
+   even before the pointer is anywhere near it. */
+.job-form-actions button.primary {
+    color: var(--bg);
+    background: var(--primary);
+    border-color: var(--primary);
+}
+
+.job-form-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* A note the page shows after a save — the server's quiet-hours forecast, which
+   is the one thing about a new job the user cannot see in the row yet. */
+.page-status {
+    margin: 0;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--primary-dim);
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+}
+
 /* The timer ring (#90 phase 4) — the one notification the client raises as an
    interruption in the physical sense. A modal <dialog>, so it sits in the
    browser's top layer above the settings dialog (and anything that opens
@@ -1336,6 +1550,16 @@ textarea::placeholder {
     padding: 2rem 1.25rem;
 }
 
+/* The page head, with the page's one action at its far end (#90 phase 7): the
+   list is what the page is for, so New is beside the title rather than a bar of
+   its own above it. */
+.page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
 .page-head h1 {
     margin: 0;
     font-size: 1.5rem;
@@ -1353,29 +1577,85 @@ textarea::placeholder {
     color: var(--error);
 }
 
+/* The page's primary action: the same shape as the form's save button, because
+   it opens that form. */
+.page-new {
+    flex-shrink: 0;
+    padding: 0.35rem 0.8rem;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--bg);
+    background: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.page-new:hover {
+    filter: brightness(1.1);
+}
+
 /* The snooze control (#90 phase 6c): one button, and its three presets when
    asked for. Inline, so it sits with whatever actions the row already has; the
    buttons themselves are styled by the row's own action rules. */
+/* The snooze control (#90 phase 6c): one button, and its three presets in a menu.
+   The menu is a **popover**, so it lives in the browser's top layer: an
+   absolutely positioned menu inside the toast was clipped by `.toast-stack`'s
+   scrolling edge, and chips in the flow reflowed the card. `inset: auto` undoes
+   the UA's viewport centring — the component measures where the menu goes
+   (`src/popover.ts`) and writes the coordinates inline. */
 .snooze {
-    position: relative;
     display: inline-flex;
     align-items: center;
 }
 
+.snooze.open .snooze-toggle {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* Deliberately **no `display` here.** The UA sheet hides a closed popover with
+   `[popover]:not(:popover-open) { display: none }`, and that rule loses to any
+   author `display` at all — origins outrank specificity, so a bare
+   `display: flex` on this selector renders the menu permanently open, over the
+   page. It belongs on the open state, which is the only state that has a layout
+   to give. */
 .snooze-options {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    z-index: 10;
-    display: flex;
+    position: fixed;
+    inset: auto;
+    margin: 0;
     flex-direction: column;
     gap: 2px;
-    margin-top: 0.25rem;
+    min-width: 8.5rem;
     padding: 0.3rem;
     background: var(--panel);
     border: 1px solid var(--primary-border);
     border-radius: 6px;
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
+.snooze-options:popover-open {
+    display: flex;
+}
+
+/* The presets read as menu items, not as the row's actions: full width, left
+   aligned, and a wash on hover rather than a border. (This rule sits after the
+   row-button one above, so it wins without a specificity fight.) */
+.snooze-options button {
+    justify-content: flex-start;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    text-align: left;
+}
+
+.snooze-options button:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+    border-color: var(--primary-border);
 }
 
 /* --- The dashboard (#90 phase 6b) --- */

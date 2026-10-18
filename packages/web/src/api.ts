@@ -50,6 +50,37 @@ export type Job = components["schemas"]["Job"];
 export type JobList = components["schemas"]["JobList"];
 
 /**
+ * Body of `POST /api/jobs` (#90 phase 7): what a page asks for. A page may name
+ * the `class` (it is the user's own hand, unlike the model's tools, which own
+ * their class) and its jobs are always `message` jobs.
+ */
+export type JobCreateRequest = components["schemas"]["JobCreateRequest"];
+
+/**
+ * Body of `PATCH /api/jobs/{id}` (#90 phase 7): the fields an edit may touch.
+ * `class` and `kind` are absent on purpose — changing either is a different job.
+ */
+export type JobUpdateRequest = components["schemas"]["JobUpdateRequest"];
+
+/**
+ * Body of `POST /api/jobs` and `PATCH /api/jobs/{id}`: the stored job and what
+ * the caller's quiet hours, as they stand, will do to its announcement.
+ */
+export type JobSaved = components["schemas"]["JobSaved"];
+
+/** Body of `GET /api/jobs/{id}`: the job and every attempt at it. */
+export type JobDetail = components["schemas"]["JobDetail"];
+
+/** One attempt at a job: what it did, or why it failed. */
+export type JobRun = components["schemas"]["JobRun"];
+
+/**
+ * What quiet hours will do to an announcement: `held` (with the moment it comes
+ * back on), `disabled` (the account's master switch is off), or `clear`.
+ */
+export type QuietForecast = components["schemas"]["QuietForecast"];
+
+/**
  * Body of `POST /api/jobs/{id}/snooze` (#90): the job's new moment, which of the
  * two things happened (`moved` / `recreated`), and what quiet hours will do to the
  * new time.
@@ -308,6 +339,50 @@ export function createApi(
             }
             const query = params.size > 0 ? `?${params.toString()}` : "";
             return request("GET", `/api/jobs${query}`, { token });
+        },
+        /**
+         * Reads one job and every attempt at it (#90 phase 7).
+         *
+         * This is the run history: what a prompt or tool job actually produced,
+         * or why it failed. A job a retention pass has pruned is a 404 — the
+         * honest answer, and the same one a snoozed row's dead link gets.
+         */
+        getJob(token: string, id: string): Promise<JobDetail> {
+            return request("GET", `/api/jobs/${encodeURIComponent(id)}`, {
+                token,
+            });
+        },
+        /**
+         * Creates a job from a page (#90 phase 7).
+         *
+         * A page-created job is always a `message` job — text with nothing to
+         * run — because a stored tool call is a durable capability, and the tool
+         * allowlist plus the target tool's own schema are the only door to one
+         * (see the server README). Everything a page sends is a *request*: the
+         * bounds (label/body length, a future moment, the horizon, the timer's
+         * day ceiling) live in `scheduler/create.ts`, and a refusal comes back as
+         * the server's own `{ error }`.
+         */
+        createJob(token: string, input: JobCreateRequest): Promise<JobSaved> {
+            return request("POST", "/api/jobs", { token, body: input });
+        },
+        /**
+         * Edits a pending job's label, detail or moment (#90 phase 7).
+         *
+         * `class` and `kind` cannot be edited — that is a different job, and the
+         * server says so rather than ignoring the field — and a `message` edit on
+         * a job that is not a `message` job is refused too (a tool job has no
+         * text to edit). A job that has already started is a 409.
+         */
+        updateJob(
+            token: string,
+            id: string,
+            patch: JobUpdateRequest,
+        ): Promise<JobSaved> {
+            return request("PATCH", `/api/jobs/${encodeURIComponent(id)}`, {
+                token,
+                body: patch,
+            });
         },
         /**
          * Snoozes a reminder (#90 phase 6c): a pending one's moment moves, one

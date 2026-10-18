@@ -6,7 +6,8 @@
  * that the policy moved rather than changed. These tests cover what the tools
  * cannot reach: the REST surface's edit, and the moments a page can ask for
  * that the natural-language resolver never produces (an instant in the past, a
- * "timer" a week out).
+ * "timer" a week out), and the snooze bounds the model's tool only passes
+ * through.
  */
 import { describe, expect, it } from "vitest";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
@@ -203,6 +204,36 @@ describe("the creation policy", () => {
             ok: false,
             code: "not-a-reminder",
         });
+    });
+
+    it("allows a snooze as far out as the menu's furthest preset", () => {
+        const h = harness();
+        const reminder = h.creator.create(h.userId, {
+            label: "Call Mum",
+            class: "reminder",
+            payload: { kind: "message", message: "Call Mum" },
+            runAt: new Date(NOW.getTime() + 3_600_000),
+            at: NOW,
+        });
+        if (!reminder.ok) {
+            throw new Error("the reminder should have been created");
+        }
+
+        // "next week" is one of the three offsets the classification table
+        // settled, and it used to be refused: the bound was the *timer's* day
+        // ceiling, which is a different question (how long a countdown may be).
+        const week = h.creator.snooze(h.userId, reminder.job.id, 7 * 24 * 60);
+        expect(week).toMatchObject({ ok: true, action: "moved" });
+        if (week.ok) {
+            expect(week.job.runAt).toBe(
+                new Date(NOW.getTime() + 7 * 24 * 60 * 60_000).toISOString(),
+            );
+        }
+
+        // The new bound is still a bound.
+        expect(
+            h.creator.snooze(h.userId, reminder.job.id, 7 * 24 * 60 + 1),
+        ).toMatchObject({ ok: false, code: "invalid-minutes" });
     });
 
     it("tells a snooze's caller which of the two things happened", () => {

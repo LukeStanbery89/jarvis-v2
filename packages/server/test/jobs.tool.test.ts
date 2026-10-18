@@ -644,16 +644,28 @@ describe("jobs tools: snoozeReminder", () => {
         }
     });
 
-    it("refuses a snooze duration outside a countdown's range", async () => {
+    it("snoozes as far as a week, and refuses anything outside that", async () => {
         const h = harness();
         await h.call("remindMe", { label: "Call Mum", at: "20:00" });
+
+        // The menu's furthest preset is "next week"; the policy allows it, and
+        // the tool is the same door (`create.ts`'s snooze).
+        expect(
+            await h.call("snoozeReminder", {
+                id: "job-1",
+                minutes: 7 * 24 * 60,
+            }),
+        ).toContain("Snoozed");
 
         expect(
             await h.call("snoozeReminder", { id: "job-1", minutes: 0 }),
         ).toContain("must be between");
-        expect(h.jobs()[0].runAt).toBe(
-            new Date(2026, 0, 1, 20, 0).toISOString(),
-        );
+        expect(
+            await h.call("snoozeReminder", {
+                id: "job-1",
+                minutes: 7 * 24 * 60 + 1,
+            }),
+        ).toContain("must be between");
     });
 
     it("predicts quiet hours for the new moment", async () => {

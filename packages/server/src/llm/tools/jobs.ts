@@ -518,7 +518,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     .number()
                     .describe(
                         "How long from now to snooze it, in minutes (at most " +
-                            "1440).",
+                            "a week, 10080).",
                     ),
             }),
         },

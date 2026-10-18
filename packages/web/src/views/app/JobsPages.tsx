@@ -1,57 +1,90 @@
 /**
- * The two job lists (#90 phase 6c): Timers at `/timers`, Reminders at
+ * The two job lists (#90 phases 6c, 7): Timers at `/timers`, Reminders at
  * `/reminders`.
  *
  * They are one file because they are one list twice — the same rows, the same
- * cancellation, the same words for a moment — differing only in which class they
- * show and whether a deferral is offered (a timer is a countdown: the only thing
- * to do with it is cancel it). Two files would be two places for the rows to
- * drift apart.
+ * cancellation, the same words for a moment, the same form — differing only in
+ * which class they show and whether a deferral is offered (a timer is a
+ * countdown: the only things to do with it are edit it and cancel it). Two files
+ * would be two places for the rows to drift apart.
  *
- * Read-only on purpose: creating and editing are phase 7's forms, and a list that
- * works is worth more than a form that half-works. The rows come from the shell's
- * `useJobs` (one list for the whole app, polled while the tab is visible), so a
- * timer that fires while the page is open leaves the list within a tick — and the
- * announcement arrives through the toast or the ring, not through here.
+ * Phase 7 gave them hands. **New** and **Edit** open the shared `JobForm` (the
+ * class is the page's, so a form cannot turn a reminder into a timer), a save
+ * lands the server's quiet-hours forecast in one line under the head — "it will
+ * wait until 7:00 AM" is not something the user should discover by waiting — and
+ * a collapsed **Recent** section carries the settled rows of that class. A
+ * cancelled job is in that history on purpose: it leaves no notification record
+ * anywhere else, so this is the only place a row that quietly vanished explains
+ * itself.
+ *
+ * The rows come from the shell's `useJobs` (one list for the whole app, polled
+ * while the tab is visible), so a timer that fires while the page is open leaves
+ * the list within a tick — and the announcement arrives through the toast or the
+ * ring, not through here.
  */
-import { describeRunAt, upcomingJobs } from "../../jobs";
+import { useState } from "react";
+import type { ReactNode } from "react";
+import {
+    describeMoment,
+    describeQuiet,
+    describeRunAt,
+    jobBody,
+    recentJobs,
+    upcomingJobs,
+} from "../../jobs";
 import { snoozeReminder } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
-import type { ReactNode } from "react";
+import type { JobClass } from "../../jobs";
 import type { JobsState } from "../../hooks/useJobs";
 import type { NotificationsState } from "../../hooks/useNotifications";
-import type { Job } from "../../api";
+import type { Job, JobSaved } from "../../api";
+import { JobForm } from "./JobForm";
 import { SnoozeMenu } from "./SnoozeMenu";
 
-/** How many rows a list shows before the dashboard's glance takes over. */
+/** How many owed rows a list shows before the dashboard's glance takes over. */
 const JOB_PAGE_LIMIT = 50;
+
+/** How many settled rows the history keeps on screen. */
+const RECENT_LIMIT = 8;
 
 /** Props for {@link TimersPage} and {@link RemindersPage}. */
 export interface JobsPageProps {
-    /** The caller's jobs and the two actions a list offers (the shell's). */
+    /** The caller's jobs and what the pages do with them (the shell's). */
     jobs: JobsState;
     /** The notification list, so a deferral settles the row it answered. */
     notifications: NotificationsState;
 }
 
-/** Props for one row. */
+/** Props for one owed row. */
 interface JobRowProps {
     job: Job;
     now: Date;
     /** Whether to offer the deferral (a reminder's, not a countdown's). */
     snoozable: boolean;
     onCancel(id: string): void;
+    onEdit(job: Job): void;
     onSnooze(job: Job, minutes: number): void;
 }
 
 /**
- * One job, with the actions it allows.
+ * One owed job, with the actions it allows.
  *
  * `running now` replaces the moment while the scheduler holds the row: a countdown
  * that says "in 0 minutes" while the work is happening would be a worse answer
- * than saying so.
+ * than saying so. Edit is offered only while the job is still `pending` — a
+ * running one cannot be changed, and the server says so rather than the button
+ * failing.
  */
-function JobRow({ job, now, snoozable, onCancel, onSnooze }: JobRowProps) {
+function JobRow({
+    job,
+    now,
+    snoozable,
+    onCancel,
+    onEdit,
+    onSnooze,
+}: JobRowProps) {
+    // The detail the row should say — never the label again (see `jobBody`).
+    const body = jobBody(job);
     return (
         <li className={`job-item job-${job.class}`}>
             <div className="job-text">
@@ -59,7 +92,7 @@ function JobRow({ job, now, snoozable, onCancel, onSnooze }: JobRowProps) {
                     {job.class === "timer" ? "Timer" : "Reminder"}
                 </span>
                 <strong>{job.label}</strong>
-                {job.message !== undefined && <span> {job.message}</span>}
+                {body !== null && <span> {body}</span>}
             </div>
             <div className="job-actions">
                 <span className="job-when">
@@ -72,9 +105,38 @@ function JobRow({ job, now, snoozable, onCancel, onSnooze }: JobRowProps) {
                         onSnooze={(minutes) => onSnooze(job, minutes)}
                     />
                 )}
+                {job.state === "pending" && (
+                    <button type="button" onClick={() => onEdit(job)}>
+                        Edit
+                    </button>
+                )}
                 <button type="button" onClick={() => onCancel(job.id)}>
                     Cancel
                 </button>
+            </div>
+        </li>
+    );
+}
+
+/**
+ * One settled job: how it ended, when it was due, and — when it went wrong —
+ * why. This is the half of a job's life that no notification necessarily
+ * records (a cancellation records nothing at all).
+ */
+function RecentRow({ job, now }: { job: Job; now: Date }) {
+    return (
+        <li className={`job-item job-${job.class} job-settled`}>
+            <div className="job-text">
+                <span className="job-eyebrow">{job.state}</span>
+                <strong>{job.label}</strong>
+                {job.lastError !== undefined && (
+                    <span className="job-error"> {job.lastError}</span>
+                )}
+            </div>
+            <div className="job-actions">
+                <span className="job-when">
+                    {describeMoment(job.runAt, now)}
+                </span>
             </div>
         </li>
     );
@@ -89,11 +151,13 @@ function JobList({
     notifications,
     jobClass,
     empty,
+    onEdit,
 }: {
     jobs: JobsState;
     notifications: NotificationsState;
-    jobClass: Job["class"];
+    jobClass: JobClass;
     empty: string;
+    onEdit(job: Job): void;
 }) {
     const now = useClock();
     const rows = upcomingJobs(jobs.jobs, {
@@ -112,6 +176,7 @@ function JobList({
                     onCancel={(id) => {
                         void jobs.cancel(id);
                     }}
+                    onEdit={onEdit}
                     onSnooze={(target, minutes) =>
                         snoozeReminder(
                             { notifications, jobs },
@@ -124,27 +189,75 @@ function JobList({
     );
 }
 
-/** The heading and the error slot both pages share. */
+/**
+ * The settled rows of the page's class, collapsed (#90 phase 7).
+ *
+ * A `<details>` rather than a permanent list: the history is what a user checks
+ * after the fact, and leaving it open would push the work still owed off the
+ * screen. Nothing renders when there is no history — an empty disclosure is a
+ * promise of something to find.
+ */
+function RecentJobs({
+    jobs,
+    jobClass,
+}: {
+    jobs: JobsState;
+    jobClass: JobClass;
+}) {
+    const now = useClock();
+    const rows = recentJobs(jobs.settled, { limit: RECENT_LIMIT, jobClass });
+    if (rows.length === 0) {
+        return null;
+    }
+    return (
+        <details className="job-history">
+            <summary>Recent</summary>
+            <ul className="job-list">
+                {rows.map((job) => (
+                    <RecentRow key={job.id} job={job} now={now} />
+                ))}
+            </ul>
+        </details>
+    );
+}
+
+/** The heading, the new-job button, and the error/status slots both pages share. */
 function JobsPageFrame({
     title,
     note,
     error,
+    status,
+    newLabel,
+    onNew,
     children,
 }: {
     title: string;
     note: string;
     error: string | null;
+    status: string | null;
+    newLabel: string;
+    onNew(): void;
     children: ReactNode;
 }) {
     return (
         <main className="page">
             <header className="page-head">
-                <h1>{title}</h1>
-                <p className="page-note">{note}</p>
+                <div>
+                    <h1>{title}</h1>
+                    <p className="page-note">{note}</p>
+                </div>
+                <button type="button" className="page-new" onClick={onNew}>
+                    {newLabel}
+                </button>
             </header>
             {error !== null && (
                 <p className="page-error" role="alert">
                     {error}
+                </p>
+            )}
+            {status !== null && (
+                <p className="page-status" role="status">
+                    {status}
                 </p>
             )}
             {children}
@@ -153,28 +266,87 @@ function JobsPageFrame({
 }
 
 /**
+ * The state both pages share: which object the form has open, and the line the
+ * last save left behind.
+ *
+ * Kept together because it is one lifecycle — opening the form clears the
+ * previous note, a save replaces it, closing the form leaves it in place — and
+ * because a second copy would be the place the two pages disagreed about what
+ * "saved" means.
+ */
+function useJobPage() {
+    /** `null` while closed; `{ job: null }` to create; `{ job }` to edit. */
+    const [form, setForm] = useState<{ job: Job | null } | null>(null);
+    const [note, setNote] = useState<string | null>(null);
+
+    return {
+        form,
+        note,
+        create(): void {
+            setNote(null);
+            setForm({ job: null });
+        },
+        edit(job: Job): void {
+            setNote(null);
+            setForm({ job });
+        },
+        close(): void {
+            setForm(null);
+        },
+        /** A save landed: say what the server said about how it will arrive. */
+        saved(saved: JobSaved): void {
+            const quiet = describeQuiet(saved.quiet, saved.job.class);
+            setNote(
+                quiet === null
+                    ? `Saved · “${saved.job.label}” is set.`
+                    : `Saved · ${quiet}`,
+            );
+        },
+    };
+}
+
+/**
  * `/timers`: the countdowns still running.
  *
  * @param props - See {@link JobsPageProps}.
  */
 export function TimersPage({ jobs, notifications }: JobsPageProps) {
+    const page = useJobPage();
     const count = upcomingJobs(jobs.jobs, {
         limit: JOB_PAGE_LIMIT,
         jobClass: "timer",
     }).length;
     return (
-        <JobsPageFrame
-            title="Timers"
-            note={count === 0 ? "Nothing counting down." : `${count} running`}
-            error={jobs.error}
-        >
-            <JobList
-                jobs={jobs}
-                notifications={notifications}
-                jobClass="timer"
-                empty="Set one by asking: “set a timer for ten minutes”."
-            />
-        </JobsPageFrame>
+        <>
+            <JobsPageFrame
+                title="Timers"
+                note={
+                    count === 0 ? "Nothing counting down." : `${count} running`
+                }
+                error={jobs.error}
+                status={page.note}
+                newLabel="New timer"
+                onNew={page.create}
+            >
+                <JobList
+                    jobs={jobs}
+                    notifications={notifications}
+                    jobClass="timer"
+                    empty="Set one by asking: “set a timer for ten minutes”, or here."
+                    onEdit={page.edit}
+                />
+                <RecentJobs jobs={jobs} jobClass="timer" />
+            </JobsPageFrame>
+            {page.form !== null && (
+                <JobForm
+                    jobClass="timer"
+                    editing={page.form.job}
+                    jobs={jobs}
+                    onClose={page.close}
+                    onSaved={page.saved}
+                />
+            )}
+        </>
     );
 }
 
@@ -184,22 +356,39 @@ export function TimersPage({ jobs, notifications }: JobsPageProps) {
  * @param props - See {@link JobsPageProps}.
  */
 export function RemindersPage({ jobs, notifications }: JobsPageProps) {
+    const page = useJobPage();
     const count = upcomingJobs(jobs.jobs, {
         limit: JOB_PAGE_LIMIT,
         jobClass: "reminder",
     }).length;
     return (
-        <JobsPageFrame
-            title="Reminders"
-            note={count === 0 ? "Nothing coming up." : `${count} waiting`}
-            error={jobs.error}
-        >
-            <JobList
-                jobs={jobs}
-                notifications={notifications}
-                jobClass="reminder"
-                empty="Ask for one: “remind me to change the AC filter tomorrow”."
-            />
-        </JobsPageFrame>
+        <>
+            <JobsPageFrame
+                title="Reminders"
+                note={count === 0 ? "Nothing coming up." : `${count} waiting`}
+                error={jobs.error}
+                status={page.note}
+                newLabel="New reminder"
+                onNew={page.create}
+            >
+                <JobList
+                    jobs={jobs}
+                    notifications={notifications}
+                    jobClass="reminder"
+                    empty="Ask for one: “remind me to change the AC filter tomorrow”, or here."
+                    onEdit={page.edit}
+                />
+                <RecentJobs jobs={jobs} jobClass="reminder" />
+            </JobsPageFrame>
+            {page.form !== null && (
+                <JobForm
+                    jobClass="reminder"
+                    editing={page.form.job}
+                    jobs={jobs}
+                    onClose={page.close}
+                    onSaved={page.saved}
+                />
+            )}
+        </>
     );
 }

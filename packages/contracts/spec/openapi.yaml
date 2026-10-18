@@ -2372,8 +2372,11 @@ components:
                     description: >-
                         How long from now to snooze, in minutes. The short end
                         is half a minute: a snooze is a human-scale "not now".
+                        The long end is a week — the classification table's
+                        furthest preset ("next week"), and the longest a deferral
+                        can be.
                     minimum: 0.5
-                    maximum: 1440
+                    maximum: 10080
         QuietForecast:
             type: object
             description: >-

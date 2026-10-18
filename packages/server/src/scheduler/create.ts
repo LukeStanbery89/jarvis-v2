@@ -74,6 +74,18 @@ export const MAX_DURATION_MINUTES = 1440;
  */
 export const MIN_SNOOZE_MINUTES = 0.5;
 
+/**
+ * The long end of a snooze: a week (#90 phase 7 fix).
+ *
+ * The classification table's three offsets are +60m, +24h and **+7d**, so a week
+ * is the longest "not now" the product offers. The bound used to be
+ * `MAX_DURATION_MINUTES` — the *timer's* day ceiling, which is about how long a
+ * countdown may be for a different reason — and that made the menu's own "next
+ * week" preset a refusal the first time anyone pressed it. A separate constant so
+ * the two bounds cannot drift back into each other.
+ */
+export const MAX_SNOOZE_MINUTES = 7 * 24 * 60;
+
 /** Bytes of randomness in a job id (eight lower-case hex characters). */
 const NEW_ID_BYTES = 4;
 
@@ -622,12 +634,12 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
         if (
             !Number.isFinite(minutes) ||
             minutes < MIN_SNOOZE_MINUTES ||
-            minutes > MAX_DURATION_MINUTES
+            minutes > MAX_SNOOZE_MINUTES
         ) {
             return {
                 ok: false,
                 code: "invalid-minutes",
-                reason: `\`minutes\` must be between ${MIN_SNOOZE_MINUTES} and ${MAX_DURATION_MINUTES}.`,
+                reason: `\`minutes\` must be between ${MIN_SNOOZE_MINUTES} and ${MAX_SNOOZE_MINUTES} (a week).`,
                 job,
             };
         }
