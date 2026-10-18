@@ -69,8 +69,14 @@ export interface UseThreadsResult {
     activeIdRef: RefObject<string | null>;
     /** Opens `id`, or clears the active thread when `null`. */
     openThread(id: string | null): void;
-    /** Mints a fresh session id, ensures its thread, and activates it. */
-    newChat(): void;
+    /**
+     * Mints a fresh session id, ensures its thread, and activates it.
+     *
+     * @returns The minted id, so a caller that has to submit into the new thread
+     *   right away (a wake match with no conversation open) does not have to
+     *   wait for a render to learn it.
+     */
+    newChat(): string;
     /** Writes the latest map to storage immediately (turn-end, unmount). */
     persist(): void;
     /** The reducer's dispatch, for streaming frames and user messages. */
@@ -193,10 +199,16 @@ export function useThreads(
         setActiveId(id);
     }, []);
 
-    const newChat = useCallback((): void => {
+    const newChat = useCallback((): string => {
         const id = crypto.randomUUID();
         dispatch({ type: "ensure", sessionId: id, at: Date.now() });
+        // Eagerly, not just on the next render: a caller may submit in the same
+        // tick (a voice match with no conversation open), and the frames that
+        // come back are dispatched by the active id this ref holds. A render
+        // still assigns it, which is idempotent.
+        activeIdRef.current = id;
         setActiveId(id);
+        return id;
     }, []);
 
     return {

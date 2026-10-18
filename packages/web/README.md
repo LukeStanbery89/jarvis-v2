@@ -139,9 +139,12 @@ whole state machine is unit-tested in node (`src/ChatClient.test.ts`).
 ## Location sharing (#31)
 
 Device-location sharing for the `getWeather` tool is **automatic by
-default**: on load a geolocation request runs once, and the browser's own
+default**: on app load a geolocation request runs once, and the browser's own
 permission prompt is the consent gate (the user answers explicitly; the
-browser remembers). The location pin lives in the **settings panel** under
+browser remembers). The share is the app's, not the chat's (#90 phase 6d):
+the request runs when the signed-in app mounts, and the `location` frame goes
+out over the shell's socket from whatever page the user is on. The location
+pin lives in the **settings panel** under
 "This browser" (#143) and is the visible opt-out (persisted in localStorage —
 an explicit "0" suppresses sharing). While sharing is on but not delivering,
 the sidebar says so in a word beside the gear (`Locating…` / `Location denied`
@@ -208,8 +211,21 @@ it constructs the controller (passing `createBrowserVad()` in and re-installing
 the submit seam) inside a mount effect — so React StrictMode's double-invoke
 gets a fresh instance rather than a permanently-disposed one — and disposes it
 on unmount (cancelling any live session and releasing the WASM model worker).
-The view renders the snapshot and forwards server frames (`noteResponseFrame`)
-through `useChatClient`'s frame handler. No behavior lives only in a component.
+Since #90 phase 6d the hook is **the shell's** (`src/AppShell.tsx`), not the
+chat view's: a wake word that listens on one page only is not a wake word, and
+the turn a transcript submits into is the shell's active thread, so
+`runTurn` — mint the thread if none is open (and go to it, since an answer
+nobody can see is not an answer), record the user message, `prompt`, persist,
+re-read the notifications — is the shell's too, shared with the typed composer.
+That is also what let the frame bus go: the shell's `onFrame` is now the one
+place that feeds the controller (`noteResponseFrame` for a turn's first frame,
+`noteAudioStarted` for `audioStart`), where a mounted view used to subscribe.
+The engines cost nothing to hold — Vosk loads its worker and model inside
+`start()`, openWakeWord loads ORT inside `start()` — so the only cost of the
+lift is the wake-support probe on boot and the arming the phase exists for.
+The chat remains the _detailed_ view of a session (the live partial
+transcript, the stage, a failure's reason) reading the same snapshot the bar
+does. No behavior lives only in a component.
 
 Two honest limits: the WASM engine's model archive must be fetchable from
 the server (a 404 from `GET /api/stt/model` — `JARVIS_STT_PROVIDER` unset —
@@ -233,7 +249,10 @@ An optional "Hey JARVIS" wake word lives beside the click-to-talk mic: a
 switch in the settings panel (#143, "This browser" — the detector is a
 per-device engine) arms an
 on-device openWakeWord detector (`createWakeWord()` in `src/voice.ts` —
-openwakeword-web running under the WASM STT engine's runtime). While armed,
+openwakeword-web running under the WASM STT engine's runtime). The detector
+belongs to the app (#90 phase 6d): once armed it listens on **every page**, and
+a match taken on `/timers` submits into the open thread exactly as one taken in
+the chat does — with no thread open it mints one and goes to it. While armed,
 the sidebar shows a blinking microphone beside the gear, because an open
 microphone is not something to have to open a panel to discover (a static
 icon under `prefers-reduced-motion`), and
@@ -279,7 +298,7 @@ same request the built client makes. The mic worklet stays relative:
 You can talk over J.A.R.V.I.S. while the reply is streaming or playing.
 While a voice response is in flight (`responding` onward, so a tool turn is
 covered from the tool call rather than only from its first audio frame,
-#114) or the player still has audio scheduled, the view arms the voice
+#114) or the player still has audio scheduled, the shell arms the voice
 controller's barge-in
 watch — a VAD-only mic session (echo-cancelled track, the browser's AEC
 keeps JARVIS's own voice out) with a 2-second look-back ring. Sustained

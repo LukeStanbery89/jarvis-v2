@@ -4,19 +4,15 @@
  * This used to be the app's composition root. Since #90 phase 6b the shell owns
  * everything that has to survive a route change — the socket, the transcript,
  * the audio player, the notification list and the account's preferences — and
- * hands them to a view as one {@link AppState}. What is left here is the
- * conversation's own orchestration: `runTurn` (record → send → settle), `send`
- * (ready attachment ids plus an error bubble), `remove`, `signOut`,
- * `toggleWake`, and the hooks that only make sense while a conversation is on
- * screen — `useSessions` (the sidebar's server rows), `useAttachments` (the
- * composer's uploads), `useVoiceSession` (mic, wake word, barge-in) and
- * `useLocationSharing`.
+ * hands them to a view as one {@link AppState}. Phase 6d added the microphone
+ * and the location share to that list, so what is left here is what the chat
+ * *shows*: `runTurn` is now the shell's (a spoken turn can start anywhere) and
+ * this view renders the transcript, the sidebar's session rows and the composer.
  *
- * The socket's frames are the one thing this view still listens to: a voice
- * session watches the first frame of a turn (waiting → responding) and the
- * spoken-audio span (`audioStart` → speaking), so it subscribes to the shell's
- * frame bus while it is mounted. Everything else a frame carries has already
- * been handled by then — the transcript dispatch and the player are the shell's.
+ * The chat is the detailed view of a voice session — the live partial
+ * transcript, the stage, and a failed session's reason — while the bar carries
+ * the app-level state of one (see `NavBar`). Both read the same snapshot, so
+ * they cannot disagree.
  *
  * Transcript state is a reducer over the pure `threads.ts` helpers (owned by the
  * shell now), persisted (throttled) to localStorage under the signed-in user's
@@ -25,27 +21,18 @@
  * local threads, so conversations created on other clients appear (empty) and
  * locally-created ones appear before their first server claim.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { api, ApiError } from "../api";
 import { mergeSessions } from "../sidebar";
 import { determineReady } from "../attachments";
 import { useSessions } from "../hooks/useSessions";
-import { useVoiceSession, voiceStatusText } from "../hooks/useVoiceSession";
-import { useLocationSharing } from "../hooks/useLocationSharing";
+import { voiceStatusText } from "../hooks/useVoiceSession";
 import { useAttachments } from "../hooks/useAttachments";
 import type { AppState } from "../appState";
-import type { ChatMode } from "@lukestanbery/jarvis-protocol";
 import { Sidebar } from "./chat/Sidebar";
 import { Transcript } from "./chat/Transcript";
 import { Composer } from "./chat/Composer";
 import { Settings } from "./chat/Settings";
-
-/** One chat turn runner (typed or voice-origin), shared via `runTurnRef`. */
-type RunTurn = (
-    text: string,
-    mode: ChatMode,
-    attachmentIds: string[],
-) => Promise<void>;
 
 /** Props for {@link Chat}. */
 export interface ChatProps {
@@ -59,23 +46,19 @@ export interface ChatProps {
  */
 export function Chat({ app }: ChatProps) {
     const { credential, onAuthRejected, onSignedOut } = app;
-    const { client, isStreaming, cancelTurn, sendLocation } = app.socket;
-    const {
-        threads,
-        activeId,
-        activeIdRef,
-        openThread,
-        newChat,
-        persist,
-        dispatch,
-    } = app.threads;
-    // The player, the notification list and the preference map belong to the
-    // shell; this view only reads them.
+    const { client, cancelTurn } = app.socket;
+    // The turn runner is the shell's: a spoken turn takes the identical path
+    // from any page, and the composer is just the typed door to it.
+    const runTurn = app.runTurn;
+    const { threads, activeId, activeIdRef, openThread, newChat, dispatch } =
+        app.threads;
+    // The player, the notification list, the preference map, the microphone and
+    // the location share belong to the shell; this view only reads them.
     const { audio, speaking: audioSpeaking, stop: stopAudio } = app.audio;
-    const notificationsUi = app.notifications;
     const prefsUi = app.prefs;
     const browserNotify = app.browserNotify;
-    const frames = app.frames;
+    const voiceUi = app.voice;
+    const { locationOn, locationState, toggleLocation } = app.location;
 
     const { rows, refreshSessions } = useSessions({
         token: credential.token,
@@ -84,83 +67,12 @@ export function Chat({ app }: ChatProps) {
     });
 
     const [banner, setBanner] = useState<string | null>(null);
-    const [streaming, setStreaming] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
 
     const { pending, previews, attachFiles, detachChip, clearPending } =
         useAttachments({ token: credential.token, onError: setBanner });
 
-    /**
-     * Latest turn runner, read by the voice controller's submit seam at call
-     * time so its closures never go stale (the seam is installed once).
-     */
-    const runTurnRef = useRef<RunTurn | null>(null);
-
-    const voiceUi = useVoiceSession({
-        submit: (text) => {
-            const runTurn = runTurnRef.current;
-            if (runTurn === null) {
-                return Promise.reject(new Error("chat is not ready"));
-            }
-            return runTurn(text, "voice", []);
-        },
-        // A wake match pre-empts the previous reply exactly as a barge-in does
-        // (#114). The reply's audio outlives its `done` frame — the lifecycle
-        // is already `idle` (so the barge watch is disarmed and the detector
-        // has re-armed) while the player still has seconds of speech
-        // scheduled. Opening the session without stopping playback left the
-        // old answer talking over the new command and queued the new answer's
-        // audio behind it, which reads as "it kept speaking the last
-        // response". `cancelTurn` is a no-op once the turn has settled, so
-        // `stopAudio` is the load-bearing half. The player and the socket come
-        // from the shell (they outlive this view), so the closure is safe.
-        onWakeCue: () => {
-            stopAudio();
-            client?.cancelTurn();
-            audio.blip();
-        },
-        // Barge-in (#84 P6): the controller's watch hears the user talk over a
-        // playing reply; the view's half is to stop local playback immediately
-        // (before any server round trip) and cancel the turn. Same closure
-        // rule as above.
-        onBargeIn: () => {
-            stopAudio();
-            client?.cancelTurn();
-        },
-        // The watch stays armed while the reply can still be heard, including
-        // the tail after its `done` frame (see `watchBargeIn`, #114).
-        playbackActive: audioSpeaking,
-    });
     const { voice, snapshot: voiceSnapshot } = voiceUi;
-
-    /**
-     * The frames a voice session has to see (#90 phase 6b): the first frame of
-     * a turn moves the machine out of `waiting`, and the spoken-audio span takes
-     * it to `speaking`. The transcript and the player have already had the frame
-     * by the time it reaches here, and a frame that arrives while this view is
-     * unmounted is nobody's business — there is no voice session to inform.
-     *
-     * `voice` is read through a ref so the subscription is installed once: the
-     * latest-value pattern the submit seam uses, and it leaves no window between
-     * an unsubscribe and a resubscribe for a frame to fall into.
-     */
-    const voiceRef = useRef(voice);
-    voiceRef.current = voice;
-    useEffect(
-        () =>
-            frames.subscribe((frame) => {
-                voiceRef.current?.noteResponseFrame();
-                if ("audioStart" in frame) {
-                    voiceRef.current?.noteAudioStarted();
-                }
-            }),
-        [frames],
-    );
-
-    const [settingsOpen, setSettingsOpen] = useState(false);
-
-    const { locationOn, locationState, toggleLocation } = useLocationSharing({
-        sendLocation,
-    });
 
     /** Sidebar rows: server sessions merged with local threads, newest first. */
     const entries = useMemo(
@@ -197,55 +109,14 @@ export function Chat({ app }: ChatProps) {
     }
 
     /**
-     * Runs one chat turn (typed or voice-origin): records the user message,
-     * sends the wire frame, and restores composer focus afterwards. Throws
-     * for the caller to surface (typed turns → assistant error bubble,
-     * voice turns → the voice session's `rejected` state).
+     * Sends the composer text (plus any ready attachments) as one chat turn.
      *
-     * @param text - Prompt text (already trimmed by the caller).
-     * @param mode - `"text"` for typed prompts, `"voice"` for mic prompts.
-     * @param attachmentIds - Ready attachment ids (typed prompts only).
-     * @returns Resolves on the terminal `done` frame.
+     * The turn itself is the shell's (`runTurn`), because a spoken turn takes
+     * the identical path from any page; what is the composer's is the error
+     * bubble, and the session-row refresh, which is the sidebar's own view of a
+     * turn. (A voice turn needs neither: the sidebar merges locally-created
+     * threads, and it re-reads the server's rows when it mounts.)
      */
-    async function runTurn(
-        text: string,
-        mode: ChatMode,
-        attachmentIds: string[],
-    ): Promise<void> {
-        const sessionId = activeIdRef.current;
-        if (sessionId === null) {
-            throw new Error("no conversation is open");
-        }
-        if (isStreaming()) {
-            throw new Error("another prompt is already in progress");
-        }
-        dispatch({
-            type: "user",
-            sessionId,
-            text,
-            at: Date.now(),
-            ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
-        });
-        setStreaming(true);
-        try {
-            await client?.prompt(text, sessionId, attachmentIds, mode);
-        } finally {
-            setStreaming(false);
-            persist();
-            void refreshSessions();
-            // A turn is where a tool can raise a notification, and a *held
-            // back* one (quiet hours, the delivery budget, the user's switch
-            // off) is pushed to nobody — the record is the only trace, and it
-            // is not in the list until something re-reads it. Without this the
-            // notification appeared only after a page reload, which is the
-            // "nothing happened" mystery #139 exists to remove.
-            notificationsUi.refresh();
-        }
-    }
-    // The voice controller reads this at submit time — see runTurnRef.
-    runTurnRef.current = runTurn;
-
-    /** Sends the composer text (plus any ready attachments) as one chat turn. */
     async function send(text: string): Promise<void> {
         if (activeId === null) {
             return;
@@ -261,6 +132,8 @@ export function Chat({ app }: ChatProps) {
                 text: err instanceof Error ? err.message : "the request failed",
                 at: Date.now(),
             });
+        } finally {
+            void refreshSessions();
         }
     }
 
@@ -297,7 +170,7 @@ export function Chat({ app }: ChatProps) {
             <Sidebar
                 entries={entries}
                 activeId={activeId}
-                streaming={streaming}
+                streaming={app.turning}
                 locationOn={locationOn}
                 locationState={locationState}
                 wakeAvailable={voiceUi.wakeAvailable}
@@ -332,7 +205,7 @@ export function Chat({ app }: ChatProps) {
                 )}
                 {activeId !== null && (
                     <Composer
-                        streaming={streaming}
+                        streaming={app.turning}
                         sttAvailable={voiceUi.sttAvailable}
                         voiceState={voiceSnapshot.state}
                         voiceTurnInFlight={voiceUi.voiceTurnInFlight}

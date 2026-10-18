@@ -1,7 +1,7 @@
 /**
- * The app shell (#90 phase 6b): the composition root for everything that has to
- * outlive a route change, and the switch that renders the page the address
- * names.
+ * The app shell (#90 phases 6b, 6d): the composition root for everything that
+ * has to outlive a route change, and the switch that renders the page the
+ * address names.
  *
  * Why the lift: `Chat` owned the socket, so navigating away closed it and coming
  * back reconnected — every step through the app dropped whatever was streaming.
@@ -10,30 +10,37 @@
  * so the app-level state lives here and a view receives it as one
  * {@link AppState}.
  *
- * What deliberately stays behind in `Chat`: the conversation's own hooks
- * (`useSessions`, `useAttachments`, `useVoiceSession`, `useLocationSharing`) and
- * the settings panel. The wake path is the riskiest thing in the app and it does
- * not have to move for a route change to survive; moving it would also change
- * *when* the microphone listens, which is a decision for its own phase.
+ * Phase 6d brought the microphone across the same line. A wake word that only
+ * listens while one page is open is not a wake word, and the turn a voice match
+ * submits into is this shell's active thread, so `useVoiceSession`,
+ * `useLocationSharing` and the turn runner live here now. That is also what
+ * retires the frame bus: its only subscriber was the chat view's voice effect
+ * (`audioStart` → `speaking`), and this module already consumes every frame.
  *
- * The chrome is here too: the top bar sits above the view, and the ring renders
- * over it, because both belong to the app rather than to any page in it.
+ * What deliberately stays behind in `Chat`: the hooks that are about what the
+ * chat *shows* (`useSessions` — the sidebar's server rows), the composer's
+ * uploads, and the settings panel's own open/closed state. The chrome is here
+ * too: the top bar sits above the view, and the ring renders over it, because
+ * both belong to the app rather than to any page in it.
  */
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
+import type { ChatMode, ClientCapability } from "@lukestanbery/jarvis-protocol";
+import type { VoiceController } from "@lukestanbery/jarvis-voice";
 import { readNotificationsEnabled } from "./prefs";
 import { selectToasts } from "./notifications";
 import { snoozeReminder, snoozeRequestFor } from "./snooze";
+import { navigate } from "./router";
 import { useRoute } from "./hooks/useRoute";
 import { useThreads } from "./hooks/useThreads";
 import { useAudio } from "./hooks/useAudio";
-import { useFrameBus } from "./hooks/useFrameBus";
 import { usePrefs } from "./hooks/usePrefs";
 import { useNotifications } from "./hooks/useNotifications";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
 import { useChatClient } from "./hooks/useChatClient";
 import { useJobs } from "./hooks/useJobs";
+import { useVoiceSession } from "./hooks/useVoiceSession";
+import { useLocationSharing } from "./hooks/useLocationSharing";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
@@ -78,12 +85,14 @@ export function AppShell({
     onSignedOut,
 }: AppShellProps) {
     const route = useRoute();
+    /** Whether a turn is in flight, typed or spoken (the composer's state). */
+    const [turning, setTurning] = useState(false);
 
     const threads = useThreads(credential.username);
     const audio = useAudio();
 
-    // The settings panel (#143) is still the chat's, but the preference *read*
-    // is the shell's: the notification hook's ring policy is gated by the
+    // The settings panel (#143) renders in a view's chrome, but the preference
+    // *read* is the shell's: the notification hook's ring policy is gated by the
     // account's master switch, so it has to happen above that hook.
     const prefs = usePrefs({ token: credential.token });
     /** The account's kill switch: outranks the browser's own preference. */
@@ -136,10 +145,13 @@ export function AppShell({
     // just ran is a state change the notification frame already announces.
     const jobs = useJobs({ token: credential.token });
 
-    // Frames reach two places: what the shell does for the whole app (the
-    // transcript, the audio queue) and whatever a view subscribed to (only a
-    // voice session does — see `useFrameBus`).
-    const frames = useFrameBus();
+    /**
+     * The voice session's controller, read by the socket's frame handler below.
+     *
+     * A ref rather than the value, because the handler is installed once (see
+     * `useChatClient`) and must always reach the live controller.
+     */
+    const voiceRef = useRef<VoiceController | null>(null);
 
     const socket = useChatClient({
         token: credential.token,
@@ -157,9 +169,16 @@ export function AppShell({
             }
         },
         onFrame: (frame) => {
-            // The spoken-audio span carries the sample rate the player decodes
-            // at; a text-mode turn never sends it.
+            // The two notes a voice session takes from the wire (#84, #90 phase
+            // 6d): the first frame of a turn moves the machine out of `waiting`,
+            // and the spoken-audio span takes it to `speaking`. The shell owns
+            // them now — the session outlives the view that used to watch, and
+            // this handler already sees every frame.
+            voiceRef.current?.noteResponseFrame();
             if ("audioStart" in frame) {
+                voiceRef.current?.noteAudioStarted();
+                // The spoken-audio span carries the sample rate the player
+                // decodes at; a text-mode turn never sends it.
                 audio.audio.setFormat(frame.audioStart.sampleRate);
             }
             const sessionId = threads.activeIdRef.current;
@@ -189,8 +208,6 @@ export function AppShell({
                     });
                 }
             }
-            // Last, so a subscriber sees exactly what the transcript consumed.
-            frames.emit(frame);
         },
         // A notification raised while the server could not be reached was
         // pushed to nobody, so the list is the only place it can appear: when
@@ -203,6 +220,107 @@ export function AppShell({
         onReconnected: notifications.refresh,
         onAuthRejected,
     });
+
+    /**
+     * The microphone (#90 phase 6d), owned by the app rather than by the chat.
+     *
+     * Everything a voice session needs is already above or below this line: the
+     * turn it submits goes through {@link runTurn} (the same runner the composer
+     * uses), the barge-in watch stops this shell's own playback and cancels this
+     * shell's own turn, and `playbackActive` reads the shell's player. The
+     * engines are cheap to hold — Vosk loads its worker and model inside
+     * `start()`, openWakeWord loads ORT inside `start()` — so the only cost of
+     * having the hook here is the wake-support probe on boot and the arming the
+     * phase exists for.
+     */
+    const voice = useVoiceSession({
+        submit: (text) => runTurn(text, "voice", []),
+        // A wake match pre-empts the previous reply exactly as a barge-in does
+        // (#114). The reply's audio outlives its `done` frame — the lifecycle
+        // is already `idle` (so the barge watch is disarmed and the detector
+        // has re-armed) while the player still has seconds of speech
+        // scheduled. Opening the session without stopping playback left the
+        // old answer talking over the new command and queued the new answer's
+        // audio behind it, which reads as "it kept speaking the last
+        // response". `cancelTurn` is a no-op once the turn has settled, so
+        // `stopAudio` is the load-bearing half.
+        onWakeCue: () => {
+            audio.stop();
+            socket.client?.cancelTurn();
+            audio.audio.blip();
+        },
+        // Barge-in (#84 P6, #90 phase 6d): the controller's watch hears the user
+        // talk over a playing reply; the shell's half is to stop local playback
+        // immediately (before any server round trip) and cancel the turn.
+        onBargeIn: () => {
+            audio.stop();
+            socket.client?.cancelTurn();
+        },
+        // The watch stays armed while the reply can still be heard, including
+        // the tail after its `done` frame (see `watchBargeIn`, #114).
+        playbackActive: audio.speaking,
+    });
+    voiceRef.current = voice.voice;
+
+    /**
+     * The device's whereabouts (#31), app-level for the same reason as the
+     * microphone: it is a fact about this browser, not about the conversation on
+     * screen, and the `location` frame goes out over the shell's socket.
+     */
+    const location = useLocationSharing({ sendLocation: socket.sendLocation });
+
+    /**
+     * Runs one turn on the active thread (#90 phases 6b, 6d).
+     *
+     * One runner for both origins, because the difference between a typed and a
+     * spoken turn is the `mode` and the attachments — nothing else about a turn
+     * should depend on which page it started from. With no conversation open
+     * (only reachable from the microphone: the composer lives in the chat) it
+     * mints one and navigates to it, because an answer nobody can see is not an
+     * answer. `newChat` sets the active-id ref eagerly for exactly that case: the
+     * frames this turn produces are dispatched by that ref, and no render has
+     * happened yet when they arrive.
+     *
+     * @param text - The prompt text (already trimmed by the caller).
+     * @param mode - `"text"` for typed prompts, `"voice"` for mic/wake prompts.
+     * @param attachmentIds - Ready attachment ids (typed prompts only).
+     * @returns Resolves on the terminal `done` frame.
+     */
+    async function runTurn(
+        text: string,
+        mode: ChatMode,
+        attachmentIds: string[],
+    ): Promise<void> {
+        if (socket.isStreaming()) {
+            throw new Error("another prompt is already in progress");
+        }
+        const open = threads.activeIdRef.current;
+        const sessionId = open ?? threads.newChat();
+        if (open === null) {
+            navigate("chat");
+        }
+        threads.dispatch({
+            type: "user",
+            sessionId,
+            text,
+            at: Date.now(),
+            ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+        });
+        setTurning(true);
+        try {
+            await socket.client?.prompt(text, sessionId, attachmentIds, mode);
+        } finally {
+            setTurning(false);
+            threads.persist();
+            // A turn is where a tool can raise a notification, and a *held
+            // back* one (quiet hours, the delivery budget, the user's switch
+            // off) is pushed to nobody — the record is the only trace, and it
+            // is not in the list until something re-reads it. Without this the
+            // notification appeared only after a page reload, which is the
+            // "nothing happened" mystery #139 exists to remove.
+            notifications.refresh();
+        }
+    }
 
     /**
      * A timer's ring belongs to the alert selection, not to a click: it starts
@@ -262,7 +380,10 @@ export function AppShell({
         notifications,
         prefs,
         browserNotify,
-        frames,
+        voice,
+        location,
+        turning,
+        runTurn,
     };
 
     /** The page the address names. */
