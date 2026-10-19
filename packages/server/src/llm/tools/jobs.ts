@@ -2,13 +2,14 @@
  * The scheduling tools (#90 phase 3): the model's way to create, inspect and
  * cancel fire-at-T jobs.
  *
- * Six tools, and their split is the invariant. **The class comes from which
+ * Seven tools, and their split is the invariant. **The class comes from which
  * tool was called, never from an argument.** `setTimer` always stores `timer`
  * (it interrupts, even in quiet hours), `remindMe` always stores `reminder` (it
- * waits out the window), and `scheduleTask` always stores `notification` (it is
- * filed, not announced). No tool exposes `class` or `priority`, because either
- * would be a way for the model to choose how loudly the user is interrupted —
- * the exact reach the notification design removed from `priority` (#139/#90).
+ * waits out the window), and `scheduleTask`/`schedulePrompt` always store
+ * `notification` (they are filed, not announced). No tool exposes `class` or
+ * `priority`, because either would be a way for the model to choose how loudly
+ * the user is interrupted — the exact reach the notification design removed from
+ * `priority` (#139/#90).
  *
  * The rest of the policy stays where it already lives:
  *
@@ -23,7 +24,10 @@
  * - **Whether a tool may be scheduled** is `scheduler/tools.ts`: creation goes
  *   through the same allowlist the runner enforces, plus that tool's own zod
  *   schema, so an impossible task is refused *now*, while the user is still
- *   here, instead of failing silently at 7am.
+ *   here, instead of failing silently at 7am. A **gate** (#90 phase 8g) is held
+ *   to the same standard: its tool must be schedulable *and* declare the action
+ *   as a read, it must be installed right now, and its arguments must satisfy
+ *   that tool's schema — three refusals while the user is still in the room.
  * - **What the user is told** is the announcement the runner makes, with the
  *   job's class. This file only relays what the creator predicts will happen to
  *   it (quiet hours as they stand); it never pre-defers, because the runner owns
@@ -36,7 +40,7 @@ import { tool, type ToolRuntime } from "@langchain/core/tools";
 import { z } from "zod";
 import { logger } from "../../logger";
 import { requireSignedInUser } from "./metering";
-import { resolveSchedulableTool } from "../../scheduler/tools";
+import { resolveGateTool, resolveSchedulableTool } from "../../scheduler/tools";
 import { resolveWhen } from "../../scheduler/time";
 import {
     createJobCreator,
@@ -49,11 +53,15 @@ import type {
     JobCreatorDeps,
     JobPayload,
 } from "../../scheduler/create";
-import { describeRepeat, parseJobRepeat } from "@lukestanbery/jarvis-protocol";
+import {
+    describeRepeat,
+    parseJobGate,
+    parseJobRepeat,
+} from "@lukestanbery/jarvis-protocol";
 import { format12Hour } from "./clock";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AppJob } from "@lukestanbery/jarvis-auth";
-import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
+import type { JobGate, NotificationClass } from "@lukestanbery/jarvis-protocol";
 
 // Re-exported because these bounds are what a caller reads when it wants to
 // know what a timer may be; their home is the creation policy.
@@ -149,7 +157,39 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         };
     }
 
-    /** Creation guard shared by the three creating tools. */
+    /**
+     * The gate a call asked for, or why it cannot be used (#90 phase 8g).
+     *
+     * Three questions, all asked while the user is still in the conversation so
+     * the refusal can be relayed and corrected: is it well-formed (the
+     * protocol's parser), may this tool be read at all (the same map the runner
+     * consults), and is that tool installed on this server right now (the
+     * registry). The fourth — whether the arguments fit the tool — is the same
+     * `argumentsProblem` a scheduled target gets, because a gate's arguments are
+     * a real call the runner will make later with nobody watching.
+     */
+    function gateFor(
+        stated: unknown,
+    ): { ok: true; gate: JobGate | null } | { ok: false; reason: string } {
+        if (stated === undefined || stated === null) {
+            return { ok: true, gate: null };
+        }
+        const parsed = parseJobGate(stated);
+        if (!parsed.ok) {
+            return { ok: false, reason: parsed.reason };
+        }
+        const resolved = resolveGateTool(deps.tools, parsed.gate);
+        if (!resolved.ok) {
+            return { ok: false, reason: resolved.reason };
+        }
+        const problem = argumentsProblem(resolved.tool, parsed.gate.args);
+        if (problem !== null) {
+            return { ok: false, reason: problem };
+        }
+        return { ok: true, gate: parsed.gate };
+    }
+
+    /** Creation guard shared by the creating tools. */
     function guard(runtime: ToolRuntime, logName: string) {
         return requireSignedInUser(runtime, {
             subject: "Scheduling",
@@ -246,6 +286,49 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 "repeat — use remindMe for something that comes back. If the " +
                 "user's phrasing could mean two different schedules, ASK which " +
                 "they mean instead of choosing one.",
+        );
+
+    /**
+     * A gate, as the model states it (#90 phases 8f, 8g).
+     *
+     * The model describes the check; it never decides whether the check is
+     * *allowed* — that is the read-action allowlist, asked again at fire time.
+     * `args` is optional because a check over a tool that takes none is still a
+     * check; for `homeAssistant` it is how the model names the entity to watch.
+     */
+    const gateSchema = z
+        .object({
+            tool: z
+                .string()
+                .trim()
+                .min(1)
+                .describe(
+                    "The read-only tool whose answer decides whether this " +
+                        "runs, e.g. homeAssistant.",
+                ),
+            args: z
+                .record(z.string(), z.unknown())
+                .optional()
+                .describe(
+                    "That tool's arguments for the check, exactly as its own " +
+                        "schema wants them — for a homeAssistant `get`, the " +
+                        "entity to watch.",
+                ),
+            when: z
+                .literal("changed")
+                .describe(
+                    "`changed`: run only when the check's answer differs " +
+                        "from the previous firing's.",
+                ),
+        })
+        .optional()
+        .describe(
+            "Run only when the check's answer changed. Use it when the user " +
+                "asks for a condition — 'only if the door opened', 'only if " +
+                "it changed' — and never invent one. It only reads: a tool " +
+                "that acts cannot be a check. A gated job may repeat as often " +
+                "as every minute, and a firing that finds nothing changed " +
+                "says nothing.",
         );
 
     const messageSchema = z
@@ -400,7 +483,16 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
 
     const scheduleTaskTool = tool(
         async (
-            { label, tool: toolName, args, at, onDate, inMinutes, repeat },
+            {
+                label,
+                tool: toolName,
+                args,
+                at,
+                onDate,
+                inMinutes,
+                repeat,
+                gate,
+            },
             runtime: ToolRuntime,
         ) => {
             const access = guard(runtime, "scheduleTask");
@@ -420,6 +512,10 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             if (argumentProblem !== null) {
                 return `The task was not scheduled: ${argumentProblem}`;
             }
+            const gated = gateFor(gate);
+            if (!gated.ok) {
+                return `The task was not scheduled: ${gated.reason}`;
+            }
             return scheduledText(
                 "Task scheduled",
                 storeJob(access.userId, {
@@ -434,6 +530,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     ...(repeat !== undefined
                         ? { repeat: anchoredRule(repeat, when.at) }
                         : {}),
+                    ...(gated.gate !== null ? { gate: gated.gate } : {}),
                     at: atTime,
                 }),
                 atTime,
@@ -486,6 +583,91 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     .optional()
                     .describe("A delay in minutes instead of a clock time."),
                 repeat: repeatSchema.optional(),
+                gate: gateSchema,
+            }),
+        },
+    );
+
+    const schedulePromptTool = tool(
+        async (
+            { label, prompt, at, onDate, inMinutes, repeat, gate },
+            runtime: ToolRuntime,
+        ) => {
+            const access = guard(runtime, "schedulePrompt");
+            if (!access.ok) {
+                return access.text;
+            }
+            const atTime = now();
+            const when = resolveWhen({ at, onDate, inMinutes }, atTime);
+            if (!when.ok) {
+                return `The job was not scheduled: ${when.reason}`;
+            }
+            const gated = gateFor(gate);
+            if (!gated.ok) {
+                return `The job was not scheduled: ${gated.reason}`;
+            }
+            return scheduledText(
+                "Job scheduled",
+                storeJob(access.userId, {
+                    label,
+                    class: "notification",
+                    payload: { kind: "prompt", prompt },
+                    runAt: when.at,
+                    ...(repeat !== undefined
+                        ? { repeat: anchoredRule(repeat, when.at) }
+                        : {}),
+                    ...(gated.gate !== null ? { gate: gated.gate } : {}),
+                    at: atTime,
+                }),
+                atTime,
+            );
+        },
+        {
+            name: "schedulePrompt",
+            description:
+                "Schedules a job for you to *do something* later — a prompt you " +
+                "will run on your own, with the reply filed as a quiet " +
+                "notification. Use it when the work is thinking or writing " +
+                "rather than one tool call: 'every night, summarise my day', " +
+                "'each morning at eight, brief me on the news', 'in an hour, " +
+                "check whether the pasta recipe needs more salt'. For a single " +
+                "tool call use scheduleTask; to tell the user something, use " +
+                "remindMe. `prompt` is the instruction you will carry out, " +
+                "written to stand on its own — nobody is there to answer a " +
+                "question when it runs. Give the time as `at` (24-hour) with " +
+                "an optional `onDate`, or as `inMinutes`, and use `repeat` for " +
+                "a recurring job. `gate` makes a frequent schedule affordable: " +
+                "'every five minutes, only if the front door opened' is a " +
+                "prompt with a gate, and a firing whose check finds nothing " +
+                "changed does not run or announce anything.",
+            schema: z.object({
+                label: labelSchema,
+                prompt: z
+                    .string()
+                    .trim()
+                    .min(1)
+                    .describe(
+                        "The instruction to carry out when it runs, written " +
+                            "for you to read later with no conversation " +
+                            "around it.",
+                    ),
+                at: z
+                    .string()
+                    .optional()
+                    .describe("A 24-hour clock time like 07:30."),
+                onDate: z
+                    .string()
+                    .optional()
+                    .describe(
+                        "The day for `at`: 'today', 'tomorrow', a weekday " +
+                            "name, or a date like 2026-10-20.",
+                    ),
+                inMinutes: z
+                    .number()
+                    .optional()
+                    .describe("A delay in minutes instead of a clock time."),
+                repeat: repeatSchema.optional(),
+                gate: gateSchema,
             }),
         },
     );
@@ -628,6 +810,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         setTimerTool,
         remindMeTool,
         scheduleTaskTool,
+        schedulePromptTool,
         listJobsTool,
         cancelJobTool,
         snoozeReminderTool,
@@ -686,8 +869,10 @@ export function describeJob(job: AppJob, now: Date): string {
     const payload =
         job.kind === "tool" && job.toolName !== null
             ? ` (runs ${job.toolName})`
-            : "";
-    return `"${job.label}" (job ${job.id}) — ${formatLocal(at, now)}, ${formatRelative(at, now)}${payload}${repeatPhrase(job)}`;
+            : job.kind === "prompt"
+              ? " (runs a prompt)"
+              : "";
+    return `"${job.label}" (job ${job.id}) — ${formatLocal(at, now)}, ${formatRelative(at, now)}${payload}${repeatPhrase(job)}${gatePhrase(job)}`;
 }
 
 /**
@@ -707,10 +892,27 @@ function repeatPhrase(job: AppJob): string {
     return parsed.ok ? `, repeating ${describeRepeat(parsed.repeat)}` : "";
 }
 
+/**
+ * The conditional clause on a job's line (#90 phases 8f, 8g), or `""`.
+ *
+ * Said in the model's own words rather than as "gated": the point of reading a
+ * job back is that the user can hear that it *may not fire*, and "but only when
+ * homeAssistant changes" is the sentence that says so. A stored gate that no
+ * longer parses adds nothing, for the same reason `repeatPhrase` omits a rule the
+ * runner would warn about.
+ */
+function gatePhrase(job: AppJob): string {
+    if (job.gate === null || job.gate === undefined) {
+        return "";
+    }
+    const parsed = parseJobGate(job.gate);
+    return parsed.ok ? `, but only when ${parsed.gate.tool} changes` : "";
+}
+
 /** One `listJobs` line: id, class, label, local time, relative time, payload. */
 export function formatJobLine(job: AppJob, now: Date): string {
     const at = new Date(job.runAt);
-    return `- ${job.id} (${job.class}) "${job.label}" — ${formatLocal(at, now)}, ${formatRelative(at, now)}${repeatPhrase(job)}`;
+    return `- ${job.id} (${job.class}) "${job.label}" — ${formatLocal(at, now)}, ${formatRelative(at, now)}${repeatPhrase(job)}${gatePhrase(job)}`;
 }
 
 /**

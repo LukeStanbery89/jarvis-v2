@@ -4,9 +4,10 @@
  * Jobs are created through two doors — the model's tools
  * (`llm/tools/jobs.ts`) and the REST surface a page uses
  * (`scheduler/http.ts`) — and both have to answer the same questions the same
- * way: what a label or a message may be, how far ahead a job may be set, how
- * many may be pending at once, what quiet hours will do to the announcement,
- * and what an edit or a snooze is allowed to touch. Those answers live here,
+ * way: what a label, a message or a prompt may be, how far ahead a job may be
+ * set, how many may be pending at once, whether a schedule is too frequent to
+ * keep, what a gate may read, what quiet hours will do to the announcement, and
+ * what an edit or a snooze is allowed to touch. Those answers live here,
  * once. Each surface renders them for its own reader (the tools in the model's
  * voice, the router as JSON), but neither decides them.
  *
@@ -30,8 +31,13 @@ import {
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
-import { nextOccurrence, parseJobRepeat } from "@lukestanbery/jarvis-protocol";
+import {
+    nextOccurrence,
+    parseJobGate,
+    parseJobRepeat,
+} from "@lukestanbery/jarvis-protocol";
 import type {
+    JobGate,
     JobRepeat,
     NotificationClass,
 } from "@lukestanbery/jarvis-protocol";
@@ -42,6 +48,7 @@ import type {
 } from "@lukestanbery/jarvis-auth";
 import { logger } from "../logger";
 import { format12Hour } from "../llm/tools/clock";
+import { gateRefusal } from "./tools";
 import {
     NOTIFY_ENABLED_PREF,
     NOTIFY_QUIET_HOURS_PREF,
@@ -79,16 +86,32 @@ export const MAX_DURATION_MINUTES = 1440;
 export const MIN_SNOOZE_MINUTES = 0.5;
 
 /**
- * The shortest gap between two firings a schedule may ask for (#90 phase 8d).
+ * The shortest gap between two firings an **ungated** schedule may ask for (#90
+ * phases 8d, 8g).
  *
  * A `message` job's firing **is** its announcement, so its cadence is a
  * notification rate: fifteen minutes caps an announcing series at 96 rows a day,
- * which is already loud. A `tool` or `prompt` job has the same floor until it can
- * carry a gate that declines an occurrence (phase 8g) — until then, every firing
- * is a model call or a device write, and the day's budget is the only other thing
- * between the user and a mistake.
+ * which is already loud. A `tool` or `prompt` job has the same floor while every
+ * firing is a model call or a device write, and the day's budget is the only
+ * other thing between the user and a mistake.
  */
 export const MIN_REPEAT_MINUTES = 15;
+
+/**
+ * The shortest gap a **gated** schedule may ask for (#90 phase 8g).
+ *
+ * A gate makes a frequent schedule affordable by declining the firings that have
+ * nothing to do, and a declined firing announces nothing — so the notification
+ * rate that sets {@link MIN_REPEAT_MINUTES} no longer applies, and what is left
+ * is the scheduler's own resolution. One minute is the fastest a job can usefully
+ * poll: the loop's tick is coarse, and anything faster would be a spin rather
+ * than a schedule.
+ *
+ * This is why the gate exists: "every five minutes, but only if the door opened"
+ * is the shape that makes a minutely job defensible, and it is the only schedule
+ * allowed below the ungated floor.
+ */
+export const MIN_GATED_REPEAT_MINUTES = 1;
 
 /**
  * The long end of a snooze: a week (#90 phase 7 fix).
@@ -135,14 +158,16 @@ export interface JobCreatorDeps {
 /**
  * The payload a creation call stores.
  *
- * The table's CHECK admits exactly one of these per row. `prompt` is
- * deliberately not a member: nothing creates one today (the tools schedule
- * messages and tools, the REST surface messages only), and a payload this
- * policy cannot describe is one it should not be writing.
+ * The table's CHECK admits exactly one of these per row. All three are reachable
+ * since 8g: the tools schedule messages (`setTimer`/`remindMe`) and tools
+ * (`scheduleTask`), the prompt tool schedules a turn (`schedulePrompt`), and the
+ * REST surface stays message-only by decision — a page writes text, and anything
+ * that spends the model is asked for in the conversation.
  */
 export type JobPayload =
     | { kind: "message"; message: string }
-    | { kind: "tool"; toolName: string; toolArgs: Record<string, unknown> };
+    | { kind: "tool"; toolName: string; toolArgs: Record<string, unknown> }
+    | { kind: "prompt"; prompt: string };
 
 /** What a caller asks for; identity and `created_at` are the store's. */
 export interface CreateRequest {
@@ -157,6 +182,13 @@ export interface CreateRequest {
      */
     repeat?: unknown;
     /**
+     * The check a firing must pass before its payload runs (#90 phase 8f/8g),
+     * or omitted for a job that runs unconditionally. Untrusted for the same
+     * reason as `repeat`, and validated against the same read-action allowlist
+     * the runner enforces — a gate this policy stores is one the runner can make.
+     */
+    gate?: unknown;
+    /**
      * The instant the request is being made, shared with `runAt`'s own
      * arithmetic so a job cannot be stamped a moment it never had. Defaults to
      * `now()`.
@@ -168,6 +200,9 @@ export interface CreateRequest {
 export type CreateRefusal =
     | "label-too-long"
     | "message-too-long"
+    | "prompt-empty"
+    | "prompt-too-long"
+    | "invalid-gate"
     | "in-the-past"
     | "beyond-horizon"
     | "too-many"
@@ -324,6 +359,54 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     }
 
     /**
+     * The bounds a prompt payload must satisfy, or `null`.
+     *
+     * Blank is its own refusal rather than a length fault: a prompt job with
+     * nothing to say would run a model turn about nothing, which is a mistake
+     * worth naming. Every door already refuses it (the tool's schema trims and
+     * requires one), so this is the policy agreeing with them rather than the
+     * only check.
+     */
+    function promptProblem(prompt: string): CreateRefusal | null {
+        if (prompt.trim().length === 0) {
+            return "prompt-empty";
+        }
+        return prompt.length > MAX_NOTIFICATION_BODY_LENGTH
+            ? "prompt-too-long"
+            : null;
+    }
+
+    /**
+     * The gate a request asks for, or why it is not one (#90 phases 8f, 8g).
+     *
+     * Two questions, and these are the halves the policy can answer: the *shape*
+     * is the protocol's (`parseJobGate`), and whether the named tool may be
+     * read at all is the scheduler's (`gateRefusal` — the same allowlist the
+     * runner enforces). Whether the tool is *installed on this server* is the
+     * calling door's question, because only it holds the registry, and the
+     * runner asks it again at fire time: a stored gate is a durable capability.
+     *
+     * The parsed value is what gets stored, not the caller's object, so what the
+     * runner later compares against is exactly what was validated here.
+     */
+    function gateCheck(
+        gate: unknown,
+    ): { ok: true; gate: JobGate | null } | { ok: false; reason: string } {
+        if (gate === undefined || gate === null) {
+            return { ok: true, gate: null };
+        }
+        const parsed = parseJobGate(gate);
+        if (!parsed.ok) {
+            return { ok: false, reason: parsed.reason };
+        }
+        const refused = gateRefusal(parsed.gate);
+        if (refused !== null) {
+            return { ok: false, reason: refused };
+        }
+        return { ok: true, gate: parsed.gate };
+    }
+
+    /**
      * The bounds a moment must satisfy for a class, or `null`.
      *
      * The horizon is every class's; the day ceiling is the timer's alone, since
@@ -361,6 +444,14 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 return `\`label\` must be at most ${MAX_NOTIFICATION_TITLE_LENGTH} characters — shorten it and try again.`;
             case "message-too-long":
                 return `\`message\` must be at most ${MAX_NOTIFICATION_BODY_LENGTH} characters — shorten it and try again.`;
+            case "prompt-empty":
+                return "a prompt job needs a prompt — say what it should do when it runs.";
+            case "prompt-too-long":
+                return `\`prompt\` must be at most ${MAX_NOTIFICATION_BODY_LENGTH} characters — shorten it and try again.`;
+            case "invalid-gate":
+                // The specific fault is the parser's or the read-action policy's
+                // (see `gateCheck`), and its reason already says which.
+                return "that check is not one this server can make — a gate may only read with a tool that allows it.";
             case "in-the-past":
                 return "that moment has already passed — give one in the future.";
             case "beyond-horizon": {
@@ -400,8 +491,9 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
      * - **A timer may not repeat.** A timer pierces quiet hours; a repeating one
      *   would be a standing breach of them, and "every night at 3am" is never a
      *   countdown. A reminder is the class for something that comes back.
-     * - **The cadence has a floor** ({@link MIN_REPEAT_MINUTES}), for the reason
-     *   written there.
+     * - **The cadence has a floor** — {@link MIN_REPEAT_MINUTES} ungated, or
+     *   {@link MIN_GATED_REPEAT_MINUTES} when the job carries a gate, because a
+     *   declined firing announces nothing (the reason written at each).
      *
      * The parse is strict, and its reason is what the user reads: "the 7th
      * Monday" is refused with wording that says which part is impossible.
@@ -409,6 +501,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     function repeatCheck(
         cls: NotificationClass,
         repeat: unknown,
+        gated: boolean,
     ): { ok: true; rule: JobRepeat | null } | { ok: false; reason: string } {
         if (repeat === undefined || repeat === null) {
             return { ok: true, rule: null };
@@ -424,10 +517,17 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
             };
         }
         const gap = repeatGapMinutes(parsed.repeat);
-        if (gap < MIN_REPEAT_MINUTES) {
+        const floor = gated ? MIN_GATED_REPEAT_MINUTES : MIN_REPEAT_MINUTES;
+        if (gap < floor) {
+            const fastest =
+                floor === 1 ? "every minute" : `every ${floor} minutes`;
             return {
                 ok: false,
-                reason: `every ${gap} minute${gap === 1 ? "" : "s"} is too often — the fastest a job may repeat is every ${MIN_REPEAT_MINUTES} minutes.`,
+                reason: `every ${gap} minute${gap === 1 ? "" : "s"} is too often — the fastest a job may repeat is ${fastest}${
+                    gated
+                        ? ""
+                        : ", or every minute if it carries a gate that can decline a firing"
+                }.`,
             };
         }
         return { ok: true, rule: parsed.repeat };
@@ -476,7 +576,21 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     function create(userId: number, request: CreateRequest): CreateOutcome {
         const at = request.at ?? now();
         const { label, payload } = request;
-        const checked = repeatCheck(request.class, request.repeat);
+        // Before the repeat check, because a gate is what the cadence floor
+        // depends on: a gated job may repeat every minute.
+        const gated = gateCheck(request.gate);
+        if (!gated.ok) {
+            return {
+                ok: false,
+                code: "invalid-gate",
+                reason: gated.reason,
+            };
+        }
+        const checked = repeatCheck(
+            request.class,
+            request.repeat,
+            gated.gate !== null,
+        );
         if (!checked.ok) {
             return {
                 ok: false,
@@ -500,7 +614,9 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
             labelProblem(label) ??
             (payload.kind === "message"
                 ? messageProblem(payload.message)
-                : null) ??
+                : payload.kind === "prompt"
+                  ? promptProblem(payload.prompt)
+                  : null) ??
             momentProblem(request.class, runAt, at);
         if (problem !== null) {
             return {
@@ -529,12 +645,15 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 kind: payload.kind,
                 ...(payload.kind === "message"
                     ? { message: payload.message }
-                    : {
-                          toolName: payload.toolName,
-                          toolArgs: payload.toolArgs,
-                      }),
+                    : payload.kind === "prompt"
+                      ? { prompt: payload.prompt }
+                      : {
+                            toolName: payload.toolName,
+                            toolArgs: payload.toolArgs,
+                        }),
                 runAt: runAt.toISOString(),
                 ...(checked.rule !== null ? { repeat: checked.rule } : {}),
+                ...(gated.gate !== null ? { gate: gated.gate } : {}),
             });
         } catch (err) {
             logger.warn(
@@ -547,7 +666,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
             };
         }
         logger.info(
-            `job ${job.id} scheduled (${job.class}, ${job.kind}${checked.rule !== null ? ", repeating" : ""}): "${job.label}" → ${job.runAt}`,
+            `job ${job.id} scheduled (${job.class}, ${job.kind}${checked.rule !== null ? ", repeating" : ""}${gated.gate !== null ? ", gated" : ""}): "${job.label}" → ${job.runAt}`,
         );
         return {
             ok: true,
@@ -672,7 +791,13 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
         let moment = patch.runAt;
         let rule: unknown | undefined;
         if (patch.repeat !== undefined) {
-            const checked = repeatCheck(job.class, patch.repeat);
+            // The job's own gate decides the floor: editing a minutely gated
+            // series must not turn the schedule it already has into a refusal.
+            const checked = repeatCheck(
+                job.class,
+                patch.repeat,
+                job.gate !== null && job.gate !== undefined,
+            );
             if (!checked.ok) {
                 return {
                     ok: false,

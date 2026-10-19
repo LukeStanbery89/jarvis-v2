@@ -1628,11 +1628,18 @@ textarea::placeholder {
 /* A repeating job's cadence, under its label (#90 phase 8e). The protocol's own
    words, so the row reads exactly like the confirmation the model gave in chat —
    and like the live preview the form shows before it is saved. */
-.job-repeat {
+.job-repeat,
+.job-gate {
     display: block;
     margin-top: 0.15rem;
     color: var(--primary-dim);
     font-size: 0.72rem;
+}
+
+/* A conditional job's note (#90 phase 8f) sits beside the cadence and reads the
+   same way: the row says it may not fire, and the runs say what the check saw. */
+.job-gate {
+    font-style: italic;
 }
 
 /* The repeat control's own fields (#90 phase 8e): the chips row picks the

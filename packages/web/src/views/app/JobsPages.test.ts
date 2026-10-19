@@ -133,6 +133,30 @@ describe("the jobs pages render", () => {
         expect(html.match(/<summary>Runs<\/summary>/g)).toHaveLength(2);
     });
 
+    it("says when a row may never fire, and names the check on hover", () => {
+        // #90 phases 8f/8g: a gated job is a different promise from one that
+        // will definitely run, so the row says so — the tool the check reads is
+        // one hover away, and the runs show what it saw.
+        const html = renderToStaticMarkup(
+            createElement(RemindersPage, {
+                jobs: jobsState([
+                    job({
+                        gate: {
+                            tool: "homeAssistant",
+                            args: { action: "get" },
+                            when: "changed",
+                        },
+                    }),
+                ]),
+                notifications,
+                token: "device-token",
+            }),
+        );
+
+        expect(html).toContain("checks first");
+        expect(html).toContain("only runs when homeAssistant changes");
+    });
+
     it("draws a row whose stored rule cannot be read, without throwing", () => {
         const html = renderToStaticMarkup(
             createElement(RemindersPage, {

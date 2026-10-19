@@ -149,7 +149,12 @@ describe("jobs tools: the class comes from the tool", () => {
 
     it("exposes no way for the model to choose a class or a priority", () => {
         const h = harness();
-        for (const name of ["setTimer", "remindMe", "scheduleTask"]) {
+        for (const name of [
+            "setTimer",
+            "remindMe",
+            "scheduleTask",
+            "schedulePrompt",
+        ]) {
             const schema = h.tool(name).schema as {
                 shape?: Record<string, unknown>;
             };
@@ -167,6 +172,10 @@ describe("jobs tools: the class comes from the tool", () => {
             [
                 "scheduleTask",
                 { label: "Lights", tool: "getCurrentTime", inMinutes: 5 },
+            ],
+            [
+                "schedulePrompt",
+                { label: "Brief", prompt: "Say good morning.", inMinutes: 5 },
             ],
             ["listJobs", {}],
             ["cancelJob", { id: "job-1" }],
@@ -423,6 +432,139 @@ describe("jobs tools: scheduleTask", () => {
 
         expect(text).toContain("needs different arguments");
         expect(text).toContain("entity_id");
+        expect(h.jobs()).toEqual([]);
+    });
+});
+
+describe("jobs tools: schedulePrompt and the gate (#90 phase 8g)", () => {
+    /** The check every gate test here reads: the front door, at its state. */
+    const doorGate = {
+        tool: "homeAssistant",
+        args: { action: "get", entity_id: "binary_sensor.front_door" },
+        when: "changed",
+    };
+
+    it("stores a prompt job — the door that can create one at all", async () => {
+        const h = harness();
+
+        const text = await h.call("schedulePrompt", {
+            label: "Morning brief",
+            prompt: "Summarise the unread news and my calendar.",
+            at: "07:30",
+            onDate: "tomorrow",
+        });
+
+        const [job] = h.jobs();
+        // The class is the tool's, as everywhere else: a prompt job is filed
+        // quietly rather than being an interruption the model chose.
+        expect(job).toMatchObject({
+            class: "notification",
+            kind: "prompt",
+            prompt: "Summarise the unread news and my calendar.",
+        });
+        expect(text).toContain("(runs a prompt)");
+        expect(text).toContain("tomorrow at 7:30 AM");
+    });
+
+    it("accepts a minutely cadence when a gate makes it affordable", async () => {
+        // The floor is fifteen minutes ungated and one minute gated; this is the
+        // schedule the gate exists for, and the echo has to say both halves or
+        // the user cannot tell what they agreed to.
+        const h = harness();
+
+        const text = await h.call("schedulePrompt", {
+            label: "Front door",
+            prompt: "Say whether the front door is open.",
+            inMinutes: 5,
+            repeat: { every: "minute", interval: 5 },
+            gate: doorGate,
+        });
+
+        expect(text).toContain("repeating every 5 minutes");
+        expect(text).toContain("but only when homeAssistant changes");
+        const [job] = h.jobs();
+        expect(job?.gate).toEqual(doorGate);
+        expect(job?.repeat).toMatchObject({ every: "minute", interval: 5 });
+        // The list line carries the condition too: a job that may not fire is a
+        // different promise, and `listJobs` is where the user asks what is set.
+        expect(formatJobLine(job!, NOW)).toContain(
+            ", but only when homeAssistant changes",
+        );
+    });
+
+    it("refuses a gate whose tool acts", async () => {
+        // A gate that turned the light on to see whether it changed would be
+        // neither deterministic nor free — the refusal has to reach the model
+        // before a row exists.
+        const h = harness();
+
+        const text = await h.call("scheduleTask", {
+            label: "Porch",
+            tool: "homeAssistant",
+            args: { action: "turn_on", entity_id: "light.porch" },
+            inMinutes: 25,
+            gate: {
+                tool: "homeAssistant",
+                args: { action: "turn_on", entity_id: "light.porch" },
+                when: "changed",
+            },
+        });
+
+        expect(text).toContain("may only read");
+        expect(h.jobs()).toEqual([]);
+    });
+
+    it("refuses a gate on a tool this server does not have", async () => {
+        const h = harness();
+
+        const text = await h.call("scheduleTask", {
+            label: "Lights",
+            tool: "homeAssistant",
+            args: { action: "turn_on", entity_id: "light.porch" },
+            inMinutes: 5,
+            gate: {
+                tool: "webSearch",
+                args: { query: "news" },
+                when: "changed",
+            },
+        });
+
+        expect(text).toContain("cannot check a job");
+        expect(h.jobs()).toEqual([]);
+    });
+
+    it("refuses gate arguments the tool would reject at the due moment", async () => {
+        const h = harness();
+
+        const text = await h.call("scheduleTask", {
+            label: "Lights",
+            tool: "homeAssistant",
+            args: { action: "turn_on", entity_id: "light.porch" },
+            inMinutes: 5,
+            // A `get` with no entity names nothing to watch.
+            gate: {
+                tool: "homeAssistant",
+                args: { action: "get" },
+                when: "changed",
+            },
+        });
+
+        expect(text).toContain("needs different arguments");
+        expect(h.jobs()).toEqual([]);
+    });
+
+    it("names the gate when a schedule is too fast without one", async () => {
+        const h = harness();
+
+        const text = await h.call("schedulePrompt", {
+            label: "Chatty",
+            prompt: "Say something.",
+            inMinutes: 5,
+            repeat: { every: "minute", interval: 5 },
+        });
+
+        expect(text).toMatch(/fastest a job may repeat is every 15 minutes/);
+        expect(text).toContain("gate");
         expect(h.jobs()).toEqual([]);
     });
 });

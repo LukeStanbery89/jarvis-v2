@@ -262,8 +262,10 @@ const SCHEDULE_RULE =
     "it in words: remindMe for something they want to be told (it waits out " +
     "their quiet hours), setTimer for a countdown they asked for (it " +
     "interrupts), scheduleTask for running one of your tools later (it is " +
-    "filed quietly). You cannot choose how loudly a job arrives — the tool " +
-    "does. You must be told when: if they gave no time, or said something " +
+    "filed quietly), schedulePrompt for something you should do later — " +
+    "thinking or writing rather than one tool call (it is filed quietly " +
+    "too, with what you produce as the notification). You cannot choose how " +
+    "loudly a job arrives — the tool does. You must be told when: if they gave no time, or said something " +
     "vague like 'later' or 'soon', ask them instead of guessing, and never " +
     "send a timestamp — give the time the way the tool asks (a 24-hour " +
     "clock time, a delay in minutes, and today/tomorrow/a weekday for the " +
@@ -283,7 +285,14 @@ const SCHEDULE_RULE =
     "two things — 'every Monday and the 1st' is either every Monday plus the " +
     "1st or a Monday that is also the 1st — ask which they mean. The result " +
     "states the schedule back to you along with when it will next run: say " +
-    "both, so they can correct you now rather than later. The result says " +
+    "both, so they can correct you now rather than later. If they want it to " +
+    "run often but only *when something changed* — 'only if the door opened', " +
+    "'check every five minutes and tell me if it changed' — pass `gate` " +
+    "(scheduleTask and schedulePrompt take it): one read-only tool call whose " +
+    "answer is compared with the previous firing's, so a firing that finds " +
+    "nothing changed does not run and does not announce. Never add a gate " +
+    "they did not ask for, and never use one to act — a gate only reads, and " +
+    "a tool that acts is refused. The result says " +
     "when it will run and whether quiet " +
     "hours will hold it — relay that rather than promising an interruption. " +
     "Never schedule anything the user did not ask for; a job is a " +

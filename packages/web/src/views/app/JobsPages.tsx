@@ -28,6 +28,7 @@
 import type { ReactNode } from "react";
 import {
     describeMoment,
+    gateText,
     recentJobs,
     repeatText,
     upcomingJobs,
@@ -89,6 +90,14 @@ function RecentRow({
                 {repeatText(job) !== null && (
                     <span className="job-repeat">
                         repeats {repeatText(job)}
+                    </span>
+                )}
+                {job.gate !== undefined && (
+                    <span
+                        className="job-gate"
+                        title={`only runs when ${job.gate.tool} changes`}
+                    >
+                        {gateText(job)}
                     </span>
                 )}
                 <JobRuns token={token} jobId={job.id} />

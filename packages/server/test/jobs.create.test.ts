@@ -483,3 +483,135 @@ describe("recurrence (#90 phase 8d)", () => {
         expect(stopped.ok ? stopped.job.runAt : null).toBe(tomorrowAt1905);
     });
 });
+
+describe("the prompt payload and the gate (#90 phase 8g)", () => {
+    /** A gate over the front door, as a door's create request would carry it. */
+    const doorGate = {
+        tool: "homeAssistant",
+        args: { action: "get", entity_id: "binary_sensor.front_door" },
+        when: "changed",
+    };
+
+    /** A prompt job five minutes out, optionally repeating and gated. */
+    function createPrompt(
+        h: Harness,
+        request: { repeat?: unknown; gate?: unknown } = {},
+    ) {
+        return h.creator.create(h.userId, {
+            label: "Morning brief",
+            class: "notification",
+            payload: { kind: "prompt", prompt: "Summarise my day." },
+            runAt: new Date(NOW.getTime() + 5 * 60_000),
+            ...(request.repeat !== undefined ? { repeat: request.repeat } : {}),
+            ...(request.gate !== undefined ? { gate: request.gate } : {}),
+            at: NOW,
+        });
+    }
+
+    /** A five-minute cadence: below the ungated floor, above the gated one. */
+    const minutely = {
+        every: "minute",
+        interval: 5,
+        start: NOW.toISOString(),
+    };
+
+    it("stores a prompt payload, and says what it will run", () => {
+        const h = harness();
+        const outcome = createPrompt(h);
+
+        expect(outcome.ok).toBe(true);
+        const [job] = h.store.listJobs(h.userId);
+        expect(job).toMatchObject({
+            kind: "prompt",
+            prompt: "Summarise my day.",
+            message: null,
+        });
+    });
+
+    it("refuses a prompt with nothing in it", () => {
+        const h = harness();
+        const outcome = h.creator.create(h.userId, {
+            label: "Nothing",
+            class: "notification",
+            payload: { kind: "prompt", prompt: "   " },
+            runAt: new Date(NOW.getTime() + 60_000),
+            at: NOW,
+        });
+
+        expect(outcome).toMatchObject({ ok: false, code: "prompt-empty" });
+        expect(h.store.listJobs(h.userId)).toEqual([]);
+    });
+
+    it("stores a valid gate with the job", () => {
+        const h = harness();
+        const outcome = createPrompt(h, { gate: doorGate });
+
+        expect(outcome.ok).toBe(true);
+        expect(h.store.listJobs(h.userId)[0]?.gate).toEqual(doorGate);
+    });
+
+    it("refuses a gate whose tool acts, and a malformed one", () => {
+        const h = harness();
+
+        const writes = createPrompt(h, {
+            gate: {
+                tool: "homeAssistant",
+                args: { action: "turn_on", entity_id: "light.porch" },
+                when: "changed",
+            },
+        });
+        expect(writes).toMatchObject({ ok: false, code: "invalid-gate" });
+        expect(writes.ok ? "" : writes.reason).toMatch(/may only read/);
+
+        const malformed = createPrompt(h, {
+            gate: { tool: "homeAssistant", args: {}, when: "rising" },
+        });
+        expect(malformed).toMatchObject({ ok: false, code: "invalid-gate" });
+        expect(malformed.ok ? "" : malformed.reason).toMatch(
+            /"when" must be one/,
+        );
+
+        expect(h.store.listJobs(h.userId)).toEqual([]);
+    });
+
+    it("allows a minutely cadence only when a gate can decline a firing", () => {
+        const h = harness();
+
+        const ungated = createPrompt(h, { repeat: minutely });
+        expect(ungated).toMatchObject({ ok: false, code: "invalid-repeat" });
+        // The refusal names the way out rather than only the rule.
+        expect(ungated.ok ? "" : ungated.reason).toMatch(
+            /every 15 minutes, or every minute if it carries a gate/,
+        );
+
+        const gated = createPrompt(h, { repeat: minutely, gate: doorGate });
+        expect(gated.ok).toBe(true);
+        expect(gated.ok ? gated.job.repeat : null).toMatchObject({
+            every: "minute",
+            interval: 5,
+        });
+    });
+
+    it("keeps a gated job's relaxed floor when its rule is edited", () => {
+        const h = harness();
+        const created = createPrompt(h, { repeat: minutely, gate: doorGate });
+        expect(created.ok).toBe(true);
+        if (!created.ok) {
+            return;
+        }
+
+        // The job already runs every five minutes because it is gated. An edit
+        // that restates the same rule must not turn that into a refusal.
+        const edited = h.creator.edit(h.userId, created.job.id, {
+            repeat: {
+                ...minutely,
+                start: new Date(NOW.getTime() + 60_000).toISOString(),
+            },
+        });
+        expect(edited.ok).toBe(true);
+        expect(edited.ok ? edited.job.repeat : null).toMatchObject({
+            every: "minute",
+            interval: 5,
+        });
+    });
+});

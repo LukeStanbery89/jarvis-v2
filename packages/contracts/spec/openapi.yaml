@@ -2504,6 +2504,32 @@ components:
                               after:
                                   type: integer
                                   minimum: 1
+        JobGate:
+            type: object
+            description: >-
+                The read-only check a firing must pass before its payload runs
+                (#90 phase 8f): one tool call, compared with the answer the
+                previous firing recorded. The same answer to the same question
+                means nothing changed, so the firing is recorded `skipped`
+                (`JobRun.state`) and announces nothing.
+            required: [tool, when]
+            properties:
+                tool:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                args:
+                    type: object
+                    additionalProperties: true
+                    description: >-
+                        That tool's arguments for the check — for a
+                        `homeAssistant` read, the entity to watch.
+                when:
+                    type: string
+                    description: >-
+                        `changed` — run only when the answer differs from the
+                        previous firing's. The only comparison defined.
+                    enum: [changed]
         Job:
             type: object
             description: One scheduled job, as the API exposes it.
@@ -2574,6 +2600,13 @@ components:
                         The rule this job repeats on (#90 phase 8), or absent
                         when it runs once.
                     $ref: "#/components/schemas/JobRepeat"
+                gate:
+                    description: >-
+                        The check a firing must pass before its payload runs
+                        (#90 phase 8f), or absent for a job that runs
+                        unconditionally. Chosen when the job was scheduled and
+                        not editable afterwards.
+                    $ref: "#/components/schemas/JobGate"
         JobRun:
             type: object
             description: One attempt at a job — the history a detail view reads.

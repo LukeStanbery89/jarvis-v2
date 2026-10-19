@@ -21,6 +21,7 @@ import {
     describeRun,
     describeSnooze,
     editPatchFor,
+    gateText,
     instantFromDuration,
     jobBody,
     momentInputValue,
@@ -270,6 +271,22 @@ describe("runDuration (#90 phase 7d)", () => {
                 finishedAt: "y",
             }),
         ).toBeNull();
+    });
+});
+
+describe("gateText (#90 phase 8f)", () => {
+    it("says nothing about a job that always runs", () => {
+        expect(gateText({})).toBeNull();
+    });
+
+    it("notes that a conditional job may not fire", () => {
+        // The row's job is to say "this may not happen" — the check's own words
+        // live in the runs, where each attempt shows what it read.
+        expect(
+            gateText({
+                gate: { tool: "homeAssistant", args: {}, when: "changed" },
+            }),
+        ).toBe("checks first");
     });
 });
 

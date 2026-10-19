@@ -904,20 +904,43 @@ the model to **ask rather than choose** when a phrase could mean two schedules �
 "every Monday and the 1st" is either every Monday plus the 1st or a Monday that
 is also the 1st — which is the one ambiguity the rule cannot resolve for it.
 
-### The scheduling tools (#90 phase 3)
+### The scheduling tools (#90 phase 3; the gate in 8g)
 
-Five tools, and their split is the policy: **the class comes from which tool was
+Seven tools, and their split is the policy: **the class comes from which tool was
 called, never from an argument**, so nothing the model writes can choose how
 loudly the user is interrupted.
 
-| Tool             | Class                                  | Payload        | Time                                     |
-| ---------------- | -------------------------------------- | -------------- | ---------------------------------------- |
-| `setTimer`       | `timer` — pierces quiet hours          | message        | `minutes` or `seconds` (1 s – 24 h)      |
-| `remindMe`       | `reminder` — defers out of quiet hours | message        | `at` + optional `onDate`, or `inMinutes` |
-| `scheduleTask`   | `notification` — waits                 | one tool call  | same as `remindMe`                       |
-| `snoozeReminder` | keeps the reminder's class             | same as before | `id` + `minutes`                         |
-| `listJobs`       | —                                      | —              | —                                        |
-| `cancelJob`      | —                                      | —              | —                                        |
+| Tool             | Class                                  | Payload        | Time                                     | `gate`   |
+| ---------------- | -------------------------------------- | -------------- | ---------------------------------------- | -------- |
+| `setTimer`       | `timer` — pierces quiet hours          | message        | `minutes` or `seconds` (1 s – 24 h)      | —        |
+| `remindMe`       | `reminder` — defers out of quiet hours | message        | `at` + optional `onDate`, or `inMinutes` | —        |
+| `scheduleTask`   | `notification` — waits                 | one tool call  | same as `remindMe`                       | optional |
+| `schedulePrompt` | `notification` — waits                 | one prompt     | same as `remindMe`                       | optional |
+| `snoozeReminder` | keeps the reminder's class             | same as before | `id` + `minutes`                         | —        |
+| `listJobs`       | —                                      | —              | —                                        | —        |
+| `cancelJob`      | —                                      | —              | —                                        | —        |
+
+`schedulePrompt` (#90 phase 8g) is the door to a job that _does_ something rather
+than one that runs a single tool: "every night, summarise my day", "each morning
+at eight, brief me on the news". It was the last payload kind with no way in —
+the runner has run `prompt` jobs since phase 1, and the REST surface stays
+message-only by decision — so its prompt is written to stand on its own, because
+nobody is there to answer a question when it fires. The reply becomes the job's
+announcement, filed as the class it is: a `notification`.
+
+**A gate is what makes a frequent schedule affordable** (#90 phases 8f–8g).
+`scheduleTask` and `schedulePrompt` take an optional one, and the model states it
+the way it states everything else — a tool, that tool's arguments, and
+`when: "changed"` — never a condition language. Three refusals arrive while the
+user is still in the conversation: the tool must be one that declares a read
+action, it must be installed on this server, and its arguments must satisfy its
+own schema (the same check a scheduled target's arguments get). What the gate
+buys is the **cadence floor**: an ungated schedule may not repeat faster than
+every 15 minutes, because a firing is an announcement or a model call, while a
+gated one may go to a minute — a declined firing announces nothing, which is the
+whole point. The reply says both halves ("repeating every 5 minutes, but only
+when homeAssistant changes"), so the user can correct a condition they did not
+ask for in the same turn.
 
 **Times are words, not timestamps.** The model passes what the user said — a
 24-hour clock time, `today`/`tomorrow`/a weekday/a date, or a delay — and
@@ -997,8 +1020,8 @@ rather than an implementation detail:
   schedule is, or about why one is refused. Two refusals are this server's rather
   than the rule's: a **timer may not repeat** (a timer pierces quiet hours, and a
   repeating one would be a standing breach of them), and nothing may repeat
-  faster than **every 15 minutes**, because a firing is an announcement — or a
-  model call. A repeating job's moment comes from its rule, so the request's own
+  faster than **every 15 minutes** — or every minute when the job carries a gate
+  (#90 phase 8g), which is the schedule a gate exists to make affordable. A repeating job's moment comes from its rule, so the request's own
   `runAt` is ignored when `repeat` is present, and `PATCH`'s `repeat: null` is how
   a series is stopped (`absent` leaves the schedule alone).
 - **A page-created job is always a `message` job.** Text with nothing to run is

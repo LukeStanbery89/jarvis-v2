@@ -29,7 +29,7 @@ import type {
     JobLedger,
 } from "@lukestanbery/jarvis-auth";
 import { MAX_NOTIFICATION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
-import type { JobRepeat } from "@lukestanbery/jarvis-protocol";
+import type { JobGate, JobRepeat } from "@lukestanbery/jarvis-protocol";
 import { authed, requireAuth, requireCsrf } from "../http/middleware";
 import { sessionCookieName } from "../http/cookies";
 import { parseBoolean, parseLimit } from "../http/params";
@@ -141,6 +141,14 @@ export function toJobResponse(job: AppJob): JobResponse {
         // shape (the same object a caller sent), so nothing re-renders it.
         ...(job.repeat !== null && job.repeat !== undefined
             ? { repeat: job.repeat as JobRepeat }
+            : {}),
+        // The check the job was created with (#90 phase 8f), on the same terms
+        // — the stored value is already the wire shape. It is a *response*
+        // field: no create or update request accepts one, because a gate is
+        // chosen in the conversation (a read the model validated) rather than
+        // drawn on a page.
+        ...(job.gate !== null && job.gate !== undefined
+            ? { gate: job.gate as JobGate }
             : {}),
     };
 }

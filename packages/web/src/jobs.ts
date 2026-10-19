@@ -205,6 +205,22 @@ export function runDuration(run: JobRun): string | null {
 }
 
 /**
+ * The row's note that a job is **conditional** (#90 phases 8f, 8g), or `null`.
+ *
+ * "Checks first" rather than the check's own words: what the row owes a reader is
+ * that this job may *not* fire, and a tool name and its arguments in a row read
+ * like a second label. The detail is in the job's runs, where each attempt shows
+ * what the check actually read (`describeRun`). The `title` in `JobRow` names the
+ * tool, for the reader who asks.
+ *
+ * @param job - The job, as the list reports it.
+ * @returns The note, or `null` for a job that always runs.
+ */
+export function gateText(job: Pick<Job, "gate">): string | null {
+    return job.gate === undefined ? null : "checks first";
+}
+
+/**
  * How one attempt reads in a run list: its headline, and what a gate checked
  * (#90 phases 7d, 8f).
  *

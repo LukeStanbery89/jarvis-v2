@@ -844,6 +844,19 @@ export interface components {
                 after: number;
             };
         };
+        /** @description The read-only check a firing must pass before its payload runs (#90 phase 8f): one tool call, compared with the answer the previous firing recorded. The same answer to the same question means nothing changed, so the firing is recorded `skipped` (`JobRun.state`) and announces nothing. */
+        JobGate: {
+            tool: string;
+            /** @description That tool's arguments for the check — for a `homeAssistant` read, the entity to watch. */
+            args?: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description `changed` — run only when the answer differs from the previous firing's. The only comparison defined.
+             * @enum {string}
+             */
+            when: "changed";
+        };
         /** @description One scheduled job, as the API exposes it. */
         Job: {
             id: string;
@@ -880,6 +893,8 @@ export interface components {
             prompt?: string;
             /** @description The rule this job repeats on (#90 phase 8), or absent when it runs once. */
             repeat?: components["schemas"]["JobRepeat"];
+            /** @description The check a firing must pass before its payload runs (#90 phase 8f), or absent for a job that runs unconditionally. Chosen when the job was scheduled and not editable afterwards. */
+            gate?: components["schemas"]["JobGate"];
         };
         /** @description One attempt at a job — the history a detail view reads. */
         JobRun: {

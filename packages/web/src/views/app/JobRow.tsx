@@ -11,14 +11,15 @@
  * frequently declining job legible: a gated firing that found nothing changed
  * announces nothing, so its `skipped` run row is the only trace it leaves — and
  * before this, a job's history was reachable only from a notification it had
- * produced.
+ * produced. A gated job says so in the row ("checks first"), because a job that
+ * may never fire is a different promise from one that will.
  *
  * What the row does **not** decide is the deferral: `onSnooze` is present only
  * where the class has one — a reminder's, since a timer is a countdown and a
  * notification is already filed — so the menu's presence is the caller's
  * statement about the class rather than a second flag to keep in step.
  */
-import { describeRunAt, jobBody, repeatText } from "../../jobs";
+import { describeRunAt, gateText, jobBody, repeatText } from "../../jobs";
 import type { Job } from "../../api";
 import { JobRuns } from "./JobRuns";
 import { SnoozeMenu } from "./SnoozeMenu";
@@ -78,6 +79,16 @@ export function JobRow({
                 {repeatText(job) !== null && (
                     <span className="job-repeat">
                         repeats {repeatText(job)}
+                    </span>
+                )}
+                {/* The job may not fire at all (#90 phase 8f): its gate decides,
+                    and the runs show what the check read. */}
+                {job.gate !== undefined && (
+                    <span
+                        className="job-gate"
+                        title={`only runs when ${job.gate.tool} changes`}
+                    >
+                        {gateText(job)}
                     </span>
                 )}
                 <JobRuns token={token} jobId={job.id} />
