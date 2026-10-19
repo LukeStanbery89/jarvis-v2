@@ -116,7 +116,11 @@ describe("POST /api/attachments", () => {
             .post("/api/attachments")
             .set("Authorization", `Bearer ${token}`)
             .send({ data: "x".repeat(100 * 1024) });
-        expect(res.status).toBe(413);
+        // The body, not just the status: a 401 here (the token from a failed
+        // bootstrap) and a 500 (a different parser) both read the same without it.
+        expect(res.status, `${res.status} ${JSON.stringify(res.body)}`).toBe(
+            413,
+        );
         expect(res.body).toMatchObject({
             code: "ATTACHMENT_TOO_LARGE",
             maxBytes: 10,

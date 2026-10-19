@@ -97,6 +97,17 @@ describe("jobs routes (#90 phase 5)", () => {
         );
     };
 
+    /**
+     * A supertest failure that says what came back, not only the status.
+     *
+     * The status alone cannot distinguish "our auth refused the token" from "a
+     * different app answered", and one flake under load made exactly that
+     * distinction the whole question.
+     */
+    function describeResponse(res: { status: number; body: unknown }): string {
+        return `${res.status} ${JSON.stringify(res.body).slice(0, 400)}`;
+    }
+
     /** Schedules a timer ten minutes out and returns the created job's id. */
     async function createTimer(
         body: Record<string, unknown> = {},
@@ -336,9 +347,14 @@ describe("jobs routes (#90 phase 5)", () => {
                 minutes: 10,
             }),
         ]) {
-            await call
-                .set("authorization", `Bearer ${material.token}`)
-                .expect(404);
+            const res = await call.set(
+                "authorization",
+                `Bearer ${material.token}`,
+            );
+            // The body, not just the status: this assertion has failed once
+            // under load with a 401 nobody could explain, and "which app
+            // answered" is only visible in what it said.
+            expect(res.status, describeResponse(res)).toBe(404);
         }
         // An id that cannot exist is refused before the lookup.
         await request(buildApp())
