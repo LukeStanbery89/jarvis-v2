@@ -26,7 +26,14 @@
  * location share are the app's now and every page is a place they can be live.
  */
 import { useEffect, useRef, useState } from "react";
-import { MapPin, Menu, Mic, Settings as SettingsIcon, X } from "lucide-react";
+import {
+    ExternalLink,
+    MapPin,
+    Menu,
+    Mic,
+    Settings as SettingsIcon,
+    X,
+} from "lucide-react";
 import { AppLink } from "../../AppLink";
 import { useRoute } from "../../hooks/useRoute";
 import type { ChatStatus } from "../../ChatClient";
@@ -39,6 +46,18 @@ const LINKS: { to: AppRoute; label: string }[] = [
     { to: "reminders", label: "Reminders" },
     { to: "notifications", label: "Notifications" },
 ];
+
+/**
+ * The admin portal (#146 phase C).
+ *
+ * Not an `AppRoute`: `/admin` is a different SPA with its own router and its own
+ * (cookie) sign-in, so this has to be a real anchor that unloads the app rather
+ * than an `AppLink` that swaps a view. It is listed for every account: the web
+ * app has never fetched the caller's `role`, and the portal is behind the
+ * server's owner check anyway — a non-owner who follows the link meets the
+ * portal's own refusal, which is a better answer than a menu that lies.
+ */
+const ADMIN_HREF = "/admin";
 
 /** What the connection chip says while the socket is not `connected`. */
 const STATUS_TEXT: Record<Exclude<ChatStatus, "connected">, string> = {
@@ -267,6 +286,18 @@ export function NavBar({
                 {LINKS.map((entry) =>
                     link(entry.to, entry.label, "navbar-link"),
                 )}
+                {/* A hairline, because Admin is a different kind of
+                    destination: everything above it swaps a view, this leaves
+                    the app. */}
+                <span className="navbar-sep" aria-hidden="true" />
+                <a
+                    className="navbar-link navbar-external"
+                    href={ADMIN_HREF}
+                    title="Admin portal — a separate app"
+                >
+                    Admin
+                    <ExternalLink size={11} aria-hidden="true" />
+                </a>
             </nav>
             <span className="navbar-end">
                 <ConnectionChip status={status} />
@@ -320,6 +351,14 @@ export function NavBar({
                         {LINKS.map((entry) =>
                             link(entry.to, entry.label, "navbar-drawer-link"),
                         )}
+                        <a
+                            className="navbar-drawer-link navbar-external"
+                            href={ADMIN_HREF}
+                            title="Admin portal — a separate app"
+                        >
+                            Admin
+                            <ExternalLink size={11} aria-hidden="true" />
+                        </a>
                     </nav>
                 </div>
             )}

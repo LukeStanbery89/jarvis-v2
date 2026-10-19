@@ -251,6 +251,24 @@ textarea::placeholder {
     background: var(--primary-wash);
 }
 
+/* The menu's one outward destination (#146 phase C): the admin portal leaves
+   this SPA, so it is separated from the links that swap views. */
+.navbar-sep {
+    align-self: center;
+    width: 1px;
+    height: 1rem;
+    background: var(--primary-border);
+}
+
+.navbar-external {
+    gap: 0.3rem;
+    color: var(--primary-faint);
+}
+
+.navbar-external:hover {
+    color: var(--primary);
+}
+
 .navbar-badge {
     min-width: 1.05rem;
     padding: 0 0.25rem;

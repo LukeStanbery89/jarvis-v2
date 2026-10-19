@@ -64,7 +64,11 @@ portal is a different app at `/admin` and keeps its own hash router.
 In-app links are `AppLink`s over the store in `src/router.ts`: a click swaps the
 view with `history.pushState` instead of reloading the document, so Back and
 Forward behave and a modified click still opens a real tab (every path replays
-the shell, so that tab works). The `/ws` socket survives the swap because
+the shell, so that tab works). The bar's one exception is **Admin** (`/admin`),
+a real anchor after a hairline: the portal is a different SPA with its own
+router and cookie sign-in, so following it unloads this app. It is shown to
+every account — the web app has never fetched `role`, and the portal's own
+owner check is the honest gate. The `/ws` socket survives the swap because
 `src/AppShell.tsx` owns it rather than the view (#90 phase 6b) — which is why a
 turn that is mid-stream keeps landing in the transcript while the user walks to
 another page.
