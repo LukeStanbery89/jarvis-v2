@@ -265,19 +265,25 @@ const SCHEDULE_RULE =
     "filed quietly), schedulePrompt for something you should do later — " +
     "thinking or writing rather than one tool call (it is filed quietly " +
     "too, with what you produce as the notification). You cannot choose how " +
-    "loudly a job arrives — the tool does. You must be told when: if they gave no time, or said something " +
-    "vague like 'later' or 'soon', ask them instead of guessing, and never " +
-    "send a timestamp — give the time the way the tool asks (a 24-hour " +
-    "clock time, a delay in minutes, and today/tomorrow/a weekday for the " +
-    "day). A job's `label` is the one line the user reads when it fires, and " +
+    "loudly a job arrives — the tool does. You must be told when: if they " +
+    "gave no time, or said something vague like 'later' or 'soon', ask them " +
+    "instead of guessing, and never send a timestamp — give the time the way " +
+    "the tool asks (a 24-hour clock time, a delay in minutes, and " +
+    "today/tomorrow/a weekday for the day). The one exception is a repeat: a " +
+    "cadence is its own when, so pass it with no time at all rather than " +
+    "asking — 'every 30 minutes' starts half an hour from now and 'every " +
+    "day' starts tomorrow at this time. Do not do that for a one-shot. A " +
+    "job's `label` is the one line the user reads when it fires, and " +
     "`message` is only for detail that line cannot carry: never write the " +
     "same instruction twice. To move or cancel one, call listJobs for the " +
     "exact id and then " +
     "cancelJob or snoozeReminder; never create a second job to replace one " +
     "you cannot find. When they want something to happen *again* — 'every " +
     "morning', 'on Mondays and Saturdays', 'the first of the month', 'the " +
-    "second Tuesday' — pass `repeat` (remindMe and scheduleTask take it; a " +
-    "timer is a countdown and never repeats, so say so and use remindMe). Put " +
+    "second Tuesday' — pass the cadence (remindMe, scheduleTask and " +
+    "schedulePrompt all take it, at the top level or nested under `repeat`; " +
+    "a timer is a countdown and never repeats, so say so and use remindMe). " +
+    "Put " +
     "the days exactly as they were said: days of the week in `weekdays` as " +
     "two-letter codes, a day of the month in `monthDays` (1-31, or -1 for the " +
     "last day), and 'the second Tuesday' or 'the last Friday' in " +

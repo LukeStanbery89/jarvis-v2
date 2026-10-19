@@ -158,6 +158,79 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
     }
 
     /**
+     * The cadence a call stated, in whichever spelling it used (#90 8d, 8g+).
+     *
+     * `repeat` wins when both are present: it is the documented, stored shape,
+     * and a call that sent both meant the one it wrapped. Otherwise the flat
+     * fields are what the model said, and they are normalized into the same
+     * object so the rest of this file — and `scheduler/create.ts`, which is the
+     * only validator — sees one shape either way.
+     *
+     * Returns `null` for a call with no cadence at all, which is a one-shot.
+     */
+    function statedCadence(fields: {
+        repeat?: unknown;
+        every?: string;
+        interval?: number;
+        weekdays?: string[];
+        monthDays?: number[];
+        weekOrdinals?: string[];
+        ends?: unknown;
+    }): Record<string, unknown> | null {
+        if (fields.repeat !== undefined && fields.repeat !== null) {
+            return fields.repeat as Record<string, unknown>;
+        }
+        if (fields.every === undefined) {
+            return null;
+        }
+        return {
+            every: fields.every,
+            ...(fields.interval !== undefined
+                ? { interval: fields.interval }
+                : {}),
+            ...(fields.weekdays !== undefined
+                ? { weekdays: fields.weekdays }
+                : {}),
+            ...(fields.monthDays !== undefined
+                ? { monthDays: fields.monthDays }
+                : {}),
+            ...(fields.weekOrdinals !== undefined
+                ? { weekOrdinals: fields.weekOrdinals }
+                : {}),
+            ...(fields.ends !== undefined ? { ends: fields.ends } : {}),
+        };
+    }
+
+    /**
+     * The instant a series should start, from the words or from the cadence.
+     *
+     * `resolveWhen` owns the words. When the model named none **and** the user
+     * asked for a repeat, the cadence is the when: "every 30 minutes" means the
+     * next one is half an hour away, "every day" means from now, daily — the
+     * rule's own anchor *is* a wall clock, so anchoring at the moment of the ask
+     * and letting `nextOccurrence` pick the first one is exactly that reading,
+     * and it states the result back. A one-shot with no time is still refused:
+     * there is nothing to derive it from.
+     *
+     * Correctable by construction: the reply says when the first firing lands, so
+     * a user who meant "every day at 8" hears the wrong time immediately and can
+     * say so.
+     */
+    function cadenceFirst(
+        when: ReturnType<typeof resolveWhen>,
+        cadence: Record<string, unknown> | null,
+        at: Date,
+    ): { ok: true; at: Date } | { ok: false; reason: string } {
+        if (when.ok) {
+            return { ok: true, at: when.at };
+        }
+        if (cadence === null) {
+            return { ok: false, reason: when.reason };
+        }
+        return { ok: true, at };
+    }
+
+    /**
      * The gate a call asked for, or why it cannot be used (#90 phase 8g).
      *
      * Three questions, all asked while the user is still in the conversation so
@@ -219,24 +292,46 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         );
 
     /**
-     * The rule, as the model states it (#90 phase 8d).
+     * The cadence's fields, as the model states them (#90 phase 8d).
      *
      * There is no `start` here on purpose: the model names *when* in words
      * (`at`/`onDate`/`inMinutes`), the resolver turns that into the first
      * occurrence, and that instant becomes the rule's anchor. A model that could
      * pass a timestamp could pass a wrong one — the same discipline that keeps
-     * `runAt` out of its hands.
+     * `runAt` out of its hands. When it names no time at all, the cadence
+     * supplies one (see `cadenceFirst`).
      *
      * `interval` is optional because "every week" is how people say it: omitted
      * means one. `ends.after` is a *count* rather than an end date for the same
      * reason — a count is arithmetic the model can do, a date is a timestamp it
      * cannot. An end date belongs to the page, where a picker produces one.
+     *
+     * Written as a factory because the same fields are offered **twice** — the
+     * nested spelling is what gets stored and what a page sends, and the flat one
+     * is what the first live run of a repeating reminder showed a small local
+     * model actually emit:
+     *
+     * ```
+     * { "label": "Drink water", "every": "minute", "interval": 30 }   // flat
+     * { "label": "Drink water", "repeat": { "every": "minute", … } }  // nested
+     * ```
+     *
+     * The flat call used to be *silently dropped* — `z.object` strips what it was
+     * not told about — so "every half hour" arrived as "no schedule", surfaced as
+     * "no time was given", and left the user with nothing to correct. A door that
+     * understands what the model said beats a refusal it cannot act on, and both
+     * spellings mean one thing here because they are one set of fields.
+     *
+     * `nested` distinguishes them: nested, `every` is what makes the object a
+     * rule (so it is required); flat, its absence is simply "not repeating" (the
+     * same fields are spread into a schema whose neighbours are all optional).
      */
-    const repeatSchema = z
-        .object({
-            every: z
-                .enum(["minute", "hour", "day", "week", "month"])
-                .describe("The unit the interval counts in."),
+    function cadenceFields(nested: boolean) {
+        const unit = z
+            .enum(["minute", "hour", "day", "week", "month"])
+            .describe("The unit the interval counts in.");
+        return {
+            every: nested ? unit : unit.optional(),
             interval: z
                 .number()
                 .int()
@@ -280,12 +375,19 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     "When the series stops, in firings: { after: 4 } for " +
                         "'four times'. Omit to repeat until cancelled.",
                 ),
-        })
+        };
+    }
+
+    /** The nested spelling: the stored, wire and page shape. */
+    const repeatSchema = z
+        .object(cadenceFields(true))
         .describe(
-            "How this repeats. Omit for a job that runs once. A timer cannot " +
-                "repeat — use remindMe for something that comes back. If the " +
-                "user's phrasing could mean two different schedules, ASK which " +
-                "they mean instead of choosing one.",
+            "How this repeats, nested. Omit for a job that runs once. You may " +
+                "give these same fields at the top level instead if that is " +
+                "easier — both are read the same way. A timer cannot repeat — " +
+                "use remindMe for something that comes back. If the user's " +
+                "phrasing could mean two different schedules, ASK which they " +
+                "mean instead of choosing one.",
         );
 
     /**
@@ -407,7 +509,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
 
     const remindMeTool = tool(
         async (
-            { label, message, at, onDate, inMinutes, repeat },
+            { label, message, at, onDate, inMinutes, ...cadence },
             runtime: ToolRuntime,
         ) => {
             const access = guard(runtime, "remindMe");
@@ -415,9 +517,14 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 return access.text;
             }
             const atTime = now();
-            const when = resolveWhen({ at, onDate, inMinutes }, atTime);
-            if (!when.ok) {
-                return `The reminder was not set: ${when.reason}`;
+            const stated = statedCadence(cadence);
+            const first = cadenceFirst(
+                resolveWhen({ at, onDate, inMinutes }, atTime),
+                stated,
+                atTime,
+            );
+            if (!first.ok) {
+                return `The reminder was not set: ${first.reason}`;
             }
             return scheduledText(
                 "Reminder scheduled",
@@ -428,9 +535,9 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                         kind: "message",
                         message: message ?? label,
                     },
-                    runAt: when.at,
-                    ...(repeat !== undefined
-                        ? { repeat: anchoredRule(repeat, when.at) }
+                    runAt: first.at,
+                    ...(stated !== null
+                        ? { repeat: anchoredRule(stated, first.at) }
                         : {}),
                     at: atTime,
                 }),
@@ -448,7 +555,11 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 "`onDate` for a day ('tomorrow', a weekday, or a date like " +
                 "2026-10-20), or `inMinutes` for a delay. If they did not say " +
                 "when, or said 'later' or 'soon', ask — never guess a time. " +
-                "`label` is the headline ('Call Mum'); `message` is optional " +
+                "Unless they asked for a repeat: a cadence is its own when " +
+                "('every 30 minutes' starts half an hour from now, 'every " +
+                "day' starts tomorrow at this time), so pass the cadence and " +
+                "no time at all rather than asking. `label` is the headline " +
+                "('Call Mum'); `message` is optional " +
                 "detail. The result says when it will run; if it mentions " +
                 "quiet hours, tell them when it will arrive instead of " +
                 "promising it at the time they asked for.",
@@ -476,6 +587,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                         "A delay in minutes instead of a clock time, e.g. 20 " +
                             "for 'in twenty minutes'.",
                     ),
+                ...cadenceFields(false),
                 repeat: repeatSchema.optional(),
             }),
         },
@@ -490,8 +602,8 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 at,
                 onDate,
                 inMinutes,
-                repeat,
                 gate,
+                ...cadence
             },
             runtime: ToolRuntime,
         ) => {
@@ -504,9 +616,14 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             if (!resolved.ok) {
                 return `The task was not scheduled: ${resolved.reason}.`;
             }
-            const when = resolveWhen({ at, onDate, inMinutes }, atTime);
-            if (!when.ok) {
-                return `The task was not scheduled: ${when.reason}`;
+            const stated = statedCadence(cadence);
+            const first = cadenceFirst(
+                resolveWhen({ at, onDate, inMinutes }, atTime),
+                stated,
+                atTime,
+            );
+            if (!first.ok) {
+                return `The task was not scheduled: ${first.reason}`;
             }
             const argumentProblem = argumentsProblem(resolved.tool, args);
             if (argumentProblem !== null) {
@@ -526,9 +643,9 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                         toolName: resolved.tool.name,
                         toolArgs: args ?? {},
                     },
-                    runAt: when.at,
-                    ...(repeat !== undefined
-                        ? { repeat: anchoredRule(repeat, when.at) }
+                    runAt: first.at,
+                    ...(stated !== null
+                        ? { repeat: anchoredRule(stated, first.at) }
                         : {}),
                     ...(gated.gate !== null ? { gate: gated.gate } : {}),
                     at: atTime,
@@ -582,6 +699,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     .number()
                     .optional()
                     .describe("A delay in minutes instead of a clock time."),
+                ...cadenceFields(false),
                 repeat: repeatSchema.optional(),
                 gate: gateSchema,
             }),
@@ -590,7 +708,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
 
     const schedulePromptTool = tool(
         async (
-            { label, prompt, at, onDate, inMinutes, repeat, gate },
+            { label, prompt, at, onDate, inMinutes, gate, ...cadence },
             runtime: ToolRuntime,
         ) => {
             const access = guard(runtime, "schedulePrompt");
@@ -598,9 +716,14 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 return access.text;
             }
             const atTime = now();
-            const when = resolveWhen({ at, onDate, inMinutes }, atTime);
-            if (!when.ok) {
-                return `The job was not scheduled: ${when.reason}`;
+            const stated = statedCadence(cadence);
+            const first = cadenceFirst(
+                resolveWhen({ at, onDate, inMinutes }, atTime),
+                stated,
+                atTime,
+            );
+            if (!first.ok) {
+                return `The job was not scheduled: ${first.reason}`;
             }
             const gated = gateFor(gate);
             if (!gated.ok) {
@@ -612,9 +735,9 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     label,
                     class: "notification",
                     payload: { kind: "prompt", prompt },
-                    runAt: when.at,
-                    ...(repeat !== undefined
-                        ? { repeat: anchoredRule(repeat, when.at) }
+                    runAt: first.at,
+                    ...(stated !== null
+                        ? { repeat: anchoredRule(stated, first.at) }
                         : {}),
                     ...(gated.gate !== null ? { gate: gated.gate } : {}),
                     at: atTime,
@@ -666,6 +789,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     .number()
                     .optional()
                     .describe("A delay in minutes instead of a clock time."),
+                ...cadenceFields(false),
                 repeat: repeatSchema.optional(),
                 gate: gateSchema,
             }),

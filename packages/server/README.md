@@ -942,6 +942,26 @@ whole point. The reply says both halves ("repeating every 5 minutes, but only
 when homeAssistant changes"), so the user can correct a condition they did not
 ask for in the same turn.
 
+**The cadence arrives in whichever spelling the model reached for** (fixed after
+the first live run of a repeating reminder). The nested object — `repeat`, the
+shape a page sends and the row stores — is one way to say it; the same fields at
+the top level are the other, and the live run produced exactly that
+(`{ label: "Drink water", every: "minute", interval: 30 }`). Because `z.object`
+_strips_ what it was not told about, that call lost its schedule silently and came
+back as "no time was given" — a refusal the user could only answer by repeating
+themselves. Both spellings are read into one object (`statedCadence`), the nested
+one winning when a call states both, and the fields are still defined once
+(`cadenceFields`).
+
+**A cadence is its own when.** When the model names no time and the user asked
+for a repeat, the rule is anchored at the moment of the ask and `nextOccurrence`
+picks the first firing: "every 30 minutes" starts half an hour from now, "every
+day" starts tomorrow at this time. The result states it back ("… today at 7:35
+PM, in 30 minutes"), so a clock time they meant differently is corrected in the
+same turn. A **one-shot** with no time is still refused — there is nothing to
+derive one from, and that is the "later"/"soon" case the prompt tells the model to
+ask about rather than guess.
+
 **Times are words, not timestamps.** The model passes what the user said — a
 24-hour clock time, `today`/`tomorrow`/a weekday/a date, or a delay — and
 `scheduler/time.ts` turns that into one instant in the server's local zone: a

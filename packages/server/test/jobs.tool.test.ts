@@ -569,6 +569,120 @@ describe("jobs tools: schedulePrompt and the gate (#90 phase 8g)", () => {
     });
 });
 
+describe("jobs tools: the cadence, however it arrives (#90 phase 8d)", () => {
+    /** The front door, for the one test that pairs a cadence with a gate. */
+    const doorGate = {
+        tool: "homeAssistant",
+        args: { action: "get", entity_id: "binary_sensor.front_door" },
+        when: "changed",
+    };
+
+    it("understands a cadence stated flat, with no start time", async () => {
+        // The first live run of a repeating reminder, verbatim: the model put
+        // `every`/`interval` at the top level and named no time. The cadence was
+        // dropped on the floor — `z.object` strips what it was not told about —
+        // and the refusal asked the user for a time they had already implied.
+        const h = harness();
+
+        const text = await h.call("remindMe", {
+            label: "Drink water",
+            message: "Take a sip of water",
+            every: "minute",
+            interval: 30,
+        });
+
+        const [job] = h.jobs();
+        expect(job).toMatchObject({
+            class: "reminder",
+            kind: "message",
+            label: "Drink water",
+        });
+        expect(job?.repeat).toMatchObject({ every: "minute", interval: 30 });
+        // A cadence is its own when: "every 30 minutes" means the first one is
+        // half an hour away.
+        expect(job?.runAt).toBe(
+            new Date(NOW.getTime() + 30 * 60_000).toISOString(),
+        );
+        expect(text).toContain("repeating every 30 minutes");
+        expect(text).toContain("in 30 minutes");
+    });
+
+    it("reads the nested spelling the same way, and with no start time", async () => {
+        const h = harness();
+
+        await h.call("remindMe", {
+            label: "Stretch",
+            repeat: { every: "hour", interval: 2 },
+        });
+
+        const [job] = h.jobs();
+        expect(job?.repeat).toMatchObject({ every: "hour", interval: 2 });
+        expect(job?.runAt).toBe(
+            new Date(NOW.getTime() + 2 * 3_600_000).toISOString(),
+        );
+    });
+
+    it("prefers the nested cadence when a call states both", async () => {
+        // Two spellings, one meaning — but only one can win, and it is the
+        // documented one rather than whichever the parser happens to see last.
+        const h = harness();
+
+        await h.call("remindMe", {
+            label: "Both",
+            every: "minute",
+            interval: 5,
+            repeat: { every: "day", interval: 1 },
+        });
+
+        expect(h.jobs()[0]?.repeat).toMatchObject({
+            every: "day",
+            interval: 1,
+        });
+    });
+
+    it("still asks for a time when no cadence supplies one", async () => {
+        // The exception is exactly the cadence: a one-shot with no time has
+        // nothing to derive a moment from, and guessing one is what "later"
+        // must never turn into.
+        const h = harness();
+
+        const text = await h.call("remindMe", { label: "Call Mum" });
+
+        expect(text).toContain("no time was given");
+        expect(h.jobs()).toEqual([]);
+    });
+
+    it("carries a flat cadence into the gate's floor", async () => {
+        // The floor is fifteen minutes ungated and one minute gated, so this
+        // proves the flat cadence reached the policy *and* that the gate did:
+        // the same call without the gate is refused.
+        const h = harness();
+
+        const text = await h.call("schedulePrompt", {
+            label: "Front door",
+            prompt: "Say whether the front door is open.",
+            every: "minute",
+            interval: 5,
+            gate: doorGate,
+        });
+
+        expect(text).toContain("repeating every 5 minutes");
+        expect(text).toContain("but only when homeAssistant changes");
+        expect(h.jobs()[0]?.repeat).toMatchObject({
+            every: "minute",
+            interval: 5,
+        });
+
+        const ungated = await h.call("schedulePrompt", {
+            label: "Chatty",
+            prompt: "Say something.",
+            every: "minute",
+            interval: 5,
+        });
+        expect(ungated).toMatch(/fastest a job may repeat is every 15 minutes/);
+    });
+});
+
 describe("jobs tools: the bounds", () => {
     it("refuses past the scheduling horizon", async () => {
         const h = harness({ maxHorizonMs: 2 * 86_400_000 });
