@@ -24,10 +24,13 @@
  * - **Whether a tool may be scheduled** is `scheduler/tools.ts`: creation goes
  *   through the same allowlist the runner enforces, plus that tool's own zod
  *   schema, so an impossible task is refused *now*, while the user is still
- *   here, instead of failing silently at 7am. A **gate** (#90 phase 8g) is held
- *   to the same standard: its tool must be schedulable *and* declare the action
- *   as a read, it must be installed right now, and its arguments must satisfy
- *   that tool's schema — three refusals while the user is still in the room.
+ *   here, instead of failing silently at 7am. A **gate** (#90 phases 8g, 9d) is
+ *   held to the same standard: its tool must be schedulable *and* declare the
+ *   action as a read, it must be installed right now, and its arguments must
+ *   satisfy that tool's schema — three refusals while the user is still in the
+ *   room. All three creating tools take one, because every one of them can be
+ *   asked for conditionally: a reminder ("only if the oven is still on"), a task
+ *   ("only if the door opened") and a prompt ("only if it changed").
  * - **What the user is told** is the announcement the runner makes, with the
  *   job's class. This file only relays what the creator predicts will happen to
  *   it (quiet hours as they stand); it never pre-defers, because the runner owns
@@ -517,7 +520,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
 
     const remindMeTool = tool(
         async (
-            { label, message, at, onDate, inMinutes, ...cadence },
+            { label, message, at, onDate, inMinutes, gate, ...cadence },
             runtime: ToolRuntime,
         ) => {
             const access = guard(runtime, "remindMe");
@@ -533,6 +536,10 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             );
             if (!first.ok) {
                 return `The reminder was not set: ${first.reason}`;
+            }
+            const gated = gateFor(gate);
+            if (!gated.ok) {
+                return `The reminder was not set: ${gated.reason}`;
             }
             return scheduledText(
                 {
@@ -550,6 +557,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     ...(stated !== null
                         ? { repeat: anchoredRule(stated, first.at) }
                         : {}),
+                    ...(gated.gate !== null ? { gate: gated.gate } : {}),
                     at: atTime,
                 }),
                 atTime,
@@ -571,7 +579,11 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 "day' starts tomorrow at this time), so pass the cadence and " +
                 "no time at all rather than asking. `label` is the headline " +
                 "('Call Mum'); `message` is optional " +
-                "detail. The result says when it will run; if it mentions " +
+                "detail. A `gate` makes it conditional rather than merely " +
+                "repeated — 'remind me every ten minutes, but only if the " +
+                "oven is still on' — and a firing whose check finds nothing " +
+                "changed says nothing at all. The result says when it will " +
+                "run; if it mentions " +
                 "quiet hours, tell them when it will arrive instead of " +
                 "promising it at the time they asked for.",
             schema: z.object({
@@ -600,6 +612,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     ),
                 ...cadenceFields(false),
                 repeat: repeatSchema.optional(),
+                gate: gateSchema,
             }),
         },
     );

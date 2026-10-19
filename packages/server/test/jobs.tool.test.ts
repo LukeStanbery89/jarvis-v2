@@ -492,6 +492,57 @@ describe("jobs tools: schedulePrompt and the gate (#90 phase 8g)", () => {
         );
     });
 
+    it("takes a gate on a reminder, because a reminder can be conditional", async () => {
+        // #90 phase 9d: "remind me every ten minutes, but only if the oven is
+        // still on" is the same request shape as a gated task — the check reads,
+        // the firing declines, and nothing is announced until it matters.
+        const h = harness();
+
+        const text = await h.call("remindMe", {
+            label: "Oven",
+            inMinutes: 10,
+            repeat: { every: "minute", interval: 10 },
+            gate: doorGate,
+        });
+
+        expect(text).toContain("repeating every 10 minutes");
+        expect(text).toContain(", but only when homeAssistant changes");
+        const [job] = h.jobs();
+        expect(job).toMatchObject({ class: "reminder", kind: "message" });
+        expect(job?.gate).toEqual(doorGate);
+    });
+
+    it("refuses a gate on a reminder on the same terms as anywhere else", async () => {
+        // One `gateFor` for all three tools: the policy cannot differ by which
+        // door asked.
+        const h = harness();
+
+        const writes = await h.call("remindMe", {
+            label: "Oven",
+            inMinutes: 10,
+            gate: {
+                tool: "homeAssistant",
+                args: { action: "turn_off", entity_id: "switch.oven" },
+                when: "changed",
+            },
+        });
+        expect(writes).toContain("The reminder was not set:");
+        expect(writes).toContain("may only read");
+
+        const unreadable = await h.call("remindMe", {
+            label: "Oven",
+            inMinutes: 10,
+            gate: {
+                tool: "getCurrentTime",
+                args: { question: "x" },
+                when: "changed",
+            },
+        });
+        expect(unreadable).toContain("cannot check a job");
+
+        expect(h.jobs()).toEqual([]);
+    });
+
     it("refuses a gate whose tool acts", async () => {
         // A gate that turned the light on to see whether it changed would be
         // neither deterministic nor free — the refusal has to reach the model

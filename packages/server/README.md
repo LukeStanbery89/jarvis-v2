@@ -929,7 +929,7 @@ loudly the user is interrupted.
 | Tool             | Class                                  | Payload        | Time                                     | `gate`   |
 | ---------------- | -------------------------------------- | -------------- | ---------------------------------------- | -------- |
 | `setTimer`       | `timer` — pierces quiet hours          | message        | `minutes` or `seconds` (1 s – 24 h)      | —        |
-| `remindMe`       | `reminder` — defers out of quiet hours | message        | `at` + optional `onDate`, or `inMinutes` | —        |
+| `remindMe`       | `reminder` — defers out of quiet hours | message        | `at` + optional `onDate`, or `inMinutes` | optional |
 | `scheduleTask`   | `notification` — waits                 | one tool call  | same as `remindMe`                       | optional |
 | `schedulePrompt` | `notification` — waits                 | one prompt     | same as `remindMe`                       | optional |
 | `snoozeReminder` | keeps the reminder's class             | same as before | `id` + `minutes`                         | —        |
@@ -945,13 +945,17 @@ nobody is there to answer a question when it fires. The reply becomes the job's
 announcement, filed as the class it is: a `notification`.
 
 **A gate is what makes a frequent schedule affordable** (#90 phases 8f–8g).
-`scheduleTask` and `schedulePrompt` take an optional one, and the model states it
+Every creating tool — `remindMe`, `scheduleTask` and `schedulePrompt` — takes
+an optional one, and the model states it
 the way it states everything else — a tool, that tool's arguments, and
 `when: "changed"` — never a condition language. Three refusals arrive while the
 user is still in the conversation: the tool must be one that declares a read
 action, it must be installed on this server, and its arguments must satisfy its
-own schema (the same check a scheduled target's arguments get). What the gate
-buys is the **cadence floor**: a job that runs a tool or a prompt may not repeat
+own schema (the same check a scheduled target's arguments get). A reminder takes
+one for the same reason the other two do — "remind me every ten minutes, but only
+if the oven is still on" is a conditional announcement, and a `message` job's
+floor is a minute precisely because a firing that declines says nothing. What the
+gate buys a _spending_ job is the **cadence floor**: a job that runs a tool or a prompt may not repeat
 faster than every 15 minutes unless it carries a gate, because every firing is a
 device write or a model call — a gated one may go to a minute, since a declined
 firing does nothing. The reply says both halves ("repeating every 5 minutes, but
