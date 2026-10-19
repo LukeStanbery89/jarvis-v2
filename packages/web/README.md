@@ -103,6 +103,61 @@ the glass off sets `data-glass="off"` on `.app`, which flattens the composed
 `--glass-filter` to `none` and darkens the tint. The layout is identical either
 way — the switch is about the surface, not the shape.
 
+## Responsive layout (#146 phase D)
+
+The shell stops growing at 96 rem (`--shell-max`) and centres, so on a wide
+monitor the particle field becomes the margin rather than stretching behind an
+ever-longer row of content. Inside it the list pages (`/timers`, `/reminders`,
+`/notifications`) hold a 64 rem measure — and subtract a 0.75 rem gutter from
+their own width, so the pane floats off the edge rather than touching it at
+exactly the widths a phone sits at — the dashboard holds 48 rem, and the
+transcript centres its turns in a 64 rem reading column **by padding** — a
+narrower scroller would have floated the scrollbar in the middle of the pane.
+
+Under 48 rem the chat is one column and the thread list becomes a drawer over
+the conversation: a scrim closes it, Escape closes it, and a pick closes it on
+the way to the thread. The closed drawer is `visibility: hidden`, not merely
+translated off-screen, so it stays out of the tab order; reduced motion drops
+the slide. The state lives in `AppShell`, not `Chat`, because the control is in
+the top bar — the chat route's first button, where the wordmark sits on wide
+screens — while the drawer is the view's; the shell also closes it on a
+navigation. At that width the wordmark is pinned to the bar's true centre
+(the flanks differ in width, so flex-centring would sit it off-centre), the
+gear hands its place to a **Settings** item in the hamburger, and Admin sits
+below a hairline under it.
+
+The sign-in gate is the same box: `Login` renders it as `.app.gate` and reads
+this browser's appearance itself, so the field and the glass reach the first
+screen and a switch turned off stays off before anyone signs in. The card is the
+glass pane, centred by its own auto margins — a card taller than a short window
+scrolls instead of losing its title to a centred flex item's overflow.
+
+The same breakpoint raises every phone-reachable control to at least 44 px in
+its short dimension — a floor via `min-height` on labelled buttons, 2.75 rem
+squares on icon buttons — and starts the corner toast stack below the taller
+bar. Job and notification rows also stack at that width: what the row says on
+one line, its controls on the next. The actions never shrink
+(`flex-shrink: 0`), so until they were given their own row the _text_ was what
+gave way, and a four-word reminder title wrapped to one word per line. A job's
+moment now rides opposite its class on the first line (`job-when` moved out of
+`job-actions`), which leaves that second row to be nothing but buttons — and the
+three are given an equal `min-width` floor with their labels centred, so "Edit"
+is not half the width of "Snooze" — or pinned to the left edge of a wider
+button.
+
+**A list page is a stack of panes.** `/timers`, `/reminders` and
+`/notifications` no longer put the whole list on one sheet of glass:
+`.page-rows` drops the page-level pane, and the head (title, count, New) and
+every row below it — jobs, settled rows and notification records alike, plus
+their empty states — become panes of their own, with more air between them. The
+page is the layout, not the window. The notification list's bordered scroll box
+became the gap between its panes, and a record's state moved to its header line
+beside the eyebrow, where a job's moment sits.
+
+That
+block sits last in `styles.css` on purpose: it overrides sizes declared above,
+and a media query carries no specificity of its own.
+
 ## Sign-in and credentials
 
 The client is signed-in-only: the login screen exchanges username +

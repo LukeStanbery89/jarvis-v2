@@ -10,6 +10,8 @@
 import { useState } from "react";
 import { LoaderCircle, LogIn } from "lucide-react";
 import { api, type LoginResult } from "../api";
+import { useAppearance } from "../hooks/useAppearance";
+import { ParticleCanvas } from "../particles/ParticleCanvas";
 
 /** Props for {@link Login}. */
 export interface LoginProps {
@@ -43,45 +45,56 @@ export function Login({ onSignedIn }: LoginProps) {
         }
     }
 
+    // The gate is a view of the same app, not a bare form (#146 phase D): the
+    // field and the glass reach it, and the user's own switches apply — a
+    // background they turned off must stay off before they have signed in.
+    const appearance = useAppearance();
+
     return (
-        <main className="login">
-            <h1>J.A.R.V.I.S. Web</h1>
-            <form onSubmit={submit}>
-                <label>
-                    Username
-                    <input
-                        name="username"
-                        value={username}
-                        autoComplete="username"
-                        required
-                        onChange={(e) => setUsername(e.target.value)}
-                    />
-                </label>
-                <label>
-                    Password
-                    <input
-                        type="password"
-                        name="password"
-                        value={password}
-                        autoComplete="current-password"
-                        required
-                        onChange={(e) => setPassword(e.target.value)}
-                    />
-                </label>
-                {error && <p className="error">{error}</p>}
-                <button
-                    type="submit"
-                    className="login-submit"
-                    aria-label="Sign in"
-                    disabled={submitting}
-                >
-                    {submitting ? (
-                        <LoaderCircle size={18} className="spin" />
-                    ) : (
-                        <LogIn size={18} />
-                    )}
-                </button>
-            </form>
-        </main>
+        <div
+            className="app gate"
+            data-glass={appearance.appearance.glass ? "on" : "off"}
+        >
+            {appearance.appearance.particles && <ParticleCanvas />}
+            <main className="login">
+                <h1>J.A.R.V.I.S. Web</h1>
+                <form onSubmit={submit}>
+                    <label>
+                        Username
+                        <input
+                            name="username"
+                            value={username}
+                            autoComplete="username"
+                            required
+                            onChange={(e) => setUsername(e.target.value)}
+                        />
+                    </label>
+                    <label>
+                        Password
+                        <input
+                            type="password"
+                            name="password"
+                            value={password}
+                            autoComplete="current-password"
+                            required
+                            onChange={(e) => setPassword(e.target.value)}
+                        />
+                    </label>
+                    {error && <p className="error">{error}</p>}
+                    <button
+                        type="submit"
+                        className="login-submit"
+                        aria-label="Sign in"
+                        disabled={submitting}
+                    >
+                        {submitting ? (
+                            <LoaderCircle size={18} className="spin" />
+                        ) : (
+                            <LogIn size={18} />
+                        )}
+                    </button>
+                </form>
+            </main>
+        </div>
     );
 }

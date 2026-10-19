@@ -94,10 +94,31 @@ textarea::placeholder {
 
 /* --- Sign-in gate --- */
 
+/* The sign-in gate (#146 phase D): the shell's own box — its width, its height,
+   and the `data-glass` hook — with the bar's row replaced by one centred card,
+   so the field and the glass reach the first screen as well. */
+.app.gate {
+    display: flex;
+    padding: 1.25rem;
+    /* A short window scrolls the card instead of clipping it. */
+    overflow-y: auto;
+}
+
 .login {
-    max-width: 22rem;
-    margin: 0 auto;
-    padding: 4rem 1.25rem;
+    /* Auto margins, not the parent's `align-items: center`: a flex item centred
+       that way has its top clipped once it outgrows the box, and the top is the
+       title. An auto margin centres while there is room and scrolls when there
+       is not. */
+    width: min(22rem, 100%);
+    margin: auto;
+    padding: 2rem 1.5rem;
+    background: var(--glass-strong);
+    color: var(--text);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: var(--glass-filter-strong);
+    -webkit-backdrop-filter: var(--glass-filter-strong);
 }
 
 .login h1 {
@@ -1056,6 +1077,10 @@ textarea::placeholder {
 .job-actions button {
     display: inline-flex;
     align-items: center;
+    /* Centred, because these buttons now share one width (#146 phase D): a
+       "Snooze" pinned left in an "Edit"-wide button reads as a mistake. The
+       snooze presets override this to `flex-start` — they are menu items. */
+    justify-content: center;
     gap: 0.25rem;
     padding: 0.2rem 0.5rem;
     border: 1px solid var(--primary-border);
@@ -1163,6 +1188,17 @@ textarea::placeholder {
     min-width: 0;
 }
 
+/* What the row is and when it happens share its top line (#146 phase D). The
+   moment used to sit with the actions, which left that row holding a sentence
+   and three buttons, and on a phone left no width for either. */
+.job-head,
+.notification-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
 .job-eyebrow {
     display: block;
     margin-bottom: 0.05rem;
@@ -1179,10 +1215,66 @@ textarea::placeholder {
     flex-shrink: 0;
 }
 
+/* Three actions in one row, equal by floor rather than by content: "Edit" is
+   half the width of "Snooze", and three different-sized buttons read as three
+   different priorities. */
+.job-actions > button,
+.job-actions .snooze-toggle {
+    min-width: 5.5rem;
+}
+
+/* The same floor for a notification's actions, a little wider because "Mark
+   read" is the longest label in either list. */
+.notification-actions button {
+    min-width: 6rem;
+}
+
 .job-when {
     color: var(--primary-dim);
     font-size: 0.8rem;
     white-space: nowrap;
+}
+
+/* A list row is two halves — what it says, and what you can do to it (#146
+   phase D). The actions never shrink (`flex-shrink: 0`), so on a phone the
+   *text* was what gave way: a four-word reminder title wrapped to one word per
+   line while three buttons kept their width. Below the breakpoint each row
+   becomes two rows — the detail, then the controls — and the controls may wrap
+   among themselves rather than overflow. */
+@media (max-width: 48rem) {
+    .job-item,
+    .notification-item,
+    .notification-banner {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+    .job-text,
+    .notification-text,
+    .job-actions,
+    .notification-actions {
+        flex: 1 0 100%;
+    }
+
+    .job-actions,
+    .notification-actions {
+        flex-wrap: wrap;
+    }
+
+    /* The controls split the row evenly instead of hugging its start. The
+       snooze is a wrapper (its presets live in a popover), so the wrapper takes
+       the share and the toggle fills it. */
+    .job-actions > button,
+    .job-actions .snooze,
+    .notification-actions > button,
+    .notification-actions .snooze {
+        flex: 1;
+    }
+
+    .job-actions .snooze-toggle,
+    .notification-actions .snooze-toggle {
+        width: 100%;
+    }
 }
 
 .job-empty {
@@ -1713,6 +1805,11 @@ textarea::placeholder {
    Stop, so it is the only button. */
 .timer-ring {
     width: min(26rem, calc(100vw - 2rem));
+    /* A ring is the one dialog that must fit a *landscape* phone: at 390px of
+       height the content and the Stop button overflow the viewport, and the
+       button is the only way out. Scrolling keeps Stop reachable. */
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
     padding: 1.6rem 1.4rem 1.35rem;
     background: var(--glass-strong);
     color: var(--text);
@@ -1809,7 +1906,11 @@ textarea::placeholder {
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    width: 100%;
+    /* A gutter from the viewport edge. `width: 100%` with a max-width leaves
+       the auto side margins at zero until the measure is reached, so the pane
+       was flush with the screen at exactly the widths a phone sits at; the
+       gutter is taken out of the width instead. */
+    width: calc(100% - 1.5rem);
     max-width: var(--page-measure);
     /* Breathing room from the bar above and the viewport below: the pane is a
        window *in* the app, not a sheet glued to the chrome. */
@@ -1824,6 +1925,94 @@ textarea::placeholder {
     box-shadow: var(--pane-shadow);
     backdrop-filter: var(--glass-filter);
     -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* A list page whose rows are the panes (#146 phase D). The page used to be one
+   sheet of glass holding the head, the rows and the history; now the head keeps
+   a pane of its own and every job below it is its own, so the list reads as a
+   stack of windows on the field rather than one long sheet with items drawn on
+   it. */
+.page-rows {
+    padding: 0;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.page-rows .page-head {
+    padding: 1.25rem 1.25rem 1rem;
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
+}
+
+.page-rows .job-item {
+    padding: 0.75rem;
+    background: var(--glass);
+    /* Only the three neutral sides are restated: `job-timer` and `job-reminder`
+       set the left edge at lower specificity, and that edge *is* the class. */
+    border-top-color: var(--glass-line);
+    border-right-color: var(--glass-line);
+    border-bottom-color: var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* Panes need more air between them than rows on a sheet did. */
+.page-rows .job-list {
+    gap: 0.6rem;
+}
+
+/* The empty state is the list's one row, so it is a pane too. */
+.page-rows .job-empty,
+.page-rows .notification-empty {
+    padding: 0.75rem;
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+}
+
+/* The records are panes for the same reason the jobs are, and their list is no
+   longer a bordered scroll box holding them: it is the gap between them. */
+.page-rows .notification-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    border: 0;
+    border-radius: 0;
+}
+
+.page-rows .notification-item {
+    padding: 0.75rem;
+    background: var(--glass);
+    border-top: 1px solid var(--glass-line);
+    border-right: 1px solid var(--glass-line);
+    border-bottom: 1px solid var(--glass-line);
+    /* The class edge, as a job row has it: a reminder dashes it, a timer lights
+       it — the same rule the banner uses. */
+    border-left: 3px solid var(--primary-border);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* `.page-rows` outranks the class rules above, so the one colour the pane
+   restates is put back here rather than at its original home. */
+.page-rows .notification-item.notification-timer {
+    border-left-color: var(--primary);
+}
+
+.page-rows .notification-item.notification-reminder {
+    border-left-style: dashed;
 }
 
 /* The page head, with the page's one action at its far end (#90 phase 7): the
@@ -2236,4 +2425,73 @@ textarea::placeholder {
 
 .dashboard-links a {
     color: var(--primary);
+}
+
+/*
+ * Touch targets at phone widths (#146 phase D).
+ *
+ * A mouse is content with a 36px icon; a thumb is not. Under the shell's
+ * breakpoint every control a phone can reach is at least 44px in its short
+ * dimension — the figure both Apple's and Google's guidance land on — while
+ * labelled buttons keep their prose padding and only gain a floor
+ * (`min-height`), so nothing changes shape, only size.
+ *
+ * This block is deliberately last in the sheet: it overrides sizes declared
+ * above (including the chat's own 48rem block), and a media query carries no
+ * specificity of its own, so source order is what makes it win.
+ */
+@media (max-width: 48rem) {
+    .icon-btn,
+    .icon-btn.small {
+        width: 2.75rem;
+        height: 2.75rem;
+    }
+
+    /* The drawer is this width's navigation, not a dense menu. */
+    .navbar-drawer-link {
+        padding: 0.7rem 0.6rem;
+    }
+
+    /* Row actions: a floor rather than padding, so an icon-only action and a
+       labelled one in the same row end up the same height. */
+    .notification-actions button,
+    .job-actions button,
+    .snooze-options button,
+    .job-form-actions button,
+    .settings-signout,
+    .new-chat {
+        min-height: 2.75rem;
+    }
+
+    /* The thread list: the row is the target, not the label. */
+    .thread-open {
+        padding: 0.6rem 0.5rem;
+    }
+
+    /* The composer: the send button and the box beside it agree on a height. */
+    .composer button,
+    .composer textarea {
+        min-height: 2.75rem;
+    }
+
+    /* The sign-in card is a phone's first screen. */
+    .login input,
+    .login button {
+        min-height: 2.75rem;
+    }
+
+    /* Settings: a switch row and a time field are both controls. */
+    .settings-row {
+        min-height: 2.75rem;
+    }
+
+    .settings-times input[type="time"] {
+        min-height: 2.75rem;
+    }
+
+    /* The bar is taller once its buttons are 44px, so the corner cards start
+       below it rather than 4px into it. */
+    .toast-stack {
+        top: 4.25rem;
+    }
 }
