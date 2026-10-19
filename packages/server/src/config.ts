@@ -336,6 +336,14 @@ export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
  * server was down runs late if it is within this window, and is recorded as
  * `missed` (with a notification saying so) if it is not. A reminder that fires
  * six hours after the fact is not a reminder.
+ *
+ * `modelRunsPerDay` is what recurrence made necessary (#90 phase 8c): a
+ * repeating `prompt` job is a standing order to call the model, and 200 a day is
+ * generous for a home assistant while still bounding a mistake. It is a
+ * *budget* — counted per local day, persisted, and spent only by runs that
+ * actually reach the model — not a rate: see the rate-limiting section of the
+ * package README for why neither `RateLimiter` nor `FixedWindowQuota` is the
+ * right shape.
  */
 export interface SchedulerConfig {
     /** Interval between scans (`JARVIS_JOB_TICK_MS`), default 5000. */
@@ -352,6 +360,11 @@ export interface SchedulerConfig {
      * row that can only be a mistake (a wrong year, a stray digit).
      */
     readonly maxHorizonDays: number;
+    /**
+     * Model-calling runs one account's schedule may spend per local day
+     * (`JARVIS_JOB_MODEL_RUNS_PER_DAY`), default 200 (#90 phase 8c).
+     */
+    readonly modelRunsPerDay: number;
 }
 
 /** LAN-reasonable scheduler defaults: a 5s scan, 50 jobs, an hour of lateness. */
@@ -361,6 +374,7 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
     maxLatenessMs: 60 * 60 * 1000,
     maxPerTick: 1,
     maxHorizonDays: 366,
+    modelRunsPerDay: 200,
 };
 
 /**
@@ -1045,6 +1059,11 @@ export function getAppConfig(): AppConfig {
                           "JARVIS_JOB_MAX_HORIZON_DAYS",
                           process.env.JARVIS_JOB_MAX_HORIZON_DAYS,
                           DEFAULT_SCHEDULER_CONFIG.maxHorizonDays,
+                      ),
+                      modelRunsPerDay: numberOr(
+                          "JARVIS_JOB_MODEL_RUNS_PER_DAY",
+                          process.env.JARVIS_JOB_MODEL_RUNS_PER_DAY,
+                          DEFAULT_SCHEDULER_CONFIG.modelRunsPerDay,
                       ),
                   },
         attachments:

@@ -371,7 +371,7 @@ answered by a non-reasoning model.
 ## Rate limiting
 
 Every throttle the server applies lives in this section — this is the single source of
-truth. Two independent mechanisms exist, because they answer different questions and
+truth. Four mechanisms exist, because they answer four different questions and
 must not be interchanged.
 
 ### Credential throttle — `src/http/rateLimit.ts`
@@ -484,6 +484,33 @@ every insert, evicting settled rows first — an undelivered notification is the
 last thing a prune takes, but it is not exempt, because the rows that pile up
 most easily are precisely the `pending` ones nobody was online to receive.
 
+### Scheduled-job model-run budget — `src/scheduler/runner.ts`
+
+The one budget here that is **not** in memory. A repeating `prompt` job is a
+standing order to call the model — the thing recurrence makes possible that
+nothing bounded before — so the runner charges every firing that reaches the
+model against a per-account, per-**local**-day ceiling
+(`JARVIS_JOB_MODEL_RUNS_PER_DAY`, default 200), counted in the auth database
+(`job_model_runs`, one row per account per day).
+
+Two properties make it a budget rather than a throttle, and both are the reason
+it is a row and not a counter:
+
+- **It survives a restart.** An in-memory ceiling would reset at exactly the
+  moment a runaway job resumes spending — when the box comes back. The same
+  argument retires the other two mechanisms here: `RateLimiter` is failure
+  backoff, and `FixedWindowQuota` counts successes per process.
+- **It charges only what costs.** A `message` or `tool` job never calls the
+  model, a quiet-hours deferral never runs, and a firing whose own schedule has
+  ended spends nothing — so none of them touch the budget.
+
+Being spent is deliberately loud enough to be seen, once: a one-shot is settled
+`missed` with the reason (its moment passed and it was not attempted, which is
+what `missed` means), while a series moves to its next occurrence and posts
+**one** notice for that day, deduped on `job-budget:<user>:<day>` through the
+notification service's existing dedupe. A schedule that starves in silence would
+be worse than the spending it prevents.
+
 ### Not rate limited
 
 Worth stating explicitly, because these are the surfaces that cost real CPU:
@@ -503,9 +530,11 @@ tool as an unbounded outbound-request amplifier.
 
 ### Scope and caveats
 
-- **State is in-memory only**, per process. The server is single-instance by design, so
-  this is adequate for the LAN posture; a process restart simply resets every counter.
-  There is no distributed or persisted state.
+- **State is in-memory only**, per process — with one deliberate exception: the
+  scheduled-job model-run budget is a row in the auth database, because a restart
+  must not hand the day's allowance back (see its section above). The server is
+  single-instance by design, so this is adequate for the LAN posture; a process
+  restart simply resets every other counter. There is no distributed state.
 - **The credential throttle trusts `req.ip` as-is.** Behind a reverse proxy every request
   appears to originate from the proxy, which collapses the per-`ip` budget into a
   **global** lockout — one attacker locks out everyone. Set
@@ -714,12 +743,15 @@ thread list; the checkpoint still gives the job memory across its own runs, and
 Everything a run must not get wrong is in `scheduler/runner.ts` — the module
 that owns one job's life — and the four rules worth knowing here:
 
-- **One outcome, always announced.** Every path ends in a run row, a settled
-  job, and exactly one notification: `job.finished` with the reply,
-  `job.failed` with the reason, or `job.missed` when its moment passed while
-  the server was down. A scheduled job that does nothing visible is the
-  "nothing happened" class #139 exists to remove, and a _scheduled_ one has
-  nobody watching to notice.
+- **One outcome, always announced.** Every firing that reaches its payload ends
+  in a run row, a job state, and exactly one notification: `job.finished` with
+  the reply, `job.failed` with the reason, or `job.missed` when its moment
+  passed while the server was down. A scheduled job that does nothing visible is
+  the "nothing happened" class #139 exists to remove, and a _scheduled_ one has
+  nobody watching to notice. A firing that **declined** — a slot missed while
+  the server was down, an occurrence the day's model budget skipped — is the one
+  exception, and it earns it: nothing ran, so there is nothing to report, and the
+  job row says where it went next.
 - **A claim is the transition.** `state = 'pending'` lives in the claim's WHERE
   clause, so a second tick — or a process that restarted mid-run — touches no
   row. The same statement is why an overlapping tick is safe.
@@ -767,6 +799,37 @@ notification`. Silence at `info` therefore means it was delivered (the
   notification tool would announce twice) — and it is checked again at fire
   time, because a server's configuration can change between scheduling and
   firing.
+
+### Repeating jobs (#90 phase 8c)
+
+A job may carry a **rule** (`JobRepeat`, validated and computed by
+`@lukestanbery/jarvis-protocol` — the same function the web form previews with,
+so a preview cannot disagree with what happens). It stays **one row**: the rule
+holds the schedule and the row's `run_at` is always the next occurrence, so the
+id a conversation named an hour ago is still the id to cancel.
+
+- **The anchor is the rule's, not the run's.** `start` carries the wall clock
+  the series fires at, and a re-arm always computes from it — which is why a
+  snooze (+1h) or a quiet-hours deferral (to 07:00) moves _one_ firing and the
+  series returns to its own clock afterwards.
+- **Re-arming is part of the settle.** The run row and the job's next state
+  (owed again, or terminal) commit in one transaction, so a process that dies
+  mid-run can never leave a series without a successor. A **failed** firing
+  re-arms too: for a series, the next occurrence is the retry.
+- **Skips are quiet, endings are not.** A slot that passed while the server was
+  down moves a series forward silently rather than announcing a `missed` firing,
+  and a firing interrupted by a restart re-arms rather than failing the series —
+  the occurrence is lost, the schedule is not. A series that runs out (`until`,
+  or `after: N` firings — a skip does not consume one) settles `done`.
+- **Stopping it is a cancel.** A cancel that lands mid-run wins: the firing in
+  flight still reports, and the re-arm refuses to schedule a successor.
+
+Impossible dates are decided in three tiers rather than one, and the tiers are
+the reason a rule can be _refused_ instead of quietly doing something else: a day
+the month does not have is clamped to its last day, an ordinal that month does
+not have ("the 5th Monday") skips the month and the create flow says when the
+next one is, and something that can never exist ("the 32nd", "the 7th Monday") is
+refused. See the rule's own doc for the full semantics.
 
 ### The scheduling tools (#90 phase 3)
 

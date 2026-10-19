@@ -68,8 +68,8 @@ only the surface they call:
   `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
   `moveJob` / `editJob` /
   `listJobRuns` / `pruneJobs` / `pruneJobRuns`, plus the **scheduler-scoped**
-  half (`listDueJobs` / `claimJob` / `rescheduleJob` / `startJobRun` /
-  `finishJobRun` / `settleJob` / `settleJobRun`)
+  half (`listDueJobs` / `claimJob` / `rescheduleJob` / `rearmJob` /
+  `startJobRun` / `finishJobRun` / `settleJob` / `settleJobRun`)
   that no request handler may reach. `settleJobRun` is the one that records a
   firing's ending — the run's row and the job's next state (owed again, or
   settled) — as a single transaction, because the two are one fact; the
@@ -77,7 +77,12 @@ only the surface they call:
   it runs (the firing in flight still reports; the series must not continue),
   which is safe because the re-arm only fires on a row that is still `running`
   — and a live repeating row is exempt from `pruneJobs`, whose `created_at`
-  never moves and which would otherwise be the first row age took. This is the one ledger with two surfaces
+  never moves and which would otherwise be the first row age took. `rearmJob` is
+  the same move without the run row: a claimed job whose slot passed while nobody
+  was looking, which is why it needs the claim-scoped `running` guard rather than
+  `rescheduleJob`'s `pending` one. `countModelRuns` / `recordModelRun` are the
+  scheduler's **daily model-run budget** (below), which is a count this package
+  owns because it has to outlive a restart. This is the one ledger with two surfaces
   on purpose: a job belongs to one user, but the scheduler is a _process_
   acting for every user at once, so it selects due work across accounts and
   settles it by the id it claimed. `claimJob` is the load-bearing statement —
@@ -188,6 +193,12 @@ router and middleware span every ledger and therefore take the full
   cascade a user's run history away. `missed` is deliberately
   not `failed`: a job whose moment passed while the server was down was never
   attempted.
+- `job_model_runs` — the daily model-run budget (#90 phase 8c): `user_id`, a
+  local `day` (`YYYY-MM-DD`) and a count, one row per account per day, never
+  pruned (a year is 365 rows). A _budget_ rather than a throttle, which is why it
+  is a row here instead of an in-memory limiter in the server: a restart must not
+  hand the day's allowance back, exactly when a runaway job would spend it again.
+  The server owns the ceiling and what a day means; this table owns the count.
 - `job_runs` — one row per attempt at a job: `started_at`/`finished_at`, the
   run's `state` (`running`/`ok`/`failed`), the `output` it produced (the reply,
   or a tool's result text) and the `error` it ended with. Cascade-deleted with

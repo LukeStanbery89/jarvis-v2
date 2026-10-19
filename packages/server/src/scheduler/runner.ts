@@ -1,16 +1,37 @@
 /**
- * One scheduled job's run (#90 phase 1): the whole life of a single job, from
- * "is this still worth doing?" to the notification that says what happened.
+ * One scheduled job's run (#90 phase 1; repeating jobs in 8c): the whole life of
+ * a single job, from "is this still worth doing?" to the notification that says
+ * what happened.
  *
  * The loop (`loop.ts`) decides *when* to look; this decides *what happens to
  * one job*, and it is the only place a job's outcome is settled or announced.
- * Every path through it ends in the same two records and one announcement, so
- * there is no way for a job to quietly stop existing:
+ * Every path through it ends in the same two records — and, for a firing that
+ * reached its payload, one announcement — so there is no way for a job to
+ * quietly stop existing:
  *
  * 1. a **run row** — this attempt happened, here is what it produced, or here
  *    is why it failed;
- * 2. the **job's state** — `done`/`failed`/`missed`, stamped with when;
+ * 2. the **job's state** — `done`/`failed`/`missed`, or `pending` again when it
+ *    repeats, stamped with when;
  * 3. one **notification**, whose `kind` says which of the three it was.
+ *
+ * **The announcement is per payload run, not per firing.** A firing that was
+ * declined — a slot missed while the server was down, an occurrence skipped by
+ * the day's model-run budget — moves the job forward instead: it leaves no run
+ * row and announces nothing, because nothing was promised for the new moment.
+ * What this module guarantees is that every firing which reached its payload
+ * leaves a run row and exactly one announcement; a skip is a different thing,
+ * and the job row is where it says so.
+ *
+ * **A repeating job is a job that is owed again.** When a firing settles, the
+ * rule decides whether the row returns to `pending` at its next occurrence or
+ * becomes terminal — in one transaction, in the ledger, so a dead process can
+ * never leave a series without a successor. The next occurrence comes from the
+ * *rule's* anchor and never from the moment that just fired, which is what makes
+ * a snoozed or quiet-hours-deferred firing return to its own clock afterwards. A
+ * series also handles two paths differently: a slot that passed while the server
+ * was down moves it forward silently rather than announcing a `missed` firing,
+ * and an interrupted firing re-arms instead of failing the series.
  *
  * Three payload kinds, and no fourth path:
  *
@@ -33,16 +54,22 @@
  * all: it moves itself to the moment the window closes (`deferralFor`).
  *
  * Deliberate limits, all of them policy rather than shortcut: no retries (a
- * failed run says so, and the user re-asks); a run is bounded by the same turn
- * timeout a chat turn gets; and an announcement that fails to send does not
- * turn a completed run into a failed one — the run row is the durable half.
+ * failed run says so and the user re-asks — for a series, the next occurrence
+ * *is* the retry, which is why re-arming does not wait for success); a run is
+ * bounded by the same turn timeout a chat turn gets; and an announcement that
+ * fails to send does not turn a completed run into a failed one — the run row is
+ * the durable half.
  */
 import { randomBytes } from "node:crypto";
 import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
 import {
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
+    nextOccurrence,
+    parseJobRepeat,
+    repeatExhausted,
 } from "@lukestanbery/jarvis-protocol";
+import type { JobRepeat } from "@lukestanbery/jarvis-protocol";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { runAgent } from "../agent";
 import { createKeyedLock } from "../keyedLock";
@@ -125,6 +152,21 @@ export interface JobRunnerOptions {
      * fires six hours after the fact is not a reminder.
      */
     maxLatenessMs: number;
+    /**
+     * Model-calling runs one account may spend in a local day (#90 phase 8c).
+     *
+     * The budget that makes a repeating `prompt` job safe to offer: it is
+     * counted in the ledger, so a restart cannot hand the day back, and only a
+     * firing that reached the model spends it.
+     */
+    modelRunsPerDay: number;
+    /**
+     * How many of a job's runs to keep (defaults to the ledger's own 50).
+     *
+     * An option rather than a config knob: the scheduler's tests need a small
+     * number to exercise the trim, and nobody else has a reason to change it.
+     */
+    runsToKeep?: number;
     /** Reads "now"; injectable so lateness and timestamps are testable. */
     now?: () => Date;
     /** Runs the turn; defaults to the real agent seam. */
@@ -142,7 +184,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         turnTimeoutMs,
         maxPerUser,
         maxLatenessMs,
+        modelRunsPerDay,
     } = options;
+    const runsToKeep = options.runsToKeep;
     const now = options.now ?? (() => new Date());
     const agent = options.agent ?? runAgent;
     const newId =
@@ -161,6 +205,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         kind: "job.finished" | "job.failed" | "job.missed",
         job: AppJob,
         text: string,
+        options: { dedupeKey?: string } = {},
     ): Promise<void> {
         try {
             const outcome = await notifications.notify(job.userId, {
@@ -178,6 +223,12 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 // *dismiss* — the client would otherwise have to guess which
                 // job a row came from.
                 jobId: job.id,
+                // Only the budget notice uses this: an occurrence skipped for
+                // the day's allowance supersedes that day's earlier notice
+                // rather than stacking one per firing.
+                ...(options.dedupeKey !== undefined
+                    ? { dedupeKey: options.dedupeKey }
+                    : {}),
                 // A message job's text is often the label itself ("Call Mum",
                 // with no detail to add). Passing it as the body would render
                 // the same line twice in the banner, so a message that is only
@@ -211,6 +262,113 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         }
     }
 
+    /**
+     * The job's rule, or `null` for a one-shot (#90 phase 8c).
+     *
+     * An unreadable rule is *reported and then treated as a one-shot*: the job
+     * fires once, settles, and the warning says why. The alternatives are worse
+     * in both directions — a series that silently never fires again, or one that
+     * throws on every tick — and the row still holds the text, so it can be
+     * inspected where it was written.
+     */
+    function repeatOf(job: AppJob): JobRepeat | null {
+        if (job.repeat === null || job.repeat === undefined) {
+            return null;
+        }
+        const parsed = parseJobRepeat(job.repeat);
+        if (!parsed.ok) {
+            logger.warn(
+                `job ${job.id} has an unreadable repeat rule (${parsed.reason}); treating it as a one-shot`,
+            );
+            return null;
+        }
+        return parsed.repeat;
+    }
+
+    /**
+     * When a series fires next, or `null` when the firing in hand was its last.
+     *
+     * `attempts` is the count the decision is made against, and the callers
+     * differ on purpose. A run that was *claimed* counts (the count including
+     * this firing), because claiming is what a firing is; a slot that was skipped
+     * does not — which is the whole meaning of `ends.after`: it counts firings,
+     * so a schedule that lost a day to an outage spans more calendar time than
+     * its count suggests.
+     */
+    function nextFiring(
+        job: AppJob,
+        at: Date,
+        attempts: number,
+    ): string | null {
+        const rule = repeatOf(job);
+        if (rule === null) {
+            return null;
+        }
+        if (repeatExhausted(rule, attempts)) {
+            logger.info(
+                `job ${job.id} "${job.label}" has run as many times as it was asked to`,
+            );
+            return null;
+        }
+        const next = nextOccurrence(rule, at);
+        if (!next.ok) {
+            if (next.reason === "never") {
+                logger.warn(
+                    `job ${job.id} "${job.label}" has a rule that will never come round again`,
+                );
+            }
+            return null;
+        }
+        return next.at.toISOString();
+    }
+
+    /**
+     * The local calendar day a budget counts against.
+     *
+     * Local, not UTC: "200 runs today" is a person's day, and it should turn over
+     * when theirs does.
+     */
+    function localDay(at: Date): string {
+        const pad = (value: number) => String(value).padStart(2, "0");
+        return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+    }
+
+    /**
+     * Skips one firing because its account has spent the day's model-run budget.
+     *
+     * A one-shot is settled `missed` with the reason: its moment passed and it
+     * was not attempted, which is exactly what that state means. A series moves
+     * to its next occurrence instead — the occurrence is lost, not the series —
+     * and says so **once a day**, deduped, because a schedule that starves in
+     * silence is the failure this budget must not become.
+     */
+    async function skipForBudget(
+        job: AppJob,
+        at: Date,
+        day: string,
+    ): Promise<RunOutcome> {
+        const reason = `the daily budget of ${modelRunsPerDay} model-calling runs is spent, so "${job.label}" did not run`;
+        const next = nextFiring(job, at, job.attempts);
+        if (next !== null) {
+            // Nothing was claimed and nothing was attempted, so the row is still
+            // `pending`: the same shape as a quiet-hours deferral.
+            ledger.rescheduleJob(job.id, next);
+            await announce("job.missed", job, reason, {
+                dedupeKey: `job-budget:${job.userId}:${day}`,
+            });
+            logger.warn(
+                `job ${job.id} "${job.label}" skipped (daily model-run budget spent); next ${next}`,
+            );
+            return { kind: "deferred", until: next };
+        }
+        ledger.settleJob(job.id, "missed", { error: reason }, at.toISOString());
+        await announce("job.missed", job, reason);
+        logger.warn(
+            `job ${job.id} "${job.label}" missed (daily model-run budget spent)`,
+        );
+        return { kind: "missed" };
+    }
+
     /** Records a run's ending, settles the job, announces, prunes. */
     async function settle(
         job: AppJob,
@@ -218,14 +376,32 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         state: "ok" | "failed",
         result: { output?: string; error?: string },
     ): Promise<RunOutcome> {
-        const at = now().toISOString();
-        ledger.finishJobRun(runId, state, result, at);
-        ledger.settleJob(
-            job.id,
-            state === "ok" ? "done" : "failed",
-            result.error !== undefined ? { error: result.error } : {},
-            at,
-        );
+        const at = now();
+        // A repeating job is owed again unless this firing was its last: the
+        // claim counted it, so `ends.after` is decided against the count
+        // including it.
+        const next = nextFiring(job, at, job.attempts + 1);
+        ledger.settleJobRun({
+            jobId: job.id,
+            runId,
+            run: { state, ...result },
+            job:
+                next === null
+                    ? {
+                          state: state === "ok" ? "done" : "failed",
+                          ...(result.error !== undefined
+                              ? { error: result.error }
+                              : {}),
+                      }
+                    : {
+                          state: "pending",
+                          runAt: next,
+                          ...(result.error !== undefined
+                              ? { error: result.error }
+                              : {}),
+                      },
+            at: at.toISOString(),
+        });
         await announce(
             state === "ok" ? "job.finished" : "job.failed",
             job,
@@ -233,9 +409,16 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 ? (result.output ?? "")
                 : (result.error ?? "the run failed"),
         );
+        if (next !== null) {
+            logger.info(
+                `job ${job.id} "${job.label}" repeats at ${next} (attempt ${job.attempts + 1})`,
+            );
+        }
         // Retention rides on the run that just landed: a user's table cannot
-        // grow without bound even though jobs are only created by a caller.
+        // grow without bound even though jobs are only created by a caller — and
+        // a series' runs are its own history, so they are trimmed with it.
         ledger.pruneJobs(job.userId, maxPerUser);
+        ledger.pruneJobRuns(job.id, runsToKeep);
         return state === "ok"
             ? { kind: "done", output: result.output ?? "" }
             : { kind: "failed", error: result.error ?? "the run failed" };
@@ -378,6 +561,19 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                     // Not attempted, so no claim and no run row: the honest
                     // record is "this moment passed while nobody was looking".
                     const reason = `missed by ${formatDelay(latenessMs)} — the server was not running when it was due`;
+                    // A series is not over because one of its slots passed: it
+                    // moves to its next occurrence, silently — nothing was ever
+                    // promised for a moment nobody saw — and only a series with
+                    // no occurrences left is settled `missed`. The slot does not
+                    // count as a firing, so `ends.after` is measured without it.
+                    const next = nextFiring(job, at, job.attempts);
+                    if (next !== null) {
+                        ledger.rescheduleJob(job.id, next);
+                        logger.info(
+                            `job ${job.id} "${job.label}" missed its slot (${formatDelay(latenessMs)} late); next ${next}`,
+                        );
+                        return { kind: "deferred", until: next };
+                    }
                     ledger.settleJob(
                         job.id,
                         "missed",
@@ -403,6 +599,19 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                         until: deferredTo.toISOString(),
                     };
                 }
+                if (job.kind === "prompt") {
+                    // The one payload that spends the model. Checked before the
+                    // claim, so a budget skip leaves the row pending — no
+                    // attempt, no run row — and the account's other work (a
+                    // timer, a tool job) is untouched.
+                    const day = localDay(at);
+                    if (
+                        ledger.countModelRuns(job.userId, day) >=
+                        modelRunsPerDay
+                    ) {
+                        return await skipForBudget(job, at, day);
+                    }
+                }
                 if (!ledger.claimJob(job.id)) {
                     return {
                         kind: "skipped",
@@ -420,6 +629,12 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 );
                 const signal = AbortSignal.timeout(turnTimeoutMs);
                 const result = await execute(job, signal);
+                // Only a prompt reaches the model, and only once it has been
+                // attempted — a tool or message job spends nothing, and neither
+                // does a firing that never got this far.
+                if (job.kind === "prompt") {
+                    ledger.recordModelRun(job.userId, localDay(at));
+                }
                 const outcome =
                     "error" in result
                         ? await settle(job, runId, "failed", {
@@ -448,11 +663,32 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         },
 
         async recover(job: AppJob): Promise<RunOutcome> {
-            const at = now().toISOString();
+            const at = now();
             const reason =
                 "the server restarted while this run was in progress";
-            ledger.failOpenJobRuns(job.id, reason, at);
-            ledger.settleJob(job.id, "failed", { error: reason }, at);
+            // The attempt is closed as `failed` either way: the process that
+            // made it died mid-run, and that is what happened to *it*. What
+            // differs for a series is the job: it is owed again at its next
+            // occurrence, because one interrupted firing does not end a
+            // schedule. The firing did claim the job, so it counts toward
+            // `ends.after`. A re-arm cannot resurrect a job the user cancelled
+            // mid-run: the row is `cancelled` by then, and `rearmJob` requires
+            // `running`.
+            const next = nextFiring(job, at, job.attempts);
+            ledger.failOpenJobRuns(job.id, reason, at.toISOString());
+            if (next !== null) {
+                ledger.rearmJob(job.id, next);
+                logger.warn(
+                    `job ${job.id} "${job.label}" was interrupted by a restart; the series continues at ${next}`,
+                );
+                return { kind: "failed", error: reason };
+            }
+            ledger.settleJob(
+                job.id,
+                "failed",
+                { error: reason },
+                at.toISOString(),
+            );
             await announce("job.failed", job, reason);
             logger.warn(
                 `job ${job.id} "${job.label}" was interrupted by a restart`,

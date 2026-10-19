@@ -650,6 +650,55 @@ describe("recurrence and retention (#90 phase 8b)", () => {
         expect(store.getJob(userId, created.id)?.repeat).toEqual(weekly);
     });
 
+    it("re-arms a claimed job at a new moment, with no run row", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, {
+            ...promptJob(),
+            repeat: weekly,
+        });
+        // The missed-slot shape: a claim, but nothing attempted — so no run row.
+        expect(store.claimJob(created.id)).toBe(true);
+        const after = store.rearmJob(
+            created.id,
+            "2026-10-26T09:00:00.000Z",
+            "missed its slot",
+        );
+        expect(after).toMatchObject({
+            state: "pending",
+            runAt: "2026-10-26T09:00:00.000Z",
+            settledAt: null,
+            lastError: "missed its slot",
+        });
+        expect(store.listJobRuns(created.id)).toEqual([]);
+    });
+
+    it("will not re-arm a job that is not running", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, promptJob());
+        const after = store.rearmJob(created.id, "2026-10-26T09:00:00.000Z");
+        expect(after).toMatchObject({
+            state: "pending",
+            runAt: created.runAt,
+        });
+    });
+
+    it("counts model runs per account and per day", () => {
+        const { store, userId } = makeStore();
+        const day = "2026-10-20";
+        expect(store.countModelRuns(userId, day)).toBe(0);
+        store.recordModelRun(userId, day);
+        store.recordModelRun(userId, day);
+        expect(store.countModelRuns(userId, day)).toBe(2);
+        // Tomorrow starts empty, and so does somebody else's day.
+        expect(store.countModelRuns(userId, "2026-10-21")).toBe(0);
+        expect(
+            store.countModelRuns(
+                store.createUser("sam", "hash", "user").id,
+                day,
+            ),
+        ).toBe(0);
+    });
+
     it("records a firing and re-arms the series in one write", () => {
         const { store, userId } = makeStore();
         const job = claimed(store, userId, { repeat: weekly });

@@ -290,6 +290,7 @@ const scheduler =
                   turnTimeoutMs: appConfig.turnTimeoutMs,
                   maxPerUser: appConfig.scheduler.maxPerUser,
                   maxLatenessMs: appConfig.scheduler.maxLatenessMs,
+                  modelRunsPerDay: appConfig.scheduler.modelRunsPerDay,
               }),
               tickMs: appConfig.scheduler.tickMs,
               maxConcurrent: appConfig.scheduler.maxPerTick,

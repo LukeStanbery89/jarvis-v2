@@ -138,6 +138,8 @@ function harness(options: {
     maxLatenessMs?: number;
     maxPerUser?: number;
     maxPerTick?: number;
+    modelRunsPerDay?: number;
+    runsToKeep?: number;
 }): {
     store: AppDatabase;
     userId: number;
@@ -166,6 +168,10 @@ function harness(options: {
         turnTimeoutMs: options.turnTimeoutMs ?? 5_000,
         maxPerUser: options.maxPerUser ?? 50,
         maxLatenessMs: options.maxLatenessMs ?? 60 * 60 * 1000,
+        modelRunsPerDay: options.modelRunsPerDay ?? 200,
+        ...(options.runsToKeep !== undefined
+            ? { runsToKeep: options.runsToKeep }
+            : {}),
         now: () => options.at,
         ...(options.actor ? { agent: options.actor } : {}),
         newId: () => `run-${(runSeq += 1)}`,
@@ -204,6 +210,39 @@ function toolJob(name: string, args: unknown = {}): CreateJobInput {
 
 /** The instant every test's clock sits at: one second after the jobs' due time. */
 const AT = new Date("2026-10-20T09:00:01.000Z");
+
+/**
+ * A daily rule anchored at `at` — "the same clock time, every day".
+ *
+ * Anchored at the test's own instant so the wall clock is whatever the machine's
+ * zone makes it: the assertion is "one local day later", not "09:00Z", which is
+ * a different time in every zone. Seconds are ignored because a rule's clock is
+ * a wall clock to the minute.
+ */
+function dailyFrom(at: Date): {
+    every: "day";
+    interval: number;
+    start: string;
+} {
+    return { every: "day", interval: 1, start: at.toISOString() };
+}
+
+/** The local day the runner's model-run budget counts against. */
+function localDayOf(at: Date): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
+/** The instant one local day after `at`, at `at`'s clock: where that rule fires next. */
+function nextLocalDay(at: Date): string {
+    return new Date(
+        at.getFullYear(),
+        at.getMonth(),
+        at.getDate() + 1,
+        at.getHours(),
+        at.getMinutes(),
+    ).toISOString();
+}
 
 /** `"HH:MM"` for a local instant, which is how a window is written. */
 function clockOf(at: Date): string {
@@ -1145,6 +1184,7 @@ describe("scheduler: announcements are best-effort", () => {
             turnTimeoutMs: 5_000,
             maxPerUser: 50,
             maxLatenessMs: 60 * 60 * 1000,
+            modelRunsPerDay: 200,
             now: () => AT,
             agent,
             newId: () => `run-${(seq += 1)}`,
@@ -1162,5 +1202,278 @@ describe("scheduler: announcements are best-effort", () => {
         expect(outcome).toEqual({ kind: "done", output: "the reply" });
         expect(store.listJobRuns("j1")[0].output).toBe("the reply");
         expect(store.getJob(userId, "j1")?.state).toBe("done");
+    });
+});
+
+describe("scheduler: a repeating job (#90 phase 8c)", () => {
+    it("re-arms on success, at its own clock", async () => {
+        const { agent } = fakeAgent("Morning summary");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "Morning summary" },
+        ]);
+        // Owed again, not settled: the firing ended, the series did not.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(AT),
+            settledAt: null,
+            attempts: 1,
+        });
+        expect(h.store.listJobRuns("j1")).toMatchObject([
+            { state: "ok", output: "Morning summary" },
+        ]);
+        // One announcement per firing, and this firing was one.
+        expect(pushed(h.socket)).toHaveLength(1);
+    });
+
+    it("re-arms on failure too, because the next occurrence is the retry", async () => {
+        const { agent } = fakeAgent("unused");
+        const h = harness({ at: AT, actor: agent, tools: [] });
+        h.store.createJob(h.userId, {
+            ...toolJob("explode"),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+
+        expect((await h.scheduler.tick()).outcomes).toMatchObject([
+            { kind: "failed" },
+        ]);
+        // Failed, and owed again: a series' next occurrence *is* its retry.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(AT),
+        });
+        expect(h.store.getJob(h.userId, "j1")?.lastError).toMatch(/explode/);
+        expect(pushed(h.socket)[0]).toMatchObject({ kind: "job.failed" });
+    });
+
+    it("ends after the number of firings it was given", async () => {
+        const { agent } = fakeAgent("Last one");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: { ...dailyFrom(AT), ends: { after: 1 } },
+        });
+
+        expect((await h.scheduler.tick()).outcomes).toEqual([
+            { kind: "done", output: "Last one" },
+        ]);
+        // The one firing it was asked for has happened, so the row is history.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "done",
+            settledAt: AT.toISOString(),
+        });
+    });
+
+    it("ends at the moment it was given", async () => {
+        const { agent } = fakeAgent("Too late");
+        const h = harness({ at: AT, actor: agent });
+        const until = new Date(AT.getTime() + 60 * 60 * 1000);
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            // Tomorrow's firing would be past the end, so there is no next one.
+            repeat: {
+                ...dailyFrom(AT),
+                ends: { until: until.toISOString() },
+            },
+        });
+
+        expect((await h.scheduler.tick()).outcomes).toEqual([
+            { kind: "done", output: "Too late" },
+        ]);
+        expect(h.store.getJob(h.userId, "j1")?.state).toBe("done");
+    });
+
+    it("moves a missed slot forward in silence instead of ending the series", async () => {
+        const { agent, calls } = fakeAgent("should not run");
+        const h = harness({
+            at: AT,
+            actor: agent,
+            maxLatenessMs: 60 * 60 * 1000,
+        });
+        // The rule is anchored at the job's own moment, so its next occurrence
+        // is one local day on at *that* clock — not at the tick's.
+        const due = new Date("2026-10-20T06:00:00.000Z");
+        h.store.createJob(h.userId, {
+            ...promptJob({ runAt: due.toISOString() }),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(due),
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "deferred", until: nextLocalDay(due) },
+        ]);
+        // Nothing was attempted and nothing was promised for the new moment, so
+        // there is no run row and nothing to say.
+        expect(calls).toEqual([]);
+        expect(h.store.listJobRuns("j1")).toEqual([]);
+        expect(pushed(h.socket)).toEqual([]);
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(due),
+        });
+    });
+
+    it("does not count a skipped slot against the firing budget", async () => {
+        const { agent } = fakeAgent("Morning summary");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob({ runAt: "2026-10-20T06:00:00.000Z" }),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: {
+                ...dailyFrom(new Date("2026-10-20T06:00:00.000Z")),
+                ends: { after: 1 },
+            },
+        });
+
+        // A slot nobody saw is not a firing, so the one it was asked for is
+        // still owed.
+        await h.scheduler.tick();
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            attempts: 0,
+        });
+    });
+
+    it("spends the day's model budget only on a run that reached the model", async () => {
+        const { agent } = fakeAgent("Summary");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            id: "j1",
+            label: "Kettle",
+            kind: "message",
+            message: "Kettle",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        // The budget is spent to the last run.
+        for (let i = 0; i < 200; i++) {
+            h.store.recordModelRun(h.userId, localDayOf(AT));
+        }
+
+        // A message job calls no model, so it is untouched by the budget...
+        expect((await h.scheduler.tick()).outcomes).toEqual([
+            { kind: "done", output: "Kettle" },
+        ]);
+        expect(h.store.countModelRuns(h.userId, localDayOf(AT))).toBe(200);
+    });
+
+    it("marks a one-shot missed when the day's budget is spent", async () => {
+        const { agent, calls } = fakeAgent("should not run");
+        const h = harness({ at: AT, actor: agent, modelRunsPerDay: 1 });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        h.store.recordModelRun(h.userId, localDayOf(AT));
+
+        expect((await h.scheduler.tick()).outcomes).toEqual([
+            { kind: "missed" },
+        ]);
+        expect(calls).toEqual([]);
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "missed",
+        });
+        expect(pushed(h.socket)[0]).toMatchObject({ kind: "job.missed" });
+        expect(pushed(h.socket)[0].body).toMatch(
+            /budget of 1 model-calling runs/,
+        );
+    });
+
+    it("moves a series past a spent budget, and says so", async () => {
+        const { agent, calls } = fakeAgent("should not run");
+        const h = harness({ at: AT, actor: agent, modelRunsPerDay: 1 });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+        h.store.recordModelRun(h.userId, localDayOf(AT));
+
+        expect((await h.scheduler.tick()).outcomes).toEqual([
+            { kind: "deferred", until: nextLocalDay(AT) },
+        ]);
+        expect(calls).toEqual([]);
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(AT),
+        });
+        // The occurrence is lost, not the series — and the user is told once a
+        // day rather than once a firing.
+        expect(pushed(h.socket)).toHaveLength(1);
+        expect(pushed(h.socket)[0].kind).toBe("job.missed");
+    });
+
+    it("continues a series whose firing a restart interrupted", async () => {
+        const h = harness({ at: AT });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+        h.store.claimJob("j1");
+        h.store.startJobRun({
+            id: "run-old",
+            jobId: "j1",
+            startedAt: "2026-10-20T08:00:00.000Z",
+        });
+
+        expect(await h.scheduler.recover()).toBe(1);
+
+        // The attempt failed — the process making it died — but the schedule did
+        // not, so the job is owed again rather than over.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(AT),
+        });
+        expect(h.store.listJobRuns("j1")[0]).toMatchObject({
+            state: "failed",
+            error: "the server restarted while this run was in progress",
+        });
+        // Nothing to say: the next firing will speak.
+        expect(pushed(h.socket)).toEqual([]);
+    });
+
+    it("trims a series' runs", async () => {
+        const { agent } = fakeAgent("Morning summary");
+        const h = harness({ at: AT, actor: agent, runsToKeep: 2 });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+        for (const hour of ["06", "07", "08"]) {
+            h.store.startJobRun({
+                id: `old-${hour}`,
+                jobId: "j1",
+                startedAt: `2026-10-20T${hour}:00:00.000Z`,
+            });
+        }
+
+        await h.scheduler.tick();
+
+        expect(h.store.listJobRuns("j1")).toHaveLength(2);
     });
 });

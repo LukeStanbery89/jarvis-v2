@@ -170,6 +170,24 @@ const JOB_INDEXES = `CREATE INDEX IF NOT EXISTS idx_jobs_due
 CREATE INDEX IF NOT EXISTS idx_jobs_user
     ON jobs (user_id, created_at DESC);`;
 
+/**
+ * The day's model-run count (#90 phase 8c): one row per account per local day.
+ *
+ * A *budget* rather than a throttle, which is why it is a row here and not an
+ * in-memory limiter like the server's: the question is "how much model work has
+ * this account's schedule asked for today", and a restart must not hand the
+ * day's allowance back — exactly when a runaway job would spend it again. The
+ * server owns the limit and the meaning of a day; this table owns the count.
+ *
+ * Never pruned: one row per day is 365 rows a year.
+ */
+const JOB_MODEL_RUNS_TABLE = `CREATE TABLE IF NOT EXISTS job_model_runs (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day     TEXT NOT NULL,
+    runs    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+)`;
+
 const JOBS_SCHEMA = `${jobsTable("jobs")};
 ${JOB_INDEXES}
 CREATE TABLE IF NOT EXISTS job_runs (
@@ -182,7 +200,8 @@ CREATE TABLE IF NOT EXISTS job_runs (
     error       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_job
-    ON job_runs (job_id, started_at DESC);`;
+    ON job_runs (job_id, started_at DESC);
+${JOB_MODEL_RUNS_TABLE};`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -809,6 +828,34 @@ export interface JobLedger {
      * under the caller — or `null` when the id is gone.
      */
     settleJobRun(input: SettleFiringInput): AppJob | null;
+    /**
+     * Puts a *claimed* job back in the queue at a new moment, unchanged in every
+     * other way (#90 phase 8c).
+     *
+     * The sibling of {@link rescheduleJob} for the one case that one cannot
+     * cover: a repeating job whose slot passed while nobody was looking, where a
+     * claim is already held. No run row, because nothing was attempted — the same
+     * honesty a quiet-hours deferral keeps. Guarded on `running` like the re-arm
+     * inside {@link settleJobRun}, so a job cancelled mid-run stays cancelled and
+     * a stale caller cannot move a finished one.
+     *
+     * @returns The row after the attempt — unchanged when it was not `running`
+     * — or `null` when the id is gone.
+     */
+    rearmJob(id: string, runAt: string, error?: string): AppJob | null;
+    /**
+     * How much model work this account's schedule has spent today (#90 phase
+     * 8c), for the daily budget.
+     *
+     * `day` is the caller's local calendar day (`YYYY-MM-DD`): the budget is a
+     * human's day, not UTC's.
+     */
+    countModelRuns(userId: number, day: string): number;
+    /**
+     * Charges one model-calling run to the day's budget. Called after the payload
+     * actually ran — a gate skip or a deferred firing spends nothing.
+     */
+    recordModelRun(userId: number, day: string): void;
     /**
      * Moves a still-pending job's moment — how a reminder defers itself out of
      * quiet hours (#90 2b).
@@ -1669,6 +1716,14 @@ ${NOTIFICATION_INDEXES}`);
         }
         db.pragma("user_version = 13");
     }
+    if (version < 14) {
+        // v14: the daily model-run budget (#90 phase 8c). A table rather than a
+        // column, so unlike the ALTERs above it is idempotent on its own —
+        // `IF NOT EXISTS` is the guard, and a fresh database already has it
+        // through `SCHEMA`.
+        db.exec(JOB_MODEL_RUNS_TABLE);
+        db.pragma("user_version = 14");
+    }
 }
 
 export function openAppDatabase(
@@ -1749,6 +1804,8 @@ export class SqliteAppDatabase implements AppDatabase {
         pruneJobs: Database.Statement;
         pruneJobRuns: Database.Statement;
         rearmJob: Database.Statement;
+        countModelRuns: Database.Statement;
+        recordModelRun: Database.Statement;
     };
 
     constructor(db: Database.Database, options?: AppDatabaseOptions) {
@@ -2022,6 +2079,12 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             // Runs are history too, and a gated job firing every five minutes
             // writes 288 of them a day: the newest survive.
+            countModelRuns: db.prepare(
+                "SELECT runs FROM job_model_runs WHERE user_id = ? AND day = ?",
+            ),
+            recordModelRun: db.prepare(
+                "INSERT INTO job_model_runs (user_id, day, runs) VALUES (?, ?, 1) ON CONFLICT (user_id, day) DO UPDATE SET runs = runs + 1",
+            ),
             pruneJobRuns: db.prepare(
                 `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
@@ -2620,6 +2683,21 @@ export class SqliteAppDatabase implements AppDatabase {
     settleJobRun(input: SettleFiringInput): AppJob | null {
         this.settleFiring(input);
         return this.jobById(input.jobId);
+    }
+
+    rearmJob(id: string, runAt: string, error?: string): AppJob | null {
+        this.statements.rearmJob.run(runAt, error ?? null, id);
+        return this.jobById(id);
+    }
+
+    countModelRuns(userId: number, day: string): number {
+        const row = this.statements.countModelRuns.get(userId, day) as
+            { runs: number } | undefined;
+        return row?.runs ?? 0;
+    }
+
+    recordModelRun(userId: number, day: string): void {
+        this.statements.recordModelRun.run(userId, day);
     }
 
     /**
