@@ -582,6 +582,140 @@ export function repeatExhausted(repeat: JobRepeat, attempts: number): boolean {
     return ends !== undefined && "after" in ends && attempts >= ends.after;
 }
 
+/** A weekday spelled out, as a person says it. */
+const WEEKDAY_NAMES: Record<Weekday, string> = {
+    su: "Sunday",
+    mo: "Monday",
+    tu: "Tuesday",
+    we: "Wednesday",
+    th: "Thursday",
+    fr: "Friday",
+    sa: "Saturday",
+};
+
+/** The five weekdays, in calendar order — what "every weekday" means. */
+const BUSINESS_DAYS: readonly Weekday[] = ["mo", "tu", "we", "th", "fr"];
+
+/** `"Monday"` / `"Monday and Tuesday"` / `"Monday, Tuesday and Saturday"`. */
+function listOf(names: readonly string[]): string {
+    if (names.length === 1) {
+        return names[0];
+    }
+    return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** `1st`, `2nd`, `3rd`, `4th`, `11th`… — how a day of the month reads. */
+function ordinalNumber(value: number): string {
+    const tens = value % 100;
+    const suffix =
+        tens >= 11 && tens <= 13
+            ? "th"
+            : value % 10 === 1
+              ? "st"
+              : value % 10 === 2
+                ? "nd"
+                : value % 10 === 3
+                  ? "rd"
+                  : "th";
+    return `${value}${suffix}`;
+}
+
+/** `first`…`fifth`, for an ordinal weekday. */
+const ORDINAL_WORDS = ["", "first", "second", "third", "fourth", "fifth"];
+
+/**
+ * A rule in the words a person would use (#90 phase 8d).
+ *
+ * Shared rather than rendered per surface, which is the point: the model says
+ * this sentence back when it sets a schedule, the page shows the same line on the
+ * job's row, and a preview that read differently from the confirmation would be
+ * worse than no preview. The clock is the anchor's own local reading — the same
+ * assumption the scheduler makes everywhere — and what a series *ends* stays with
+ * the caller, which has the date formatting the rule does not.
+ *
+ * The union inside a month reads long on purpose ("on the 1st and the second
+ * Tuesday of every month"): it is the shape a person asked for, and shortening it
+ * would hide which days are in it.
+ *
+ * @param repeat - The rule, as {@link parseJobRepeat} produced it.
+ * @returns The cadence, in plain words.
+ */
+export function describeRepeat(repeat: JobRepeat): string {
+    const anchor = new Date(Date.parse(repeat.start));
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const clock = `${pad(anchor.getHours())}:${pad(anchor.getMinutes())}`;
+    const { interval } = repeat;
+
+    if (repeat.every === "minute") {
+        return interval === 1 ? "every minute" : `every ${interval} minutes`;
+    }
+    if (repeat.every === "hour") {
+        return interval === 1 ? "every hour" : `every ${interval} hours`;
+    }
+    if (repeat.every === "day") {
+        return interval === 1
+            ? `every day at ${clock}`
+            : `every ${interval} days at ${clock}`;
+    }
+    if (repeat.every === "week") {
+        const days = repeat.weekdays ?? [];
+        const names = days.map((day) => WEEKDAY_NAMES[day]);
+        const everyDay =
+            days.length === BUSINESS_DAYS.length &&
+            BUSINESS_DAYS.every((day) => days.includes(day));
+        const which = everyDay ? "every weekday" : `every ${listOf(names)}`;
+        return interval === 1
+            ? `${which} at ${clock}`
+            : `every ${interval} weeks on ${listOf(names)} at ${clock}`;
+    }
+
+    // A month: days of the month and ordinal weekdays first, because "on the
+    // 1st" is a day and "every Monday" is a set of them.
+    const days = repeat.monthDays ?? [];
+    const parts = days.map((day) =>
+        day < 0 ? "last day" : ordinalNumber(day),
+    );
+    for (const ordinal of repeat.weekOrdinals ?? []) {
+        const parsed = /^(-?)([1-5])(su|mo|tu|we|th|fr|sa)$/.exec(ordinal);
+        if (parsed !== null) {
+            const [, sign, count, weekday] = parsed;
+            parts.push(
+                `${sign === "-" ? "last" : ORDINAL_WORDS[Number(count)]} ${WEEKDAY_NAMES[weekday as Weekday]}`,
+            );
+        }
+    }
+    const weekdays = repeat.weekdays ?? [];
+    const named = parts.length > 0;
+    if (named) {
+        // One article for the whole list ("the 1st and 15th"), and a weekday set
+        // brings its own "every" so a union shows both halves rather than hiding
+        // one behind the other's grammar.
+        const weekdaysText =
+            weekdays.length === 0
+                ? []
+                : [
+                      weekdays.length === BUSINESS_DAYS.length &&
+                      BUSINESS_DAYS.every((day) => weekdays.includes(day))
+                          ? "every weekday"
+                          : `every ${listOf(weekdays.map((day) => WEEKDAY_NAMES[day]))}`,
+                  ];
+        const on = `the ${listOf([...parts, ...weekdaysText])}`;
+        return interval === 1
+            ? `on ${on} of every month at ${clock}`
+            : `every ${interval} months on ${on} at ${clock}`;
+    }
+    // Only weekdays were named: "every Monday of every month".
+    const everyDay =
+        weekdays.length === BUSINESS_DAYS.length &&
+        BUSINESS_DAYS.every((day) => weekdays.includes(day));
+    const which = everyDay
+        ? "every weekday"
+        : `every ${listOf(weekdays.map((day) => WEEKDAY_NAMES[day]))}`;
+    return interval === 1
+        ? `${which} of every month at ${clock}`
+        : `every ${interval} months on ${which} of every month at ${clock}`;
+}
+
 /** A clock reading one wall clock's worth of fields, for validation. */
 function isWholeNumber(value: unknown): value is number {
     return typeof value === "number" && Number.isInteger(value);

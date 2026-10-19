@@ -49,6 +49,7 @@ import type {
     JobCreatorDeps,
     JobPayload,
 } from "../../scheduler/create";
+import { describeRepeat, parseJobRepeat } from "@lukestanbery/jarvis-protocol";
 import { format12Hour } from "./clock";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AppJob } from "@lukestanbery/jarvis-auth";
@@ -121,10 +122,31 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             class: NotificationClass;
             payload: JobPayload;
             runAt: Date;
+            /** The rule the model stated, already anchored (#90 phase 8d). */
+            repeat?: unknown;
             at: Date;
         },
     ): CreateOutcome {
         return creator.create(userId, request);
+    }
+
+    /**
+     * The rule the model stated, anchored at the moment its words resolved to.
+     *
+     * The anchor is the point of this function: the model names a time in words
+     * and the resolver turns it into the *first occurrence*, which is exactly
+     * what a rule's `start` is. Doing it here means the model never handles a
+     * timestamp and a series still fires at the clock the user said.
+     */
+    function anchoredRule(
+        stated: Record<string, unknown>,
+        first: Date,
+    ): Record<string, unknown> {
+        return {
+            ...stated,
+            interval: stated.interval ?? 1,
+            start: first.toISOString(),
+        };
     }
 
     /** Creation guard shared by the three creating tools. */
@@ -154,6 +176,76 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         .describe(
             "The headline the user will see, written to stand on its own " +
                 "('Call Mum', 'Pasta', 'Porch lights on').",
+        );
+
+    /**
+     * The rule, as the model states it (#90 phase 8d).
+     *
+     * There is no `start` here on purpose: the model names *when* in words
+     * (`at`/`onDate`/`inMinutes`), the resolver turns that into the first
+     * occurrence, and that instant becomes the rule's anchor. A model that could
+     * pass a timestamp could pass a wrong one — the same discipline that keeps
+     * `runAt` out of its hands.
+     *
+     * `interval` is optional because "every week" is how people say it: omitted
+     * means one. `ends.after` is a *count* rather than an end date for the same
+     * reason — a count is arithmetic the model can do, a date is a timestamp it
+     * cannot. An end date belongs to the page, where a picker produces one.
+     */
+    const repeatSchema = z
+        .object({
+            every: z
+                .enum(["minute", "hour", "day", "week", "month"])
+                .describe("The unit the interval counts in."),
+            interval: z
+                .number()
+                .int()
+                .min(1)
+                .max(1000)
+                .optional()
+                .describe(
+                    "How many units between repeats: 3 for 'every three " +
+                        "weeks'. Omit for every one.",
+                ),
+            weekdays: z
+                .array(z.enum(["su", "mo", "tu", "we", "th", "fr", "sa"]))
+                .min(1)
+                .optional()
+                .describe(
+                    "For a weekly (or monthly) repeat: the days of the week, " +
+                        "e.g. ['mo','tu','sa'] for 'every Monday, Tuesday and " +
+                        "Saturday', or all of mo-fr for 'every weekday'.",
+                ),
+            monthDays: z
+                .array(z.number().int().min(-31).max(31))
+                .min(1)
+                .optional()
+                .describe(
+                    "For a monthly repeat: days of the month, 1-31, or " +
+                        "negative to count back from the end (-1 is 'the last " +
+                        "day'). [1] is 'the first of every month'.",
+                ),
+            weekOrdinals: z
+                .array(z.string().regex(/^-?[1-5](su|mo|tu|we|th|fr|sa)$/))
+                .min(1)
+                .optional()
+                .describe(
+                    "For a monthly repeat: an ordinal weekday, like '2tu' " +
+                        "('the second Tuesday') or '-1fr' ('the last Friday').",
+                ),
+            ends: z
+                .object({ after: z.number().int().min(1) })
+                .optional()
+                .describe(
+                    "When the series stops, in firings: { after: 4 } for " +
+                        "'four times'. Omit to repeat until cancelled.",
+                ),
+        })
+        .describe(
+            "How this repeats. Omit for a job that runs once. A timer cannot " +
+                "repeat — use remindMe for something that comes back. If the " +
+                "user's phrasing could mean two different schedules, ASK which " +
+                "they mean instead of choosing one.",
         );
 
     const messageSchema = z
@@ -232,7 +324,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
 
     const remindMeTool = tool(
         async (
-            { label, message, at, onDate, inMinutes },
+            { label, message, at, onDate, inMinutes, repeat },
             runtime: ToolRuntime,
         ) => {
             const access = guard(runtime, "remindMe");
@@ -254,6 +346,9 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                         message: message ?? label,
                     },
                     runAt: when.at,
+                    ...(repeat !== undefined
+                        ? { repeat: anchoredRule(repeat, when.at) }
+                        : {}),
                     at: atTime,
                 }),
                 atTime,
@@ -298,13 +393,14 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                         "A delay in minutes instead of a clock time, e.g. 20 " +
                             "for 'in twenty minutes'.",
                     ),
+                repeat: repeatSchema.optional(),
             }),
         },
     );
 
     const scheduleTaskTool = tool(
         async (
-            { label, tool: toolName, args, at, onDate, inMinutes },
+            { label, tool: toolName, args, at, onDate, inMinutes, repeat },
             runtime: ToolRuntime,
         ) => {
             const access = guard(runtime, "scheduleTask");
@@ -335,6 +431,9 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                         toolArgs: args ?? {},
                     },
                     runAt: when.at,
+                    ...(repeat !== undefined
+                        ? { repeat: anchoredRule(repeat, when.at) }
+                        : {}),
                     at: atTime,
                 }),
                 atTime,
@@ -386,6 +485,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     .number()
                     .optional()
                     .describe("A delay in minutes instead of a clock time."),
+                repeat: repeatSchema.optional(),
             }),
         },
     );
@@ -587,13 +687,30 @@ export function describeJob(job: AppJob, now: Date): string {
         job.kind === "tool" && job.toolName !== null
             ? ` (runs ${job.toolName})`
             : "";
-    return `"${job.label}" (job ${job.id}) — ${formatLocal(at, now)}, ${formatRelative(at, now)}${payload}`;
+    return `"${job.label}" (job ${job.id}) — ${formatLocal(at, now)}, ${formatRelative(at, now)}${payload}${repeatPhrase(job)}`;
+}
+
+/**
+ * The cadence clause on a job's line (#90 phase 8d), or `""` for a one-shot.
+ *
+ * The words come from the protocol's `describeRepeat`, so the sentence the model
+ * says when it sets a schedule is the sentence it reads back later — and the
+ * same words the page shows. An unreadable stored rule adds nothing rather than
+ * throwing: the runner warns about that case, and a tool that failed to *list* a
+ * job because its rule was corrupt would be worse than one that omits it.
+ */
+function repeatPhrase(job: AppJob): string {
+    if (job.repeat === null || job.repeat === undefined) {
+        return "";
+    }
+    const parsed = parseJobRepeat(job.repeat);
+    return parsed.ok ? `, repeating ${describeRepeat(parsed.repeat)}` : "";
 }
 
 /** One `listJobs` line: id, class, label, local time, relative time, payload. */
 export function formatJobLine(job: AppJob, now: Date): string {
     const at = new Date(job.runAt);
-    return `- ${job.id} (${job.class}) "${job.label}" — ${formatLocal(at, now)}, ${formatRelative(at, now)}`;
+    return `- ${job.id} (${job.class}) "${job.label}" — ${formatLocal(at, now)}, ${formatRelative(at, now)}${repeatPhrase(job)}`;
 }
 
 /**

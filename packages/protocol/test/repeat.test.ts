@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    describeRepeat,
     MAX_REPEAT_INTERVAL,
     nextOccurrence,
     parseJobRepeat,
@@ -411,6 +412,113 @@ describe("ends", () => {
                 500,
             ),
         ).toBe(false);
+    });
+});
+
+describe("describeRepeat (#90 phase 8d)", () => {
+    // Built in local time, so the phrase's clock is the fixture's own.
+    const at9 = new Date(2026, 0, 5, 9, 0).toISOString();
+
+    it("says an interval", () => {
+        expect(
+            describeRepeat(rule({ every: "minute", interval: 15, start: at9 })),
+        ).toBe("every 15 minutes");
+        expect(
+            describeRepeat(rule({ every: "hour", interval: 2, start: at9 })),
+        ).toBe("every 2 hours");
+        expect(describeRepeat(rule({ every: "day", start: at9 }))).toBe(
+            "every day at 09:00",
+        );
+        expect(
+            describeRepeat(rule({ every: "day", interval: 3, start: at9 })),
+        ).toBe("every 3 days at 09:00");
+    });
+
+    it("says a weekly set, and calls Monday to Friday a weekday", () => {
+        expect(
+            describeRepeat(
+                rule({
+                    every: "week",
+                    start: at9,
+                    weekdays: ["mo", "tu", "sa"],
+                }),
+            ),
+        ).toBe("every Monday, Tuesday and Saturday at 09:00");
+        expect(
+            describeRepeat(
+                rule({
+                    every: "week",
+                    start: at9,
+                    weekdays: ["mo", "tu", "we", "th", "fr"],
+                }),
+            ),
+        ).toBe("every weekday at 09:00");
+        expect(
+            describeRepeat(
+                rule({
+                    every: "week",
+                    interval: 2,
+                    start: at9,
+                    weekdays: ["mo"],
+                }),
+            ),
+        ).toBe("every 2 weeks on Monday at 09:00");
+    });
+
+    it("says a monthly day, ordinal, end or cadence", () => {
+        expect(
+            describeRepeat(
+                rule({ every: "month", start: at9, monthDays: [1] }),
+            ),
+        ).toBe("on the 1st of every month at 09:00");
+        expect(
+            describeRepeat(
+                rule({ every: "month", start: at9, monthDays: [1, 15] }),
+            ),
+        ).toBe("on the 1st and 15th of every month at 09:00");
+        expect(
+            describeRepeat(
+                rule({ every: "month", start: at9, monthDays: [-1] }),
+            ),
+        ).toBe("on the last day of every month at 09:00");
+        expect(
+            describeRepeat(
+                rule({ every: "month", start: at9, weekOrdinals: ["2tu"] }),
+            ),
+        ).toBe("on the second Tuesday of every month at 09:00");
+        expect(
+            describeRepeat(
+                rule({ every: "month", start: at9, weekOrdinals: ["-1fr"] }),
+            ),
+        ).toBe("on the last Friday of every month at 09:00");
+        expect(
+            describeRepeat(
+                rule({
+                    every: "month",
+                    interval: 3,
+                    start: at9,
+                    monthDays: [15],
+                }),
+            ),
+        ).toBe("every 3 months on the 15th at 09:00");
+    });
+
+    it("reads a union as both halves, and a weekday-only month as itself", () => {
+        expect(
+            describeRepeat(
+                rule({
+                    every: "month",
+                    start: at9,
+                    weekdays: ["mo"],
+                    monthDays: [1],
+                }),
+            ),
+        ).toBe("on the 1st and every Monday of every month at 09:00");
+        expect(
+            describeRepeat(
+                rule({ every: "month", start: at9, weekdays: ["mo"] }),
+            ),
+        ).toBe("every Monday of every month at 09:00");
     });
 });
 

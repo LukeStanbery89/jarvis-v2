@@ -53,6 +53,7 @@ export {
     REVOKED_TOKEN_ERROR,
 } from "./types";
 export {
+    describeRepeat,
     LOCAL_ZONE,
     MAX_REPEAT_INTERVAL,
     MAX_REPEAT_ORDINAL,

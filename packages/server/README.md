@@ -831,6 +831,26 @@ not have ("the 5th Monday") skips the month and the create flow says when the
 next one is, and something that can never exist ("the 32nd", "the 7th Monday") is
 refused. See the rule's own doc for the full semantics.
 
+### The scheduling tools (#90 phase 3; `repeat` in 8d)
+
+`remindMe` and `scheduleTask` take an optional **`repeat`** (#90 phase 8): the
+same rule object the REST surface sends, minus its anchor. The model states the
+schedule in fields — `every`/`interval`, `weekdays` for "every Monday and
+Saturday", `monthDays` for "the first of the month", `weekOrdinals` for "the
+second Tuesday", `ends.after` for a count — and names _when_ in words, exactly as
+it always has; the resolver turns those words into the first occurrence, which
+becomes the rule's `start`. The model never handles a timestamp, and a series
+still fires at the clock the user said.
+
+Two things the tool text does deliberately. It **states the schedule back**
+("Reminder scheduled: … repeating every Monday, Tuesday and Saturday at 09:00")
+alongside when it will next run, because a small local model writing `weekOrdinals`
+by hand is exactly where a silent mistake would land, and reading it back lets
+the user correct it in the same turn. And the scheduling hygiene paragraph tells
+the model to **ask rather than choose** when a phrase could mean two schedules —
+"every Monday and the 1st" is either every Monday plus the 1st or a Monday that
+is also the 1st — which is the one ambiguity the rule cannot resolve for it.
+
 ### The scheduling tools (#90 phase 3)
 
 Five tools, and their split is the policy: **the class comes from which tool was

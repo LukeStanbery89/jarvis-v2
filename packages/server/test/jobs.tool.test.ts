@@ -750,3 +750,92 @@ describe("jobs tools: formatting", () => {
         })();
     });
 });
+
+describe("scheduling a repeating job (#90 phase 8d)", () => {
+    it("says the cadence back, and anchors the rule where the words pointed", async () => {
+        const h = harness();
+
+        const text = await h.call("remindMe", {
+            label: "Standup",
+            at: "09:00",
+            repeat: { every: "week", weekdays: ["mo", "tu", "sa"] },
+        });
+
+        // The echo is the point: a model that mis-stated the days reads them
+        // back before the user has to wait for the first one.
+        expect(text).toMatch(/every Monday, Tuesday and Saturday at 09:00/);
+        const job = h.jobs()[0];
+        const rule = job?.repeat as {
+            every: string;
+            interval: number;
+            start: string;
+        };
+        expect(rule).toMatchObject({
+            every: "week",
+            interval: 1,
+            weekdays: ["mo", "tu", "sa"],
+        });
+        // The anchor is the instant the words resolved to, at the clock they
+        // named...
+        const anchor = new Date(rule.start);
+        expect([anchor.getHours(), anchor.getMinutes()]).toEqual([9, 0]);
+        // ...and the job is due at the rule's *next* occurrence, which is a day
+        // in the set rather than the anchor itself once that has passed.
+        const due = new Date(String(job?.runAt));
+        expect([due.getHours(), due.getMinutes()]).toEqual([9, 0]);
+        expect([1, 2, 6]).toContain(due.getDay());
+        expect(due.getTime()).toBeGreaterThan(anchor.getTime());
+    });
+
+    it("carries the count it was given", async () => {
+        const h = harness();
+
+        const text = await h.call("scheduleTask", {
+            label: "Water the plants",
+            tool: "getCurrentTime",
+            args: { question: "what time is it" },
+            at: "10:00",
+            repeat: { every: "minute", interval: 30, ends: { after: 12 } },
+        });
+
+        expect(text).toMatch(/every 30 minutes/);
+        expect(h.jobs()[0]?.repeat).toMatchObject({
+            every: "minute",
+            interval: 30,
+            ends: { after: 12 },
+        });
+    });
+
+    it("refuses what this server will not keep, in the model's words", async () => {
+        const h = harness();
+
+        // A reminder that fires every five minutes announces every firing.
+        const tooFast = await h.call("remindMe", {
+            label: "Nag",
+            inMinutes: 60,
+            repeat: { every: "minute", interval: 5 },
+        });
+        expect(tooFast).toMatch(/every 5 minutes is too often/);
+
+        // Days of the week belong to a week or a month, which the rule says.
+        const mixed = await h.call("remindMe", {
+            label: "Misread",
+            at: "09:00",
+            repeat: { every: "day", weekdays: ["mo"] },
+        });
+        expect(mixed).toMatch(/applies to a week or month rule/);
+    });
+
+    it("lists a repeating job with its cadence", async () => {
+        const h = harness();
+        await h.call("remindMe", {
+            label: "Standup",
+            at: "09:00",
+            repeat: { every: "day" },
+        });
+
+        const text = await h.call("listJobs", {});
+
+        expect(text).toMatch(/repeating every day at 09:00/);
+    });
+});

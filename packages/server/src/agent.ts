@@ -272,7 +272,19 @@ const SCHEDULE_RULE =
     "same instruction twice. To move or cancel one, call listJobs for the " +
     "exact id and then " +
     "cancelJob or snoozeReminder; never create a second job to replace one " +
-    "you cannot find. The result says when it will run and whether quiet " +
+    "you cannot find. When they want something to happen *again* — 'every " +
+    "morning', 'on Mondays and Saturdays', 'the first of the month', 'the " +
+    "second Tuesday' — pass `repeat` (remindMe and scheduleTask take it; a " +
+    "timer is a countdown and never repeats, so say so and use remindMe). Put " +
+    "the days exactly as they were said: days of the week in `weekdays` as " +
+    "two-letter codes, a day of the month in `monthDays` (1-31, or -1 for the " +
+    "last day), and 'the second Tuesday' or 'the last Friday' in " +
+    "`weekOrdinals` as '2tu' or '-1fr'. Do not guess when a phrase could mean " +
+    "two things — 'every Monday and the 1st' is either every Monday plus the " +
+    "1st or a Monday that is also the 1st — ask which they mean. The result " +
+    "states the schedule back to you along with when it will next run: say " +
+    "both, so they can correct you now rather than later. The result says " +
+    "when it will run and whether quiet " +
     "hours will hold it — relay that rather than promising an interruption. " +
     "Never schedule anything the user did not ask for; a job is a " +
     "commitment you keep when nobody is watching.";
