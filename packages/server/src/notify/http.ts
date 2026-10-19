@@ -22,11 +22,13 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import {
     createCookieSessionProvider,
+    NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
 } from "@lukestanbery/jarvis-auth";
 import type { AppDatabase, AppNotification } from "@lukestanbery/jarvis-auth";
 import { MAX_NOTIFICATION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { authed, requireAuth, requireCsrf } from "../http/middleware";
+import { parseLimit } from "../http/params";
 import { sessionCookieName } from "../http/cookies";
 import { logger } from "../logger";
 import type { AppConfig } from "../config";
@@ -48,12 +50,19 @@ const MAX_LIMIT = 200;
 export interface NotificationResponse {
     id: string;
     kind: string;
+    class: string;
     priority: string;
     title: string;
     body?: string;
     state: string;
     requiresAnswer?: boolean;
     answer?: string;
+    /**
+     * The job this notification is about (#90 phase 5), when there is one. A
+     * page uses it to act on the notification's subject — a reminder's snooze
+     * — rather than on the notification itself.
+     */
+    jobId?: string;
     createdAt: string;
     deliveredAt?: string;
     settledAt?: string;
@@ -66,6 +75,7 @@ export function toNotificationResponse(
     return {
         id: notification.id,
         kind: notification.kind,
+        class: notification.class,
         priority: notification.priority,
         title: notification.title,
         ...(notification.body !== null ? { body: notification.body } : {}),
@@ -74,6 +84,7 @@ export function toNotificationResponse(
         ...(notification.answer !== null
             ? { answer: notification.answer }
             : {}),
+        ...(notification.jobId !== null ? { jobId: notification.jobId } : {}),
         createdAt: notification.createdAt,
         ...(notification.deliveredAt !== null
             ? { deliveredAt: notification.deliveredAt }
@@ -144,8 +155,10 @@ export function createNotificationRouter(
         route((req, res) => {
             const jarv = authed(req).jarv;
             const { notifications, unread } = service.list(jarv.user.id, {
-                limit: parseLimit(req.query.limit),
-                includeDismissed: parseBoolean(req.query.includeDismissed),
+                limit: parseLimit(req.query.limit, {
+                    fallback: DEFAULT_LIMIT,
+                    max: MAX_LIMIT,
+                }),
             });
             res.status(200).json({
                 notifications: notifications.map(toNotificationResponse),
@@ -229,6 +242,7 @@ export function createNotificationRouter(
  */
 function notificationInputFrom(body: unknown): {
     kind: string;
+    class?: AppNotification["class"];
     priority?: AppNotification["priority"];
     title: string;
     body?: string;
@@ -239,6 +253,18 @@ function notificationInputFrom(body: unknown): {
         throw new NotificationInputError("body must be a JSON object");
     }
     const candidate = body as Record<string, unknown>;
+    const notificationClass = candidate.class;
+    if (
+        notificationClass !== undefined &&
+        (typeof notificationClass !== "string" ||
+            !(NOTIFICATION_CLASSES as readonly string[]).includes(
+                notificationClass,
+            ))
+    ) {
+        throw new NotificationInputError(
+            `class must be one of ${NOTIFICATION_CLASSES.join(", ")}`,
+        );
+    }
     const priority = candidate.priority;
     if (
         priority !== undefined &&
@@ -252,6 +278,9 @@ function notificationInputFrom(body: unknown): {
     return {
         kind: requireString(candidate.kind, "kind"),
         title: requireString(candidate.title, "title"),
+        ...(notificationClass !== undefined
+            ? { class: notificationClass as AppNotification["class"] }
+            : {}),
         ...(priority !== undefined
             ? { priority: priority as AppNotification["priority"] }
             : {}),
@@ -307,37 +336,8 @@ function notificationId(value: unknown): string {
 }
 
 /**
- * Clamps a `limit` query parameter into the page bounds.
- *
- * Accepts a number as well as a string because the contract validator runs
- * with `coerceTypes`, which rewrites `req.query` in place — by the time a
- * handler sees `limit` it is already an integer, and a `typeof value !==
- * "string"` guard silently ignored every real request the spec advertises.
+ * Maps a thrown error onto the `{ error }` shape the API promises.
  */
-function parseLimit(value: unknown): number {
-    const parsed =
-        typeof value === "number"
-            ? value
-            : typeof value === "string" && value.length > 0
-              ? Number(value)
-              : Number.NaN;
-    if (!Number.isInteger(parsed) || parsed < 1) {
-        return DEFAULT_LIMIT;
-    }
-    return Math.min(parsed, MAX_LIMIT);
-}
-
-/**
- * Reads a boolean query parameter, in either the coerced or the raw form.
- *
- * Same reason as {@link parseLimit}: after validation `includeDismissed` is a
- * real boolean, so `=== "true"` was always false and the knob did nothing.
- */
-function parseBoolean(value: unknown): boolean {
-    return value === true || value === "true";
-}
-
-/** Maps a thrown error onto the `{ error }` shape the API promises. */
 function handleError(res: Response, err: unknown): void {
     if (err instanceof NotificationInputError) {
         res.status(400).json({ error: err.message });

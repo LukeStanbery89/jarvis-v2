@@ -15,11 +15,26 @@
  * State ownership: the wire frame never carries `state` — the record does —
  * so a frame merged over a record the user already read must not un-read it.
  * {@link mergeNotification} encodes exactly that.
+ *
+ * The **delivery class** (#90) is carried through as well, because it decides
+ * which surface a notification gets: a fired `timer` rings in a modal overlay
+ * until it is stopped, a `reminder` waits as a banner, and everything else is
+ * informational. {@link selectAlerts} is the single place that decision is
+ * made, so the overlay and the banner can never disagree about which row is
+ * the one demanding attention.
  */
+import type {
+    NotificationClass,
+    NotificationFrame,
+} from "@lukestanbery/jarvis-protocol";
+import type { Notification } from "./api";
+import { clockText, describeSpan } from "./clock";
+
+export type { NotificationClass };
 
 /** Lifecycle states, mirroring the REST schema's `Notification.state`. */
 export type NotificationState =
-    "pending" | "delivered" | "read" | "answered" | "dismissed";
+    "pending" | "delivered" | "read" | "answered" | "snoozed";
 
 /**
  * A notification as the client holds it: the live frame's fields, plus the
@@ -28,6 +43,12 @@ export type NotificationState =
 export interface ClientNotification {
     id: string;
     kind: string;
+    /**
+     * What kind of attention this asks for (#90), as the server decided it.
+     * Carried into the client rather than inferred from `kind`, because the
+     * ring/banner split must not depend on string-matching a producer's token.
+     */
+    class: NotificationClass;
     priority: string;
     title: string;
     body?: string;
@@ -35,6 +56,57 @@ export interface ClientNotification {
     requiresAnswer?: boolean;
     answer?: string;
     state: NotificationState;
+    /**
+     * The job this notification is about (#90), when a scheduler announcement
+     * produced it — the id `GET /api/jobs/{id}` answers for.
+     *
+     * Carried so an action on a *reminder* has something to write to: snoozing
+     * touches the job, not the notification row, and without the link the
+     * client could only guess which reminder a banner was about.
+     */
+    jobId?: string;
+}
+
+/**
+ * One live `notification` frame as the client stores it.
+ *
+ * A pushed notification is by definition delivered; the record may later say it
+ * was read on another device, which the next fetch wins ({@link mergeNotification}
+ * refuses to un-settle it). Pure and exported so class propagation is tested
+ * here rather than inferred in the React hook.
+ */
+export function fromFrame(
+    frame: NotificationFrame["notification"],
+): ClientNotification {
+    return {
+        id: frame.id,
+        kind: frame.kind,
+        class: frame.class,
+        priority: frame.priority,
+        title: frame.title,
+        ...(frame.body !== undefined ? { body: frame.body } : {}),
+        createdAt: frame.createdAt,
+        ...(frame.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        ...(frame.jobId !== undefined ? { jobId: frame.jobId } : {}),
+        state: "delivered",
+    };
+}
+
+/** One REST record as the client stores it (state and answer included). */
+export function fromRecord(record: Notification): ClientNotification {
+    return {
+        id: record.id,
+        kind: record.kind,
+        class: record.class,
+        priority: record.priority,
+        title: record.title,
+        ...(record.body !== undefined ? { body: record.body } : {}),
+        createdAt: record.createdAt,
+        ...(record.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        ...(record.answer !== undefined ? { answer: record.answer } : {}),
+        ...(record.jobId !== undefined ? { jobId: record.jobId } : {}),
+        state: record.state,
+    };
 }
 
 /** How many notifications the client keeps in memory (newest first). */
@@ -44,10 +116,13 @@ export const NOTIFICATION_LIMIT = 50;
  * Whether a state is final from the user's point of view.
  *
  * `pending` and `delivered` still want attention; the rest are done, and are
- * what {@link mergeNotification} refuses to overwrite.
+ * what {@link mergeNotification} refuses to overwrite. `snoozed` (#90 phase 6c)
+ * is final in exactly that sense: the deferral *is* the acknowledgement, so a row
+ * the user snoozed must not start asking again — and it must not count as unread,
+ * or the badge would keep the deferral in front of them.
  */
 export function isSettled(state: NotificationState): boolean {
-    return state === "read" || state === "answered" || state === "dismissed";
+    return state === "read" || state === "answered" || state === "snoozed";
 }
 
 /**
@@ -55,7 +130,7 @@ export function isSettled(state: NotificationState): boolean {
  *
  * A known id is replaced in place (the freshest content wins) **except** for a
  * settled state, which is preserved: a frame or a re-fetch must never resurrect
- * a notification the user has already read or dismissed. An unknown id is
+ * a notification the user has already read or deferred. An unknown id is
  * inserted by `createdAt`, so a frame that raced the page fetch lands in the
  * right order rather than always on top.
  */
@@ -80,14 +155,35 @@ export function mergeNotification(
 }
 
 /**
+ * Drops one notification from the list (#90 phase 9c).
+ *
+ * A dismissal is a *deletion* server-side, so the local list loses the row
+ * rather than settling it into a state: there is nothing left to show, count, or
+ * sort into a "dismissed" column, and the optimistic case is the same one the
+ * next fetch would report.
+ *
+ * @param list - The list to drop it from.
+ * @param id - The notification to remove.
+ * @returns The list without it (the same array when it was not there).
+ */
+export function removeNotification(
+    list: ClientNotification[],
+    id: string,
+): ClientNotification[] {
+    if (!list.some((item) => item.id === id)) {
+        return list;
+    }
+    return list.filter((item) => item.id !== id);
+}
+
+/**
  * Merges a fetched page into the local list.
  *
  * The page is authoritative for *content*; the local list may hold fresher
- * states (a dismissal that has not been re-fetched), which is why this is a
- * fold over {@link mergeNotification} rather than a replacement. Notifications
- * that exist locally but not in the page (dismissed ones are excluded from the
- * page) are kept, so a dismissal does not make the row vanish and reappear on
- * the next load.
+ * states (a read that has not been re-fetched), which is why this is a fold over
+ * {@link mergeNotification} rather than a replacement. Notifications that exist
+ * locally but not in the page are kept — the page is one *window* of a longer
+ * list, so absence is not deletion.
  */
 export function mergeNotificationPage(
     list: ClientNotification[],
@@ -141,26 +237,326 @@ export function selectBanner(
 }
 
 /**
+ * Whether a notification is worth interrupting for (#90 phase 6b).
+ *
+ * Two cases, and the reasoning is the whole policy:
+ *
+ * - A **reminder** exists for a moment, so one that has arrived is exactly what
+ *   the user asked to be told. It waits out quiet hours and it never rings,
+ *   which leaves the badge — too quiet for something a person deliberately
+ *   scheduled — so it toasts.
+ * - A timer that **failed or was missed** is the one timer that does not ring
+ *   (it has no moment to acknowledge) and it is still news: a countdown the user
+ *   set did not happen.
+ *
+ * Everything else deliberately does not toast. An informational notification is
+ * a record to read, and interrupting whatever page the user is on with it would
+ * make every tool that says something a popup; it has the badge and the list.
+ *
+ * @param notification - The row, or the fields that decide (so a frame can be
+ *   asked before it is stored).
+ * @returns True when this row should reach the floating toast.
+ */
+export function shouldToast(
+    notification: Pick<ClientNotification, "class" | "kind">,
+): boolean {
+    if (notification.class === "reminder") {
+        return true;
+    }
+    if (notification.class !== "timer") {
+        return false;
+    }
+    return (
+        notification.kind === "job.failed" || notification.kind === "job.missed"
+    );
+}
+
+/** How many toasts the corner shows at once (#90 phases 6b–6c). */
+export const TOAST_LIMIT = 3;
+
+/**
+ * The rows the floating toast stack shows, newest first, or none (#90 phase 6c).
+ *
+ * One at a time was phase 6b's rule, and it reads as a bug the first time several
+ * reminders land in the same minute: the newest takes the corner and the rest are
+ * only a badge. The *selection* rule is unchanged — {@link shouldToast}, unsettled,
+ * and never the timer that is ringing (structurally impossible, which the tests
+ * pin) — so what changed is where it stops: at {@link TOAST_LIMIT} rather than at
+ * the first match. Anything past the limit is still in the list and still counted.
+ *
+ * The account's master switch turns the whole corner off: it means "do not
+ * interrupt me", and a toast is an interruption.
+ *
+ * @param list - The client's notifications, newest first.
+ * @param context - The account's master switch.
+ * @returns Up to {@link TOAST_LIMIT} rows to show, newest first.
+ */
+export function selectToasts(
+    list: ClientNotification[],
+    context: { enabled: boolean },
+): ClientNotification[] {
+    if (!context.enabled) {
+        return [];
+    }
+    // One card per job (#90 phase 9a): a series' firings supersede each other on
+    // the server, and the stack says the same thing rather than filling itself
+    // with the same reminder. The list is newest-first, so the first card seen
+    // for a job is the one to keep.
+    const seen = new Set<string>();
+    const cards: ClientNotification[] = [];
+    for (const item of list) {
+        if (isSettled(item.state) || !shouldToast(item)) {
+            continue;
+        }
+        if (item.jobId !== undefined) {
+            if (seen.has(item.jobId)) {
+                continue;
+            }
+            seen.add(item.jobId);
+        }
+        cards.push(item);
+        if (cards.length === TOAST_LIMIT) {
+            break;
+        }
+    }
+    return cards;
+}
+
+/**
+ * How long a fired timer keeps the right to ring on next open.
+ *
+ * "Rings until acknowledged" is about the moment, not about a browser that was
+ * closed for a week: a timer that fired within a day still greets the user with
+ * the overlay (and says how late it is), while an older one stays unsettled in
+ * the list so the record is never lost — it just does not start shouting when
+ * the app opens.
+ */
+export const RING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Whether a notification asks for the ring overlay. */
+export function isRinging(
+    notification: ClientNotification,
+    context: { enabled: boolean; now: Date },
+): boolean {
+    // The master switch silences everything, a timer included: a row that
+    // reached this client through the list rather than a push was recorded
+    // *because* the server's gates said "not now".
+    if (!context.enabled) {
+        return false;
+    }
+    if (notification.class !== "timer") {
+        return false;
+    }
+    // Only a timer that actually fired is due. One that failed or was missed
+    // belongs in the list: an overlay whose Stop button stops nothing would be
+    // a lie about what the user is acknowledging.
+    if (notification.kind !== "job.finished") {
+        return false;
+    }
+    if (isSettled(notification.state)) {
+        return false;
+    }
+    const createdAt = Date.parse(notification.createdAt);
+    // An unreadable timestamp cannot be trusted to be "just now", and a timer
+    // is an interruption: fail closed rather than ring for something unknowable.
+    if (Number.isNaN(createdAt)) {
+        return false;
+    }
+    return context.now.getTime() - createdAt <= RING_MAX_AGE_MS;
+}
+
+/** What wants attention right now: the ringing timer and the banner row. */
+export interface AlertSelection {
+    /** The fired timer that should be ringing, or `null`. */
+    ring: ClientNotification | null;
+    /** What the in-app banner shows — never the ring target as well. */
+    banner: ClientNotification | null;
+}
+
+/**
+ * Splits the list into what rings and what reads.
+ *
+ * The ring target is the **oldest** ringing timer, so two timers that fired
+ * minutes apart queue: the one that has been waiting longest is acknowledged
+ * first, and the next takes over when it is stopped. The banner is the newest
+ * unsettled row that is not the ring target, so a firing timer appears in
+ * exactly one place — the thing this split exists to guarantee.
+ */
+export function selectAlerts(
+    list: ClientNotification[],
+    context: { enabled: boolean; now: Date },
+): AlertSelection {
+    let ring: ClientNotification | null = null;
+    for (const item of list) {
+        if (!isRinging(item, context)) {
+            continue;
+        }
+        if (
+            ring === null ||
+            Date.parse(item.createdAt) < Date.parse(ring.createdAt)
+        ) {
+            ring = item;
+        }
+    }
+    const banner = selectBanner(
+        ring === null ? list : list.filter((item) => item.id !== ring.id),
+    );
+    return { ring, banner };
+}
+
+/**
+ * The lead-ins a model writes when it restates a headline rather than adding to it.
+ *
+ * A reminder is one sentence, and a two-field design invites writing it twice:
+ * headline "Do a test" over body "Remind me to do a test". These are the phrasings
+ * that carry nothing the headline lacks — anything else is kept, because the body
+ * exists for detail the headline cannot hold.
+ */
+const RESTATEMENT_LEAD_INS = [
+    "remind me to",
+    "remind me that",
+    "remind me",
+    "reminder:",
+    "reminder",
+    "remember to",
+    "don't forget to",
+    "do not forget to",
+    "don't forget",
+    "don't let me forget to",
+] as const;
+
+/** Lower-case, one space between words, no trailing sentence punctuation. */
+function normalizeText(text: string): string {
+    return text
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/[.!?…]+$/, "");
+}
+
+/**
+ * A notification's body, or `null` when it only repeats its title (#90 phase 6c).
+ *
+ * The rule is deliberately narrow, because the failure it prevents is cosmetic and
+ * the damage a wrong guess could do is not: the body is dropped when it *is* the
+ * title after normalisation, or when it is the title behind one of
+ * {@link RESTATEMENT_LEAD_INS}. A body that says anything else survives — "change
+ * the AC filter in the hall" under "AC filter" is exactly what the field is for.
+ *
+ * One home for the decision, so the floating card, the list and the OS popup cannot
+ * disagree about what a notification says. A caller with no title to compare
+ * against (an OS popup built from a partial row) keeps the body.
+ *
+ * @param notification - The row, or whatever part of it the caller holds.
+ * @returns The body to render, or `null` when the title says it all.
+ */
+export function describeBody(notification: {
+    title?: string;
+    body?: string;
+}): string | null {
+    const body = notification.body;
+    if (body === undefined || body.trim() === "") {
+        return null;
+    }
+    const title =
+        notification.title === undefined
+            ? ""
+            : normalizeText(notification.title);
+    if (title === "") {
+        return body;
+    }
+    const normalized = normalizeText(body);
+    if (
+        normalized === title ||
+        RESTATEMENT_LEAD_INS.some((lead) => normalized === `${lead} ${title}`)
+    ) {
+        return null;
+    }
+    return body;
+}
+
+/**
+ * When the notification fired, in the user's own clock, plus how late it is:
+ * `due at 2:20 AM` or `due at 2:20 AM, 3 minutes ago`.
+ *
+ * The instant is rendered in the browser's local zone — a notification's
+ * `createdAt` is a real moment, so "when did this fire" is a local question
+ * even though the server's scheduling rules use its own clock.
+ */
+export function describeDue(
+    notification: Pick<ClientNotification, "createdAt">,
+    now: Date,
+): string {
+    const at = new Date(notification.createdAt);
+    if (Number.isNaN(at.getTime())) {
+        return "due now";
+    }
+    const clock = clockText(at);
+    const lateMs = now.getTime() - at.getTime();
+    if (lateMs < 60_000) {
+        return `due at ${clock}`;
+    }
+    return `due at ${clock}, ${describeSpan(lateMs)} ago`;
+}
+
+/**
+ * The short label a notification shows above its title: what kind of thing it
+ * is, plus how a scheduled one ended.
+ *
+ * The class is the server's decision and the outcome is the producer's `kind`,
+ * so this is presentation only — but it is the line that makes a banner say
+ * "Timer failed" rather than leaving the user to infer it from a body that
+ * mentions a tool. Pure and exported for tests.
+ */
+export function describeNotice(
+    notification: Pick<ClientNotification, "class" | "kind">,
+): string {
+    const outcome =
+        notification.kind === "job.failed"
+            ? "failed"
+            : notification.kind === "job.missed"
+              ? "missed"
+              : null;
+    const noun =
+        notification.class === "timer"
+            ? "Timer"
+            : notification.class === "reminder"
+              ? "Reminder"
+              : "Notification";
+    return outcome === null ? noun : `${noun} ${outcome}`;
+}
+
+/**
  * A lifecycle state in plain language, for the list.
  *
  * The distinction that matters to a user asking "why did nothing pop up?" is
  * `pending` versus `delivered`: a pending notification was *recorded* while no
- * client was listening (or while quiet hours or the delivery budget held it
- * back), so it is waiting to be read rather than lost. Bare `pending` reads as
- * an error; this says what actually happened.
+ * announcement was pushed — because no client was listening, or because a gate
+ * held it back (quiet hours, the delivery budget, the user's own switch). Which
+ * of those it was is not stored on the record, so this says only what is true
+ * in every case: it was recorded, and it was not announced. The old wording
+ * named one cause ("while you were away") and was therefore wrong for the rest
+ * — and quietly wrong copy is the exact failure this area exists to remove.
+ * The gate that refused a push is reported to whoever raised it (the tool
+ * result, the test button's outcome line).
+ *
+ * Bare `pending` reads as an error; this says what actually happened.
  */
 export function describeNotificationState(state: NotificationState): string {
     switch (state) {
         case "pending":
-            return "not announced — recorded while you were away";
+            return "recorded — not announced";
         case "delivered":
             return "new";
         case "read":
             return "read";
         case "answered":
             return "answered";
-        case "dismissed":
-            return "dismissed";
+        case "snoozed":
+            // Bare, because the page that lists a snoozed row knows which job it
+            // came from and can say "until 7:00 AM" (`describeSnooze`) — this
+            // function has only the state to go on.
+            return "snoozed";
     }
 }
 
@@ -195,7 +591,7 @@ export function describeDelivery(
 export type NotificationSuppression =
     "disabled" | "quiet-hours" | "absent" | "cap";
 
-/** How many notifications are neither read nor dismissed (the badge count). */
+/** How many notifications are unsettled (the badge count). */
 export function unreadCount(list: ClientNotification[]): number {
     return list.filter((item) => !isSettled(item.state)).length;
 }

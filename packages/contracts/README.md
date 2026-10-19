@@ -104,6 +104,12 @@ check:endpoints` regenerates the endpoint tables the same way (`build`
 4. Run the root `npm run check` (the workspace `build` chain runs the checked
    typegen, endpoint tables, bundle, lint, and validate in dependency order).
 
+`src/generated/` is in the root `.prettierignore`: `check-generated` compares it
+byte-for-byte against the generator's own output, which is the stronger guard,
+and a long literal union is emitted on one line that Prettier would split — so
+the two cannot both be satisfied by hand. Never hand-edit either generated
+artifact; regenerate it.
+
 ## Notes for maintainers
 
 - The package is deliberately **spec + tooling only**: no runtime

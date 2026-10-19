@@ -16,6 +16,24 @@
  * queueing logic is testable in node without WebAudio.
  */
 
+/** How often a ringing timer repeats its chime, in milliseconds. */
+export const RING_INTERVAL_MS = 3000;
+
+/**
+ * How much alarm audio is queued ahead on the context clock, in milliseconds.
+ *
+ * A background tab's `setInterval` is throttled — Chrome clamps it to once a
+ * minute after five minutes hidden — so a chime-per-tick alarm would go quiet
+ * exactly when the tab is in the background, which is the normal place a timer
+ * finds you. Web Audio scheduling is not throttled: queue minutes of pattern
+ * in advance and top it up; a fully throttled top-up still lands well inside
+ * the window it queued, so the alarm never gaps.
+ */
+const RING_LOOKAHEAD_MS = 120_000;
+
+/** How often the queued alarm is topped back up. */
+const RING_TOPUP_MS = 30_000;
+
 /** Options for {@link AudioPlayer}. */
 export interface AudioPlayerOptions {
     /**
@@ -36,6 +54,12 @@ export class AudioPlayer {
     /** Earliest time the next queued buffer may start (context clock). */
     private nextStart = 0;
     private sources: AudioBufferSourceNode[] = [];
+    /** The top-up timer for a ringing alarm, or `null` when nothing rings. */
+    private ringTimer: ReturnType<typeof setInterval> | null = null;
+    /** Context-clock instant the alarm has been queued through, in seconds. */
+    private ringScheduledUntil = 0;
+    /** Queued tones, so Stop silences the look-ahead as well as the loop. */
+    private ringTones: OscillatorNode[] = [];
     private readonly listeners = new Set<() => void>();
     private speaking = false;
     private readonly createContext: () => AudioContext | null;
@@ -88,7 +112,14 @@ export class AudioPlayer {
             // The snapshot flips as soon as the context runs; announce it, so
             // a store keyed on it (the barge-in watch's window, #114) sees the
             // audio it was told about.
-            void ctx.resume().then(() => this.notify());
+            void ctx.resume().then(() => {
+                this.notify();
+                // A timer can fire before the first gesture; the overlay waits,
+                // and the alarm starts the moment the browser lets sound out.
+                if (this.ringTimer !== null) {
+                    this.scheduleRing();
+                }
+            });
         }
     }
 
@@ -168,8 +199,109 @@ export class AudioPlayer {
         osc.stop(ctx.currentTime + 0.18);
     }
 
+    /**
+     * Starts the timer ring (#90 phase 4): a three-tone alarm, queued minutes
+     * ahead on the audio clock and topped up until {@link stopRing}.
+     *
+     * Deliberately not the wake cue ({@link blip}) — that one is a nudge, this
+     * one has to be impossible to ignore — and deliberately **off** the
+     * `speaking` signal, so a ringing timer does not look like the assistant
+     * talking (the barge-in watch keys on that, #114).
+     *
+     * Deliberately not one chime per `setInterval` either: hidden tabs throttle
+     * timers, and a timer is most likely to fire while the tab is hidden. The
+     * pattern is scheduled in advance and re-armed, so the throttled path only
+     * affects the top-up, never the sound.
+     *
+     * A suspended context is silent, not a failure: {@link unlock} (from any
+     * first gesture) schedules the alarm where the user left it.
+     *
+     * Idempotent: a second timer taking over the overlay keeps the loop it
+     * already has rather than restarting the pattern.
+     */
+    startRing(): void {
+        if (this.ringTimer !== null) {
+            return;
+        }
+        this.ringScheduledUntil = 0;
+        this.scheduleRing();
+        this.ringTimer = setInterval(() => this.scheduleRing(), RING_TOPUP_MS);
+        // Node timers would otherwise hold a test process open; browsers have
+        // no `unref`, so this is structural rather than a typed API.
+        (this.ringTimer as { unref?: () => void }).unref?.();
+    }
+
+    /** Stops the ring, including every tone already queued ahead. */
+    stopRing(): void {
+        if (this.ringTimer !== null) {
+            clearInterval(this.ringTimer);
+            this.ringTimer = null;
+        }
+        for (const tone of this.ringTones) {
+            try {
+                tone.stop();
+            } catch {
+                // Already ended: stopping it again is a no-op, never an error.
+            }
+        }
+        this.ringTones = [];
+        this.ringScheduledUntil = 0;
+    }
+
+    /**
+     * Queues the alarm pattern from where it left off to the look-ahead
+     * horizon. Called on start and on every top-up tick.
+     */
+    private scheduleRing(): void {
+        const ctx = this.ensureContext();
+        if (ctx === null || ctx.state === "suspended") {
+            return;
+        }
+        const from = Math.max(ctx.currentTime, this.ringScheduledUntil);
+        const until = ctx.currentTime + RING_LOOKAHEAD_MS / 1000;
+        let at = from;
+        while (at < until) {
+            this.chimeAt(at);
+            at += RING_INTERVAL_MS / 1000;
+        }
+        this.ringScheduledUntil = at;
+    }
+
+    /**
+     * One alarm pattern starting at `start` on the context clock:
+     * `880 → 660 → 990 Hz`, short, with a decay so it reads as a chime rather
+     * than a tone.
+     */
+    private chimeAt(start: number): void {
+        const ctx = this.ensureContext();
+        if (ctx === null) {
+            return;
+        }
+        [880, 660, 990].forEach((frequency, index) => {
+            const at = start + index * 0.18;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = "triangle";
+            osc.frequency.setValueAtTime(frequency, at);
+            gain.gain.setValueAtTime(0.22, at);
+            gain.gain.exponentialRampToValueAtTime(0.001, at + 0.16);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(at);
+            osc.stop(at + 0.17);
+            this.ringTones.push(osc);
+            osc.onended = () => {
+                const queued = this.ringTones.indexOf(osc);
+                if (queued !== -1) {
+                    this.ringTones.splice(queued, 1);
+                }
+            };
+        });
+    }
+
     /** Stops playback and closes the context (view unmount). */
     dispose(): void {
+        this.stopRing();
         this.stop();
         if (this.ctx !== null) {
             void this.ctx.close();

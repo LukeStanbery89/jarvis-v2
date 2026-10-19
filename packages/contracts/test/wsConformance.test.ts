@@ -489,6 +489,7 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 notification: {
                     id: "3Ybq0kQmT1xVn8sRzWpLdA",
                     kind: "job.finished",
+                    class: "notification",
                     priority: "normal",
                     title: "The coding agent finished and opened PR #143",
                     body: "4 files changed, tests green.",
@@ -506,10 +507,32 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 notification: {
                     id: "3Ybq0kQmT1xVn8sRzWpLdA",
                     kind: "coding.question",
+                    class: "notification",
                     priority: "high",
                     title: "Which React version?",
                     createdAt: "2026-10-15T18:04:11.000Z",
                     requiresAnswer: true,
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.notification,
+            );
+        });
+
+        it("validates a job-linked notification frame (#90 phase 6a)", () => {
+            // A scheduler announcement carries the job behind it, which is what
+            // lets a client snooze the reminder rather than only acknowledge the
+            // notification it was shown.
+            const frame: ServerFrame = {
+                notification: {
+                    id: "3Ybq0kQmT1xVn8sRzWpLdA",
+                    kind: "job.finished",
+                    class: "reminder",
+                    priority: "normal",
+                    title: "Call Mum",
+                    createdAt: "2026-10-15T18:04:11.000Z",
+                    jobId: "0f3a91bc",
                 },
             };
             expectWireConformant(

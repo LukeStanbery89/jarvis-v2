@@ -13,6 +13,7 @@ import {
     describeBrowserNotifyState,
     loadBrowserNotifyPref,
     notificationBody,
+    notificationOptions,
     saveBrowserNotifyPref,
     shouldAnnounce,
 } from "./browserNotify";
@@ -34,6 +35,7 @@ function memoryStorage(): Storage {
 
 const baseContext = {
     enabled: true,
+    masterEnabled: true,
     permission: "granted",
     hidden: true,
     announced: new Set<string>(),
@@ -110,7 +112,7 @@ describe("shouldAnnounce", () => {
     });
 
     it("stays quiet for anything already settled", () => {
-        for (const state of ["read", "answered", "dismissed"]) {
+        for (const state of ["read", "answered", "snoozed"]) {
             expect(
                 shouldAnnounce(
                     { id: "n1", state },
@@ -121,8 +123,15 @@ describe("shouldAnnounce", () => {
                 ),
             ).toBe(false);
         }
-        // `pending` was never pushed, so it is worth announcing if it is the
-        // first thing this session sees.
+    });
+
+    it("stays quiet for a row the server recorded but never pushed (#90)", () => {
+        // This reverses the phase-2 rule, deliberately: a `pending` row is what
+        // the server's own gates produced (quiet hours, the switch, the budget,
+        // nobody connected), and the browser raising it as an OS interruption
+        // would be the client overruling the account's settings. The in-app
+        // list is where it appears — and for a timer that fired while this
+        // browser was closed, the ring overlay is what greets the user.
         expect(
             shouldAnnounce(
                 { id: "n1", state: "pending" },
@@ -131,7 +140,7 @@ describe("shouldAnnounce", () => {
                     announced: new Set<string>(),
                 },
             ),
-        ).toBe(true);
+        ).toBe(false);
     });
 });
 
@@ -202,5 +211,64 @@ describe("browserNotifyState", () => {
         for (const state of ["unsupported", "blocked", "off", "on"] as const) {
             expect(describeBrowserNotifyState(state).length).toBeGreaterThan(0);
         }
+    });
+});
+
+describe("the server's decision outranks the browser (#90)", () => {
+    it("announces only what the server actually pushed", () => {
+        // `pending` means recorded, not announced: quiet hours, the switch,
+        // the delivery budget, or nobody connected. The OS channel must not
+        // promote a row the server chose not to interrupt for.
+        for (const state of ["pending", "read", "answered", "snoozed"]) {
+            expect(
+                shouldAnnounce(
+                    { id: "n1", state },
+                    { ...baseContext, announced: new Set<string>() },
+                ),
+            ).toBe(false);
+        }
+    });
+
+    it("stays silent when the account has notifications switched off", () => {
+        expect(
+            shouldAnnounce(
+                { id: "n1", state: "delivered" },
+                { ...baseContext, masterEnabled: false },
+            ),
+        ).toBe(false);
+    });
+
+    it("makes a timer's popup sticky, and titles it as time up", () => {
+        expect(
+            notificationOptions({
+                id: "n1",
+                class: "timer",
+                title: "kettle",
+            } as { id: string; class: "timer" }),
+        ).toEqual({
+            body: "Your timer has finished.",
+            tag: "n1",
+            requireInteraction: true,
+        });
+    });
+
+    it("leaves quieter classes non-sticky, with their own body", () => {
+        expect(
+            notificationOptions({
+                id: "n2",
+                class: "reminder",
+                body: "About the tickets.",
+            } as { id: string; class: "reminder" }),
+        ).toEqual({
+            body: "About the tickets.",
+            tag: "n2",
+            requireInteraction: false,
+        });
+    });
+
+    it("keeps the answer hint for a question, never the timer line", () => {
+        expect(
+            notificationBody({ requiresAnswer: true, class: "notification" }),
+        ).toBe("J.A.R.V.I.S. needs your answer.");
     });
 });

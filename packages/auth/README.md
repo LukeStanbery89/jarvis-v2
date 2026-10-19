@@ -11,18 +11,18 @@ concern so consumers depend on narrow seams, never raw SQL.
 
 ## Files
 
-| File            | Responsibility                                                                                                                                                                                                                                                                                                                     |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                   |
-| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                          |
-| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                              |
-| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                         |
-| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & NotificationLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session + notification ledgers |
-| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                               |
-| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                           |
-| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                         |
-| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                             |
-| `README.md`     | this file                                                                                                                                                                                                                                                                                                                          |
+| File            | Responsibility                                                                                                                                                                                                                                                                                                                                       |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                                     |
+| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                                            |
+| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                                                |
+| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                                           |
+| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & NotificationLedger & JobLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session + notification + job ledgers |
+| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                                                 |
+| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                                             |
+| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                                           |
+| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                                               |
+| `README.md`     | this file                                                                                                                                                                                                                                                                                                                                            |
 
 The REST layer lives outside this package in the server's `src/http/` (`middleware.ts` = `requireAuth`
 [bearer-then-cookie fallback]/`requireOwner`/`requireCsrf` filling `req.jarv`; `cookies.ts` = the web-session
@@ -32,7 +32,7 @@ browser portal (#24) authenticates through, so the cookie provider and the CLI/d
 
 ## Ledger roles
 
-`AppDatabase` is an intersection of five narrower roles, so consumers depend on
+`AppDatabase` is an intersection of narrower roles, so consumers depend on
 only the surface they call:
 
 - `UserLedger` — account rows + stored password hashes (`getPasswordHash` is
@@ -56,17 +56,50 @@ only the surface they call:
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
 - `NotificationLedger` — JARVIS's outbound messages to a user (#139) over the
   `notifications` table: `createNotification` / `getNotification` /
-  `listNotifications` (newest first, dismissed hidden by default) /
-  `countUnreadNotifications` / `setNotificationState` / `pruneNotifications`.
+  `listNotifications` (newest first, the whole list) /
+  `countUnreadNotifications` / `setNotificationState` / `deleteNotification`
+  (what dismissing means, #90 phase 9c) / `pruneNotifications`.
   Every method scopes by `userId`, so a foreign id is indistinguishable from a
   missing one — the reason the REST layer needs no ownership check. The store
   owns _transitions_ (terminal states are terminal, `delivered_at` and
   `settled_at` are stamped by the states that imply them) while the server's
   notification service owns the _policy_ (when to push, quiet hours, caps,
   retention).
+- `JobLedger` — the scheduler's queue and history (#90) over the `jobs` and
+  `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
+  `moveJob` / `editJob` /
+  `listJobRuns` / `pruneJobs` / `pruneJobRuns`, plus the **scheduler-scoped**
+  half (`listDueJobs` / `claimJob` / `rescheduleJob` / `rearmJob` /
+  `startJobRun` / `finishJobRun` / `settleJob` / `settleJobRun`)
+  that no request handler may reach. `settleJobRun` is the one that records a
+  firing's ending — the run's row and the job's next state (owed again, or
+  settled) — as a single transaction, because the two are one fact; the
+  announcement stays outside it. `cancelJob` accepts a **repeating** job while
+  it runs (the firing in flight still reports; the series must not continue),
+  which is safe because the re-arm only fires on a row that is still `running`
+  — and a live repeating row is exempt from `pruneJobs`, whose `created_at`
+  never moves and which would otherwise be the first row age took. `rearmJob` is
+  the same move without the run row: a claimed job whose slot passed while nobody
+  was looking, which is why it needs the claim-scoped `running` guard rather than
+  `rescheduleJob`'s `pending` one. `editJob` carries the rule too, with the wire's own three states:
+  a rule to write, `null` to stop repeating, `undefined` to leave it — JSON cannot
+  spell `undefined`, so a request's absent field and its explicit `null` already
+  mean exactly those, and no sentinel is needed. `countModelRuns` / `recordModelRun` are the
+  scheduler's **daily model-run budget** (below), which is a count this package
+  owns because it has to outlive a restart. This is the one ledger with two surfaces
+  on purpose: a job belongs to one user, but the scheduler is a _process_
+  acting for every user at once, so it selects due work across accounts and
+  settles it by the id it claimed. `claimJob` is the load-bearing statement —
+  `state = 'pending'` sits in its WHERE clause, which is what makes a second
+  tick, or a process that restarted mid-run, unable to fire a job twice. The
+  user-scoped state changes (`cancelJob`, `moveJob`, `editJob`) put the same
+  `user_id` + `state = 'pending'` predicates in their own WHERE clauses, so
+  ownership and "still owed" are one statement rather than a read-then-write
+  window. The store owns rows and transitions; the server's scheduler owns the
+  _policy_ (what may be scheduled, what a run means, deferral, retention).
 
 The server's `createApp`/`attachChatServer` are the composition roots; the REST
-router and middleware span all five ledgers and therefore take the full
+router and middleware span every ledger and therefore take the full
 `AppDatabase`, while `createSessionManager` narrows to `SessionLedger`.
 
 ## Credential model
@@ -124,15 +157,70 @@ router and middleware span all five ledgers and therefore take the full
   settings stay in the environment. Reached through the `PrefLedger` accessors
   — the reserved home for the per-user integration state the web portal (#24)
   manages, from a consumer (v4 schema, planning-complete) onward.
-- `notifications` — one row per notification (#139, v7): producer `kind` +
-  `priority`, the `title`/`body` text, a `state` lifecycle (`pending` →
-  `delivered` → `read`/`answered`/`dismissed`, with `pending` → `read` legal
+- `notifications` — one row per notification (#139, v7; `class` added in v9,
+  `job_id` in v11, the state CHECK widened in v12 — both #90): producer `kind` +
+  `class` (the delivery policy — a `timer` pierces quiet hours, everything else
+  waits) + `priority` (display
+  emphasis only), the
+  `title`/`body` text, a `state` lifecycle (`pending` →
+  `delivered` → then the terminal set: `read`/`answered`/**`snoozed`** — and, for
+  the terminal state that left in #90 phase 9c, no row at all, since dismissal
+  deletes rather than files,
+  with `pending` → `read` legal
   for a notification the user found in the list rather than had pushed), an
   optional `requires_answer`, `dedupe_key`, and `answer`, plus the timestamps.
   Indexed on `(user_id, created_at DESC)` for the list; cascade-deleted with
   the user. `pending` is not an error state — it is the normal outcome for a
   user who was offline — so the table is also the delivery queue's record of
-  what still wants attention.
+  what still wants attention. `job_id` (nullable, `ON DELETE SET NULL`) is how
+  a scheduler announcement names the job it came from: it is what lets a
+  reminder row offer _snooze_ rather than only _dismiss_ (and what settles that
+  row when the snooze lands — `listNotificationsForJob` is how the server finds
+  it without guessing an id), and it is the one
+  link a notification needs, because everything else it says is already
+  rendered into its text. Jobs are pruned as history while a notification the
+  user was already shown stays true, so the prune clears the link and keeps the
+  row.
+- `jobs` — one row per scheduled job (#90, v8; rebuilt in v10 for `class` and
+  the `message` payload): `label`, `class` (the delivery class its announcement
+  carries — `notification`/`reminder`/`timer`), `kind` (`prompt`/`tool`/
+  `message`) with the prompt, the tool call, _or_ the message text (a CHECK
+  refuses a row whose payload does not match its kind), `run_at`, a `state`
+  lifecycle (`pending` → `running` → `done`/`failed`/`cancelled`/`missed`),
+  `attempts`, `last_error`, `gate` (the deterministic check a firing must pass,
+  as JSON, v15) and `repeat` (the recurrence rule as JSON, v13 —
+  read defensively: a value that will not parse comes back as its raw text, so
+  the scheduler can report a rule it cannot read rather than pretending the job
+  is a one-shot). Indexed on `(user_id, created_at DESC)` for the
+  owner's list and on `(run_at) WHERE state = 'pending'` — a partial index,
+  because the scheduler's claim feed only ever scans pending work. The v10
+  rebuild is the documented SQLite dance for widening a CHECK (which cannot be
+  altered in place), run with foreign keys off for the duration: `job_runs`
+  references `jobs`, and dropping the old table with enforcement on would
+  cascade a user's run history away. `missed` is deliberately
+  not `failed`: a job whose moment passed while the server was down was never
+  attempted.
+- `job_model_runs` — the daily model-run budget (#90 phase 8c): `user_id`, a
+  local `day` (`YYYY-MM-DD`) and a count, one row per account per day, never
+  pruned (a year is 365 rows). A _budget_ rather than a throttle, which is why it
+  is a row here instead of an in-memory limiter in the server: a restart must not
+  hand the day's allowance back, exactly when a runaway job would spend it again.
+  The server owns the ceiling and what a day means; this table owns the count.
+- `job_runs` — one row per attempt at a job: `started_at`/`finished_at`, the
+  run's `state` (`running`/`ok`/`failed`/`skipped`), the `output` it produced (the
+  reply, or a tool's result text) and the `error` it ended with. `skipped` is a
+  firing that _declined_ — a gate's check found nothing to do — which is why it is
+  a run rather than silence: one run row per firing is the trace this table owes.
+  `gate_output`/`gate_key` are that check's memory (#90 phase 8f): what it read,
+  and which check read it, so a changed gate is a different question rather than a
+  changed answer. Cascade-deleted with
+  its job even when the _job_ is pruned. The newest runs of each job are kept
+  (`pruneJobRuns`, 50 by default — comfortably above the detail endpoint's
+  page): a job that fires every few minutes writes one per firing, so the job
+  count no longer bounds this table. This is the job's observable history;
+  the model's own context lives in the LangGraph checkpoint under a `job:<id>`
+  thread that never enters the `sessions` ledger, which is what keeps a job's
+  runs out of the chat-thread list.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's

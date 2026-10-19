@@ -39,18 +39,37 @@ const appConfig = (
     ...over,
 });
 
-/** Bootstraps an owner with `username` and returns a bearer token for it. */
+/** A failure that says what came back, not only the status (#148). */
+function describeResponse(res: { status: number; body: unknown }): string {
+    return `${res.status} ${JSON.stringify(res.body).slice(0, 400)}`;
+}
+
+/**
+ * Bootstraps an owner with `username` and returns a bearer token for it.
+ *
+ * Both steps assert. This helper used to discard their responses, so any
+ * setup failure (`409` from a store that already had its owner, a throttled
+ * login, a config mismatch) became `Bearer undefined` on the next request —
+ * which then answered a well-formed `401` from a test that was about
+ * something else entirely. That is exactly the shape of the unexplained
+ * `413`-expected failure in #148: the route looked wrong, the setup was.
+ *
+ * Re-bootstrapping the same store is expected (`409 OWNER_EXISTS`) and is
+ * fine: the login below mints the token either way.
+ */
 async function bearerFor(
     app: ReturnType<typeof createApp>,
     username = "uploader",
 ): Promise<string> {
-    await request(app)
+    const booted = await request(app)
         .post("/api/bootstrap")
         .set("x-bootstrap-token", BOOTSTRAP)
         .send({ username, password: "hunter2pw", deviceName: "test" });
+    expect([201, 409], describeResponse(booted)).toContain(booted.status);
     const res = await request(app)
         .post("/api/auth/login")
         .send({ username, password: "hunter2pw" });
+    expect(res.status, describeResponse(res)).toBe(200);
     return res.body.device.token as string;
 }
 
@@ -116,7 +135,9 @@ describe("POST /api/attachments", () => {
             .post("/api/attachments")
             .set("Authorization", `Bearer ${token}`)
             .send({ data: "x".repeat(100 * 1024) });
-        expect(res.status).toBe(413);
+        // The body, not just the status: a 401 here (the token from a failed
+        // bootstrap) and a 500 (a different parser) both read the same without it.
+        expect(res.status, describeResponse(res)).toBe(413);
         expect(res.body).toMatchObject({
             code: "ATTACHMENT_TOO_LARGE",
             maxBytes: 10,

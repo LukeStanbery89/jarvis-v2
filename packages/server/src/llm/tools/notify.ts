@@ -159,10 +159,13 @@ export function createNotifyTool(deps: NotifyToolDeps) {
                 "is an interruption they have to act on. Write `title` as one " +
                 "short line that stands on its own — it is the headline they " +
                 "see — and put any detail in `body`. `priority` defaults to " +
-                "'normal': 'low' for something that can wait, 'high' only " +
-                "when it genuinely cannot, since 'high' interrupts the " +
-                "user's quiet hours while 'low' and 'normal' wait for them to " +
-                "end. The result says whether a connected client received it: " +
+                "'normal' and only changes how prominently the client shows " +
+                "it: 'low' for something that can wait, 'high' when the user " +
+                "should look sooner. It does not change *when* it arrives — " +
+                "quiet hours are the user's setting, and a notification sent " +
+                "this way waits for them to end whichever priority it " +
+                "carries. The result says whether a connected client " +
+                "received it: " +
                 "if it reports the notification was not pushed, tell the user " +
                 "it is waiting in their notification list instead of saying " +
                 "it appeared.",
@@ -185,9 +188,11 @@ export function createNotifyTool(deps: NotifyToolDeps) {
                     .enum(["low", "normal", "high"])
                     .optional()
                     .describe(
-                        "'low', 'normal' (the default), or 'high' — how much " +
-                            "this may interrupt. 'high' interrupts quiet " +
-                            "hours; use it only when it truly cannot wait.",
+                        "'low', 'normal' (the default), or 'high' — how " +
+                            "prominently the client shows this, not when it " +
+                            "is delivered. Quiet hours hold it regardless; " +
+                            "tell the user when you will come back rather " +
+                            "than trying to interrupt them through it.",
                     ),
             }),
         },

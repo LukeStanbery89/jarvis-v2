@@ -16,22 +16,40 @@ const OWW_SRC = path.join(
     findPackageRoot("openwakeword-web", CONFIG_DIR),
     "src",
 );
+/**
+ * The protocol's TypeScript sources: the workspace package next door, not a
+ * node_modules dependency (`findPackageRoot` above looks there; a sibling is a
+ * plain relative walk) — and `..`, not `../..`, because `CONFIG_DIR` is
+ * `packages/web`.
+ */
+const PROTOCOL_SRC = path.resolve(CONFIG_DIR, "..", "protocol", "src");
 
 /**
- * Dev server for the web chat client.
+ * Dev server for the web app.
  *
- * The built SPA is served by the JARVIS server at `/web` (see
- * `packages/server/src/app.ts`), so `base` is `/web/` and every asset and
- * route lives under that prefix. `npm run dev` serves the client on Vite's
- * default port with HMR and proxies `/api` and `/ws` (with WebSocket upgrade)
- * to the running JARVIS server, so the client dials the same same-origin
- * URLs it will use in production.
+ * The built SPA is served by the JARVIS server at `/` (see
+ * `packages/server/src/app.ts`): it is the app's front door, so `base` is `/`
+ * and every asset and route lives directly under the origin. `npm run dev`
+ * serves the app on Vite's default port with HMR and proxies `/api` and `/ws`
+ * (with WebSocket upgrade) to the running JARVIS server, so the app dials the
+ * same same-origin URLs it will use in production.
  *
- * `@lukestanbery/jarvis-protocol` is a linked workspace package whose build
- * output is CommonJS. Linked deps skip Vite's automatic pre-bundling, so in
- * dev it would otherwise be served raw and crash in the browser
- * (`exports is not defined` — a blank page; `vite build` bundles it fine).
- * Listing it in `optimizeDeps.include` forces the CJS→ESM pre-bundle.
+ * (Until #90 phase 6a the client lived at `/web` with `base: "/web/"`, and the
+ * server 301s that path to `/`.)
+ *
+ * `@lukestanbery/jarvis-voice` is a linked workspace package whose build output
+ * is CommonJS. Linked deps skip Vite's automatic pre-bundling, so in dev it would
+ * otherwise be served raw and crash in the browser (`exports is not defined` — a
+ * blank page; `vite build` bundles it fine). Listing it in
+ * `optimizeDeps.include` forces the CJS→ESM pre-bundle.
+ *
+ * `@lukestanbery/jarvis-protocol` used to be listed there for the same reason,
+ * and is now aliased to its sources instead (#90 phase 8e): the forced bundle is
+ * keyed on *this file*, not on the linked package's output, so a rebuild was
+ * invisible — and Vite serves dep bundles `immutable`, so the browser held the
+ * stale copy at an unchanged URL. Aliasing a pure TypeScript package costs
+ * nothing and cannot go stale. Voice carries the caveat still: after rebuilding
+ * it, hard-reload the browser.
  */
 export default defineConfig({
     plugins: [
@@ -45,7 +63,7 @@ export default defineConfig({
             },
         },
     ],
-    base: "/web/",
+    base: "/",
     resolve: {
         // `onnxruntime-web` ships a "use extern wasm" variant that loads its
         // wasm pair from `wasmPaths` at runtime instead of bundling it —
@@ -53,6 +71,22 @@ export default defineConfig({
         // staged `public/ort/` copy.
         conditions: ["onnxruntime-web-use-extern-wasm"],
         alias: [
+            {
+                // The protocol is aliased to its **source**, not pre-bundled
+                // (#90 phase 8e). It is pure TypeScript with no runtime deps, so
+                // Vite compiles it directly — and that is what makes a rebuild
+                // visible: a forced pre-bundle is content-addressed by *this
+                // config*, so editing the package produced a new bundle at the
+                // same URL, which Vite then serves `immutable` for a year. The
+                // browser kept the old copy, and the first new *export* to land
+                // in it (`parseJobRepeat`) crashed the reminders page with `is
+                // not a function` until the cache was cleared by hand.
+                //
+                // Bare entry only, like the two below: a subpath import must not
+                // be swallowed by the prefix match.
+                find: /^@lukestanbery\/jarvis-protocol$/,
+                replacement: path.join(PROTOCOL_SRC, "index.ts"),
+            },
             {
                 // Bare entry only — an unanchored find would swallow
                 // `openwakeword-web/microphone` too (rolldown aliases match
@@ -68,11 +102,12 @@ export default defineConfig({
     },
     optimizeDeps: {
         include: [
-            "@lukestanbery/jarvis-protocol",
-            // Same situation as the protocol: a linked workspace package
-            // whose build output is CommonJS. Without the forced pre-bundle
-            // the dev server serves voice's dist raw and every named import
-            // from it fails ("does not provide an export named …").
+            // The protocol is deliberately *not* here: it is aliased to its
+            // sources above, which is what keeps a rebuild visible. Voice still
+            // is, because its dist is CommonJS and Vite cannot compile it as-is —
+            // so it carries the same cache caveat: after rebuilding voice, hard
+            // reload (`the dep bundle is served immutable at a URL that does not
+            // change`).
             "@lukestanbery/jarvis-voice",
         ],
     },
@@ -85,6 +120,19 @@ export default defineConfig({
             "/ws": {
                 target: "ws://localhost:54321",
                 ws: true,
+            },
+            /**
+             * The admin portal is a **different app** on the real server
+             * (`/admin`, cookie auth — see `packages/server/src/app.ts`), and
+             * the launcher links to it. Without this proxy the dev server
+             * answers `/admin` with *this* app's shell, which renders the
+             * launcher (an unknown path), so the link appeared to go nowhere
+             * while production was correct. Proxying keeps dev and production
+             * agreeing on every address the app links to.
+             */
+            "/admin": {
+                target: "http://localhost:54321",
+                changeOrigin: false,
             },
         },
     },

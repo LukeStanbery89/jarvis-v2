@@ -24,9 +24,11 @@ import {
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_KIND_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
+    NOTIFICATION_CLASSES,
 } from "@lukestanbery/jarvis-protocol";
+import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
 
-export type { AppNotification, NotificationPriority };
+export type { AppNotification, NotificationClass, NotificationPriority };
 
 /**
  * What a producer asks for when it raises a notification.
@@ -42,6 +44,16 @@ export interface NotificationInput {
      * a new feature needs no protocol change, bounded so it stays a token.
      */
     kind: string;
+    /**
+     * What kind of attention this asks for (#90); defaults to the quiet
+     * `notification`.
+     *
+     * Set by the thing that was *asked for* — a scheduled reminder or timer —
+     * never by the model: the class decides whether quiet hours may hold the
+     * notification back, so exposing it to a tool would be a way to pierce
+     * them by naming one.
+     */
+    class?: NotificationClass;
     /** How much this may disturb the user; defaults to `"normal"`. */
     priority?: NotificationPriority;
     /** One-line headline, already written for display. */
@@ -55,6 +67,13 @@ export interface NotificationInput {
      * exists for the user, this one replaces it instead of stacking.
      */
     dedupeKey?: string;
+    /**
+     * The job this notification is about (#90 phase 5), when a producer has
+     * one — the scheduler's announcement of a run. It is what lets a reminder
+     * banner offer *snooze* rather than only *dismiss*: the row names the
+     * reminder it came from instead of the client guessing from the title.
+     */
+    jobId?: string;
 }
 
 /** What one delivery attempt achieved, for the caller and the tests. */
@@ -77,7 +96,10 @@ export type NotificationSuppression =
     | null
     /** The user's `notify.enabled` pref is off. */
     | "disabled"
-    /** Inside the user's quiet hours, at a priority that respects them. */
+    /**
+     * Inside the user's quiet hours, for a class that respects them — every
+     * class but `timer`, which pierces (#90).
+     */
     | "quiet-hours"
     /** Nobody had a live socket, so there was nothing to push to. */
     | "absent"
@@ -151,11 +173,22 @@ export class NotificationInputError extends Error {
 export function normalizeNotificationInput(
     input: NotificationInput,
 ): Required<
-    Pick<NotificationInput, "kind" | "priority" | "title" | "requiresAnswer">
+    Pick<
+        NotificationInput,
+        "kind" | "class" | "priority" | "title" | "requiresAnswer"
+    >
 > &
-    Pick<NotificationInput, "body" | "dedupeKey"> {
+    Pick<NotificationInput, "body" | "dedupeKey" | "jobId"> {
     const kind = input.kind?.trim() ?? "";
     const title = input.title?.trim() ?? "";
+    const notificationClass = input.class ?? "notification";
+    if (
+        !(NOTIFICATION_CLASSES as readonly string[]).includes(notificationClass)
+    ) {
+        throw new NotificationInputError(
+            `class must be one of ${NOTIFICATION_CLASSES.join(", ")}`,
+        );
+    }
     if (kind.length === 0) {
         throw new NotificationInputError("kind must be a non-empty string");
     }
@@ -186,6 +219,7 @@ export function normalizeNotificationInput(
     }
     return {
         kind,
+        class: notificationClass,
         priority: input.priority ?? "normal",
         title,
         requiresAnswer: input.requiresAnswer === true,
@@ -193,6 +227,7 @@ export function normalizeNotificationInput(
         ...(dedupeKey !== undefined && dedupeKey.length > 0
             ? { dedupeKey }
             : {}),
+        ...(input.jobId !== undefined ? { jobId: input.jobId } : {}),
     };
 }
 

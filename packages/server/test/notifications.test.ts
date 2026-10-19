@@ -33,6 +33,7 @@ import type { HubSocket, NotificationHub } from "../src/notify/hub";
 import { createInAppChannel } from "../src/notify/channels/inApp";
 import { createNotificationService } from "../src/notify/service";
 import type { NotificationService } from "../src/notify/service";
+import { assertKnownPrefs } from "../src/prefs/known";
 
 /** A socket double that records what the hub pushed to it. */
 function fakeSocket(): HubSocket & { frames: ServerFrame[] } {
@@ -130,7 +131,10 @@ describe("notification store (#139)", () => {
         ).toEqual(["c", "b"]);
     });
 
-    it("hides dismissed notifications unless asked for them", () => {
+    it("deletes a dismissed notification rather than keeping it (#90 9c)", () => {
+        // Dismissal used to be a terminal state the row sat in, hidden from the
+        // list. It is a delete now: the user is finished with it, so there is
+        // nothing to list, count or hide.
         store.createNotification(userId, {
             id: "a",
             kind: "k",
@@ -138,13 +142,17 @@ describe("notification store (#139)", () => {
             title: "a",
             createdAt: "2026-10-15T10:00:00.000Z",
         });
-        store.setNotificationState(userId, "a", "dismissed");
+
+        expect(store.deleteNotification(userId, "a")).toMatchObject({
+            id: "a",
+        });
         expect(store.listNotifications(userId)).toEqual([]);
-        expect(
-            store
-                .listNotifications(userId, { includeDismissed: true })
-                .map((n) => n.id),
-        ).toEqual(["a"]);
+        expect(store.getNotification(userId, "a")).toBeNull();
+        expect(store.countUnreadNotifications(userId)).toBe(0);
+        // A row that is already gone is what a repeat dismissal asked for.
+        expect(store.deleteNotification(userId, "a")).toBeNull();
+        // And a foreign id is indistinguishable from a missing one.
+        expect(store.deleteNotification(userId + 1, "a")).toBeNull();
     });
 
     it("stamps delivered_at on delivery and settled_at on a terminal state", () => {
@@ -174,7 +182,7 @@ describe("notification store (#139)", () => {
             createdAt: "2026-10-15T10:00:00.000Z",
         });
         store.setNotificationState(userId, "a", "read", { answer: undefined });
-        const again = store.setNotificationState(userId, "a", "dismissed");
+        const again = store.setNotificationState(userId, "a", "snoozed");
         expect(again?.state).toBe("read");
     });
 
@@ -234,9 +242,7 @@ describe("notification store (#139)", () => {
         });
         const deleted = store.pruneNotifications(userId, 2);
         expect(deleted).toBe(4);
-        const remaining = store
-            .listNotifications(userId, { includeDismissed: true })
-            .map((n) => n.id);
+        const remaining = store.listNotifications(userId).map((n) => n.id);
         expect(remaining).toEqual(["pending", "read-4"]);
     });
 
@@ -278,6 +284,7 @@ describe("notification service policy (#139)", () => {
             notification: {
                 id: outcome.notification.id,
                 kind: "job.finished",
+                class: "notification",
                 priority: "normal",
                 title: "PR #143 is ready",
                 body: "4 files changed.",
@@ -315,7 +322,7 @@ describe("notification service policy (#139)", () => {
         expect(service.list(userId).notifications).toHaveLength(1);
     });
 
-    it("defers low and normal inside quiet hours but lets urgent through", async () => {
+    it("holds every class inside quiet hours except a timer", async () => {
         // 23:30 in the server's LOCAL time — quiet hours are evaluated
         // against the local clock (a home server shares its user's), so the
         // instant is built from local parts rather than parsed from UTC.
@@ -332,19 +339,62 @@ describe("notification service policy (#139)", () => {
 
         const quiet = await service.notify(userId, {
             kind: "k",
-            priority: "normal",
             title: "not now",
         });
         expect(quiet.suppressed).toBe("quiet-hours");
         expect(socket.frames).toEqual([]);
 
-        const loud = await service.notify(userId, {
+        // And so does a *prioritised* one. Since #90 the class owns quiet
+        // hours, so an escalated priority is emphasis rather than a way
+        // through — which is what closes the hole a model used to have on the
+        // `sendNotification` path.
+        const prioritised = await service.notify(userId, {
             kind: "k",
             priority: "urgent",
-            title: "now",
+            title: "still not now",
         });
-        expect(loud.suppressed).toBeNull();
+        expect(prioritised.suppressed).toBe("quiet-hours");
+        expect(socket.frames).toEqual([]);
+
+        // A timer pierces: it is the class the user chose for a moment they
+        // chose, and a timer that waits for morning is not a timer.
+        const timer = await service.notify(userId, {
+            kind: "timer.fired",
+            class: "timer",
+            title: "the kettle",
+        });
+        expect(timer.suppressed).toBeNull();
         expect(socket.frames).toHaveLength(1);
+        expect(socket.frames[0]).toMatchObject({
+            notification: { class: "timer" },
+        });
+    });
+
+    it("honours the master switch even for a timer", async () => {
+        const at = new Date(2026, 9, 15, 23, 30);
+        const { store, hub, service, socket } = makeService({ at });
+        const userId = makeUser(store);
+        hub.add(userId, socket);
+        store.setPrefs(userId, [
+            { key: "notify.enabled", value: false },
+            {
+                key: "notify.quietHours",
+                value: { start: "22:00", end: "07:00" },
+            },
+        ]);
+
+        // `notify.enabled: false` is a switch the user threw, not a quiet
+        // hour: a class named by a producer must not be a way around it. The
+        // flow that schedules a timer warns at that moment instead, which is
+        // why the silence is announced when the user asked for it rather than
+        // discovered when the kettle was supposed to boil.
+        const outcome = await service.notify(userId, {
+            kind: "timer.fired",
+            class: "timer",
+            title: "the kettle",
+        });
+        expect(outcome.suppressed).toBe("disabled");
+        expect(socket.frames).toEqual([]);
     });
 
     it("treats a quiet-hours window as half-open across midnight", async () => {
@@ -435,6 +485,36 @@ describe("notification service policy (#139)", () => {
         expect(socket.frames).toHaveLength(1);
     });
 
+    it("honours a window the prefs write path accepted (#143 parity)", async () => {
+        const at = new Date(2026, 9, 15, 23, 30);
+        const { store, hub, service, socket } = makeService({ at });
+        const userId = makeUser(store);
+        hub.add(userId, socket);
+
+        // Exactly what the settings panel sends: one key, the documented shape.
+        // The write path validates it (a 400 here would make the panel's save a
+        // silent no-op) and the delivery path then acts on it. The two halves
+        // share one definition of the shape, and this is the assertion that
+        // says so.
+        const patch: Record<string, unknown> = {
+            "notify.quietHours": { start: "22:00", end: "07:00" },
+        };
+        const entries = Object.entries(patch).map(([key, value]) => ({
+            key,
+            value,
+        }));
+        expect(() => assertKnownPrefs(entries)).not.toThrow();
+        store.setPrefs(userId, entries);
+
+        const outcome = await service.notify(userId, {
+            kind: "k",
+            priority: "normal",
+            title: "held for the morning",
+        });
+        expect(outcome.suppressed).toBe("quiet-hours");
+        expect(socket.frames).toEqual([]);
+    });
+
     it("caps deliveries per user but keeps recording past the cap", async () => {
         const { store, hub, service, socket } = makeService({
             deliveriesPerWindow: 2,
@@ -454,7 +534,7 @@ describe("notification service policy (#139)", () => {
         expect(service.list(userId).notifications).toHaveLength(3);
     });
 
-    it("settles a notification read, dismissed, or answered", async () => {
+    it("settles a notification read, dismissed, or answered (#90 9c)", async () => {
         const { store, service } = makeService({});
         const userId = makeUser(store);
         const question = await service.notify(userId, {
@@ -477,10 +557,17 @@ describe("notification service policy (#139)", () => {
             ok: true,
             notification: { state: "read" },
         });
+        // Dismissal deletes: the row handed back is the one that was there, and
+        // the store no longer has it.
         const later = await service.notify(userId, { kind: "k", title: "ho" });
         expect(service.dismiss(userId, later.notification.id)).toMatchObject({
             ok: true,
-            notification: { state: "dismissed" },
+            notification: { id: later.notification.id },
+        });
+        expect(store.getNotification(userId, later.notification.id)).toBeNull();
+        expect(service.dismiss(userId, later.notification.id)).toEqual({
+            ok: false,
+            reason: "missing",
         });
     });
 
@@ -514,16 +601,10 @@ describe("notification service policy (#139)", () => {
 
         const list = service.list(userId).notifications;
         expect(list.map((n) => n.title)).toEqual(["step 2 of 3"]);
-        // Dismissed rather than deleted: the superseded row is still on
-        // record, just out of the way.
-        expect(
-            service
-                .list(userId, { includeDismissed: true })
-                .notifications.map((n) => n.id),
-        ).toEqual([second.notification.id, first.notification.id]);
-        expect(
-            store.getNotification(userId, first.notification.id)?.state,
-        ).toBe("dismissed");
+        // Deleted rather than dismissed (#90 9c): one live row per key is the
+        // point — a minutely series must not stack a thousand tombstones.
+        expect(list.map((n) => n.id)).toEqual([second.notification.id]);
+        expect(store.getNotification(userId, first.notification.id)).toBeNull();
     });
 
     it("still stacks notifications that carry no dedupe key", async () => {
@@ -614,7 +695,7 @@ describe("notification routes (#139)", () => {
         expect(after.body.unread).toBe(0);
     });
 
-    it("honours limit and includeDismissed from the query string", async () => {
+    it("honours limit from the query string, on a list dismissal removes from", async () => {
         // The contract validator coerces `req.query` in place, so these
         // assertions only hold if the handler reads the *coerced* types — the
         // bug this test exists for silently ignored both knobs.
@@ -631,7 +712,7 @@ describe("notification routes (#139)", () => {
                 createdAt: at,
             });
         }
-        store.setNotificationState(userId, "b", "dismissed");
+        store.deleteNotification(userId, "b");
 
         const all = await request(buildApp())
             .get("/api/notifications")
@@ -648,14 +729,6 @@ describe("notification routes (#139)", () => {
         expect(
             limited.body.notifications.map((n: { id: string }) => n.id),
         ).toEqual(["c"]);
-
-        const withDismissed = await request(buildApp())
-            .get("/api/notifications?includeDismissed=true")
-            .set("authorization", `Bearer ${token}`)
-            .expect(200);
-        expect(
-            withDismissed.body.notifications.map((n: { id: string }) => n.id),
-        ).toEqual(["c", "b", "a"]);
     });
 
     it("answers an answerable notification and rejects the wrong kinds", async () => {
@@ -712,6 +785,68 @@ describe("notification routes (#139)", () => {
             .set("authorization", `Bearer ${token}`)
             .send({ kind: "k", title: "hi", priority: "apocalyptic" })
             .expect(400);
+
+        await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({ kind: "k", title: "hi", class: "alarm" })
+            .expect(400);
+    });
+
+    it("runs a timer through quiet hours and holds a notification", async () => {
+        hub.add(userId, socket);
+        // The route harness runs on a fixed clock (see `makeService`), so the
+        // window is built around *that* instant in local time — which is what
+        // quiet hours are evaluated against. Two hours wide, so the instant is
+        // comfortably inside it.
+        const serviceNow = new Date("2026-10-15T18:00:00.000Z");
+        const asClock = (offsetMinutes: number): string => {
+            const at = new Date(serviceNow.getTime() + offsetMinutes * 60_000);
+            const pad = (n: number) => String(n).padStart(2, "0");
+            return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+        };
+        store.setPrefs(userId, [
+            {
+                key: "notify.quietHours",
+                value: { start: asClock(-60), end: asClock(60) },
+            },
+        ]);
+
+        const held = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({ kind: "job.finished", title: "held" })
+            .expect(201);
+        expect(held.body.suppressed).toBe("quiet-hours");
+        expect(held.body.delivered).toBe(0);
+        expect(socket.frames).toEqual([]);
+
+        // The same request with the class the user picks for a moment they
+        // chose reaches the live socket — the one difference #90 is about.
+        const rung = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({ kind: "timer.fired", class: "timer", title: "the kettle" })
+            .expect(201);
+        expect(rung.body.suppressed).toBeNull();
+        expect(rung.body.delivered).toBe(1);
+        expect(socket.frames).toHaveLength(1);
+    });
+
+    it("takes a class and defaults it to the quiet one", async () => {
+        const timer = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({ kind: "timer.fired", class: "timer", title: "the kettle" })
+            .expect(201);
+        expect(timer.body.notification.class).toBe("timer");
+
+        const plain = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({ kind: "k", title: "no opinion" })
+            .expect(201);
+        expect(plain.body.notification.class).toBe("notification");
     });
 
     it("cannot see or settle another account's notification", async () => {

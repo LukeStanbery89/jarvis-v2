@@ -21,6 +21,7 @@ import {
 } from "./llm/agentGraph";
 import { createTools } from "./llm/tools";
 import type { ToolDeps } from "./llm/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { getLlmConfig } from "./config";
 import { logger } from "./logger";
 import type { ChatMode, ClientCapability } from "@lukestanbery/jarvis-protocol";
@@ -241,6 +242,70 @@ const NOTIFY_RULE =
     "in their notification list rather than that it appeared.";
 
 /**
+ * Scheduling hygiene appended to every conditioned system prompt (#90 phase 3).
+ *
+ * The scheduling tools are the one place the assistant commits to something it
+ * will do *later*, with nobody watching, so the failure mode is not a wrong
+ * answer but a promise kept badly: a guessed time ("you said soon, so 6pm"), a
+ * second job created to "replace" one the model could not find, or a claim that
+ * an interruption will arrive when quiet hours will hold it. The tools refuse
+ * what they can (an ambiguous time, a task that cannot run) and report what
+ * will happen; this paragraph pins the model's half — ask rather than guess,
+ * never compute a timestamp, relay what the result says, and cancel by exact
+ * id. The last sentence is the restraint clause, for the same reason
+ * {@link NOTIFY_RULE} has one: a job nobody asked for is an interruption the
+ * user cannot avoid.
+ */
+const SCHEDULE_RULE =
+    "When the user asks to be reminded of something, to set a timer, or to " +
+    "have something done later, use the matching tool rather than promising " +
+    "it in words: remindMe for something they want to be told (it waits out " +
+    "their quiet hours), setTimer for a countdown they asked for (it " +
+    "interrupts), scheduleTask for running one of your tools later (it is " +
+    "filed quietly), schedulePrompt for something you should do later — " +
+    "thinking or writing rather than one tool call (it is filed quietly " +
+    "too, with what you produce as the notification). You cannot choose how " +
+    "loudly a job arrives — the tool does. You must be told when: if they " +
+    "gave no time, or said something vague like 'later' or 'soon', ask them " +
+    "instead of guessing, and never send a timestamp — give the time the way " +
+    "the tool asks (a 24-hour clock time, a delay in minutes, and " +
+    "today/tomorrow/a weekday for the day). The one exception is a repeat: a " +
+    "cadence is its own when, so pass it with no time at all rather than " +
+    "asking — 'every 30 minutes' starts half an hour from now and 'every " +
+    "day' starts tomorrow at this time. Do not do that for a one-shot. A " +
+    "job's `label` is the one line the user reads when it fires, and " +
+    "`message` is only for detail that line cannot carry: never write the " +
+    "same instruction twice. To move or cancel one, call listJobs for the " +
+    "exact id and then " +
+    "cancelJob or snoozeReminder; never create a second job to replace one " +
+    "you cannot find. When they want something to happen *again* — 'every " +
+    "morning', 'on Mondays and Saturdays', 'the first of the month', 'the " +
+    "second Tuesday' — pass the cadence (remindMe, scheduleTask and " +
+    "schedulePrompt all take it, at the top level or nested under `repeat`; " +
+    "a timer is a countdown and never repeats, so say so and use remindMe). " +
+    "Put " +
+    "the days exactly as they were said: days of the week in `weekdays` as " +
+    "two-letter codes, a day of the month in `monthDays` (1-31, or -1 for the " +
+    "last day), and 'the second Tuesday' or 'the last Friday' in " +
+    "`weekOrdinals` as '2tu' or '-1fr'. Do not guess when a phrase could mean " +
+    "two things — 'every Monday and the 1st' is either every Monday plus the " +
+    "1st or a Monday that is also the 1st — ask which they mean. The result " +
+    "states the schedule back to you along with when it will next run: say " +
+    "both, so they can correct you now rather than later. If they want it to " +
+    "run often but only *when something changed* — 'only if the door opened', " +
+    "'check every five minutes and tell me if it changed' — pass `gate` " +
+    "(remindMe, scheduleTask and schedulePrompt all take it): one read-only " +
+    "tool call whose " +
+    "answer is compared with the previous firing's, so a firing that finds " +
+    "nothing changed does not run and does not announce. Never add a gate " +
+    "they did not ask for, and never use one to act — a gate only reads, and " +
+    "a tool that acts is refused. The result says " +
+    "when it will run and whether quiet " +
+    "hours will hold it — relay that rather than promising an interruption. " +
+    "Never schedule anything the user did not ask for; a job is a " +
+    "commitment you keep when nobody is watching.";
+
+/**
  * Spoken-word formatting directive appended for voice-mode turns (#83).
  *
  * A voice prompt's effective capabilities are empty, which yields plain
@@ -271,9 +336,10 @@ const VOICE_FORMAT_RULE =
  * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
  * lookups ({@link IMAGE_ANALYSIS_RULE}), Home Assistant calls
  * ({@link HOME_CALL_RULE}), tools-over-memory for research
- * ({@link RESEARCH_RULE}), and notification restraint ({@link NOTIFY_RULE}) —
- * are always appended: all are server concerns, independent of the client's
- * rendering capabilities and of any `LLM_SYSTEM_PROMPT` override. (The Home,
+ * ({@link RESEARCH_RULE}), notification restraint ({@link NOTIFY_RULE}), and
+ * scheduling discipline ({@link SCHEDULE_RULE}) — are always appended: all are
+ * server concerns, independent of the client's rendering capabilities and of
+ * any `LLM_SYSTEM_PROMPT` override. (The Home,
  * research, and notification rules are unconditional even though their tools
  * are optional: a model that cannot see a tool is never misled by instruction
  * it cannot follow.) Capability notes are appended as one paragraph only when
@@ -312,10 +378,21 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}${rendering}${spoken}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;
+
+/**
+ * The tool instances the graph was built with.
+ *
+ * Held alongside the graph so the scheduler can invoke a job's tool directly
+ * with the *same* objects a graph turn would use. The per-user quotas,
+ * ownership checks and quiet-hours policy live inside those tools; rebuilding
+ * them for the scheduler would be a second set of counters that agree by
+ * accident.
+ */
+let agentTools: readonly StructuredToolInterface[] | null = null;
 
 /**
  * Builds the shared agent graph up-front and opens its checkpoint store.
@@ -340,13 +417,31 @@ export function initAgentGraph(deps?: ToolDeps): AgentGraph {
     logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
     const saver = new SqliteSaver(new Database(checkpointPath));
     ensurePrivateFile(checkpointPath);
+    const tools = createTools(deps);
     graph = createAgentGraph({
         model: createChatModel(),
-        tools: createTools(deps),
+        tools,
         checkpointer: saver,
     });
+    agentTools = tools;
     logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
     return graph;
+}
+
+/**
+ * Returns the tool instances the graph was built with.
+ *
+ * For the scheduler (#90), which invokes one of them directly for a `tool`
+ * job. Throws if `initAgentGraph()` has not run — same contract and reason as
+ * {@link getAgentGraph}.
+ */
+export function getAgentTools(): readonly StructuredToolInterface[] {
+    if (agentTools === null) {
+        throw new Error(
+            "agent graph not initialized; call initAgentGraph() at server startup",
+        );
+    }
+    return agentTools;
 }
 
 /**

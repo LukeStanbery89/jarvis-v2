@@ -46,6 +46,7 @@ export function toNotificationFrame(
         notification: {
             id: notification.id,
             kind: notification.kind,
+            class: notification.class,
             priority: notification.priority,
             title: notification.title,
             ...(notification.body !== null && notification.body.length > 0
@@ -53,6 +54,13 @@ export function toNotificationFrame(
                 : {}),
             createdAt: notification.createdAt,
             ...(notification.requiresAnswer ? { requiresAnswer: true } : {}),
+            // The job behind the announcement (#90 phase 5), when there is one:
+            // a client that wants to act on the reminder rather than merely
+            // acknowledge it needs the id, and the list route already returns it
+            // — a frame without it would be the one place that knows less.
+            ...(notification.jobId !== null
+                ? { jobId: notification.jobId }
+                : {}),
         },
     };
 }

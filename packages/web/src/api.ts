@@ -40,12 +40,70 @@ export type Notification = components["schemas"]["Notification"];
 /** Body of `GET /api/notifications`: the page plus the unread badge count. */
 export type NotificationList = components["schemas"]["NotificationList"];
 
+/**
+ * One scheduled job (#90), as `GET /api/jobs` exposes it. `state` decides
+ * whether it is still owed; `class` decides how loudly it will announce itself.
+ */
+export type Job = components["schemas"]["Job"];
+
+/** Body of `GET /api/jobs`: the work still owed, newest-created first. */
+export type JobList = components["schemas"]["JobList"];
+
+/**
+ * Body of `POST /api/jobs` (#90 phase 7): what a page asks for. A page may name
+ * the `class` (it is the user's own hand, unlike the model's tools, which own
+ * their class) and its jobs are always `message` jobs.
+ */
+export type JobCreateRequest = components["schemas"]["JobCreateRequest"];
+
+/**
+ * Body of `PATCH /api/jobs/{id}` (#90 phase 7): the fields an edit may touch.
+ * `class` and `kind` are absent on purpose — changing either is a different job.
+ */
+export type JobUpdateRequest = components["schemas"]["JobUpdateRequest"];
+
+/**
+ * Body of `POST /api/jobs` and `PATCH /api/jobs/{id}`: the stored job and what
+ * the caller's quiet hours, as they stand, will do to its announcement.
+ */
+export type JobSaved = components["schemas"]["JobSaved"];
+
+/** Body of `GET /api/jobs/{id}`: the job and every attempt at it. */
+export type JobDetail = components["schemas"]["JobDetail"];
+
+/** One attempt at a job: what it did, or why it failed. */
+export type JobRun = components["schemas"]["JobRun"];
+
+/**
+ * What quiet hours will do to an announcement: `held` (with the moment it comes
+ * back on), `disabled` (the account's master switch is off), or `clear`.
+ */
+export type QuietForecast = components["schemas"]["QuietForecast"];
+
+/**
+ * Body of `POST /api/jobs/{id}/snooze` (#90): the job's new moment, which of the
+ * two things happened (`moved` / `recreated`), and what quiet hours will do to the
+ * new time.
+ */
+export type JobSnoozed = components["schemas"]["JobSnoozed"];
+
+/** Body of `DELETE /api/jobs/{id}` (#90): the job as it now stands. */
+export type JobCancelled = components["schemas"]["JobCancelled"];
+
 /** Body of `POST /api/notifications`: the record plus what happened to it. */
 export type NotificationDelivery =
     components["schemas"]["NotificationDelivery"];
 
 /** Body of `POST /api/notifications`: what the producer asks for. */
 export type NotificationInput = components["schemas"]["NotificationInput"];
+
+/**
+ * The caller's free-form preferences map (`GET`/`PUT /api/prefs`): string keys
+ * to any JSON value. The web client only reads and writes the keys it owns
+ * (`notify.*`, see `prefs.ts`); everything else in the map belongs to
+ * integrations and is passed through untouched.
+ */
+export type Prefs = components["schemas"]["Prefs"];
 
 /** REST failure carrying the server's `{ error }` message on a non-2xx body. */
 export class ApiError extends Error {
@@ -185,14 +243,11 @@ export function createApi(
          */
         listNotifications(
             token: string,
-            options: { limit?: number; includeDismissed?: boolean } = {},
+            options: { limit?: number } = {},
         ): Promise<NotificationList> {
             const params = new URLSearchParams();
             if (options.limit !== undefined) {
                 params.set("limit", String(options.limit));
-            }
-            if (options.includeDismissed === true) {
-                params.set("includeDismissed", "true");
             }
             const query = params.size > 0 ? `?${params.toString()}` : "";
             return request("GET", `/api/notifications${query}`, { token });
@@ -224,7 +279,10 @@ export function createApi(
                 body: input,
             });
         },
-        /** Dismisses one notification (idempotent; 404 for a foreign id). */
+        /**
+         * Dismisses one notification: **deletes** it (#90 phase 9c). The row
+         * comes back as it was, and a repeat answers 404 like a foreign id.
+         */
         async dismissNotification(
             token: string,
             id: string,
@@ -235,6 +293,134 @@ export function createApi(
                 { token },
             );
             return result.notification;
+        },
+        /**
+         * Reads the caller's preferences map (possibly empty). The panel needs
+         * the *stored* values rather than a projection of them, so it can tell
+         * "never set" from "set to something unreadable".
+         */
+        getPrefs(token: string): Promise<Prefs> {
+            return request("GET", "/api/prefs", { token });
+        },
+        /**
+         * Upserts the given pref keys and returns the whole updated map.
+         *
+         * Only the keys sent are touched; every other key keeps its value, so a
+         * caller patches one setting at a time. Bearer-authenticated, no CSRF
+         * token (the web client has no CSRF secret by design). A key whose
+         * value the server cannot accept is a 400 — never a silent no-op.
+         *
+         * Note there is **no** `clearPrefs`: `DELETE /api/prefs` drops every
+         * key, which would wipe integration preferences the panel knows nothing
+         * about. Turning a pref off means writing its off value.
+         */
+        setPrefs(token: string, patch: Prefs): Promise<Prefs> {
+            return request("PUT", "/api/prefs", { token, body: patch });
+        },
+        /**
+         * Lists the caller's scheduled jobs (#90).
+         *
+         * Settled jobs (`done`, `failed`, `cancelled`, `missed`) are history and
+         * are excluded unless asked for, so the default answer is the work still
+         * owed — which is exactly what a dashboard's "coming up" means. As with
+         * the notification list, a 401 is the caller's problem: the app is about
+         * to drop to login.
+         */
+        listJobs(
+            token: string,
+            options: { limit?: number; includeSettled?: boolean } = {},
+        ): Promise<JobList> {
+            const params = new URLSearchParams();
+            if (options.limit !== undefined) {
+                params.set("limit", String(options.limit));
+            }
+            if (options.includeSettled === true) {
+                params.set("includeSettled", "true");
+            }
+            const query = params.size > 0 ? `?${params.toString()}` : "";
+            return request("GET", `/api/jobs${query}`, { token });
+        },
+        /**
+         * Reads one job and every attempt at it (#90 phase 7).
+         *
+         * This is the run history: what a prompt or tool job actually produced,
+         * or why it failed. A job a retention pass has pruned is a 404 — the
+         * honest answer, and the same one a snoozed row's dead link gets.
+         */
+        getJob(token: string, id: string): Promise<JobDetail> {
+            return request("GET", `/api/jobs/${encodeURIComponent(id)}`, {
+                token,
+            });
+        },
+        /**
+         * Creates a job from a page (#90 phase 7).
+         *
+         * A page-created job is always a `message` job — text with nothing to
+         * run — because a stored tool call is a durable capability, and the tool
+         * allowlist plus the target tool's own schema are the only door to one
+         * (see the server README). Everything a page sends is a *request*: the
+         * bounds (label/body length, a future moment, the horizon, the timer's
+         * day ceiling) live in `scheduler/create.ts`, and a refusal comes back as
+         * the server's own `{ error }`.
+         */
+        createJob(token: string, input: JobCreateRequest): Promise<JobSaved> {
+            return request("POST", "/api/jobs", { token, body: input });
+        },
+        /**
+         * Edits a pending job's label, detail or moment (#90 phase 7).
+         *
+         * `class` and `kind` cannot be edited — that is a different job, and the
+         * server says so rather than ignoring the field — and a `message` edit on
+         * a job that is not a `message` job is refused too (a tool job has no
+         * text to edit). A job that has already started is a 409.
+         */
+        updateJob(
+            token: string,
+            id: string,
+            patch: JobUpdateRequest,
+        ): Promise<JobSaved> {
+            return request("PATCH", `/api/jobs/${encodeURIComponent(id)}`, {
+                token,
+                body: patch,
+            });
+        },
+        /**
+         * Snoozes a reminder (#90 phase 6c): a pending one's moment moves, one
+         * that already had its moment is set again for the new time with the same
+         * payload.
+         *
+         * The same call also settles the notification that announced it —
+         * `snoozed`, server-side, because the deferral *is* the acknowledgement.
+         * That is why the client settles its row locally instead of posting a
+         * second request: one action, one request, and the row stops asking.
+         *
+         * @param minutes - How long from now. The short end is the server's
+         *   (`MIN_SNOOZE_MINUTES`); the presets the UI offers are `SNOOZE_PRESETS`.
+         */
+        snoozeJob(
+            token: string,
+            id: string,
+            minutes: number,
+        ): Promise<JobSnoozed> {
+            return request(
+                "POST",
+                `/api/jobs/${encodeURIComponent(id)}/snooze`,
+                { token, body: { minutes } },
+            );
+        },
+        /**
+         * Cancels one of the caller's jobs (#90). Idempotent on the server's side
+         * of the ledger (an already-cancelled row is refused rather than
+         * rewritten), and a foreign id is a 404.
+         *
+         * A settled job is history and cannot be cancelled — the caller's
+         * `GET /api/jobs` list only carries rows still owed, so the button is only
+         * ever offered where it applies.
+         */
+        cancelJob(token: string, id: string): Promise<JobCancelled> {
+            return request("DELETE", `/api/jobs/${encodeURIComponent(id)}`, {
+                token,
+            });
         },
     };
 }

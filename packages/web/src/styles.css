@@ -8,8 +8,10 @@
     line-height: 1.5;
 
     /* Dual-chromatic theme: pure black + holographic cyan (#00ddff).
-       All hierarchy is alpha of the one hue on black; red is the single
-       functional exception (errors). */
+       All hierarchy is alpha of the one hue on black; red and amber are the two
+       functional exceptions — red is an error, amber is *unseen* (a notification
+       nobody has read yet). Both say something the cyan ladder cannot, which is
+       why they are allowed to be off-hue at all. */
     --primary: #00ddff;
     --primary-faint: rgba(0, 221, 255, 0.35);
     --primary-dim: rgba(0, 221, 255, 0.6);
@@ -19,6 +21,7 @@
     --bg: #000000;
     --text: var(--primary);
     --error: #ff6b6b;
+    --attention: #ffdd00;
 }
 
 * {
@@ -112,13 +115,178 @@ textarea::placeholder {
     font-weight: 600;
 }
 
+/* --- App shell and top bar (#90 phase 6b) --- */
+
+/* The bar is a row, the page gets the rest. The chat used to own the viewport
+   (`height: 100dvh` here); it now fills the row the bar leaves, so a page taller
+   than the screen scrolls inside its own region and the bar stays put. */
+.app {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+.app-view {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.navbar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.45rem 0.75rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--primary-border);
+}
+
+.navbar-brand {
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.navbar-links {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.navbar-link,
+.navbar-drawer-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    color: var(--primary-dim);
+    text-decoration: none;
+}
+
+.navbar-link:hover,
+.navbar-drawer-link:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* The page the user is on: `aria-current` is set by the link itself, so the
+   mark and the accessibility tree cannot disagree. */
+.navbar-link[aria-current="page"],
+.navbar-drawer-link[aria-current="page"] {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+.navbar-badge {
+    min-width: 1.05rem;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: var(--primary);
+    color: var(--bg);
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1.05rem;
+    text-align: center;
+}
+
+.navbar-end {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-left: auto;
+}
+
+.navbar-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+}
+
+.navbar-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--primary);
+    box-shadow: 0 0 6px var(--primary-dim);
+}
+
+/* The hamburger is the collapsed form of `.navbar-links`: only one of the two is
+   ever visible, which is also what decides which badge is showing.
+   `.navbar` in the selector, not for precision but for the cascade: `.icon-btn`
+   (the button's other class) sets `display: inline-flex` and sits later in this
+   file, so a bare `.navbar-menu` here would lose to it and the hamburger would
+   show at every width. */
+.navbar .navbar-menu {
+    display: none;
+}
+
+.navbar-user {
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.navbar-drawer {
+    position: absolute;
+    top: 100%;
+    right: 0.75rem;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 12rem;
+    padding: 0.4rem;
+    background: var(--panel);
+    border: 1px solid var(--primary-border);
+    border-radius: 8px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+}
+
+/* The account, at the top of the drawer: the bar's user line is hidden at this
+   width, and this is where it went. */
+.navbar-drawer-user {
+    margin: 0 0 0.3rem;
+    padding: 0 0.6rem 0.3rem;
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+    border-bottom: 1px solid var(--primary-border);
+}
+
+.navbar-drawer-links {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+@media (max-width: 48rem) {
+    .navbar-links,
+    .navbar-user {
+        display: none;
+    }
+
+    .navbar .navbar-menu {
+        display: inline-flex;
+    }
+}
+
 /* --- Chat layout --- */
 
+/* Fills the row the bar leaves (`flex: 1` rather than a percentage height: the
+   row's height is definite, so the grow is exact and the transcript's own
+   scroll region gets a real box). */
 .chat {
     display: grid;
     grid-template-columns: 16rem 1fr;
     grid-template-rows: 1fr;
-    height: 100dvh;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -130,14 +298,6 @@ textarea::placeholder {
     background: var(--panel);
     border-right: 1px solid var(--primary-border);
     overflow-y: auto;
-}
-
-.sidebar-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-weight: 600;
-    color: var(--primary);
 }
 
 .sidebar nav {
@@ -381,6 +541,7 @@ textarea::placeholder {
 /* Square hit-area, centered glyph; the icon inherits currentColor, so the
    dual-chromatic rules color icons exactly like the text they replaced. */
 .icon-btn {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -411,28 +572,62 @@ textarea::placeholder {
     cursor: default;
 }
 
-/* The location-consent pin (#31): dim until actively sharing. */
+/* The sidebar's icon row: the state hints plus the settings gear (#143). */
 .sidebar-actions {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
 }
 
-.icon-btn.location {
+/* A state that must stay visible while its control is out of sight (#143, #90
+   phase 6d): a live wake detector, a location share that is not delivering, a
+   voice session that failed. Small and secondary — the control itself lives in
+   the settings panel — and it sits in the bar rather than the chat's sidebar,
+   because the microphone and the share belong to the app, and *every* page is a
+   place they can be live. */
+.navbar-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+    color: var(--primary-dim);
+    white-space: nowrap;
+}
+
+.navbar-state.error {
+    color: var(--error);
+}
+
+.navbar-state-icon {
     color: var(--primary-dim);
 }
 
-.icon-btn.location.active {
-    color: var(--primary);
+/* An armed wake detector is an open microphone, so it says so from the bar. Red
+   is the convention for a microphone that is on — and the blink is the "live"
+   part, because a static icon would read as a decoration. A *failed* session is
+   red too, but never blinks: red and pulsing means live, red holding still
+   beside a sentence means it broke. Reduced-motion keeps the icon (and the
+   colour) without the pulse. */
+.navbar-state-icon.listening {
+    color: var(--error);
+    animation: jarvis-listening 1.4s ease-in-out infinite;
 }
 
-/* A sharing problem the user must act on (denied/unsupported/…) — stated
-   in the open, not hidden in a tooltip. */
-.location-note {
-    margin: 4px 12px 0;
-    font-size: 0.72rem;
-    line-height: 1.35;
-    color: var(--primary-dim);
+@keyframes jarvis-listening {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.2;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .navbar-state-icon.listening {
+        animation: none;
+    }
 }
 
 /* The attach button sits in the composer row beside the textarea. */
@@ -561,9 +756,11 @@ textarea::placeholder {
     animation: spin 1s linear infinite;
 }
 
-/* Notifications (#139): a banner for the newest unsettled notification and a
-   collapsible list. Priority tints the border; nothing is hidden by priority,
-   because phase 1 has no second channel to fall back to. */
+/* Notifications (#139, #90): a banner for the newest unsettled notification and
+   a collapsible list. Priority tints the border; nothing is hidden by priority.
+   The class (#90) decides the surface — a fired timer rings in the modal
+   overlay above instead of appearing here at all — while a timer that failed
+   or was missed still banners, labelled as such. */
 .notification-banner {
     display: flex;
     align-items: center;
@@ -592,6 +789,15 @@ textarea::placeholder {
     flex: 1;
 }
 
+.notification-eyebrow {
+    display: block;
+    margin-bottom: 0.05rem;
+    color: var(--primary-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
 .notification-needs-answer {
     color: var(--primary-dim);
 }
@@ -603,7 +809,8 @@ textarea::placeholder {
     flex-shrink: 0;
 }
 
-.notification-actions button {
+.notification-actions button,
+.job-actions button {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
@@ -666,6 +873,215 @@ textarea::placeholder {
     border-bottom: none;
 }
 
+.notification-item.notification-timer,
+.notification-banner.notification-timer {
+    border-left-color: var(--primary);
+}
+
+.notification-item.notification-reminder,
+.notification-banner.notification-reminder {
+    border-left-style: dashed;
+}
+
+.job-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.job-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-left-width: 3px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+/* The class decides how loudly a job arrives, and it reads the same here as it
+   does in the notification list: a reminder's edge is dashed, a timer's is solid
+   and bright. */
+.job-reminder {
+    border-left-style: dashed;
+}
+
+.job-timer {
+    border-left-color: var(--primary);
+}
+
+.job-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.job-eyebrow {
+    display: block;
+    margin-bottom: 0.05rem;
+    color: var(--primary-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.job-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+
+.job-when {
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.job-empty {
+    padding: 0.5rem 0.75rem;
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+}
+
+/* A settled row (#90 phase 7): history, so it steps back — no class edge, dimmer
+   text — and its eyebrow names what happened ("done", "missed", "cancelled")
+   where an owed row's names the class. */
+.job-settled {
+    background: transparent;
+    border-left-color: var(--primary-border);
+    color: var(--primary-dim);
+}
+
+.job-settled strong {
+    font-weight: 600;
+}
+
+/* Why a failed or missed job failed, in the server's own words. Wrapped rather
+   than clipped: the reason is the whole point of the row. */
+.job-error {
+    color: var(--error);
+}
+
+/* The history disclosure: closed by default, so the work still owed keeps the
+   screen. */
+.job-history {
+    font-size: 0.85rem;
+}
+
+.job-history summary {
+    padding: 0.2rem 0;
+    color: var(--primary-dim);
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.job-history summary:hover {
+    color: var(--primary);
+}
+
+.job-history .job-list {
+    margin-top: 0.4rem;
+}
+
+/* The floating toast (#90 phase 6b): the banner's card, moved out of the
+   conversation column so a fired reminder reaches the user on any page. Opaque —
+   it sits over page content, and the banner's translucent wash would let text
+   show through.
+
+   Pinned **top-right** rather than the usual bottom: the conversation's composer
+   owns the bottom of the screen, and a card that covers the send button while
+   someone is typing is a bad trade — with a reminder the card sits there until it
+   is read. Top-right also puts it just under the Notifications item it belongs
+   to. The `top` clears the bar (see `.navbar`: ~3.2rem including its border);
+   either way it renders below the dialogs in the top layer. */
+.toast-stack {
+    position: fixed;
+    top: 3.4rem;
+    right: 1rem;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: min(26rem, calc(100vw - 2rem));
+    /* Newest first, so a new card lands at the top and pushes the older ones
+       down. The bound is the viewport's: past three cards on a short window the
+       stack would run off the bottom, and scrolling is better than clipping. */
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
+}
+
+.toast-stack .notification-banner {
+    margin: 0;
+    background: var(--panel);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.7);
+    /* A corner card **stacks**. The banner's single row was designed for the
+       conversation column, which had the whole width; four actions and a title
+       do not fit in 26rem, and forcing them into one row wrapped the title to a
+       word per line and pushed the last button off screen. */
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    /* It arrives rather than appearing: a card that interrupts whatever page you
+       are on should move a little, or it reads as a glitch. Deliberately only on
+       the way *in* — the way out is a click, and the click is its own feedback.
+       The element is keyed by notification id, so a queued row that replaces a
+       settled one animates too. */
+    animation: toast-in 160ms ease-out;
+}
+
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-0.4rem);
+    }
+
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .toast-stack .notification-banner {
+        animation: none;
+    }
+}
+
+/* In a column the text must not grow (a `flex: 1` there is a *height* basis of
+   zero) — it is the width it needs, and `min-width: 0` lets it wrap inside the
+   card rather than push it wider. */
+.toast-stack .notification-text {
+    flex: none;
+    min-width: 0;
+}
+
+.toast-stack .notification-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+/* The way into the list: a quiet link rather than a fourth button. It changes the
+   page, which is what a navigation does, and it is the least urgent thing in the
+   card — so it should not compete with the three actions above it. */
+.toast-link {
+    padding: 0.2rem;
+    color: var(--primary-dim);
+    font-size: 0.75rem;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.toast-link:hover {
+    color: var(--primary);
+}
+
 .notification-item.dismissed {
     opacity: 0.5;
 }
@@ -680,6 +1096,15 @@ textarea::placeholder {
     color: var(--primary-dim);
     font-size: 0.7rem;
     text-transform: uppercase;
+}
+
+/* An unread notification says "NEW" in amber, the one word in the list that is
+   about the *reader* rather than the notification: everything else here (a
+   class, a state, a moment) describes the thing, and this describes the fact
+   that they have not seen it. It stops the moment it is read. */
+.notification-state-new {
+    color: var(--attention);
+    font-weight: 700;
 }
 
 /* The debug-gated test affordance (#139): a development control, styled as
@@ -702,4 +1127,837 @@ textarea::placeholder {
     font: inherit;
     font-size: 0.72rem;
     cursor: pointer;
+}
+
+/* --- Settings panel (#143) --- */
+
+/* The unread count over the gear. The badge is an addition to the one on the
+   notification list, not a replacement: that one stays visible in the
+   conversation column, so nothing is lost if the gear is off screen. */
+.icon-badge {
+    position: absolute;
+    top: -0.35rem;
+    right: -0.35rem;
+    min-width: 1.05rem;
+    padding: 0 0.2rem;
+    border-radius: 999px;
+    background: var(--primary);
+    color: var(--bg);
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1.05rem;
+    text-align: center;
+}
+
+/* A native modal dialog: the platform owns Escape, the focus trap, and
+   restoring focus to the gear, which is why this is not a div with a
+   hand-rolled key handler. */
+.settings {
+    width: min(26rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
+    padding: 1rem 1.1rem 1.25rem;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 10px;
+}
+
+.settings::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+
+.settings-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+}
+
+.settings-group {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--primary-border);
+}
+
+.settings-group:first-of-type {
+    border-top: none;
+    padding-top: 0;
+}
+
+.settings-group h3 {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--primary);
+}
+
+/* What the group means — the account/browser split is the reason the panel
+   has groups at all, so each one says which it is. */
+.settings-hint {
+    margin: 2px 0 0.6rem;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--primary-faint);
+}
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0;
+    cursor: pointer;
+}
+
+.settings-times {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.2rem 0 0.4rem 1.6rem;
+    color: var(--primary-dim);
+}
+
+.settings-times input[type="time"] {
+    padding: 0.15rem 0.3rem;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+    font: inherit;
+    font-size: 0.82rem;
+}
+
+.settings-times input[type="time"]:disabled {
+    opacity: 0.45;
+}
+
+.settings-note {
+    margin: 0 0 0.4rem;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--primary-dim);
+}
+
+/* A stored value the server cannot honour: stated in the open, with what the
+   system actually does, rather than shown as the default. */
+.settings-warning {
+    margin: 0 0 0.4rem;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--error);
+}
+
+.settings-error {
+    margin: 0.2rem 0 0;
+    font-size: 0.75rem;
+    color: var(--error);
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.settings-signout {
+    padding: 0.3rem 0.7rem;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--primary);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.settings-signout:hover {
+    background: var(--primary-wash);
+    border-color: var(--primary);
+}
+
+/* The job form (#90 phase 7): the same dialog shape as the settings panel —
+   a modal in the top layer, so Escape, the backdrop and focus are the platform's
+   — with one field per row and the moment phrased the way the row will read it
+   back. */
+.job-form {
+    width: min(24rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 4rem);
+    overflow-y: auto;
+    padding: 1rem 1.1rem 1.25rem;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 10px;
+}
+
+.job-form::backdrop {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.job-form-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+}
+
+.job-form-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+}
+
+.job-form-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+}
+
+/* The label over the control, rather than beside it: the name and the detail are
+   sentences the user types, and a two-column form shrinks them both. */
+.job-form-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--primary-dim);
+}
+
+.job-form-row input,
+.job-form-row select {
+    padding: 0.3rem 0.45rem;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--primary-border);
+    border-radius: 5px;
+    font: inherit;
+    font-size: 0.88rem;
+    letter-spacing: normal;
+    text-transform: none;
+}
+
+.job-form-row input:focus,
+.job-form-row select:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.job-form-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.job-form-chip {
+    padding: 0.2rem 0.5rem;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--primary-dim);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 999px;
+    cursor: pointer;
+}
+
+.job-form-chip:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* The preset the current length matches, so the chips and the fields cannot look
+   like two different answers. */
+.job-form-chip.current {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--primary-wash);
+}
+
+.job-form-custom {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.job-form-custom input {
+    width: 5.5rem;
+}
+
+.job-form-note {
+    margin: 0;
+    font-size: 0.74rem;
+    line-height: 1.4;
+    color: var(--primary-faint);
+}
+
+.job-form-error {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--error);
+}
+
+.job-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+}
+
+.job-form-actions button {
+    padding: 0.3rem 0.8rem;
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--primary-dim);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.job-form-actions button:hover:not(:disabled) {
+    color: var(--primary);
+    background: var(--primary-wash);
+    border-color: var(--primary);
+}
+
+/* The save button is the form's one commitment: it reads as the primary action
+   even before the pointer is anywhere near it. */
+.job-form-actions button.primary {
+    color: var(--bg);
+    background: var(--primary);
+    border-color: var(--primary);
+}
+
+.job-form-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* A note the page shows after a save — the server's quiet-hours forecast, which
+   is the one thing about a new job the user cannot see in the row yet. */
+.page-status {
+    margin: 0;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--primary-dim);
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+}
+
+/* The timer ring (#90 phase 4) — the one notification the client raises as an
+   interruption in the physical sense. A modal <dialog>, so it sits in the
+   browser's top layer above the settings dialog (and anything that opens
+   later) without a z-index race; the backdrop is the dim. The only action is
+   Stop, so it is the only button. */
+.timer-ring {
+    width: min(26rem, calc(100vw - 2rem));
+    padding: 1.6rem 1.4rem 1.35rem;
+    background: var(--panel);
+    color: var(--text);
+    border: 2px solid var(--primary);
+    border-radius: 12px;
+    text-align: center;
+    box-shadow:
+        0 0 0 1px var(--primary-faint),
+        0 0 32px var(--primary-wash);
+    animation: timer-ring-pulse 1.6s ease-in-out infinite;
+}
+
+.timer-ring::backdrop {
+    background: rgba(0, 0, 0, 0.82);
+}
+
+.timer-ring-eyebrow {
+    margin: 0;
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    opacity: 0.7;
+}
+
+.timer-ring-title {
+    margin: 0.35rem 0 0;
+    font-size: 1.85rem;
+    line-height: 1.15;
+    color: var(--primary);
+    overflow-wrap: anywhere;
+}
+
+.timer-ring-body {
+    margin: 0.6rem 0 0;
+    opacity: 0.85;
+}
+
+.timer-ring-when {
+    margin: 0.9rem 0 0;
+    font-size: 0.85rem;
+    opacity: 0.7;
+}
+
+.timer-ring-stop {
+    width: 100%;
+    margin-top: 1.2rem;
+    padding: 0.9rem 1rem;
+    font: inherit;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--bg);
+    background: var(--primary);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.timer-ring-stop:hover,
+.timer-ring-stop:focus-visible {
+    background: #7defff;
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+@keyframes timer-ring-pulse {
+    0%,
+    100% {
+        box-shadow:
+            0 0 0 1px var(--primary-faint),
+            0 0 24px var(--primary-wash);
+    }
+    50% {
+        box-shadow:
+            0 0 0 2px var(--primary-dim),
+            0 0 48px var(--primary-faint);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .timer-ring {
+        animation: none;
+    }
+}
+
+/* --- The app's list pages (#90 phase 6c) --- */
+
+/* One shell for the pages that are lists (notifications, timers, reminders).
+   The dashboard keeps its own: it is a glance rather than a list, and it leads
+   with the clock. */
+.page {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    width: 100%;
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 2rem 1.25rem;
+}
+
+/* The page head, with the page's one action at its far end (#90 phase 7): the
+   list is what the page is for, so New is beside the title rather than a bar of
+   its own above it. */
+.page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.page-head h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    letter-spacing: 0.06em;
+}
+
+.page-note {
+    margin: 0.2rem 0 0;
+    color: var(--primary-dim);
+    font-size: 0.9rem;
+}
+
+.page-error {
+    margin: 0;
+    color: var(--error);
+}
+
+/* The page's primary action: the same shape as the form's save button, because
+   it opens that form. */
+.page-new {
+    flex-shrink: 0;
+    padding: 0.35rem 0.8rem;
+    font: inherit;
+    font-size: 0.85rem;
+    color: var(--bg);
+    background: var(--primary);
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.page-new:hover {
+    filter: brightness(1.1);
+}
+
+/* The halves of a page that lists two kinds of thing (#90 phase 7d): the work
+   still owed and the history it leaves. A signpost, not a heading — the page's
+   h1 is the title, and these only say which half is which. */
+.page-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.page-section-head {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+/* A repeating job's cadence, under its label (#90 phase 8e). The protocol's own
+   words, so the row reads exactly like the confirmation the model gave in chat —
+   and like the live preview the form shows before it is saved. */
+.job-repeat,
+.job-gate {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+}
+
+/* A conditional job's note (#90 phase 8f) sits beside the cadence and reads the
+   same way: the row says it may not fire, and the runs say what the check saw. */
+.job-gate {
+    font-style: italic;
+}
+
+/* The repeat control's own fields (#90 phase 8e): the chips row picks the
+   cadence, and what is under it depends on that choice. */
+.job-form-repeat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+    padding: 0.5rem 0.6rem;
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+}
+
+.job-form-repeat-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+}
+
+.job-form-repeat-line input,
+.job-form-repeat-line select {
+    font: inherit;
+    padding: 0.25rem 0.4rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+}
+
+.job-form-repeat-line input[type="number"] {
+    width: 4.5rem;
+}
+
+/* The live line: the cadence in words, and when it next fires. */
+.job-form-repeat-preview {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.78rem;
+}
+
+/* A record's run disclosure (#90 phase 7d): what the job actually did, under the
+   notification it produced. */
+.job-runs {
+    margin-top: 0.35rem;
+}
+
+.job-runs > summary {
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.job-runs[open] > summary {
+    margin-bottom: 0.3rem;
+}
+
+.job-runs-note {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.75rem;
+}
+
+.job-runs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.job-runs-head {
+    display: block;
+    color: var(--primary-dim);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* A model's reply is not a row's worth of text: bounded and scrollable rather
+   than allowed to stretch the record it hangs under. */
+.job-runs-output {
+    max-height: 10rem;
+    margin: 0.2rem 0 0;
+    padding: 0.35rem 0.5rem;
+    overflow: auto;
+    font-family: inherit;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--bg);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+}
+
+.job-runs-error {
+    margin: 0.2rem 0 0;
+    color: var(--error);
+    font-size: 0.75rem;
+}
+
+/* What a job's gate read on one firing (#90 phase 8f): the reason a declined
+   firing produced nothing, and the baseline a payload run leaves. `pre-wrap`
+   because a check's answer can be a short list rather than one line. */
+.job-runs-gate {
+    margin: 0.2rem 0 0;
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* The snooze control (#90 phase 6c): one button, and its three presets when
+   asked for. Inline, so it sits with whatever actions the row already has; the
+   buttons themselves are styled by the row's own action rules. */
+/* The snooze control (#90 phase 6c): one button, and its three presets in a menu.
+   The menu is a **popover**, so it lives in the browser's top layer: an
+   absolutely positioned menu inside the toast was clipped by `.toast-stack`'s
+   scrolling edge, and chips in the flow reflowed the card. `inset: auto` undoes
+   the UA's viewport centring — the component measures where the menu goes
+   (`src/popover.ts`) and writes the coordinates inline. */
+.snooze {
+    display: inline-flex;
+    align-items: center;
+}
+
+.snooze.open .snooze-toggle {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* Deliberately **no `display` here.** The UA sheet hides a closed popover with
+   `[popover]:not(:popover-open) { display: none }`, and that rule loses to any
+   author `display` at all — origins outrank specificity, so a bare
+   `display: flex` on this selector renders the menu permanently open, over the
+   page. It belongs on the open state, which is the only state that has a layout
+   to give. */
+.snooze-options {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 8.5rem;
+    padding: 0.3rem;
+    background: var(--panel);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
+.snooze-options:popover-open {
+    display: flex;
+}
+
+/* The presets read as menu items, not as the row's actions: full width, left
+   aligned, and a wash on hover rather than a border. (This rule sits after the
+   row-button one above, so it wins without a specificity fight.) */
+.snooze-options button {
+    justify-content: flex-start;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    text-align: left;
+}
+
+.snooze-options button:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+    border-color: var(--primary-border);
+}
+
+/* --- The dashboard (#90 phase 6b) --- */
+
+.dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    width: 100%;
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.25rem;
+}
+
+.dashboard-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.dashboard-time {
+    margin: 0;
+    font-size: 2.25rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+/* The colon blinks once a second (#90 phase 6b): the classic clock face, and the
+   only moving part on this page. CSS rather than a state toggle, so
+   `prefers-reduced-motion` below can turn it off; the once-a-second re-render that
+   advances the minute does not restart the animation, so the blink stays even
+   instead of jumping with each render. */
+.clock-colon {
+    animation: clock-blink 1s linear infinite;
+}
+
+@keyframes clock-blink {
+    0%,
+    49% {
+        opacity: 1;
+    }
+
+    50%,
+    100% {
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .clock-colon {
+        animation: none;
+    }
+}
+
+.dashboard-date {
+    margin: 0;
+    color: var(--primary-dim);
+}
+
+.dashboard-account {
+    margin: 0;
+    color: var(--primary-faint);
+    font-size: 0.85rem;
+}
+
+.dashboard-card {
+    padding: 0.9rem 1rem;
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-radius: 8px;
+}
+
+.dashboard-card h2 {
+    margin: 0 0 0.6rem;
+    font-size: 1rem;
+    letter-spacing: 0.04em;
+}
+
+.dashboard-empty {
+    margin: 0;
+    color: var(--primary-dim);
+}
+
+.dashboard-error {
+    margin: 0 0 0.5rem;
+    color: var(--error);
+}
+
+.dashboard-jobs {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-job {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+}
+
+.dashboard-class {
+    padding: 0.02rem 0.45rem;
+    color: var(--primary-dim);
+    border: 1px solid var(--primary-border);
+    border-radius: 999px;
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* The loud class stands out by a step, not a second hue: the theme is one
+   colour, and "timer" is the one that will interrupt. */
+.dashboard-class-timer {
+    color: var(--primary);
+    border-color: var(--primary-dim);
+}
+
+.dashboard-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-when {
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.dashboard-links {
+    margin: 0.7rem 0 0;
+    color: var(--primary-dim);
+    font-size: 0.85rem;
+}
+
+.dashboard-links a {
+    color: var(--primary);
 }

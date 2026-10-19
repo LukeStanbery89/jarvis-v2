@@ -69,7 +69,7 @@ Four things are worth knowing:
 - **Bootstrap is off by default.** Set `JARVIS_BOOTSTRAP_TOKEN` (in a `.env`
   beside the compose file, or as an environment variable at `up` time) before
   calling `POST /api/bootstrap`; until then it returns `409`.
-- **No SPAs are baked in.** `/` answers `Hello World` and `/web` is unmounted.
+- **No SPAs are baked in.** `/` answers `Hello World` (no app build), `/admin` 404s, and `/web` 301s to `/chat`.
   To serve them, build them on the host and mount the directories — see below.
 
 #### Serving the SPAs from the image
@@ -90,8 +90,9 @@ environment:
     JARVIS_WEB_DIR: /srv/web
 ```
 
-A directory is mounted only when it contains `index.html`, so a wrong path
-degrades to `Hello World` and a warning rather than failing to boot.
+A directory is mounted only when it contains `index.html`: a wrong path for the
+app degrades to `Hello World` at `/` and a warning, and one for the portal leaves
+`/admin` an honest 404 — each rather than failing to boot.
 
 #### Container environment reference
 
@@ -112,74 +113,79 @@ whitespace) falls back to its documented default with a startup warning
 naming the variable — a typo can never break the server start, and it cannot
 fail silently either:
 
-| Variable                                 | Default                                                                         | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                                   | `54321`                                                                         | HTTP listener port                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `JARVIS_NOTIFY`                          | (unset)                                                                         | `off` removes the notification surface entirely (#139) — no `/api/notifications` routes and no delivery wiring                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_NOTIFY_DELIVERIES_PER_MIN`       | `20`                                                                            | Pushes allowed per user per minute; over budget a notification is still recorded and listed, just not pushed                                                                                                                                                                                                                                                                                                                                         |
-| `JARVIS_NOTIFY_MAX_PER_USER`             | `200`                                                                           | Notifications kept per user; settled rows are evicted first, then the oldest survivor, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                            |
-| `LLM_BASE_URL`                           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `LLM_MODEL`                              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `LLM_TEMPERATURE`                        | `0.15`                                                                          | Sampling temperature                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `LLM_SYSTEM_PROMPT`                      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends five fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer; the image-analysis rule; the home-assistant rule; and the tools-over-memory rule for research, #8) plus capability notes — see the Chat protocol section |
-| `JARVIS_AGENT_MAX_TURNS`                 | `10`                                                                            | Max agent loop steps per turn (tools + model calls)                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `JARVIS_CHECKPOINT_PATH`                 | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `JARVIS_DB_PATH`                         | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `JARVIS_TURN_TIMEOUT_MS`                 | `120000`                                                                        | Hard cap for one agent turn before it is aborted                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `LLM_VL_MODEL`                           | `qwen3.6-35b-a3b-splash`                                                        | Vision-language model the `analyzeImage` tool calls (must accept `image_url` parts)                                                                                                                                                                                                                                                                                                                                                                  |
-| `LLM_VL_MAX_TOKENS`                      | `1024`                                                                          | Output-token cap for one image analysis                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `LLM_VL_TIMEOUT_MS`                      | `60000`                                                                         | Wall-clock cap for one image analysis (abort bound)                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `JARVIS_ATTACHMENT_TTL_MINUTES`          | `60`                                                                            | How long an uploaded image stays analyzable                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `JARVIS_ATTACHMENT_MAX_BYTES`            | `4194304` (4 MiB)                                                               | Decoded-byte cap per attachment                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `JARVIS_ATTACHMENT_MAX_TOTAL_BYTES`      | `209715200` (200 MiB)                                                           | Per-user total across live attachments                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN`     | `10`                                                                            | Vision-analysis calls per user per minute                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `JARVIS_ATTACHMENT_MAX_INFLIGHT`         | `4`                                                                             | Concurrent uploads server-wide                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_ATTACHMENT_DIR`                  | `<tmpdir>/jarvis-attachments`                                                   | Attachment root (mode-verified private; emptied at boot)                                                                                                                                                                                                                                                                                                                                                                                             |
-| `TAVILY_API_KEY`                         | unset                                                                           | Tavily search key — enables the `general`/`news`/`finance` verticals of `webSearch`                                                                                                                                                                                                                                                                                                                                                                  |
-| `SERPER_API_KEY`                         | unset                                                                           | Serper search key — enables the Serper-only verticals (`images`, `videos`, `places`, `reviews`, `patents`, `shopping`, `scholar`)                                                                                                                                                                                                                                                                                                                    |
-| `JARVIS_SEARCH_TIMEOUT_MS`               | `15000`                                                                         | Wall-clock cap for one provider search call                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `JARVIS_SEARCH_MAX_RESULTS`              | `5`                                                                             | Results handed to the model per search                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `JARVIS_SEARCH_CALLS_PER_MIN`            | `20`                                                                            | Per-user search-call quota                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `OPENWEATHER_API_KEY`                    | unset                                                                           | OpenWeather key — enables the `getWeather` tool (current + 5-day forecast)                                                                                                                                                                                                                                                                                                                                                                           |
-| `JARVIS_WEATHER_UNITS`                   | `imperial`                                                                      | Unit system reported to the model (`metric` supported)                                                                                                                                                                                                                                                                                                                                                                                               |
-| `JARVIS_WEATHER_TIMEOUT_MS`              | `10000`                                                                         | Wall-clock cap for one provider weather call                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `JARVIS_WEATHER_CALLS_PER_MIN`           | `10`                                                                            | Per-user weather-call quota                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `HOME_ASSISTANT_URL`                     | unset                                                                           | Home Assistant base URL (no trailing slash needed) — enables the `homeAssistant` tool                                                                                                                                                                                                                                                                                                                                                                |
-| `HOME_ASSISTANT_ACCESS_TOKEN`            | unset                                                                           | Long-lived HA token; required alongside the URL                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `JARVIS_HA_READ_DOMAINS`                 | `light,switch,climate,fan,sensor,binary_sensor,cover,media_player,lock`         | Domains whose entities the model may read                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `JARVIS_HA_CONTROL_DOMAINS`              | `light,switch,climate,fan`                                                      | Domains whose entities the model may write (a strict subset of reads)                                                                                                                                                                                                                                                                                                                                                                                |
-| `JARVIS_HA_CALLS_PER_MIN`                | `10`                                                                            | Per-user Home Assistant call quota                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `JARVIS_HA_TIMEOUT_MS`                   | `10000`                                                                         | Wall-clock cap for one HA call                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_HA_CACHE_TTL_MS`                 | `15000`                                                                         | How long an entity snapshot is reused; `0` disables the cache                                                                                                                                                                                                                                                                                                                                                                                        |
-| `JARVIS_HA_LIST_LIMIT`                   | `40`                                                                            | Max entities listed by one `list`, `lights` or `switches` call                                                                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_HA_LIGHT_TOKENS`                 | `light,lamp,bulb,strip,ceiling,sconce,luminaire,fixture`                        | Name fragments that make a light a light to `action: "lights"`                                                                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_WIKIPEDIA`                       | `on`                                                                            | `off` removes the `wikipedia` tool; it is the one optional tool enabled without a credential                                                                                                                                                                                                                                                                                                                                                         |
-| `JARVIS_WIKIPEDIA_LANG`                  | `en`                                                                            | Wiki language subdomain (validated as a host label)                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `JARVIS_WIKIPEDIA_TIMEOUT_MS`            | `10000`                                                                         | Wall-clock cap for one Wikipedia API call                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `JARVIS_WIKIPEDIA_MAX_SENTENCES`         | `5`                                                                             | Leading sentences a summary extract asks for (API caps at 10)                                                                                                                                                                                                                                                                                                                                                                                        |
-| `JARVIS_WIKIPEDIA_MAX_FULL_CHARS`        | `6000`                                                                          | Character budget for `detail: "full"`; the result states the omission                                                                                                                                                                                                                                                                                                                                                                                |
-| `JARVIS_WIKIPEDIA_MAX_CANDIDATES`        | `5`                                                                             | Candidate titles returned when a query is ambiguous                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `JARVIS_WIKIPEDIA_CALLS_PER_MIN`         | `20`                                                                            | Per-user Wikipedia call quota                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN` | `3`                                                                             | Per-guest-session quota (both this and the per-address budget must admit)                                                                                                                                                                                                                                                                                                                                                                            |
-| `JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN`      | `10`                                                                            | Aggregate per-guest-client-address quota                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `JARVIS_WIKIPEDIA_USER_AGENT`            | `jarvis-v2/0.1 (+https://github.com/LukeStanbery89/jarvis-v2)`                  | Descriptive `User-Agent` (Wikimedia policy; empty is answered 403)                                                                                                                                                                                                                                                                                                                                                                                   |
-| `JARVIS_BOOTSTRAP_TOKEN`                 | unset                                                                           | One-time setup credential; see the `@lukestanbery/jarvis-auth` README                                                                                                                                                                                                                                                                                                                                                                                |
-| `JARVIS_HOST`                            | `0.0.0.0`                                                                       | Bind address (all interfaces = LAN posture)                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `JARVIS_TLS_CERT`                        | unset                                                                           | PEM certificate path — enables HTTPS serving                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `JARVIS_TLS_KEY`                         | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`)                                                                                                                                                                                                                                                                                                                                                                                           |
-| `JARVIS_HTTP_REDIRECT_PORT`              | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `JARVIS_PORTAL_DIR`                      | `packages/portal/dist`                                                          | Built portal SPA root served at `/`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                        |
-| `JARVIS_WEB_DIR`                         | `packages/web/dist`                                                             | Built web chat client root served at `/web`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                |
-| `JARVIS_RATE_WINDOW_MS`                  | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `JARVIS_RATE_MAX_FAILURES`               | `10`                                                                            | Attempts per `(ip, username)` before a lockout                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_RATE_MAX_IP_FAILURES`            | `100`                                                                           | Aggregate attempts per IP per window — the cap for `login:<ip>` and `bootstrap:<ip>` keys                                                                                                                                                                                                                                                                                                                                                            |
-| `JARVIS_RATE_LOCKOUT_MS`                 | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `JARVIS_CORS_ORIGINS`                    | unset (deny all cross-origin)                                                   | Comma-separated exact origins allowed to call `/api` cross-origin; no wildcard                                                                                                                                                                                                                                                                                                                                                                       |
-| `JARVIS_TRUST_PROXY_CIDRS`               | unset (trust none)                                                              | IPs/subnets whose `X-Forwarded-For` is believed for `req.ip`                                                                                                                                                                                                                                                                                                                                                                                         |
-| `JARVIS_SESSION_TTL_MS`                  | `2592000000` (30 days)                                                          | Absolute lifetime of a cookie session (no sliding)                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `JARVIS_API_CONTRACT`                    | unset                                                                           | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated)                                                                                                                                                                                                                                                                                                                                |
-| `JARVIS_LOG_LEVEL`                       | `info` (`silent` under tests)                                                   | Log verbosity: `silent` \| `debug` \| `info` \| `warn` \| `error`                                                                                                                                                                                                                                                                                                                                                                                    |
-| `JARVIS_LOG_SENSITIVE`                   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`                                                                                                                                                                                                                                                                                                                                                                                                |
+| Variable                                 | Default                                                                         | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                   | `54321`                                                                         | HTTP listener port                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `JARVIS_NOTIFY`                          | (unset)                                                                         | `off` removes the notification surface entirely (#139) — no `/api/notifications` routes and no delivery wiring                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_NOTIFY_DELIVERIES_PER_MIN`       | `20`                                                                            | Pushes allowed per user per minute; over budget a notification is still recorded and listed, just not pushed                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_NOTIFY_MAX_PER_USER`             | `200`                                                                           | Notifications kept per user; settled rows are evicted first, then the oldest survivor, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_SCHEDULER`                       | (unset)                                                                         | `off` removes the scheduler entirely (#90) — no tick loop, no `jobs` tool (phase 3); `JARVIS_NOTIFY=off` removes it too, since a run's outcome is announced through the notification service                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_JOB_TICK_MS`                     | `5000`                                                                          | How often the scheduler scans for due jobs; coarse on purpose, so a job can start up to one tick late and a restart has nothing to rebuild                                                                                                                                                                                                                                                                                                                                                                      |
+| `JARVIS_JOB_MAX_PER_USER`                | `50`                                                                            | Jobs kept per user; settled rows are evicted first, then the oldest pending one, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_JOB_MAX_LATENESS_MS`             | `3600000`                                                                       | How late a job may be and still run; past it the job is recorded (and announced) as `missed` rather than attempted, because a reminder that fires six hours after the fact is not a reminder                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_JOB_MAX_PER_TICK`                | `1`                                                                             | Jobs one tick takes on; above 1 the runs really do go concurrently, against one model — a home server has one                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `LLM_BASE_URL`                           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `LLM_MODEL`                              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `LLM_TEMPERATURE`                        | `0.15`                                                                          | Sampling temperature                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `LLM_SYSTEM_PROMPT`                      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends seven fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer; the image-analysis rule; the home-assistant rule; the tools-over-memory rule for research, #8; notification restraint, #139; and scheduling discipline, #90) plus capability notes — see the Chat protocol section |
+| `JARVIS_AGENT_MAX_TURNS`                 | `10`                                                                            | Max agent loop steps per turn (tools + model calls)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_CHECKPOINT_PATH`                 | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_DB_PATH`                         | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `JARVIS_TURN_TIMEOUT_MS`                 | `120000`                                                                        | Hard cap for one agent turn before it is aborted                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `LLM_VL_MODEL`                           | `qwen3.6-35b-a3b-splash`                                                        | Vision-language model the `analyzeImage` tool calls (must accept `image_url` parts)                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `LLM_VL_MAX_TOKENS`                      | `1024`                                                                          | Output-token cap for one image analysis                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `LLM_VL_TIMEOUT_MS`                      | `60000`                                                                         | Wall-clock cap for one image analysis (abort bound)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_ATTACHMENT_TTL_MINUTES`          | `60`                                                                            | How long an uploaded image stays analyzable                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `JARVIS_ATTACHMENT_MAX_BYTES`            | `4194304` (4 MiB)                                                               | Decoded-byte cap per attachment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `JARVIS_ATTACHMENT_MAX_TOTAL_BYTES`      | `209715200` (200 MiB)                                                           | Per-user total across live attachments                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `JARVIS_ATTACHMENT_VL_CALLS_PER_MIN`     | `10`                                                                            | Vision-analysis calls per user per minute                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_ATTACHMENT_MAX_INFLIGHT`         | `4`                                                                             | Concurrent uploads server-wide                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_ATTACHMENT_DIR`                  | `<tmpdir>/jarvis-attachments`                                                   | Attachment root (mode-verified private; emptied at boot)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `TAVILY_API_KEY`                         | unset                                                                           | Tavily search key — enables the `general`/`news`/`finance` verticals of `webSearch`                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `SERPER_API_KEY`                         | unset                                                                           | Serper search key — enables the Serper-only verticals (`images`, `videos`, `places`, `reviews`, `patents`, `shopping`, `scholar`)                                                                                                                                                                                                                                                                                                                                                                               |
+| `JARVIS_SEARCH_TIMEOUT_MS`               | `15000`                                                                         | Wall-clock cap for one provider search call                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `JARVIS_SEARCH_MAX_RESULTS`              | `5`                                                                             | Results handed to the model per search                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `JARVIS_SEARCH_CALLS_PER_MIN`            | `20`                                                                            | Per-user search-call quota                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `OPENWEATHER_API_KEY`                    | unset                                                                           | OpenWeather key — enables the `getWeather` tool (current + 5-day forecast)                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `JARVIS_WEATHER_UNITS`                   | `imperial`                                                                      | Unit system reported to the model (`metric` supported)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `JARVIS_WEATHER_TIMEOUT_MS`              | `10000`                                                                         | Wall-clock cap for one provider weather call                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_WEATHER_CALLS_PER_MIN`           | `10`                                                                            | Per-user weather-call quota                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `HOME_ASSISTANT_URL`                     | unset                                                                           | Home Assistant base URL (no trailing slash needed) — enables the `homeAssistant` tool                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `HOME_ASSISTANT_ACCESS_TOKEN`            | unset                                                                           | Long-lived HA token; required alongside the URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `JARVIS_HA_READ_DOMAINS`                 | `light,switch,climate,fan,sensor,binary_sensor,cover,media_player,lock`         | Domains whose entities the model may read                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_HA_CONTROL_DOMAINS`              | `light,switch,climate,fan`                                                      | Domains whose entities the model may write (a strict subset of reads)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `JARVIS_HA_CALLS_PER_MIN`                | `10`                                                                            | Per-user Home Assistant call quota                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `JARVIS_HA_TIMEOUT_MS`                   | `10000`                                                                         | Wall-clock cap for one HA call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_HA_CACHE_TTL_MS`                 | `15000`                                                                         | How long an entity snapshot is reused; `0` disables the cache                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `JARVIS_HA_LIST_LIMIT`                   | `40`                                                                            | Max entities listed by one `list`, `lights` or `switches` call                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_HA_LIGHT_TOKENS`                 | `light,lamp,bulb,strip,ceiling,sconce,luminaire,fixture`                        | Name fragments that make a light a light to `action: "lights"`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_WIKIPEDIA`                       | `on`                                                                            | `off` removes the `wikipedia` tool; it is the one optional tool enabled without a credential                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_WIKIPEDIA_LANG`                  | `en`                                                                            | Wiki language subdomain (validated as a host label)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_WIKIPEDIA_TIMEOUT_MS`            | `10000`                                                                         | Wall-clock cap for one Wikipedia API call                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_WIKIPEDIA_MAX_SENTENCES`         | `5`                                                                             | Leading sentences a summary extract asks for (API caps at 10)                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `JARVIS_WIKIPEDIA_MAX_FULL_CHARS`        | `6000`                                                                          | Character budget for `detail: "full"`; the result states the omission                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `JARVIS_WIKIPEDIA_MAX_CANDIDATES`        | `5`                                                                             | Candidate titles returned when a query is ambiguous                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_WIKIPEDIA_CALLS_PER_MIN`         | `20`                                                                            | Per-user Wikipedia call quota                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `JARVIS_WIKIPEDIA_GUEST_SESSION_PER_MIN` | `3`                                                                             | Per-guest-session quota (both this and the per-address budget must admit)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_WIKIPEDIA_GUEST_IP_PER_MIN`      | `10`                                                                            | Aggregate per-guest-client-address quota                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `JARVIS_WIKIPEDIA_USER_AGENT`            | `jarvis-v2/0.1 (+https://github.com/LukeStanbery89/jarvis-v2)`                  | Descriptive `User-Agent` (Wikimedia policy; empty is answered 403)                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `JARVIS_BOOTSTRAP_TOKEN`                 | unset                                                                           | One-time setup credential; see the `@lukestanbery/jarvis-auth` README                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `JARVIS_HOST`                            | `0.0.0.0`                                                                       | Bind address (all interfaces = LAN posture)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `JARVIS_TLS_CERT`                        | unset                                                                           | PEM certificate path — enables HTTPS serving                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_TLS_KEY`                         | unset                                                                           | Matching PEM private key (required with `JARVIS_TLS_CERT`)                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `JARVIS_HTTP_REDIRECT_PORT`              | `PORT + 1`                                                                      | Cleartext port that upgrades to HTTPS (TLS mode)                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `JARVIS_PORTAL_DIR`                      | `packages/portal/dist`                                                          | Built portal SPA root served at `/`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `JARVIS_WEB_DIR`                         | `packages/web/dist`                                                             | Built web app root served at `/`; empty string disables it                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `JARVIS_RATE_WINDOW_MS`                  | `900000` (15 min)                                                               | Attempt-accumulation window for login/bootstrap                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `JARVIS_RATE_MAX_FAILURES`               | `10`                                                                            | Attempts per `(ip, username)` before a lockout                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_RATE_MAX_IP_FAILURES`            | `100`                                                                           | Aggregate attempts per IP per window — the cap for `login:<ip>` and `bootstrap:<ip>` keys                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_RATE_LOCKOUT_MS`                 | `60000`                                                                         | Base lockout; doubles per repeat (backoff, ×32 cap)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `JARVIS_CORS_ORIGINS`                    | unset (deny all cross-origin)                                                   | Comma-separated exact origins allowed to call `/api` cross-origin; no wildcard                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `JARVIS_TRUST_PROXY_CIDRS`               | unset (trust none)                                                              | IPs/subnets whose `X-Forwarded-For` is believed for `req.ip`                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_SESSION_TTL_MS`                  | `2592000000` (30 days)                                                          | Absolute lifetime of a cookie session (no sliding)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `JARVIS_API_CONTRACT`                    | unset                                                                           | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated)                                                                                                                                                                                                                                                                                                                                                                                           |
+| `JARVIS_LOG_LEVEL`                       | `info` (`silent` under tests)                                                   | Log verbosity: `silent` \| `debug` \| `info` \| `warn` \| `error`                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `JARVIS_LOG_SENSITIVE`                   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ```sh
 LLM_MODEL=some-other-model npm run dev
@@ -263,7 +269,7 @@ and conversation checkpoints aren't world-readable on a shared machine.
 ### Cross-origin and reverse proxy
 
 Most deployments never need this section. If the browser loads the SPAs **from this
-server** (the default: `/` and `/web`) or through the Vite dev server's `/api` + `/ws`
+server** (the default: `/` and `/admin`) or through the Vite dev server's `/api` + `/ws`
 proxy, every request is same-origin and the settings below do nothing. They matter
 only when a SPA is served from a _different_ origin than the API (issue #63).
 
@@ -365,7 +371,7 @@ answered by a non-reasoning model.
 ## Rate limiting
 
 Every throttle the server applies lives in this section — this is the single source of
-truth. Two independent mechanisms exist, because they answer different questions and
+truth. Four mechanisms exist, because they answer four different questions and
 must not be interchanged.
 
 ### Credential throttle — `src/http/rateLimit.ts`
@@ -464,10 +470,60 @@ home server that normally shares its user's clock, and a deployment that does
 not (the container defaults to UTC — see `TZ` in `docker-compose.yml`) would
 otherwise be quietly wrong. A per-user timezone is the tracked follow-up.
 
+A held-back notification is **never re-announced when the window ends**. The
+gate is evaluated once, at raise time; nothing watches the clock, so there is no
+event at 07:00 to push anything. That is deliberate rather than unfinished:
+re-pushing a night's worth the moment quiet hours lift is a burst of exactly the
+interruptions quiet hours exists to prevent. What the user gets instead is the
+durable record, shown on their client's next contact with the server — never
+pushed, but never lost. (A single digest at the window's end is the shape if
+that is ever wanted; it needs a timer, which is #90.)
+
 Retention is the other half: `JARVIS_NOTIFY_MAX_PER_USER` (default 200) trims on
 every insert, evicting settled rows first — an undelivered notification is the
 last thing a prune takes, but it is not exempt, because the rows that pile up
 most easily are precisely the `pending` ones nobody was online to receive.
+
+**A dismissal deletes the row** (#90 phase 9c), which is the one lifecycle
+decision this section owns. `dismissed` used to be a terminal state a row sat in
+— hidden from the list, but on record — and a row kept to record a shrug is a row
+nobody reads. So `POST /api/notifications/{id}/dismiss` removes it, `dismissed`
+left the state vocabulary (a v16 rebuild deletes the rows that were in it, and
+reports how many), and there is no `includeDismissed` read to ask for them. Two
+consequences worth stating: a dismissal is idempotent in the sense that a row
+already gone is what the call wanted (the second one answers 404, like a foreign
+id), and the supersede path is a delete too — which is what keeps a series that
+repeats every minute at one live row rather than a thousand tombstones.
+
+### Scheduled-job model-run budget — `src/scheduler/runner.ts`
+
+The one budget here that is **not** in memory. A repeating `prompt` job is a
+standing order to call the model — the thing recurrence makes possible that
+nothing bounded before — so the runner charges every firing that reaches the
+model against a per-account, per-**local**-day ceiling
+(`JARVIS_JOB_MODEL_RUNS_PER_DAY`, default 200), counted in the auth database
+(`job_model_runs`, one row per account per day).
+
+Two properties make it a budget rather than a throttle, and both are the reason
+it is a row and not a counter:
+
+- **It survives a restart.** An in-memory ceiling would reset at exactly the
+  moment a runaway job resumes spending — when the box comes back. The same
+  argument retires the other two mechanisms here: `RateLimiter` is failure
+  backoff, and `FixedWindowQuota` counts successes per process.
+- **It charges only what costs.** A `message` or `tool` job never calls the
+  model, a quiet-hours deferral never runs, a firing a gate declined spends
+  nothing, and a firing whose own schedule has ended spends nothing — so none of
+  them touch the budget. It is checked before the claim, and so before the gate:
+  a spent budget ends the job's day at the notice, because claiming a firing that
+  will not run would consume one of `ends.after`'s firings.
+
+Being spent is deliberately loud enough to be seen, once: a one-shot is settled
+`missed` with the reason (its moment passed and it was not attempted, which is
+what `missed` means), while a series moves to its next occurrence and posts
+**one** notice for that day, deduped on `job-budget:<user>:<day>` through the
+notification service's existing dedupe. A schedule that starves in silence would
+be worse than the spending it prevents.
 
 ### Not rate limited
 
@@ -488,9 +544,11 @@ tool as an unbounded outbound-request amplifier.
 
 ### Scope and caveats
 
-- **State is in-memory only**, per process. The server is single-instance by design, so
-  this is adequate for the LAN posture; a process restart simply resets every counter.
-  There is no distributed or persisted state.
+- **State is in-memory only**, per process — with one deliberate exception: the
+  scheduled-job model-run budget is a row in the auth database, because a restart
+  must not hand the day's allowance back (see its section above). The server is
+  single-instance by design, so this is adequate for the LAN posture; a process
+  restart simply resets every other counter. There is no distributed state.
 - **The credential throttle trusts `req.ip` as-is.** Behind a reverse proxy every request
   appears to originate from the proxy, which collapses the per-`ip` budget into a
   **global** lockout — one attacker locks out everyone. Set
@@ -558,7 +616,7 @@ What the surface guarantees:
 - **Reasoning never leaks.** The default VL model is a reasoning model; its
   chain-of-thought is discarded and only the final analysis returns.
 
-The web chat client implements the upload flow (📎, paste, drag-and-drop,
+The web app implements the upload flow (📎, paste, drag-and-drop,
 `data:` previews, one stricter-budget retry on a 413). The protocol and the
 store are client-agnostic — a CLI or camera client can reference attachments
 without touching the wire shape; non-browser clients cannot downscale, so
@@ -639,6 +697,413 @@ The request/response normalization and the defensive parsing live in the
 `packages/server/src/README.md` file map (`llm/tools/wikipedia.ts`,
 `llm/tools/wikipedia/client.ts`).
 
+## Preferences — `/api/prefs`
+
+`GET /api/prefs` / `PUT /api/prefs` are a **free-form per-user map**: string
+keys (1–256 chars, at most 64) to any JSON value. It is where integrations keep
+their own settings, and the portal's raw JSON editor is the escape hatch for
+them. `PUT` upserts only the keys it names, so a client patches one setting at a
+time; `DELETE` clears **every** key on the account and is not a way to unset
+one.
+
+A key the server _itself reads_ is a different matter, because a setting in a
+shape the reader cannot parse saves fine and then silently does nothing — the
+"nothing happened" failure class #139 exists to remove. So writes to those keys
+are validated (`src/prefs/known.ts`) and a malformed value is a **400 carrying
+the reason**, to whoever wrote it (the web panel, the portal's raw editor, or
+`curl`). A rejected body stores nothing at all: a prefs write is all-or-nothing.
+
+The two keys read today, both by the notification service:
+
+| Key                 | Value                                                | Off / unset                                                                     |
+| ------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `notify.enabled`    | `true` / `false`                                     | `false` turns interruptions off (records are still kept); `null` or absent = on |
+| `notify.quietHours` | `{ "start": "HH:MM", "end": "HH:MM" }`, server-local | `null` or absent = off; a zero-length window is refused on write                |
+
+The reader stays lenient (an unreadable stored value is ignored, never fatal),
+so a hand-edited database can never silence a user for the day; the write check
+is the strict counterpart. Both live in `packages/server/src/notify/prefs.ts`,
+one definition, so a new pref shape cannot have two.
+
+## Scheduler (#90)
+
+The assistant's scheduling tools (#90 phase 3) can set work for later.
+The queue is the `jobs` table in the app database — there is no in-memory
+pending set — which is what makes a restart free: the loop simply scans for
+what is due _now_, however the process got here.
+
+```
+   chat turn                          the loop (one coarse tick)
+   ┌──────────────────────┐           ┌──────────────────────────────────────────┐
+   │ the scheduling tools │           │ listDueJobs(now)  ← the partial index    │
+   │  (setTimer etc.)     │           │      │                                   │
+   └──────────┬───────────┘           │      ▼  at most JARVIS_JOB_MAX_PER_TICK  │
+              │ creates               │   claim (pending → running, atomic)      │
+              ▼                       │      │                                   │
+   ┌───────────────────────────────┐  │      ▼                                   │
+   │ jobs  (queue + state)         │◄─┤   execute: prompt → runAgent(job:<id>)   │
+   │ job_runs  (what happened)     │  │            tool   → tool.invoke(runtime) │
+   └───────────────────────────────┘  │      │                                   │
+              ▲                       │      ▼  run row + settled job + ONE       │
+              │ 1:N                   │   notification (job.finished/failed/missed)│
+              └───────────────────────┴──────────────────────────────────────────┘
+```
+
+**A job is not a conversation.** Its runs execute on a `job:<id>` thread that
+never claims a row in the `sessions` ledger, so they never appear in a client's
+thread list; the checkpoint still gives the job memory across its own runs, and
+`job_runs` is the history a page will read (phase 7).
+
+Everything a run must not get wrong is in `scheduler/runner.ts` — the module
+that owns one job's life — and the four rules worth knowing here:
+
+- **One run row per firing; one announcement per payload run.** Every firing
+  that reaches its payload ends in a run row, a job state and exactly one
+  notification — with one deliberate exception (#90 phase 9b): a **plain
+  `message` series** records no run row at all, because every one of them would
+  hold the job's own text and a minutely reminder would write 1,440 identical
+  rows a day. The job row is the record there (`attempts` counts the firings,
+  `last_error` the last failure), and a failure, a gate's answer or a one-shot
+  still files its row. The announcements are: `job.finished` with the reply, `job.failed` with the reason, or
+  `job.missed` when its moment passed while the server was down. A scheduled job
+  that does nothing visible is the "nothing happened" class #139 exists to
+  remove, and a _scheduled_ one has nobody watching to notice. Three firings end
+  without a payload and do not announce the finished/failed pair: a slot missed
+  while the server was down and an occurrence the day's model budget skipped
+  leave **no** run row (nothing was begun), while a firing a **gate** declined
+  leaves a `skipped` row and says nothing (nothing changed, which is what the
+  user asked to be told about). The budget's one deduped notice is the sole
+  exception, and it exists because a schedule starving in silence would be worse
+  than the spending it prevents.
+- **A claim is the transition.** `state = 'pending'` lives in the claim's WHERE
+  clause, so a second tick — or a process that restarted mid-run — touches no
+  row. The same statement is why an overlapping tick is safe.
+- **Lateness is honest.** Within `JARVIS_JOB_MAX_LATENESS_MS` a job runs late;
+  beyond it, it is `missed` and says so rather than firing into a moment that
+  has passed. A `running` row found at boot was left by a process that died
+  (a claim lives in memory), so the first thing `start()` does is fail it with
+  "the server restarted while this run was in progress" — announced like any
+  other failure.
+- **A message job runs nothing.** The job's own text is the whole payload: a
+  reminder or a timer needs no model and no tool, and the runner's announcement
+  is what delivers it — which is why `sendNotification` stays unschedulable
+  (one job, one notification). The job's `class` travels with that announcement
+  unchanged, so a `timer` pierces quiet hours while everything else waits.
+- **The log says whether the user was actually told.** A run's announcement is
+  logged at `info` whenever it was _recorded but not pushed_, with the reason:
+  `job notif1 "Filter" recorded only (quiet-hours) — quiet hours hold a
+notification`. Silence at `info` therefore means it was delivered (the
+  delivery itself is a `debug` line), so "it ran but nothing appeared" is
+  answered by the log rather than by a debug rerun.
+- **A reminder defers itself out of quiet hours.** Rather than being held (and
+  forgotten) or firing into a sleeping house, a `reminder` that lands inside the
+  window moves its own `run_at` to the moment the window closes — the loop
+  already owns the clock, so no second timer is involved — and keeps its attempt
+  count at zero, because nothing was attempted. A `timer` pierces instead, and a
+  `notification` records its announcement and waits to be read. The window
+  arithmetic and the "which class is held" answer live in `notify/prefs.ts`, so
+  the service and the scheduler cannot disagree about when quiet hours end. The
+  window is read **live**, never copied onto the job: moving quiet hours before
+  a reminder's moment changes the decision, extending them over an
+  already-deferred moment defers it again, and clearing them does not bring the
+  job forward — the original moment is not retained, so a deferral is one-way.
+  With `notify.enabled: false` there is nothing to defer _for_, so the job runs
+  at its own moment and the record is produced then rather than hours late.
+- **The boot log names the database.** `App database: <path>` sits beside the
+  checkpoint line, because "the scheduler never fired" and "the row was inserted
+  into a different file" are indistinguishable from the outside — that happened
+  once (2026-10-17) and cost a round trip.
+- **A tool job runs the tool, not the model.** The `tool` payload invokes the
+  named tool with the runtime a graph turn would have stamped
+  (`configurable.sessionId`/`userId`, the turn's `AbortSignal`), so the quotas,
+  ownership checks and quiet-hours policy inside that tool apply unchanged. The
+  allowlist in `scheduler/tools.ts` decides what may be named — it excludes
+  `sendNotification` (the runner already announces every run, so scheduling the
+  notification tool would announce twice) — and it is checked again at fire
+  time, because a server's configuration can change between scheduling and
+  firing.
+
+### Repeating jobs (#90 phase 8c)
+
+A job may carry a **rule** (`JobRepeat`, validated and computed by
+`@lukestanbery/jarvis-protocol` — the same function the web form previews with,
+so a preview cannot disagree with what happens). It stays **one row**: the rule
+holds the schedule and the row's `run_at` is always the next occurrence, so the
+id a conversation named an hour ago is still the id to cancel.
+
+- **The anchor is the rule's, not the run's.** `start` carries the wall clock
+  the series fires at, and a re-arm always computes from it — which is why a
+  snooze (+1h) or a quiet-hours deferral (to 07:00) moves _one_ firing and the
+  series returns to its own clock afterwards.
+- **Re-arming is part of the settle.** The run row and the job's next state
+  (owed again, or terminal) commit in one transaction, so a process that dies
+  mid-run can never leave a series without a successor. A **failed** firing
+  re-arms too: for a series, the next occurrence is the retry.
+- **Skips are quiet, endings are not.** A slot that passed while the server was
+  down moves a series forward silently rather than announcing a `missed` firing,
+  and a firing interrupted by a restart re-arms rather than failing the series —
+  the occurrence is lost, the schedule is not. A series that runs out (`until`,
+  or `after: N` firings — a skip does not consume one) settles `done`.
+- **Stopping it is a cancel.** A cancel that lands mid-run wins: the firing in
+  flight still reports, and the re-arm refuses to schedule a successor.
+
+Impossible dates are decided in three tiers rather than one, and the tiers are
+the reason a rule can be _refused_ instead of quietly doing something else: a day
+the month does not have is clamped to its last day, an ordinal that month does
+not have ("the 5th Monday") skips the month and the create flow says when the
+next one is, and something that can never exist ("the 32nd", "the 7th Monday") is
+refused. See the rule's own doc for the full semantics.
+
+### The gate (#90 phase 8f)
+
+A job that fires every five minutes cannot afford a model call every five
+minutes, and a reminder cannot afford to speak every five minutes. So a job may
+carry a **gate**: one read-only tool call, made by the runner _before_ any
+payload, whose answer is compared with the answer the previous firing recorded.
+
+```
+fire → claim → gate (one read) ─┬─ same question, same answer → run row `skipped`
+                                │                               no payload · no announcement
+                                └─ different (or no baseline)   → payload runs, announced
+                                                                  and the answer is recorded
+```
+
+- **Only `changed` exists.** A richer condition is either a predicate language or
+  a model call; half of one would be worse than an honest refusal.
+- **Gateable is declared, not inferred.** `homeAssistant` mixes reads and writes
+  behind one name, so `scheduler/tools.ts` lists the actions that only read
+  (`list`/`lights`/`switches`/`get`); a tool absent from that map cannot be a
+  gate, and the refusal reaches the conversation when the job is created and the
+  run when it fires. The read-only tools are deliberately absent for now: a
+  `changed` gate over `webSearch` would answer differently on every poll and
+  turn an affordable job into a flood. An entry is a promise that the answer is
+  stable while nothing changes.
+- **The answer is recorded on every gated firing**, not only the declined ones:
+  the comparison reads the newest run, so a payload run that recorded nothing
+  would reset the baseline and every other firing would run. `gate_key` is the
+  `{tool, args}` identity — a gate that was edited asks a _different question_,
+  so its predecessor's answer is not evidence and the payload runs.
+- **A check that cannot be made fails the firing.** The tool may be gone at 3am,
+  or the stored value may name a write; "only if it changed" is not a request to
+  run regardless, so the refusal goes in the run row and in the failure — the
+  same shape a tool job gets when its target has vanished. A _structurally_
+  unreadable gate (a stored value that no longer parses) is a different case and
+  runs the job unguarded with a warning, as an unreadable `repeat` rule fires
+  once: the request is still the request.
+- **A decline costs nothing.** No model run is charged and nothing is announced.
+  The one interaction worth knowing: the model-run budget is checked before the
+  claim, and therefore before the gate, so an account that has spent its day
+  ends the job's day at the notice rather than at the free check — a claim spent
+  on a firing that never runs would consume an `ends.after` count.
+- **Skips are visible where jobs live.** A gated job that only ever declines
+  produces no notification at all, so the **Runs** disclosure sits on the job row
+  (owed and settled) on `/timers`, `/reminders` and the notifications page's
+  Scheduled half — the first place a timer's own history is reachable too.
+
+### The scheduling tools (#90 phase 3; `repeat` in 8d)
+
+`remindMe` and `scheduleTask` take an optional **`repeat`** (#90 phase 8): the
+same rule object the REST surface sends, minus its anchor. The model states the
+schedule in fields — `every`/`interval`, `weekdays` for "every Monday and
+Saturday", `monthDays` for "the first of the month", `weekOrdinals` for "the
+second Tuesday", `ends.after` for a count — and names _when_ in words, exactly as
+it always has; the resolver turns those words into the first occurrence, which
+becomes the rule's `start`. The model never handles a timestamp, and a series
+still fires at the clock the user said.
+
+Two things the tool text does deliberately. It **states the schedule back**
+("Reminder scheduled: … repeating every Monday, Tuesday and Saturday at 09:00")
+alongside when it will next run, because a small local model writing `weekOrdinals`
+by hand is exactly where a silent mistake would land, and reading it back lets
+the user correct it in the same turn. And the scheduling hygiene paragraph tells
+the model to **ask rather than choose** when a phrase could mean two schedules —
+"every Monday and the 1st" is either every Monday plus the 1st or a Monday that
+is also the 1st — which is the one ambiguity the rule cannot resolve for it.
+
+### The scheduling tools (#90 phase 3; the gate in 8g)
+
+Seven tools, and their split is the policy: **the class comes from which tool was
+called, never from an argument**, so nothing the model writes can choose how
+loudly the user is interrupted.
+
+| Tool             | Class                                  | Payload        | Time                                     | `gate`   |
+| ---------------- | -------------------------------------- | -------------- | ---------------------------------------- | -------- |
+| `setTimer`       | `timer` — pierces quiet hours          | message        | `minutes` or `seconds` (1 s – 24 h)      | —        |
+| `remindMe`       | `reminder` — defers out of quiet hours | message        | `at` + optional `onDate`, or `inMinutes` | optional |
+| `scheduleTask`   | `notification` — waits                 | one tool call  | same as `remindMe`                       | optional |
+| `schedulePrompt` | `notification` — waits                 | one prompt     | same as `remindMe`                       | optional |
+| `snoozeReminder` | keeps the reminder's class             | same as before | `id` + `minutes`                         | —        |
+| `listJobs`       | —                                      | —              | —                                        | —        |
+| `cancelJob`      | —                                      | —              | —                                        | —        |
+
+`schedulePrompt` (#90 phase 8g) is the door to a job that _does_ something rather
+than one that runs a single tool: "every night, summarise my day", "each morning
+at eight, brief me on the news". It was the last payload kind with no way in —
+the runner has run `prompt` jobs since phase 1, and the REST surface stays
+message-only by decision — so its prompt is written to stand on its own, because
+nobody is there to answer a question when it fires. The reply becomes the job's
+announcement, filed as the class it is: a `notification`.
+
+**A gate is what makes a frequent schedule affordable** (#90 phases 8f–8g).
+Every creating tool — `remindMe`, `scheduleTask` and `schedulePrompt` — takes
+an optional one, and the model states it
+the way it states everything else — a tool, that tool's arguments, and
+`when: "changed"` — never a condition language. Three refusals arrive while the
+user is still in the conversation: the tool must be one that declares a read
+action, it must be installed on this server, and its arguments must satisfy its
+own schema (the same check a scheduled target's arguments get). A reminder takes
+one for the same reason the other two do — "remind me every ten minutes, but only
+if the oven is still on" is a conditional announcement, and a `message` job's
+floor is a minute precisely because a firing that declines says nothing. What the
+gate buys a _spending_ job is the **cadence floor**: a job that runs a tool or a prompt may not repeat
+faster than every 15 minutes unless it carries a gate, because every firing is a
+device write or a model call — a gated one may go to a minute, since a declined
+firing does nothing. The reply says both halves ("repeating every 5 minutes, but
+only when homeAssistant changes"), so the user can correct a condition they did
+not ask for in the same turn.
+
+**A series keeps one live announcement** (#90 phase 9a), which is the other half
+of the floor: a firing's announcement carries a dedupe key of its job's id, so
+each one _replaces_ the previous rather than stacking. A reminder every minute is
+one row in the list that keeps saying the newest thing — not 1,440 rows of the
+same sentence — and the toast stack collapses by job for the same reason. That is
+why a `message` job may now repeat as often as every minute: its cadence is no
+longer a notification rate. A `tool`/`prompt` job keeps its 15-minute floor
+because what it spends per firing is real, and a gate — which declines before
+spending — is the way past it.
+
+**The cadence arrives in whichever spelling the model reached for** (fixed after
+the first live run of a repeating reminder). The nested object — `repeat`, the
+shape a page sends and the row stores — is one way to say it; the same fields at
+the top level are the other, and the live run produced exactly that
+(`{ label: "Drink water", every: "minute", interval: 30 }`). Because `z.object`
+_strips_ what it was not told about, that call lost its schedule silently and came
+back as "no time was given" — a refusal the user could only answer by repeating
+themselves. Both spellings are read into one object (`statedCadence`), the nested
+one winning when a call states both, and the fields are still defined once
+(`cadenceFields`).
+
+**A cadence is its own when.** When the model names no time and the user asked
+for a repeat, the rule is anchored at the moment of the ask and `nextOccurrence`
+picks the first firing: "every 30 minutes" starts half an hour from now, "every
+day" starts tomorrow at this time. The result states it back ("… today at 7:35
+PM, in 30 minutes"), so a clock time they meant differently is corrected in the
+same turn. A **one-shot** with no time is still refused — there is nothing to
+derive one from, and that is the "later"/"soon" case the prompt tells the model to
+ask about rather than guess.
+
+**Times are words, not timestamps.** The model passes what the user said — a
+24-hour clock time, `today`/`tomorrow`/a weekday/a date, or a delay — and
+`scheduler/time.ts` turns that into one instant in the server's local zone: a
+bare clock time means the next time the clock reads that, a time that passed
+seconds ago still means today, a weekday rolls forward, and an explicit past
+date is refused. That is also why the prompt tells the model not to convert
+times itself.
+
+**Impossible tasks fail at creation.** `scheduleTask` checks the requested tool
+against `scheduler/tools.ts` (so `sendNotification`, `analyzeImage`, and the
+scheduling tools themselves are refused) _and_ against that tool's own schema, so
+"the homeAssistant tool needs different arguments — entity_id: …" arrives while
+the user is still in the conversation rather than at the due moment with nobody
+watching. The runner re-resolves the tool when it fires, because a server's
+configuration can change in between.
+
+**The bounds are the queue's.** `JARVIS_JOB_MAX_PER_USER` caps _pending_ rows
+(the runner's retention prune evicts settled rows first, so a job the tool
+accepted cannot be the row the prune eats), `JARVIS_JOB_MAX_HORIZON_DAYS`
+(default 366) refuses a moment too far out to be anything but a typo, and a
+label or message longer than a notification can carry is refused rather than
+truncated. Every refusal is model-facing text and leaves no row behind.
+
+**The result says what will happen, not what was asked.** A reminder that lands
+inside quiet hours is told so — "it will wait until 7:00 AM and be announced
+then" — from a live read of the prefs, without pre-deferring (the runner owns
+that decision). A timer says it will interrupt; a notification says it will be
+recorded and wait. A job whose text is only its headline arrives as one line,
+not a headline repeated as the body.
+
+**Snooze is a move, not a new kind of thing.** A reminder that has not fired
+moves its own `run_at` (`moveJob`, owner-scoped and pending-only, in one
+statement); one that already had its moment is re-created with the same text for
+the new time. A running reminder is refused (it is being worked on), a cancelled
+one is refused (cancelling was an explicit "don't tell me"), and a timer or a
+notification is refused because only a reminder snoozes. No schema change is
+involved: the notification list's own _snoozed_ state belongs with the list that
+can show it (phase 6).
+
+The tools are registered only when the scheduler is running (`JARVIS_SCHEDULER`
+not `off`, notifications wired): a job nobody can run is a promise the server
+cannot keep. The pages come next (phases 6–7), and recurrence (per-job
+timezones, DST, retries) last.
+
+### Managing jobs over REST (#90 phase 5)
+
+`/api/jobs` is the surface a page manages timers and reminders through, and it
+is **the same policy as the tools**, not a second one: `scheduler/create.ts`
+owns what a job may be (the label/message bounds, the horizon, the per-user cap
+on pending rows, the timer's day ceiling), what an edit may touch, what a snooze
+means, and the quiet-hours forecast. The tools render its answers in the model's
+voice; the routes map its refusal codes onto status codes. Mounted only when
+the scheduler is wired, so `JARVIS_SCHEDULER=off` leaves no endpoint rather than
+one that cannot honour what it stores.
+
+| Method   | Path                    | Description                                                                    |
+| -------- | ----------------------- | ------------------------------------------------------------------------------ |
+| `GET`    | `/api/jobs`             | The caller's jobs, newest first (settled ones only with `includeSettled=true`) |
+| `POST`   | `/api/jobs`             | Schedule a `message` job: `{ label, class, message?, runAt, repeat? }`         |
+| `GET`    | `/api/jobs/{id}`        | One job plus its run history (`{ job, runs }`)                                 |
+| `PATCH`  | `/api/jobs/{id}`        | Edit `label`, `message`, `runAt` or `repeat` while the job is still `pending`  |
+| `DELETE` | `/api/jobs/{id}`        | Cancel a `pending` job, or stop a **repeating** one mid-run                    |
+| `POST`   | `/api/jobs/{id}/snooze` | `{ minutes }` — move a pending reminder, or set a settled one again            |
+
+Three things about that surface are worth stating, because each is a decision
+rather than an implementation detail:
+
+- **A page may name a class; the model may not.** `class` is accepted in the
+  create body because a page is the user's own hand — a form that offers "timer"
+  and "reminder" is the user choosing how loudly to be interrupted. The model's
+  tools each own their class and expose no such argument, because a model that
+  could name one could pierce quiet hours by asking.
+- **A page may set a rule, judged in one place.** `repeat` arrives here as the
+  same `JobRepeat` object the model's tools take, and goes straight to
+  `scheduler/create.ts` — so a page and a model cannot disagree about what a
+  schedule is, or about why one is refused. Two refusals are this server's rather
+  than the rule's: a **timer may not repeat** (a timer pierces quiet hours, and a
+  repeating one would be a standing breach of them), and a job whose firing
+  **spends** — a tool write or a model call — may not repeat faster than
+  **every 15 minutes** unless it carries a gate (#90 phases 8g, 9a). A message
+  job, which spends nothing and whose announcement replaces its predecessor, may
+  repeat every minute. A repeating job's moment comes from its rule, so the
+  request's own `runAt` is ignored when `repeat` is present, and `PATCH`'s
+  `repeat: null` is how a series is stopped (`absent` leaves the schedule alone).
+- **A page-created job is always a `message` job.** Text with nothing to run is
+  what a timer or a reminder actually needs. Scheduling a _tool_ or a _prompt_
+  stays with the model's tools, where the allowlist and the target tool's own
+  schema are checked before the row is written — a stored tool call is a durable
+  capability, and a REST form has no schema to validate one against.
+- **Times are instants here, words there.** `runAt` is an ISO-8601 instant (the
+  output of a picker), while the model speaks times as words through its tools.
+  Both end at one instant, but only the words need the resolver. A moment in the
+  past, a `timer` more than a day out, and a moment beyond
+  `JARVIS_JOB_MAX_HORIZON_DAYS` are refused — the first is the only one the
+  natural-language path can never produce, and it is exactly what a date picker
+  can.
+
+`quiet` on the create/edit/snooze response is what the caller's prefs will do to
+that announcement as they stand: `clear`, `disabled` (the account switch is
+off — the job still runs), or `held` with the instant it comes back on. It is a
+prediction, not a promise: the runner reads the prefs again when the job fires,
+and a change in between changes the outcome.
+
+The link that makes the surface useful to the _notification_ list is
+`notifications.job_id` (schema v11): the runner stamps each announcement with
+the job that produced it, and `GET /api/notifications` returns it as `jobId`. It
+is what lets a fired reminder's banner offer _snooze_ rather than only
+_dismiss_ — the client would otherwise have to guess which job a row came from,
+and a job is pruned as history while the notification the user was shown stays.
+The WS `notification` frame does not carry it yet; the list refresh does, and the
+frame field lands with the buttons that read it (phase 6).
+
 ## Endpoints
 
 Authoritative machine-checked tables live in `@lukestanbery/jarvis-contracts`:
@@ -651,8 +1116,8 @@ table — "web session" is the `jarvis_session` cookie):
 
 | Method   | Path                       | Auth                                | Description                                                                              |
 | -------- | -------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------- |
-| `GET`    | `/`                        | none                                | Returns the built portal SPA if present, otherwise `Hello World`                         |
-| `GET`    | `/web`                     | none                                | Built web chat client SPA (301s to `/web/`, then serves `index.html`)                    |
+| `GET`    | `/`                        | none                                | The built web app (the front door); `Hello World` when it is not built                   |
+| `GET`    | `/admin`                   | cookie session (its own gate)       | Built admin portal SPA (strict CSP)                                                      |
 | `WS`     | `/ws`                      | optional device token (first frame) | Chat endpoint (WebSocket)                                                                |
 | `POST`   | `/api/bootstrap`           | `x-bootstrap-token` header          | Create the first (owner) account + device token                                          |
 | `POST`   | `/api/auth/login`          | none                                | Username + password → a (rotating) device token                                          |
@@ -665,6 +1130,12 @@ table — "web session" is the `jarvis_session` cookie):
 | `PATCH`  | `/api/users/{id}`          | device token or web session (owner) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409) |
 | `GET`    | `/api/sessions`            | device token or web session         | List sessions (owner sees all, with `userId`)                                            |
 | `DELETE` | `/api/sessions/{threadId}` | device token or web session         | Delete the caller's owned session (owner: any)                                           |
+| `GET`    | `/api/jobs`                | device token or web session         | List scheduled jobs, newest first (`includeSettled=true` for history)                    |
+| `POST`   | `/api/jobs`                | device token or web session         | Schedule a message job (`label`, `class`, `message?`, `runAt`), with a quiet forecast    |
+| `GET`    | `/api/jobs/{id}`           | device token or web session         | One job and its run history                                                              |
+| `PATCH`  | `/api/jobs/{id}`           | device token or web session         | Edit a pending job's `label`/`message`/`runAt`                                           |
+| `DELETE` | `/api/jobs/{id}`           | device token or web session         | Cancel a pending job                                                                     |
+| `POST`   | `/api/jobs/{id}/snooze`    | device token or web session         | Snooze a reminder (`minutes`): move it, or set a settled one again                       |
 
 "Device token" auth is `Authorization: Bearer <token>`; the web session is the
 `jarvis_session` cookie (+ `x-csrf-token` on state changes).
@@ -681,7 +1152,7 @@ and exchange JSON text frames:
       `{ "type": "hello", "capabilities": [...] }`) — the client announces how it renders responses. Each token is
       one of `markdown` / `html` / `image` / `link` / `audio` (duplicates and unknown tokens are rejected; the list may be
       empty). This affects the agent's system prompt: the model is told the client renders Markdown/images/links
-      (or that it only shows plain text). Regardless of capabilities, the server always appends five fixed hygiene paragraphs to the system prompt — make exactly one tool call at a time with every required argument as well-formed JSON and wait for each result; make exactly one `getCurrentTime` call per time/date/weekday ask, passing the user's question verbatim; for attachment-carrying prompts, call `analyzeImage` with the exact id from the message's `[attachments: …]` list and answer from the tool's description, never by guessing; for home automation, use `homeAssistant` only as its description allows and report failures plainly; and for factual or fast-changing questions, prefer a lookup tool such as `wikipedia` or `webSearch` over memory. Must be
+      (or that it only shows plain text). Regardless of capabilities, the server always appends seven fixed hygiene paragraphs to the system prompt — make exactly one tool call at a time with every required argument as well-formed JSON and wait for each result; make exactly one `getCurrentTime` call per time/date/weekday ask, passing the user's question verbatim; for attachment-carrying prompts, call `analyzeImage` with the exact id from the message's `[attachments: …]` list and answer from the tool's description, never by guessing; for home automation, use `homeAssistant` only as its description allows and report failures plainly; for factual or fast-changing questions, prefer a lookup tool such as `wikipedia` or `webSearch` over memory; and for anything scheduled, use the scheduling tool that matches what the user asked for and ask them when to run it instead of guessing a time. Must be
       the very first frame.
     - **First frame (or immediately after `hello`), optional:** `{ "type": "auth", "token": "<device token>" }`
       — authenticates as an account. The server replies with one
@@ -829,7 +1300,7 @@ Deployment posture (deliberate):
 
 ## Local STT model serving (#84 P3b)
 
-The web chat client's speech recognition runs **on-device** (issue #84):
+The web app's speech recognition runs **on-device** (issue #84):
 a WASM engine (Vosk) in the browser transcribes the microphone locally, so
 no audio ever leaves the client. The engine needs ~40 MB of model weights;
 the server fetches the archive from its configured upstream on the **first
@@ -862,12 +1333,12 @@ archive never lands in the Docker image and is never downloaded at boot.
 
 ## Wake-word model serving (#84 P4)
 
-The web chat client's "Hey JARVIS" wake detector (openWakeWord) also runs
+The web app's "Hey JARVIS" wake detector (openWakeWord) also runs
 **on-device**. It needs three small ONNX models (`melspectrogram.onnx`,
 `embedding_model.onnx`, `hey_jarvis_v0.1.onnx` — ~3 MB total); the server
 fetches them from the openWakeWord release host on first request and serves
 them same-origin from `/api/wake/model/:file`, because the upstream commits
-no CORS headers and a `/web`-mounted SPA must load them without them. The
+no CORS headers and an SPA must load them without them. The
 route is an exact per-file allowlist — an unknown name 404s before any
 fetch; `HEAD` answers 200 without downloading.
 
@@ -883,7 +1354,9 @@ fetch; `HEAD` answers 200 without downloading.
   satellite speaker or a phone outranks nothing it cannot do; `hub.ts` is the
   live-socket registry (`ws.ts` fills it on auth, empties it on close) that
   makes "is the user reachable?" answerable at all; `service.ts` is the policy
-  (presence-first, quiet hours from the `notify.quietHours` pref, the delivery
+  (presence-first, quiet hours from the `notify.quietHours` pref — which the
+  notification's `class` decides, and nothing else does, so a timer pierces
+  them while a prioritised notification still waits — and the delivery
   budget above); `channels/inApp.ts` is the one phase-1 channel, pushing the
   stored record as a `notification` frame; `http.ts` is `/api/notifications`
   (list + create + read/dismiss/answer), mounted only when notifications are

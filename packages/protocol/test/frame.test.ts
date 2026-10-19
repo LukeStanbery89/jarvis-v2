@@ -157,6 +157,7 @@ describe("parseFrame: notification frames (#139)", () => {
         notification: {
             id: "abc123",
             kind: "job.finished",
+            class: "notification",
             priority: "normal",
             title: "PR #143 is ready",
             body: "4 files changed.",
@@ -175,6 +176,7 @@ describe("parseFrame: notification frames (#139)", () => {
                     notification: {
                         id: "a",
                         kind: "k",
+                        class: "reminder",
                         priority: "low",
                         title: "t",
                         createdAt: "2026-10-15T18:04:11.000Z",
@@ -185,6 +187,7 @@ describe("parseFrame: notification frames (#139)", () => {
             notification: {
                 id: "a",
                 kind: "k",
+                class: "reminder",
                 priority: "low",
                 title: "t",
                 createdAt: "2026-10-15T18:04:11.000Z",
@@ -218,6 +221,25 @@ describe("parseFrame: notification frames (#139)", () => {
         ).toBe(false);
     });
 
+    it("carries the job link only when the notification has one", () => {
+        // A scheduler announcement names the job it came from (#90): it is what
+        // lets a client snooze the reminder rather than only acknowledge the
+        // notification it saw.
+        const linked = parseFrame(
+            JSON.stringify({
+                notification: { ...valid.notification, jobId: "0f3a91bc" },
+            }),
+        );
+        expect("notification" in linked && linked.notification.jobId).toBe(
+            "0f3a91bc",
+        );
+        // A notification no job stands behind carries no key at all.
+        const standalone = parseFrame(JSON.stringify(valid));
+        expect(
+            "notification" in standalone && "jobId" in standalone.notification,
+        ).toBe(false);
+    });
+
     it("rejects a notification missing a required field or priority token", () => {
         for (const payload of [
             { ...valid.notification, id: undefined },
@@ -225,12 +247,17 @@ describe("parseFrame: notification frames (#139)", () => {
             { ...valid.notification, kind: "" },
             { ...valid.notification, title: "" },
             { ...valid.notification, createdAt: undefined },
+            { ...valid.notification, class: undefined },
+            { ...valid.notification, class: "alarm" },
             { ...valid.notification, priority: undefined },
             { ...valid.notification, priority: "eventually" },
             { ...valid.notification, title: "x".repeat(201) },
             { ...valid.notification, body: "x".repeat(2001) },
             { ...valid.notification, id: "x".repeat(65) },
             { ...valid.notification, requiresAnswer: "yes" },
+            { ...valid.notification, jobId: "" },
+            { ...valid.notification, jobId: "x".repeat(65) },
+            { ...valid.notification, jobId: 42 },
         ]) {
             expect(() =>
                 parseFrame(JSON.stringify({ notification: payload })),

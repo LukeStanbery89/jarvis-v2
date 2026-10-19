@@ -25,6 +25,7 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
 } from "./types";
 import type {
@@ -36,6 +37,7 @@ import type {
     ClientFrame,
     ClientHello,
     ClientLocationFrame,
+    NotificationClass,
     NotificationFrame,
     NotificationPriority,
     ServerFrame,
@@ -61,6 +63,14 @@ const KNOWN_MODES: ReadonlySet<string> = new Set<string>(CHAT_MODES);
  */
 const KNOWN_NOTIFICATION_PRIORITIES: ReadonlySet<string> = new Set<string>(
     NOTIFICATION_PRIORITIES,
+);
+
+/**
+ * The notification-class tokens the protocol recognizes, derived from
+ * {@link NOTIFICATION_CLASSES} for the same reason.
+ */
+const KNOWN_NOTIFICATION_CLASSES: ReadonlySet<string> = new Set<string>(
+    NOTIFICATION_CLASSES,
 );
 
 /** User-facing wording for a malformed JSON payload; must not drift. */
@@ -198,11 +208,13 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
     const n = payload as {
         id?: unknown;
         kind?: unknown;
+        class?: unknown;
         priority?: unknown;
         title?: unknown;
         body?: unknown;
         createdAt?: unknown;
         requiresAnswer?: unknown;
+        jobId?: unknown;
     };
     if (
         typeof n.id !== "string" ||
@@ -215,6 +227,7 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
         n.title.length === 0 ||
         n.title.length > MAX_NOTIFICATION_TITLE_LENGTH ||
         typeof n.createdAt !== "string" ||
+        !isNotificationClass(n.class) ||
         !isNotificationPriority(n.priority)
     ) {
         return null;
@@ -232,10 +245,19 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
     ) {
         return null;
     }
+    if (
+        n.jobId !== undefined &&
+        (typeof n.jobId !== "string" ||
+            n.jobId.length === 0 ||
+            n.jobId.length > MAX_NOTIFICATION_ID_LENGTH)
+    ) {
+        return null;
+    }
     return {
         notification: {
             id: n.id,
             kind: n.kind,
+            class: n.class,
             priority: n.priority,
             title: n.title,
             ...(typeof n.body === "string" && n.body.length > 0
@@ -243,6 +265,9 @@ function parseNotificationFrame(payload: unknown): NotificationFrame | null {
                 : {}),
             createdAt: n.createdAt,
             ...(n.requiresAnswer === true ? { requiresAnswer: true } : {}),
+            ...(typeof n.jobId === "string" && n.jobId.length > 0
+                ? { jobId: n.jobId }
+                : {}),
         },
     };
 }
@@ -257,6 +282,21 @@ function isNotificationPriority(value: unknown): value is NotificationPriority {
     return (
         typeof value === "string" &&
         (KNOWN_NOTIFICATION_PRIORITIES as ReadonlySet<string>).has(value)
+    );
+}
+
+/**
+ * True when `value` is one of the {@link NOTIFICATION_CLASSES} tokens.
+ *
+ * A class must come from the closed set for the same reason a priority must:
+ * a client choosing how insistently to render a frame it does not recognize
+ * would be guessing about the one field that decides whether a timer is
+ * impossible to miss.
+ */
+function isNotificationClass(value: unknown): value is NotificationClass {
+    return (
+        typeof value === "string" &&
+        (KNOWN_NOTIFICATION_CLASSES as ReadonlySet<string>).has(value)
     );
 }
 

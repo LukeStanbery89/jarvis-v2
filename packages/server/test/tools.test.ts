@@ -9,6 +9,7 @@ import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
 import type { HomeAssistantProvider } from "../src/llm/tools/homeAssistant/types";
 import type { WikipediaProvider } from "../src/llm/tools/wikipedia/types";
 import type { NotificationService } from "../src/notify/service";
+import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 
 const CASES: Array<[string, number]> = [
     ["42", 42],
@@ -163,6 +164,28 @@ describe("createTools wiring", () => {
                 },
             }),
         ).toContain("wikipedia");
+    });
+
+    it("registers the scheduling tools only when the scheduler is wired (#90)", () => {
+        const ledger = createInMemoryAppDatabase();
+        expect(names()).not.toContain("setTimer");
+        expect(
+            names({
+                jobs: {
+                    ledger,
+                    maxPerUser: 50,
+                    maxHorizonMs: 366 * 86_400_000,
+                },
+            }),
+        ).toEqual(
+            expect.arrayContaining([
+                "setTimer",
+                "remindMe",
+                "scheduleTask",
+                "listJobs",
+                "cancelJob",
+            ]),
+        );
     });
 
     it("registers sendNotification only when notifications are wired (#139)", () => {

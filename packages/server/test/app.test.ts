@@ -84,7 +84,7 @@ describe("wake model route (#84 P4)", () => {
     });
 });
 
-describe("web portal serving", () => {
+describe("admin portal serving (/admin)", () => {
     let portalDir: string;
     let portalApp: ReturnType<typeof createApp>;
 
@@ -111,26 +111,26 @@ describe("web portal serving", () => {
         rmSync(portalDir, { recursive: true, force: true });
     });
 
-    it("serves the SPA shell at /", async () => {
-        const res = await request(portalApp).get("/");
+    it("serves the SPA shell at /admin/", async () => {
+        const res = await request(portalApp).get("/admin/");
         expect(res.status).toBe(200);
         expect(res.text).toContain("JARVIS Portal");
     });
 
-    it("serves static assets from the portal dir", async () => {
-        const res = await request(portalApp).get("/assets/app.js");
+    it("serves static assets from the portal dir under /admin", async () => {
+        const res = await request(portalApp).get("/admin/assets/app.js");
         expect(res.status).toBe(200);
         expect(res.text).toBe("console.log('portal')");
     });
 
     it("falls back to the shell for client-side routes", async () => {
-        const res = await request(portalApp).get("/users/42");
+        const res = await request(portalApp).get("/admin/users/42");
         expect(res.status).toBe(200);
         expect(res.text).toContain("JARVIS Portal");
     });
 
-    it("hardens the portal with CSP headers", async () => {
-        const res = await request(portalApp).get("/");
+    it("hardens the portal with the strict CSP headers", async () => {
+        const res = await request(portalApp).get("/admin/");
         expect(res.headers["content-security-policy"]).toBe(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
         );
@@ -142,9 +142,18 @@ describe("web portal serving", () => {
         expect(res.status).toBe(401);
         expect(res.body.error).toBeTruthy();
     });
+
+    it("leaves / a greeting when the app itself is not built", async () => {
+        // The portal is a destination now, not the front door: with no web
+        // build, the root answers the historical greeting rather than the
+        // portal's shell at the wrong address.
+        const res = await request(portalApp).get("/");
+        expect(res.status).toBe(200);
+        expect(res.text).toBe("Hello World");
+    });
 });
 
-describe("web chat client serving", () => {
+describe("web app serving (/)", () => {
     let webDir: string;
     let webApp: ReturnType<typeof createApp>;
 
@@ -171,30 +180,42 @@ describe("web chat client serving", () => {
         rmSync(webDir, { recursive: true, force: true });
     });
 
-    it("serves the web SPA shell at /web (redirecting the bare /web first)", async () => {
-        const redirected = await request(webApp).get("/web");
-        expect(redirected.status).toBe(301);
-        expect(redirected.headers.location).toBe("/web/");
-
-        const res = await request(webApp).get("/web/");
+    it("serves the app shell at /", async () => {
+        const res = await request(webApp).get("/");
         expect(res.status).toBe(200);
         expect(res.text).toContain("JARVIS Web");
     });
 
-    it("serves static assets from the web dir", async () => {
-        const res = await request(webApp).get("/web/assets/app.js");
+    it("serves static assets from the web dir at the root", async () => {
+        const res = await request(webApp).get("/assets/app.js");
         expect(res.status).toBe(200);
         expect(res.text).toBe("console.log('web')");
     });
 
-    it("falls back to the web shell for client-side routes under /web", async () => {
-        const res = await request(webApp).get("/web/chat");
+    it("falls back to the app shell for client-side routes", async () => {
+        const res = await request(webApp).get("/chat");
         expect(res.status).toBe(200);
         expect(res.text).toContain("JARVIS Web");
     });
 
-    it("widens img-src, permits wasm compile, allows the same-origin ws socket, and declares the worker source for the web chat client", async () => {
-        const web = await request(webApp).get("/web/");
+    it("redirects the old /web address to /chat, keeping the query", async () => {
+        // The client's former mount (#90 phase 6a). One redirect, no second
+        // mount: a bookmark lands on the app rather than on a second copy. The
+        // query rides along because the documented dev flags (`?debug=1`,
+        // `?voice-harness=1`, `?voice-trace=1`) are read from it.
+        const bare = await request(webApp).get("/web");
+        expect(bare.status).toBe(301);
+        expect(bare.headers.location).toBe("/chat");
+        const deep = await request(webApp).get("/web/chat");
+        expect(deep.status).toBe(301);
+        expect(deep.headers.location).toBe("/chat");
+        const flagged = await request(webApp).get("/web/?voice-trace=1");
+        expect(flagged.status).toBe(301);
+        expect(flagged.headers.location).toBe("/chat?voice-trace=1");
+    });
+
+    it("widens img-src, permits wasm compile, allows the same-origin ws socket, and declares the worker source for the app", async () => {
+        const web = await request(webApp).get("/");
         // supertest defaults Host to 127.0.0.1:<port>; the CSP derives the
         // socket origins from it.
         expect(web.headers["content-security-policy"]).toMatch(
@@ -204,7 +225,7 @@ describe("web chat client serving", () => {
 
     it("drops the ws socket origins when the Host header is malformed", async () => {
         const res = await request(webApp)
-            .get("/web/")
+            .get("/")
             .set("Host", "evil.test; script-src *");
         expect(res.headers["content-security-policy"]).toBe(
             "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self'; img-src 'self' data: https:; connect-src 'self'",
@@ -217,13 +238,13 @@ describe("web chat client serving", () => {
         // so embind's runtime invoker synthesis (`new Function`) is legal
         // inside the hashed module while the page never allows eval.
         const worker = await request(webApp).get(
-            "/web/assets/vosk.worker-AB12cd34.js",
+            "/assets/vosk.worker-AB12cd34.js",
         );
         expect(worker.headers["content-security-policy"]).toBe(
             "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self'",
         );
-        // Any other asset under /web keeps the page's strict policy.
-        const page = await request(webApp).get("/web/assets/index-OTHER123.js");
+        // Any other asset keeps the page's strict policy.
+        const page = await request(webApp).get("/assets/index-OTHER123.js");
         expect(page.headers["content-security-policy"]).toMatch(
             /script-src 'self' 'wasm-unsafe-eval';/,
         );
@@ -232,66 +253,50 @@ describe("web chat client serving", () => {
         );
     });
 
-    it("leaves /web a 404 when the web client is not built (never the portal shell)", async () => {
-        // A webDir configured but missing index.html leaves /web unmounted;
-        // the portal fallback must NOT swallow it (404, not the portal shell).
-        const emptyDir = mkdtempSync(path.join(tmpdir(), "jarvis-web-empty-"));
-        const portalDir = mkdtempSync(path.join(tmpdir(), "jarvis-portal-"));
-        writeFileSync(
-            path.join(portalDir, "index.html"),
-            "<!doctype html><title>JARVIS Portal</title>",
-        );
-        const app = createApp(store, {
-            appDbPath: ":memory:",
-            turnTimeoutMs: 30_000,
-            bootstrapToken: undefined,
-            portalDir,
-            webDir: emptyDir,
-        });
-        const res = await request(app).get("/web/chat");
+    it("leaves /admin a 404 when the portal is not mounted (never the app shell)", async () => {
+        // The app's fallback skips /admin on purpose: an unbuilt (or disabled)
+        // admin surface must be an honest 404 rather than the app wearing the
+        // admin address.
+        const res = await request(webApp).get("/admin/users/42");
         expect(res.status).toBe(404);
-
-        const disabled = createApp(store, {
-            appDbPath: ":memory:",
-            turnTimeoutMs: 30_000,
-            bootstrapToken: undefined,
-            portalDir,
-            webDir: undefined,
-        });
-        const res2 = await request(disabled).get("/web/");
-        expect(res2.status).toBe(404);
-
-        rmSync(emptyDir, { recursive: true, force: true });
-        rmSync(portalDir, { recursive: true, force: true });
+        const bare = await request(webApp).get("/admin");
+        expect(bare.status).toBe(404);
     });
+});
 
-    it("does not let the /web skip swallow unrelated paths like /webfoo", async () => {
-        const portalDir = mkdtempSync(path.join(tmpdir(), "jarvis-portal-"));
-        writeFileSync(
-            path.join(portalDir, "index.html"),
-            "<!doctype html><title>JARVIS Portal</title>",
-        );
-        const both = createApp(store, {
-            appDbPath: ":memory:",
-            turnTimeoutMs: 30_000,
-            bootstrapToken: undefined,
-            portalDir,
-            webDir,
-        });
-        const res = await request(both).get("/webfoo");
-        expect(res.status).toBe(200);
-        expect(res.text).toContain("JARVIS Portal");
-        rmSync(portalDir, { recursive: true, force: true });
-    });
+describe("both surfaces mounted", () => {
+    let portalDir: string;
+    let webDir: string;
 
-    it("keeps the portal's root fallback from capturing /web when both are mounted", async () => {
-        const portalDir = mkdtempSync(path.join(tmpdir(), "jarvis-portal-"));
+    beforeAll(() => {
+        portalDir = mkdtempSync(path.join(tmpdir(), "jarvis-portal-"));
         mkdirSync(path.join(portalDir, "assets"), { recursive: true });
         writeFileSync(
             path.join(portalDir, "index.html"),
             "<!doctype html><title>JARVIS Portal</title>",
         );
+        writeFileSync(
+            path.join(portalDir, "assets", "app.js"),
+            "console.log('portal')",
+        );
+        webDir = mkdtempSync(path.join(tmpdir(), "jarvis-web-"));
+        mkdirSync(path.join(webDir, "assets"), { recursive: true });
+        writeFileSync(
+            path.join(webDir, "index.html"),
+            "<!doctype html><title>JARVIS Web</title>",
+        );
+        writeFileSync(
+            path.join(webDir, "assets", "app.js"),
+            "console.log('web')",
+        );
+    });
 
+    afterAll(() => {
+        rmSync(portalDir, { recursive: true, force: true });
+        rmSync(webDir, { recursive: true, force: true });
+    });
+
+    it("gives each surface its own assets, and neither the other's shell", async () => {
         const both = createApp(store, {
             appDbPath: ":memory:",
             turnTimeoutMs: 30_000,
@@ -299,12 +304,28 @@ describe("web chat client serving", () => {
             portalDir,
             webDir,
         });
-        const webRoute = await request(both).get("/web/chat");
-        expect(webRoute.text).toContain("JARVIS Web");
-        const root = await request(both).get("/");
-        expect(root.text).toContain("JARVIS Portal");
 
-        rmSync(portalDir, { recursive: true, force: true });
+        const root = await request(both).get("/");
+        expect(root.text).toContain("JARVIS Web");
+        const admin = await request(both).get("/admin/");
+        expect(admin.text).toContain("JARVIS Portal");
+
+        // The two `assets/` directories are different mounts serving different
+        // builds: a mix-up would be invisible until an asset 404'd.
+        expect((await request(both).get("/assets/app.js")).text).toBe(
+            "console.log('web')",
+        );
+        expect((await request(both).get("/admin/assets/app.js")).text).toBe(
+            "console.log('portal')",
+        );
+
+        // An unmatched path belongs to the app (it is the front door), and the
+        // old chat address still lands on the chat.
+        const unmatched = await request(both).get("/webfoo");
+        expect(unmatched.text).toContain("JARVIS Web");
+        const legacy = await request(both).get("/web/");
+        expect(legacy.status).toBe(301);
+        expect(legacy.headers.location).toBe("/chat");
     });
 });
 

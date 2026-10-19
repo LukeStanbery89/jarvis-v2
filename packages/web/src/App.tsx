@@ -1,11 +1,15 @@
 /**
- * The web chat client shell.
+ * The app: forced sign-in, then the shell.
  *
- * Forced sign-in: without a usable stored credential the login screen is the
- * entry gate; with one, the chat view re-authenticates the stored device
- * token in the background and any permanent rejection (invalid, revoked, or
- * a REST 401) clears the credential and drops back to the gate. Sign-out
- * clears the credential but deliberately keeps the per-user transcripts.
+ * Without a usable stored credential the login screen is the entry gate; with
+ * one, the shell mounts and re-authenticates the stored device token in the
+ * background — any permanent rejection (invalid, revoked, or a REST 401) clears
+ * the credential and drops back to the gate. Sign-out clears the credential but
+ * deliberately keeps the per-user transcripts.
+ *
+ * Deliberately thin: everything that has to outlive a route change lives in
+ * {@link AppShell} (#90 phase 6b), so this file no longer knows what the routes
+ * are — it owns the gate and nothing else.
  */
 import { useCallback, useState } from "react";
 import type { LoginResult } from "./api";
@@ -15,11 +19,11 @@ import {
     loadCredential,
     type StoredCredential,
 } from "./credentials";
+import { AppShell } from "./AppShell";
 import { Login } from "./views/Login";
-import { Chat } from "./views/Chat";
 
 /**
- * Routes between the sign-in gate and the chat surface based on the stored
+ * Routes between the sign-in gate and the app shell based on the stored
  * credential.
  */
 export function App() {
@@ -27,7 +31,7 @@ export function App() {
         loadCredential(localStorage),
     );
 
-    /** Persists a fresh login and enters the chat. */
+    /** Persists a fresh login and enters the app. */
     const onSignedIn = useCallback((result: LoginResult): void => {
         const stored: StoredCredential = {
             username: result.user.username,
@@ -52,8 +56,9 @@ export function App() {
     if (credential === null) {
         return <Login onSignedIn={onSignedIn} />;
     }
+
     return (
-        <Chat
+        <AppShell
             credential={credential}
             onAuthRejected={dropToLogin}
             onSignedOut={dropToLogin}

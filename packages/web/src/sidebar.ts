@@ -82,3 +82,26 @@ export function describeWakeState(
     }
     return wakeArmed ? "Listening for “Hey JARVIS”" : "Wake word off";
 }
+
+/**
+ * A short inline hint for the wake state, or `null` when there is nothing to
+ * say.
+ *
+ * Only an *armed* detector has something worth saying: it is the one wake state
+ * with a live microphone, and the settings panel is closed most of the time, so
+ * this keeps that fact on screen without keeping a whole button for it. The
+ * panel carries the rest (unavailable, off) beside the control itself.
+ *
+ * The sidebar draws this as a blinking microphone rather than a word, so the
+ * text is only the accessible name (see `Sidebar.tsx`).
+ *
+ * @param wakeAvailable - Local engines exist and the server serves the model.
+ * @param wakeArmed - The controller is actively listening for the wake phrase.
+ * @returns `true` while a detector is live.
+ */
+export function wakeIsListening(
+    wakeAvailable: boolean,
+    wakeArmed: boolean,
+): boolean {
+    return wakeAvailable && wakeArmed;
+}

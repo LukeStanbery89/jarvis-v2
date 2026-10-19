@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+    briefLocationState,
     describeLocationState,
     isLocationSupported,
     readLocationPref,
@@ -137,5 +138,19 @@ describe("describeLocationState", () => {
         ] as const) {
             expect(describeLocationState(state).length).toBeGreaterThan(0);
         }
+    });
+});
+
+describe("briefLocationState", () => {
+    it("stays quiet for the user's own choice and for the working case", () => {
+        expect(briefLocationState("off")).toBeNull();
+        expect(briefLocationState("active")).toBeNull();
+    });
+
+    it("names every state that leaves the user wondering", () => {
+        expect(briefLocationState("locating")).toBe("Locating…");
+        expect(briefLocationState("denied")).toMatch(/denied/i);
+        expect(briefLocationState("failed")).toMatch(/failed/i);
+        expect(briefLocationState("unsupported")).toMatch(/unavailable/i);
     });
 });

@@ -8,52 +8,45 @@
  * mount, one optimistic local settle followed by the REST call, and a rollback
  * if the server refuses.
  *
+ * The frame path also re-reads the page when a frame arrives **without a
+ * `class`**: that is not a server bug but a stale Vite pre-bundle of the shared
+ * protocol (its parser copies the shape it was built with), and the record has
+ * the field the frame lost. Settling from the record keeps a timer ringing
+ * instead of rendering it as an ordinary notification, and the development
+ * warning names the cause once.
+ *
  * The token is the component's device credential; a 401 is the caller's
  * problem (the app drops to login), so failures here are surfaced as a short
  * message rather than swallowed or thrown.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { debugLog } from "../debug";
 import {
+    fromFrame,
+    fromRecord,
     mergeNotification,
     mergeNotificationPage,
-    selectBanner,
+    selectAlerts,
+    removeNotification,
     settleNotification,
     unreadCount,
 } from "../notifications";
 import type {
     ClientNotification,
-    NotificationState,
     NotificationSuppression,
 } from "../notifications";
 import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
-
-/** One live frame as the client stores it: state is the record's, not the wire's. */
-export function fromFrame(
-    frame: NotificationFrame["notification"],
-): ClientNotification {
-    return {
-        id: frame.id,
-        kind: frame.kind,
-        priority: frame.priority,
-        title: frame.title,
-        ...(frame.body !== undefined ? { body: frame.body } : {}),
-        createdAt: frame.createdAt,
-        ...(frame.requiresAnswer === true ? { requiresAnswer: true } : {}),
-        // A pushed notification is by definition delivered; the record may
-        // later say it was read on another device, which the next fetch wins.
-        state: "delivered",
-    };
-}
 
 /** What {@link useNotifications} exposes to the view. */
 export interface NotificationsState {
     /** Newest first, bounded (see `NOTIFICATION_LIMIT`). */
     notifications: ClientNotification[];
+    /** The fired timer that should be ringing, or `null` (#90 phase 4). */
+    ring: ClientNotification | null;
     /** The newest unsettled notification, for the prominent surface. */
     banner: ClientNotification | null;
-    /** Count of notifications neither read nor dismissed. */
+    /** Count of notifications that are not settled. */
     unread: number;
     /** Whether a fetch is in flight (the list can render empty meanwhile). */
     loading: boolean;
@@ -67,6 +60,16 @@ export interface NotificationsState {
     markRead(id: string): void;
     /** Dismisses one, optimistically. */
     dismiss(id: string): void;
+    /**
+     * Settles one row as `snoozed`, locally (#90 phase 6c).
+     *
+     * No request of its own, on purpose: the call that *made* it a snooze is the
+     * job's (`POST /api/jobs/{id}/snooze`), which settles the row server-side in
+     * the same breath — the deferral is the acknowledgement. This is the client's
+     * half, applied once that call has succeeded, so there is nothing to roll
+     * back and nothing to double-post.
+     */
+    markSnoozed(id: string): void;
     /**
      * Re-reads the page. Called when the client recovers a dropped connection
      * (`onReconnected`), since a notification raised while the socket was down
@@ -90,11 +93,15 @@ export interface NotificationsState {
  * Owns the notification list for one signed-in device token.
  *
  * @param token - The device credential the REST calls authenticate with.
+ * @param notifyEnabled - The account's master switch (`notify.enabled`). It
+ *   gates the *ring*, not the list: a suppressed notification is still a
+ *   record the user can read, but nothing may start shouting on its behalf.
  */
 export function useNotifications(options: {
     token: string;
+    notifyEnabled?: boolean;
 }): NotificationsState {
-    const { token } = options;
+    const { token, notifyEnabled = true } = options;
     const [notifications, setNotifications] = useState<ClientNotification[]>(
         [],
     );
@@ -117,7 +124,7 @@ export function useNotifications(options: {
                 setNotifications((current) =>
                     mergeNotificationPage(
                         current,
-                        page.notifications.map(toClientNotification),
+                        page.notifications.map(fromRecord),
                     ),
                 );
                 setLoaded(true);
@@ -142,15 +149,53 @@ export function useNotifications(options: {
         refresh();
     }, [refresh]);
 
+    /** Latest `refresh`, for the frame path (which must not re-subscribe to it). */
+    const refreshRef = useRef(refresh);
+    refreshRef.current = refresh;
+    /** Whether the stale-bundle warning has been said (once per session). */
+    const warnedStaleBundle = useRef(false);
+
     const acceptFrame = useCallback(
         (frame: NotificationFrame["notification"]) => {
             // The one line that answers "did the server actually push it?":
             // if this never appears, the socket or the server's delivery gate
             // is the story, not the UI.
+            //
+            // `class` is read structurally on purpose. A client whose Vite
+            // pre-bundle of the protocol predates the field receives frames
+            // *without* it (the old parser validates and copies the old
+            // shape), so the row is ring-ineligible until a REST fetch
+            // replaces it — which looks exactly like "timers never ring". The
+            // warning below is what turns that into a one-line diagnosis.
+            const frameClass: string | undefined = (frame as { class?: string })
+                .class;
             debugLog(
                 "notify",
-                `frame received id=${frame.id} kind=${frame.kind} priority=${frame.priority}`,
+                `frame received id=${frame.id} kind=${frame.kind} class=${frameClass ?? "MISSING"} priority=${frame.priority}`,
             );
+            if (frameClass === undefined) {
+                // A pre-bundled protocol that predates the field validates and
+                // copies the *old* shape, so the frame arrives classless and a
+                // timer would render as an ordinary notification. The record
+                // has the class, so ask for it rather than guessing; the
+                // warning names the actual cause (once, development only).
+                if (!warnedStaleBundle.current) {
+                    warnedStaleBundle.current = true;
+                    if (import.meta.env.DEV) {
+                        console.warn(
+                            "[jarvis] a notification frame arrived without " +
+                                "`class` — this browser's pre-bundled protocol " +
+                                "is stale. Run `npm run dev:clean -w " +
+                                "@lukestanbery/jarvis-web` and reload.",
+                        );
+                    }
+                }
+                debugLog(
+                    "notify",
+                    "frame carries no class — settling this row from the REST record",
+                );
+                refreshRef.current();
+            }
             setNotifications((current) =>
                 mergeNotification(current, fromFrame(frame)),
             );
@@ -158,21 +203,27 @@ export function useNotifications(options: {
         [],
     );
 
-    const settle = useCallback(
+    /**
+     * Applies one local change optimistically, and undoes it if the call fails.
+     *
+     * The rollback restores the *row* rather than the list: a notification that
+     * arrives between the click and a failure must survive, and nothing refetches
+     * mid-session, so dropping it would stay dropped.
+     */
+    const apply = useCallback(
         (
             id: string,
-            state: NotificationState,
+            label: string,
+            update: (list: ClientNotification[]) => ClientNotification[],
             call: () => Promise<unknown>,
         ) => {
-            debugLog("notify", `${state} id=${id}`);
+            debugLog("notify", `${label} id=${id}`);
             // Snapshot the *row*, not the list: a notification that arrives
             // between this click and a failure must survive the rollback, and
             // restoring a whole-list snapshot would silently discard it — and
             // nothing refetches mid-session, so it would stay gone.
             const before = notifications.find((item) => item.id === id);
-            setNotifications((current) =>
-                settleNotification(current, id, state),
-            );
+            setNotifications((current) => update(current));
             call().catch((err: unknown) => {
                 // Roll back to what the server still believes: an optimistic
                 // dismissal that never landed is a lie the next fetch would
@@ -194,17 +245,44 @@ export function useNotifications(options: {
 
     const markRead = useCallback(
         (id: string) => {
-            settle(id, "read", () => api.markNotificationRead(token, id));
+            apply(
+                id,
+                "read",
+                (list) => settleNotification(list, id, "read"),
+                () => api.markNotificationRead(token, id),
+            );
         },
-        [settle, token],
+        [apply, token],
     );
 
     const dismiss = useCallback(
         (id: string) => {
-            settle(id, "dismissed", () => api.dismissNotification(token, id));
+            // A dismissal deletes the row (#90 phase 9c), so the optimistic change
+            // is a removal — and `removeNotification` rather than a filter here,
+            // because the test suite owns that behaviour.
+            apply(
+                id,
+                "dismiss",
+                (list) => removeNotification(list, id),
+                () => api.dismissNotification(token, id),
+            );
         },
-        [settle, token],
+        [apply, token],
     );
+
+    /**
+     * Settles one row as `snoozed` (#90 phase 6c).
+     *
+     * Local only — the request that caused it was the *job's* snooze, which
+     * settles this row server-side. Nothing to roll back: it is applied after
+     * that call reported success.
+     */
+    const markSnoozed = useCallback((id: string) => {
+        debugLog("notify", `snoozed id=${id}`);
+        setNotifications((current) =>
+            settleNotification(current, id, "snoozed"),
+        );
+    }, []);
 
     const sendTest = useCallback(() => {
         setLastTest(null);
@@ -240,11 +318,19 @@ export function useNotifications(options: {
             });
     }, [refresh, token]);
 
-    const banner = useMemo(() => selectBanner(notifications), [notifications]);
+    const { ring, banner } = useMemo(
+        () =>
+            selectAlerts(notifications, {
+                enabled: notifyEnabled,
+                now: new Date(),
+            }),
+        [notifications, notifyEnabled],
+    );
     const unread = useMemo(() => unreadCount(notifications), [notifications]);
 
     return {
         notifications,
+        ring,
         banner,
         unread,
         loading,
@@ -253,6 +339,7 @@ export function useNotifications(options: {
         acceptFrame,
         markRead,
         dismiss,
+        markSnoozed,
         refresh,
         sendTest,
         lastTest,
@@ -270,29 +357,4 @@ function replaceNotification(
     previous: ClientNotification,
 ): ClientNotification[] {
     return list.map((item) => (item.id === previous.id ? previous : item));
-}
-
-/** Maps a REST record onto the client shape (state included). */
-function toClientNotification(record: {
-    id: string;
-    kind: string;
-    priority: string;
-    title: string;
-    body?: string;
-    state: string;
-    requiresAnswer?: boolean;
-    answer?: string;
-    createdAt: string;
-}): ClientNotification {
-    return {
-        id: record.id,
-        kind: record.kind,
-        priority: record.priority,
-        title: record.title,
-        ...(record.body !== undefined ? { body: record.body } : {}),
-        createdAt: record.createdAt,
-        ...(record.requiresAnswer === true ? { requiresAnswer: true } : {}),
-        ...(record.answer !== undefined ? { answer: record.answer } : {}),
-        state: record.state as NotificationState,
-    };
 }

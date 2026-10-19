@@ -1,0 +1,1131 @@
+/**
+ * Jobs-list tests (#90 phases 6b–6c).
+ *
+ * The pages' lists are small enough to be pure, so their decisions are asserted
+ * here rather than eyeballed in a browser: which rows are shown and in what order
+ * (a class filter that bounds the list before filtering it would hand the Timers
+ * page four timers because a reminder filled the cut), what "when" reads like at
+ * the boundaries (inside the hour, later today, tomorrow, next week, a moment
+ * already past), and what a snoozed row can honestly say about its moment.
+ *
+ * Instants are built with the local `Date` constructor: the module renders local
+ * time, so a UTC fixture would be asserting something the user never sees.
+ */
+import { describe, expect, it } from "vitest";
+import {
+    checkJobInput,
+    defaultMoment,
+    describeMoment,
+    describeQuiet,
+    describeRunAt,
+    describeRun,
+    describeSnooze,
+    editPatchFor,
+    emptyRunsNote,
+    gateText,
+    instantFromDuration,
+    jobBody,
+    momentInputValue,
+    nextRepeatAt,
+    noRepeat,
+    parseMomentInput,
+    repeatDraftFromRule,
+    repeatDraftToRule,
+    recentJobs,
+    runDuration,
+    snoozeUntil,
+    splitJobs,
+    DURATION_PRESETS,
+    HORIZON_DAYS,
+    MAX_TIMER_MINUTES,
+    MOMENT_CHIPS,
+    SNOOZE_PRESETS,
+    upcomingJobs,
+} from "./jobs";
+import {
+    MAX_NOTIFICATION_BODY_LENGTH,
+    MAX_NOTIFICATION_TITLE_LENGTH,
+} from "@lukestanbery/jarvis-protocol";
+import type { JobDraft, RepeatDraft } from "./jobs";
+import type { Job, JobRun } from "./api";
+
+/** A job with everything the list needs, overridable per test. */
+function job(overrides: Partial<Job>): Job {
+    return {
+        id: "job-1",
+        label: "Kettle",
+        class: "timer",
+        kind: "message",
+        state: "pending",
+        runAt: new Date(2026, 9, 17, 12, 0).toISOString(),
+        attempts: 0,
+        createdAt: new Date(2026, 9, 17, 11, 0).toISOString(),
+        ...overrides,
+    };
+}
+
+describe("upcomingJobs", () => {
+    it("keeps what is owed and drops what already happened", () => {
+        const rows = upcomingJobs(
+            [
+                job({ id: "a", state: "pending" }),
+                job({ id: "b", state: "running" }),
+                job({ id: "c", state: "done" }),
+                job({ id: "d", state: "failed" }),
+                job({ id: "e", state: "cancelled" }),
+                job({ id: "f", state: "missed" }),
+            ],
+            { limit: 10 },
+        );
+        expect(rows.map((row) => row.id)).toEqual(["a", "b"]);
+    });
+
+    it("orders by the moment that is coming", () => {
+        // The server answers newest-created first, which is not the order a
+        // "what is next" list wants.
+        const rows = upcomingJobs(
+            [
+                job({
+                    id: "later",
+                    runAt: new Date(2026, 9, 17, 18, 0).toISOString(),
+                }),
+                job({
+                    id: "next",
+                    runAt: new Date(2026, 9, 17, 12, 30).toISOString(),
+                }),
+                job({
+                    id: "sooner",
+                    runAt: new Date(2026, 9, 17, 12, 5).toISOString(),
+                }),
+            ],
+            { limit: 10 },
+        );
+        expect(rows.map((row) => row.id)).toEqual(["sooner", "next", "later"]);
+    });
+
+    it("keeps only the first `limit` rows", () => {
+        const rows = upcomingJobs(
+            [1, 2, 3, 4].map((hour) =>
+                job({
+                    id: `at-${hour}`,
+                    runAt: new Date(2026, 9, 17, hour + 12, 0).toISOString(),
+                }),
+            ),
+            { limit: 2 },
+        );
+        expect(rows.map((row) => row.id)).toEqual(["at-1", "at-2"]);
+    });
+
+    it("filters by class before bounding the list", () => {
+        // The reason the filter is an option of this function rather than a
+        // second pass: two reminders are sooner, so a bound applied first would
+        // hand the Timers page nothing at all.
+        const rows = upcomingJobs(
+            [
+                job({
+                    id: "reminder-1",
+                    class: "reminder",
+                    runAt: new Date(2026, 9, 17, 12, 1).toISOString(),
+                }),
+                job({
+                    id: "reminder-2",
+                    class: "reminder",
+                    runAt: new Date(2026, 9, 17, 12, 2).toISOString(),
+                }),
+                job({
+                    id: "timer-1",
+                    class: "timer",
+                    runAt: new Date(2026, 9, 17, 12, 3).toISOString(),
+                }),
+                job({
+                    id: "timer-2",
+                    class: "timer",
+                    runAt: new Date(2026, 9, 17, 12, 4).toISOString(),
+                }),
+            ],
+            { limit: 2, jobClass: "timer" },
+        );
+        expect(rows.map((row) => row.id)).toEqual(["timer-1", "timer-2"]);
+    });
+
+    it("sorts an unreadable moment last instead of failing the list", () => {
+        const rows = upcomingJobs(
+            [
+                job({ id: "broken", runAt: "not a date" }),
+                job({
+                    id: "fine",
+                    runAt: new Date(2026, 9, 17, 13, 0).toISOString(),
+                }),
+            ],
+            { limit: 10 },
+        );
+        expect(rows.map((row) => row.id)).toEqual(["fine", "broken"]);
+    });
+
+    it("does not mutate the caller's list", () => {
+        const input = [
+            job({
+                id: "later",
+                runAt: new Date(2026, 9, 17, 18, 0).toISOString(),
+            }),
+            job({
+                id: "sooner",
+                runAt: new Date(2026, 9, 17, 12, 5).toISOString(),
+            }),
+        ];
+        upcomingJobs(input, { limit: 10 });
+        expect(input.map((row) => row.id)).toEqual(["later", "sooner"]);
+    });
+});
+
+describe("describeRunAt", () => {
+    // Saturday 17 October 2026, noon, in the browser's own zone.
+    const now = new Date(2026, 9, 17, 12, 0);
+
+    it("reads a moment already past as due now", () => {
+        expect(
+            describeRunAt(new Date(2026, 9, 17, 11, 59).toISOString(), now),
+        ).toBe("due now");
+        expect(
+            describeRunAt(new Date(2026, 9, 10, 9, 0).toISOString(), now),
+        ).toBe("due now");
+    });
+
+    it("counts down inside the hour", () => {
+        // How someone waiting for a timer talks about it.
+        expect(
+            describeRunAt(new Date(2026, 9, 17, 12, 30).toISOString(), now),
+        ).toBe("in 30 minutes");
+        expect(
+            describeRunAt(new Date(2026, 9, 17, 12, 1).toISOString(), now),
+        ).toBe("in 1 minute");
+    });
+
+    it("gives the clock time for later today", () => {
+        expect(
+            describeRunAt(new Date(2026, 9, 17, 15, 0).toISOString(), now),
+        ).toBe("at 3:00 PM");
+    });
+
+    it("names tomorrow", () => {
+        expect(
+            describeRunAt(new Date(2026, 9, 18, 8, 0).toISOString(), now),
+        ).toBe("tomorrow at 8:00 AM");
+    });
+
+    it("names the weekday beyond tomorrow", () => {
+        // Tuesday 20 October 2026.
+        expect(
+            describeRunAt(new Date(2026, 9, 20, 8, 0).toISOString(), now),
+        ).toBe("Tuesday at 8:00 AM");
+    });
+
+    it("says so when the moment cannot be read", () => {
+        expect(describeRunAt("", now)).toBe("at an unknown time");
+    });
+});
+
+describe("runDuration (#90 phase 7d)", () => {
+    // Seconds and milliseconds matter at this size, so the stamps are built with
+    // the full `Date` precision.
+    const at = (seconds: number, ms = 0) =>
+        new Date(2026, 9, 17, 12, 0, seconds, ms).toISOString();
+
+    /** One attempt, overridable per test. */
+    function run(startedAt: string, finishedAt?: string): JobRun {
+        return {
+            id: "run-1",
+            state: "ok",
+            startedAt,
+            ...(finishedAt === undefined ? {} : { finishedAt }),
+        };
+    }
+
+    it("measures a tool's attempt in milliseconds", () => {
+        // A tool job is done before the network notices; "0 minutes" would be
+        // the answer `describeSpan` alone would give.
+        expect(runDuration(run(at(0), at(0, 12)))).toBe("12 ms");
+    });
+
+    it("measures a prompt's attempt in seconds", () => {
+        expect(runDuration(run(at(0), at(1, 400)))).toBe("1 second");
+        expect(runDuration(run(at(0), at(42)))).toBe("42 seconds");
+    });
+
+    it("falls back to the span every other surface reads", () => {
+        expect(runDuration(run(at(0), at(3 * 60 + 30)))).toBe("3 minutes");
+    });
+
+    it("says nothing about an attempt still in flight", () => {
+        expect(runDuration(run(at(0)))).toBeNull();
+    });
+
+    it("says nothing when the stamps disagree or cannot be read", () => {
+        // A `finishedAt` before its start is a clock that moved, not a negative
+        // duration to render.
+        expect(runDuration(run(at(10), at(0)))).toBeNull();
+        expect(
+            runDuration({
+                id: "run-2",
+                state: "ok",
+                startedAt: "x",
+                finishedAt: "y",
+            }),
+        ).toBeNull();
+    });
+});
+
+describe("emptyRunsNote (#90 phase 9b)", () => {
+    it("says nothing was recorded when the job has not fired", () => {
+        expect(emptyRunsNote(0)).toBe("No attempt was recorded.");
+        // A caller with no count at all (a notification record's disclosure) is
+        // in the same position: it cannot claim the job never fired.
+        expect(emptyRunsNote(undefined)).toBe("No attempt was recorded.");
+    });
+
+    it("reports the firings a plain reminder keeps no rows for", () => {
+        // The rows would all be the job's own text, so the count is the answer.
+        expect(emptyRunsNote(1)).toBe(
+            "Fired once. A plain reminder keeps no per-firing history — the job itself is the record.",
+        );
+        expect(emptyRunsNote(12)).toContain("Fired 12 times.");
+    });
+});
+
+describe("gateText (#90 phase 8f)", () => {
+    it("says nothing about a job that always runs", () => {
+        expect(gateText({})).toBeNull();
+    });
+
+    it("notes that a conditional job may not fire", () => {
+        // The row's job is to say "this may not happen" — the check's own words
+        // live in the runs, where each attempt shows what it read.
+        expect(
+            gateText({
+                gate: { tool: "homeAssistant", args: {}, when: "changed" },
+            }),
+        ).toBe("checks first");
+    });
+});
+
+describe("describeRun (#90 phase 8f)", () => {
+    const at = (seconds: number, ms = 0) =>
+        new Date(2026, 9, 17, 12, 0, seconds, ms).toISOString();
+
+    /** One attempt, overridable per test. */
+    function run(overrides: Partial<JobRun> = {}): JobRun {
+        return {
+            id: "run-1",
+            state: "ok",
+            startedAt: at(0),
+            finishedAt: at(0, 12),
+            ...overrides,
+        };
+    }
+
+    it("reads a payload run as its state and how long it took", () => {
+        expect(describeRun(run())).toEqual({
+            headline: "ok · 12 ms",
+            check: null,
+        });
+    });
+
+    it("keeps the gate's answer, labelled as a check", () => {
+        // The pair is written on payload runs too, because the next firing
+        // compares against the newest run's value.
+        expect(describeRun(run({ gateOutput: "front door: closed" }))).toEqual({
+            headline: "ok · 12 ms",
+            check: "checked: front door: closed",
+        });
+    });
+
+    it("says a declined firing was skipped, without a duration", () => {
+        // A skip measures the microseconds it took to read one value; the
+        // number is noise beside the fact, and the check is the whole story.
+        expect(
+            describeRun(
+                run({
+                    state: "skipped",
+                    output: undefined,
+                    gateOutput: "front door: closed",
+                }),
+            ),
+        ).toEqual({
+            headline: "skipped",
+            check: "checked: front door: closed",
+        });
+    });
+});
+
+describe("describeMoment", () => {
+    const now = new Date(2026, 9, 17, 12, 0);
+
+    it("names the clock time rather than counting down", () => {
+        // The whole reason it exists: "snoozed until in 45 minutes" is not
+        // English, and a named moment is what someone checking *when* wants.
+        expect(
+            describeMoment(new Date(2026, 9, 17, 12, 45).toISOString(), now),
+        ).toBe("at 12:45 PM");
+    });
+
+    it("names the day when the clock alone would be ambiguous", () => {
+        expect(
+            describeMoment(new Date(2026, 9, 18, 9, 0).toISOString(), now),
+        ).toBe("tomorrow at 9:00 AM");
+        expect(
+            describeMoment(new Date(2026, 9, 20, 9, 0).toISOString(), now),
+        ).toBe("Tuesday at 9:00 AM");
+    });
+});
+
+describe("a snoozed row's moment (#90 phase 6c)", () => {
+    const now = new Date(2026, 9, 17, 12, 0);
+
+    it("joins the notification's link to the job's new moment", () => {
+        const jobs = [
+            job({
+                id: "job-1",
+                class: "reminder",
+                runAt: new Date(2026, 9, 17, 19, 0).toISOString(),
+            }),
+        ];
+        const until = snoozeUntil("job-1", jobs);
+        expect(until).not.toBeNull();
+        expect(describeSnooze(until, now)).toBe("snoozed until 7:00 PM");
+    });
+
+    it("says only `snoozed` when the job is gone or no link was kept", () => {
+        // A pruned job nulls the link (the FK's ON DELETE SET NULL), so the row
+        // must be able to state the deferral without naming a moment.
+        expect(snoozeUntil(undefined, [])).toBeNull();
+        expect(snoozeUntil("job-gone", [])).toBeNull();
+        expect(describeSnooze(null, now)).toBe("snoozed");
+    });
+
+    it("names the day when the moment is not today", () => {
+        // The bug this test exists for: prefixing "until" to a moment that
+        // already carries a preposition ("at 7:00 PM") produced "until at".
+        const jobs = [
+            job({
+                id: "job-1",
+                class: "reminder",
+                runAt: new Date(2026, 9, 18, 8, 0).toISOString(),
+            }),
+        ];
+        expect(describeSnooze(snoozeUntil("job-1", jobs), now)).toBe(
+            "snoozed until tomorrow at 8:00 AM",
+        );
+    });
+
+    it("says only `snoozed` when the job is no longer pending", () => {
+        // The successor was cancelled, or it already ran: either way the moment
+        // this row claimed is not a moment any more.
+        const jobs = [
+            job({ id: "job-1", class: "reminder", state: "cancelled" }),
+        ];
+        expect(snoozeUntil("job-1", jobs)).toBeNull();
+    });
+
+    it("offers the three offsets the classification table settled", () => {
+        expect(SNOOZE_PRESETS).toEqual([
+            { label: "in an hour", minutes: 60 },
+            { label: "tomorrow", minutes: 24 * 60 },
+            { label: "next week", minutes: 7 * 24 * 60 },
+        ]);
+    });
+});
+
+describe("splitJobs", () => {
+    it("divides one read into what is owed and what is history", () => {
+        const rows = [
+            job({ id: "a", state: "pending" }),
+            job({ id: "b", state: "done" }),
+            job({ id: "c", state: "running" }),
+            job({ id: "d", state: "failed" }),
+            job({ id: "e", state: "cancelled" }),
+            job({ id: "f", state: "missed" }),
+        ];
+        const { owed, settled } = splitJobs(rows);
+        expect(owed.map((entry) => entry.id)).toEqual(["a", "c"]);
+        expect(settled.map((entry) => entry.id)).toEqual(["b", "d", "e", "f"]);
+    });
+
+    it("keeps the server's order in both halves", () => {
+        // Newest-created first as it arrives; the owed list is sorted for display
+        // by `upcomingJobs` and a history list wants its own order anyway (when it
+        // settled, not when it was made), so this function must not invent one.
+        const rows = [
+            job({ id: "new", state: "done" }),
+            job({ id: "mid", state: "pending" }),
+            job({ id: "old", state: "done" }),
+        ];
+        const { owed, settled } = splitJobs(rows);
+        expect(owed.map((entry) => entry.id)).toEqual(["mid"]);
+        expect(settled.map((entry) => entry.id)).toEqual(["new", "old"]);
+    });
+
+    it("answers two empty lists for an empty read", () => {
+        expect(splitJobs([])).toEqual({ owed: [], settled: [] });
+    });
+});
+
+describe("instantFromDuration", () => {
+    const now = new Date(2026, 9, 18, 12, 0, 0);
+
+    it("adds seconds, minutes and hours", () => {
+        expect(
+            instantFromDuration(now, {
+                amount: 30,
+                unit: "seconds",
+            })?.getTime(),
+        ).toBe(now.getTime() + 30_000);
+        expect(
+            instantFromDuration(now, {
+                amount: 10,
+                unit: "minutes",
+            })?.getTime(),
+        ).toBe(now.getTime() + 600_000);
+        expect(
+            instantFromDuration(now, { amount: 2, unit: "hours" })?.getTime(),
+        ).toBe(now.getTime() + 7_200_000);
+    });
+
+    it("refuses a length that is not one", () => {
+        // Zero and negative are what an emptied or hand-edited number field
+        // produces; the form turns a null into "give it a length".
+        expect(
+            instantFromDuration(now, { amount: 0, unit: "minutes" }),
+        ).toBeNull();
+        expect(
+            instantFromDuration(now, { amount: -5, unit: "minutes" }),
+        ).toBeNull();
+        expect(
+            instantFromDuration(now, { amount: NaN, unit: "minutes" }),
+        ).toBeNull();
+    });
+});
+
+describe("the moment input (datetime-local)", () => {
+    it("round-trips an instant to the minute, in local time", () => {
+        const at = new Date(2026, 9, 19, 9, 30, 0);
+        const value = momentInputValue(at);
+        expect(value).toBe("2026-10-19T09:30");
+        expect(parseMomentInput(value)?.getTime()).toBe(at.getTime());
+    });
+
+    it("pads single digits, so the value is always the control's shape", () => {
+        expect(momentInputValue(new Date(2026, 0, 5, 7, 4, 0))).toBe(
+            "2026-01-05T07:04",
+        );
+    });
+
+    it("reads the parts, not a string, so the wall clock survives a DST day", () => {
+        // Both are local-time assertions, so they hold in every zone — including
+        // the ones where a March or November date carries a shift. A
+        // `new Date("2026-03-08T09:00")` parse would be the thing to distrust.
+        expect(parseMomentInput("2026-03-08T09:00")?.getHours()).toBe(9);
+        expect(parseMomentInput("2026-11-01T09:00")?.getHours()).toBe(9);
+    });
+
+    it("takes seconds when the value carries them", () => {
+        expect(parseMomentInput("2026-10-19T09:00:30")?.getSeconds()).toBe(30);
+    });
+
+    it("refuses a day the calendar would correct", () => {
+        // 2026-02-30 is not a date; `new Date(2026, 1, 30)` would quietly make it
+        // March 2, which would store a job for a day the user never chose.
+        expect(parseMomentInput("2026-02-30T09:00")).toBeNull();
+        expect(parseMomentInput("2026-13-01T09:00")).toBeNull();
+        expect(parseMomentInput("2026-10-19T25:00")).toBeNull();
+        expect(parseMomentInput("")).toBeNull();
+        expect(parseMomentInput("tomorrow")).toBeNull();
+    });
+});
+
+describe("the form's defaults and chips", () => {
+    it("starts a new reminder on tomorrow morning", () => {
+        const at = defaultMoment(new Date(2026, 9, 18, 23, 30, 0));
+        expect(at.getDate()).toBe(19);
+        expect(at.getHours()).toBe(9);
+        expect(at.getMinutes()).toBe(0);
+        // Even when it is already morning: "tomorrow 9 AM" means tomorrow.
+        expect(defaultMoment(new Date(2026, 9, 18, 8, 0, 0)).getDate()).toBe(
+            19,
+        );
+    });
+
+    it("offers four lengths worth one click", () => {
+        expect(DURATION_PRESETS.map((preset) => preset.minutes)).toEqual([
+            5, 10, 25, 60,
+        ]);
+    });
+
+    it("offers an hour from now and tomorrow morning", () => {
+        const now = new Date(2026, 9, 18, 12, 0, 0);
+        expect(MOMENT_CHIPS.map((chip) => chip.label)).toEqual([
+            "in an hour",
+            "tomorrow 9 AM",
+        ]);
+        expect(MOMENT_CHIPS[0]?.at(now).getTime()).toBe(
+            now.getTime() + 3_600_000,
+        );
+        expect(MOMENT_CHIPS[1]?.at(now).getTime()).toBe(
+            defaultMoment(now).getTime(),
+        );
+    });
+});
+
+describe("checkJobInput", () => {
+    const now = new Date(2026, 9, 18, 12, 0, 0);
+    const minute = (ahead: number): Date =>
+        new Date(now.getTime() + ahead * 60_000);
+
+    /** A valid draft, overridable per test. */
+    function draft(overrides: Partial<JobDraft>): JobDraft {
+        return {
+            label: "Kettle",
+            message: "",
+            runAt: minute(10),
+            jobClass: "timer",
+            repeat: noRepeat(),
+            ...overrides,
+        };
+    }
+
+    it("passes a draft the server would accept", () => {
+        expect(checkJobInput(draft({}), now)).toBeNull();
+        expect(
+            checkJobInput(
+                draft({ jobClass: "reminder", runAt: minute(60 * 24 * 30) }),
+                now,
+            ),
+        ).toBeNull();
+    });
+
+    it("asks for a name, and bounds it the way the server does", () => {
+        expect(checkJobInput(draft({ label: "   " }), now)).toMatch(
+            /give it a name/,
+        );
+        expect(
+            checkJobInput(
+                draft({ label: "k".repeat(MAX_NOTIFICATION_TITLE_LENGTH + 1) }),
+                now,
+            ),
+        ).toMatch(/at most/);
+    });
+
+    it("bounds the detail, which a name-length check would miss", () => {
+        expect(
+            checkJobInput(
+                draft({
+                    message: "d".repeat(MAX_NOTIFICATION_BODY_LENGTH + 1),
+                }),
+                now,
+            ),
+        ).toMatch(/detail is at most/);
+    });
+
+    it("says a timer needs a length and a reminder needs a moment", () => {
+        expect(checkJobInput(draft({ runAt: null }), now)).toMatch(
+            /give it a length/,
+        );
+        expect(
+            checkJobInput(draft({ jobClass: "reminder", runAt: null }), now),
+        ).toMatch(/date and time/);
+    });
+
+    it("refuses a moment that has passed, and one beyond each ceiling", () => {
+        expect(checkJobInput(draft({ runAt: minute(-1) }), now)).toMatch(
+            /already passed/,
+        );
+        // The timer's day ceiling and the horizon are the server's bounds; the
+        // form knows them so it can say so before a round trip.
+        expect(
+            checkJobInput(draft({ runAt: minute(MAX_TIMER_MINUTES + 1) }), now),
+        ).toMatch(/longer than a day is a reminder/);
+        // The same length is fine for a reminder: the ceiling is the timer's.
+        expect(
+            checkJobInput(
+                draft({ jobClass: "reminder", runAt: minute(1500) }),
+                now,
+            ),
+        ).toBeNull();
+        expect(
+            checkJobInput(
+                draft({
+                    jobClass: "reminder",
+                    runAt: minute((HORIZON_DAYS + 1) * 1440),
+                }),
+                now,
+            ),
+        ).toMatch(/more than 366 days/);
+    });
+});
+
+describe("jobBody", () => {
+    it("drops a detail that is the label again", () => {
+        // The first timer made by hand would have read "Kettle Kettle": the
+        // create route defaults a missing detail to the label.
+        expect(jobBody(job({ label: "Kettle", message: "Kettle" }))).toBeNull();
+        expect(
+            jobBody(
+                job({ label: "Do a test", message: "remind me to Do a test" }),
+            ),
+        ).toBeNull();
+    });
+
+    it("keeps a detail that says something else", () => {
+        expect(
+            jobBody(
+                job({
+                    label: "AC filter",
+                    message: "change it in the hall cupboard",
+                }),
+            ),
+        ).toBe("change it in the hall cupboard");
+    });
+
+    it("answers nothing when the job has no detail at all", () => {
+        expect(jobBody(job({ label: "Kettle" }))).toBeNull();
+    });
+});
+
+describe("editPatchFor", () => {
+    /** A stored job, overridable per test. */
+    function stored(overrides: Partial<Job>): Job {
+        return job({
+            label: "Kettle",
+            message: "Kettle",
+            runAt: new Date(2026, 9, 18, 12, 34, 56).toISOString(),
+            ...overrides,
+        });
+    }
+
+    it("sends nothing when nothing moved", () => {
+        const target = stored({});
+        const patch = editPatchFor(target, {
+            label: target.label,
+            message: "",
+            runAt: parseMomentInput(momentInputValue(new Date(target.runAt))),
+            jobClass: "timer",
+            repeat: noRepeat(),
+        });
+        expect(patch).toBeNull();
+    });
+
+    it("sends only the field that changed", () => {
+        const target = stored({});
+        const patch = editPatchFor(target, {
+            label: "Tea",
+            message: "",
+            runAt: parseMomentInput(momentInputValue(new Date(target.runAt))),
+            jobClass: "timer",
+            repeat: noRepeat(),
+        });
+        // The detail rides along, and has to: a blank field *is* the label, so a
+        // rename that left the stored message behind would read "Tea Kettle".
+        expect(patch).toEqual({ label: "Tea", message: "Tea" });
+    });
+
+    it("leaves a real detail alone when only the label moves", () => {
+        const target = stored({ message: "pour it before it goes cold" });
+        const patch = editPatchFor(target, {
+            label: "Tea",
+            message: target.message ?? "",
+            runAt: null,
+            jobClass: "timer",
+            repeat: noRepeat(),
+        });
+        expect(patch).toEqual({ label: "Tea" });
+    });
+
+    it("leaves a moment's seconds alone when the label is all that moved", () => {
+        // The control is minute-granular: sending the instant back would round
+        // 12:34:56 down to 12:34 six seconds early. The minute reading is what
+        // decides whether the user touched it.
+        const target = stored({});
+        const patch = editPatchFor(target, {
+            label: "Tea",
+            message: "",
+            runAt: new Date(2026, 9, 18, 12, 34, 0),
+            jobClass: "timer",
+            repeat: noRepeat(),
+        });
+        expect(patch).toEqual({ label: "Tea", message: "Tea" });
+    });
+
+    it("sends the moment when the user really moved it", () => {
+        const target = stored({});
+        const moved = new Date(2026, 9, 18, 13, 0, 0);
+        const patch = editPatchFor(target, {
+            label: target.label,
+            message: "",
+            runAt: moved,
+            jobClass: "timer",
+            repeat: noRepeat(),
+        });
+        expect(patch).toEqual({ runAt: moved.toISOString() });
+    });
+
+    it("treats a cleared detail as the label, and a redundant one as nothing", () => {
+        // Clearing the field cannot send "" (the server refuses an empty
+        // message), and the stored value is already the creation default here —
+        // which the rows drop anyway (`jobBody`).
+        const target = stored({});
+        expect(
+            editPatchFor(target, {
+                label: "Kettle",
+                message: "   ",
+                runAt: null,
+                jobClass: "timer",
+                repeat: noRepeat(),
+            }),
+        ).toBeNull();
+
+        const detailed = stored({ message: "pour it before it goes cold" });
+        expect(
+            editPatchFor(detailed, {
+                label: "Kettle",
+                message: "",
+                runAt: null,
+                jobClass: "timer",
+                repeat: noRepeat(),
+            }),
+        ).toEqual({ message: "Kettle" });
+    });
+});
+
+describe("recentJobs", () => {
+    const settledAt = (hour: number): string =>
+        new Date(2026, 9, 18, hour, 0, 0).toISOString();
+
+    it("keeps one class, newest settled first", () => {
+        const rows = [
+            job({ id: "old", state: "done", settledAt: settledAt(9) }),
+            job({
+                id: "other-class",
+                class: "reminder",
+                state: "done",
+                settledAt: settledAt(12),
+            }),
+            job({ id: "new", state: "failed", settledAt: settledAt(11) }),
+        ];
+        const recent = recentJobs(rows, { limit: 8, jobClass: "timer" });
+        expect(recent.map((entry) => entry.id)).toEqual(["new", "old"]);
+    });
+
+    it("falls back to when it was made for a row with no settled stamp", () => {
+        // A row can arrive without `settledAt` (a hand-edited database, or a
+        // state the ledger stamped before the column existed): it sorts by its
+        // creation rather than vanishing or landing first.
+        const rows = [
+            job({ id: "stamped", state: "done", settledAt: settledAt(10) }),
+            job({
+                id: "unstamped",
+                state: "cancelled",
+                createdAt: new Date(2026, 9, 18, 11, 0, 0).toISOString(),
+            }),
+        ];
+        const recent = recentJobs(rows, { limit: 8, jobClass: "timer" });
+        expect(recent.map((entry) => entry.id)).toEqual([
+            "unstamped",
+            "stamped",
+        ]);
+    });
+
+    it("bounds the list and never shows a row that is still owed", () => {
+        const rows = [
+            job({ id: "a", state: "done", settledAt: settledAt(8) }),
+            job({ id: "b", state: "done", settledAt: settledAt(9) }),
+            job({ id: "c", state: "done", settledAt: settledAt(10) }),
+            job({ id: "pending", state: "pending" }),
+        ];
+        expect(
+            recentJobs(rows, { limit: 2, jobClass: "timer" }).map(
+                (entry) => entry.id,
+            ),
+        ).toEqual(["c", "b"]);
+    });
+});
+
+describe("describeQuiet", () => {
+    const until = new Date(2026, 9, 19, 7, 0, 0).toISOString();
+
+    it("says nothing when quiet hours will not touch it", () => {
+        expect(describeQuiet({ state: "clear" }, "timer")).toBeNull();
+    });
+
+    it("warns that a timer will not ring when notifications are off", () => {
+        // The master switch silences the announcement, and a timer's ring rides
+        // on that announcement — so "won't ring" is the honest disappointment.
+        expect(describeQuiet({ state: "disabled" }, "timer")).toBe(
+            "notifications are off, so this timer will not ring.",
+        );
+        expect(describeQuiet({ state: "disabled" }, "reminder")).toBe(
+            "notifications are off, so this will be recorded but not pushed.",
+        );
+    });
+
+    it("names the moment a held reminder comes back on", () => {
+        // The server's forecast carries the instant and the window as the user
+        // set it; the client only renders them.
+        expect(
+            describeQuiet(
+                { state: "held", until, window: "10:00 PM–7:00 AM" },
+                "reminder",
+            ),
+        ).toBe(
+            "it falls inside quiet hours (quiet hours 10:00 PM–7:00 AM), so it will wait until 7:00 AM.",
+        );
+    });
+
+    it("stays quiet about a forecast it cannot read", () => {
+        expect(describeQuiet({ state: "held" }, "reminder")).toBeNull();
+        expect(
+            describeQuiet({ state: "held", until: "not a time" }, "reminder"),
+        ).toBeNull();
+    });
+});
+
+describe("the repeat control (#90 phase 8e)", () => {
+    /** The form's clock: a Thursday, so "tomorrow" is unambiguous. */
+    const now = new Date(2026, 0, 1, 19, 5, 0, 0);
+    /** The moment a picker holds, ten minutes out. */
+    const first = new Date(2026, 0, 1, 19, 15, 0, 0);
+
+    /** A draft with one field overridden. */
+    function draft(overrides: Partial<RepeatDraft> = {}): RepeatDraft {
+        return { ...noRepeat(), ...overrides };
+    }
+
+    it("builds a rule with the picker's moment as its anchor", () => {
+        expect(repeatDraftToRule(noRepeat(), first)).toBeNull();
+
+        expect(repeatDraftToRule(draft({ choice: "daily" }), first)).toEqual({
+            every: "day",
+            interval: 1,
+            start: first.toISOString(),
+        });
+        // "Weekdays" is Mon–Fri, in calendar order.
+        expect(
+            repeatDraftToRule(draft({ choice: "weekdays" }), first),
+        ).toMatchObject({
+            every: "week",
+            weekdays: ["mo", "tu", "we", "th", "fr"],
+        });
+        // A weekly set is sorted, whatever order the toggles were tapped in.
+        expect(
+            repeatDraftToRule(
+                draft({ choice: "weekly", weekdays: ["sa", "mo"] }),
+                first,
+            ),
+        ).toMatchObject({ every: "week", weekdays: ["mo", "sa"] });
+    });
+
+    it("builds a monthly rule from either control, and an end from either", () => {
+        expect(
+            repeatDraftToRule(
+                draft({ choice: "monthly", monthly: "day", monthDay: 1 }),
+                first,
+            ),
+        ).toMatchObject({ every: "month", monthDays: [1] });
+        expect(
+            repeatDraftToRule(
+                draft({ choice: "monthly", monthly: "day", monthDay: -1 }),
+                first,
+            ),
+        ).toMatchObject({ monthDays: [-1] });
+        expect(
+            repeatDraftToRule(
+                draft({
+                    choice: "monthly",
+                    monthly: "ordinal",
+                    weekOrdinal: "2tu",
+                }),
+                first,
+            ),
+        ).toMatchObject({ every: "month", weekOrdinals: ["2tu"] });
+        expect(
+            repeatDraftToRule(
+                draft({
+                    choice: "daily",
+                    interval: 3,
+                    ends: "after",
+                    after: 4,
+                }),
+                first,
+            ),
+        ).toMatchObject({ interval: 3, ends: { after: 4 } });
+        // A date means "through that day", so the end is its last instant.
+        const until = new Date(2026, 5, 20, 23, 59, 59, 999);
+        expect(
+            repeatDraftToRule(
+                draft({
+                    choice: "daily",
+                    ends: "until",
+                    until: new Date(2026, 5, 20),
+                }),
+                first,
+            ),
+        ).toMatchObject({ ends: { until: until.toISOString() } });
+    });
+
+    it("reads a stored rule back into the controls", () => {
+        expect(
+            repeatDraftFromRule({
+                every: "week",
+                interval: 1,
+                start: first.toISOString(),
+                weekdays: ["mo", "tu", "we", "th", "fr"],
+            }),
+        ).toMatchObject({ choice: "weekdays" });
+        expect(
+            repeatDraftFromRule({
+                every: "week",
+                interval: 2,
+                start: first.toISOString(),
+                weekdays: ["sa", "mo"],
+            }),
+            // Parsed rules arrive sorted, so the toggles open in calendar order.
+        ).toMatchObject({
+            choice: "weekly",
+            interval: 2,
+            weekdays: ["mo", "sa"],
+        });
+        expect(
+            repeatDraftFromRule({
+                every: "month",
+                interval: 1,
+                start: first.toISOString(),
+                weekOrdinals: ["-1fr"],
+                ends: { after: 6 },
+            }),
+        ).toMatchObject({
+            choice: "monthly",
+            monthly: "ordinal",
+            weekOrdinal: "-1fr",
+            ends: "after",
+            after: 6,
+        });
+        expect(
+            repeatDraftFromRule({
+                every: "month",
+                interval: 1,
+                start: first.toISOString(),
+                monthDays: [15],
+            }),
+        ).toMatchObject({ choice: "monthly", monthly: "day", monthDay: 15 });
+        // Nothing to repeat, and nothing that will not parse, both open on Never.
+        expect(repeatDraftFromRule(undefined).choice).toBe("never");
+        expect(repeatDraftFromRule({ every: "fortnight" }).choice).toBe(
+            "never",
+        );
+    });
+
+    it("round-trips a rule through the form without changing it", () => {
+        const rules = [
+            { every: "day", interval: 1, start: first.toISOString() },
+            {
+                every: "week",
+                interval: 2,
+                start: first.toISOString(),
+                weekdays: ["mo", "sa"],
+            },
+            {
+                every: "month",
+                interval: 1,
+                start: first.toISOString(),
+                monthDays: [1],
+                ends: { after: 3 },
+            },
+        ];
+        for (const rule of rules) {
+            const draft = repeatDraftFromRule(rule);
+            expect(repeatDraftToRule(draft, first)).toEqual(rule);
+        }
+    });
+
+    it("refuses a timer's schedule, as the server would", () => {
+        const timer = {
+            label: "Kettle",
+            message: "",
+            runAt: first,
+            jobClass: "timer" as const,
+            repeat: draft({ choice: "daily" }),
+        };
+        expect(checkJobInput(timer, now)).toMatch(/a timer is a countdown/);
+        expect(
+            checkJobInput({ ...timer, jobClass: "reminder" }, now),
+        ).toBeNull();
+    });
+
+    it("says when it will next fire, with the server's own function", () => {
+        // 19:15 today, every day: tomorrow at the same clock time.
+        expect(
+            nextRepeatAt(draft({ choice: "daily" }), first)?.toISOString(),
+        ).toBe(new Date(2026, 0, 2, 19, 15).toISOString());
+        expect(nextRepeatAt(noRepeat(), first)).toBeNull();
+    });
+
+    it("adds, keeps and clears a rule through an edit", () => {
+        const job = {
+            label: "Standup",
+            message: "Standup",
+            runAt: first.toISOString(),
+        };
+        // Adding one sends the rule anchored at the draft's moment.
+        expect(
+            editPatchFor(job, {
+                label: "Standup",
+                message: "",
+                runAt: first,
+                jobClass: "reminder",
+                repeat: draft({ choice: "daily" }),
+            }),
+        ).toMatchObject({
+            repeat: { every: "day", interval: 1, start: first.toISOString() },
+        });
+
+        // An unchanged rule sends nothing.
+        expect(
+            editPatchFor(
+                {
+                    ...job,
+                    repeat: {
+                        every: "day",
+                        interval: 1,
+                        start: first.toISOString(),
+                    },
+                },
+                {
+                    label: "Standup",
+                    message: "",
+                    runAt: first,
+                    jobClass: "reminder",
+                    repeat: draft({ choice: "daily" }),
+                },
+            ),
+        ).toBeNull();
+
+        // Turning it off is `null`, which is how the server is told to stop.
+        expect(
+            editPatchFor(
+                {
+                    ...job,
+                    repeat: {
+                        every: "day",
+                        interval: 1,
+                        start: first.toISOString(),
+                    },
+                },
+                {
+                    label: "Standup",
+                    message: "",
+                    runAt: first,
+                    jobClass: "reminder",
+                    repeat: noRepeat(),
+                },
+            ),
+        ).toEqual({ repeat: null });
+    });
+});

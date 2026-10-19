@@ -20,10 +20,20 @@ export type {
     ClientFrame,
     ClientHello,
     ClientLocationFrame,
+    NotificationClass,
     NotificationFrame,
     NotificationPriority,
     ServerFrame,
 } from "./types";
+export type {
+    JobRepeat,
+    NextOccurrenceResult,
+    RepeatFrequency,
+    RepeatParseResult,
+    Weekday,
+    Zone,
+} from "./repeat";
+export type { GateCondition, GateParseResult, JobGate } from "./gate";
 export {
     CHAT_MODES,
     CLIENT_CAPABILITIES,
@@ -39,9 +49,29 @@ export {
     MAX_NOTIFICATION_TITLE_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
     REVOKED_TOKEN_ERROR,
 } from "./types";
+export {
+    describeRepeat,
+    LOCAL_ZONE,
+    MAX_REPEAT_INTERVAL,
+    MAX_REPEAT_ORDINAL,
+    MAX_REPEAT_STEPS,
+    nextOccurrence,
+    parseJobRepeat,
+    repeatExhausted,
+    REPEAT_FREQUENCIES,
+    WEEKDAYS,
+} from "./repeat";
+export {
+    GATE_CONDITIONS,
+    gateKey,
+    MAX_GATE_ARGS_LENGTH,
+    MAX_GATE_TOOL_LENGTH,
+    parseJobGate,
+} from "./gate";
 export {
     MALFORMED_SERVER_FRAME,
     parseClientMessage,
@@ -55,5 +85,9 @@ export {
     serializeHello,
     serializeLocation,
     serializeRequest,
-    SerializeRequestOptions,
 } from "./frame";
+// A *type*, which no `isolatedModules` transform can re-export from a value
+// block: `tsc` dropped it silently from the emitted JavaScript, so the mistake
+// only showed itself when a consumer compiled the sources directly (#90 phase
+// 8e, where the web's Vite alias to `src/` caught it).
+export type { SerializeRequestOptions } from "./frame";

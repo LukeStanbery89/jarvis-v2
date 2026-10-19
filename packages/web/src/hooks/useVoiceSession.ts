@@ -100,6 +100,29 @@ export function voiceStatusText(snapshot: VoiceSnapshot): string | null {
 }
 
 /**
+ * The voice line the app renders (#90 phase 6d): the stage, or "Speaking…".
+ *
+ * {@link voiceStatusText} plus the one case that needs the player: a reply whose
+ * audio is still scheduled reads as speaking even though the lifecycle has left
+ * `speaking` (the `done` frame arrives while seconds of speech are queued). Two
+ * surfaces render this — the chat's status line and the bar's microphone chip —
+ * so the sentence has one home instead of two that can disagree.
+ *
+ * @param snapshot - The current voice snapshot.
+ * @param playbackActive - Whether the player still has scheduled audio.
+ * @returns The line, or `null` when there is nothing to say.
+ */
+export function voiceStatusLine(
+    snapshot: VoiceSnapshot,
+    playbackActive: boolean,
+): string | null {
+    if (snapshot.state === "speaking" || playbackActive) {
+        return "Speaking…";
+    }
+    return voiceStatusText(snapshot);
+}
+
+/**
  * Whether the barge-in watch covers a voice lifecycle state (#114).
  *
  * `responding` onward, **not just `speaking`**. `speaking` is entered by the

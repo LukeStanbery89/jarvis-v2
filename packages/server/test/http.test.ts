@@ -31,7 +31,10 @@ async function passwordLogin(
     const res = await request(app)
         .post("/api/auth/login")
         .send({ username, password, deviceName });
-    expect(res.status).toBe(200);
+    // The body, not just the status: a setup failure that returns no device
+    // token would otherwise surface as `Bearer undefined` on whatever request
+    // followed it (#148).
+    expect(res.status, `${res.status} ${JSON.stringify(res.body)}`).toBe(200);
     return res.body.device.token as string;
 }
 
@@ -47,7 +50,9 @@ function ownerHeader(): Promise<string> {
             .post("/api/bootstrap")
             .set("x-bootstrap-token", FAST.bootstrapToken)
             .send({ username: "luke", password: "hunter2pw" });
-        expect(res.status).toBe(201);
+        expect(res.status, `${res.status} ${JSON.stringify(res.body)}`).toBe(
+            201,
+        );
         return `Bearer ${res.body.device.token}`;
     })();
     return ownerHeaderPromise;
@@ -759,6 +764,72 @@ describe("prefs", () => {
             .set("authorization", `Bearer ${token}`)
             .send({ exploding: undefined });
         expect(nonJson.status).toBe(400);
+    });
+
+    it("validates known pref values on write and stores nothing on a rejection", async () => {
+        const token = await prefsUser("prefs-known");
+        const userId = store.getUserByUsername("prefs-known")!.id;
+        store.setPrefs(userId, [{ key: "integration.kept", value: ["a"] }]);
+
+        const bad = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                "notify.quietHours": "22:00-07:00",
+                "integration.kept": ["changed"],
+            });
+        expect(bad.status).toBe(400);
+        expect(bad.body.error).toContain("notify.quietHours");
+        // The whole write is refused, so the sent integration key is untouched
+        // too — a rejected prefs body is never a partial write.
+        expect(store.getPrefs(userId)).toEqual({ "integration.kept": ["a"] });
+
+        const ok = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                "notify.enabled": false,
+                "notify.quietHours": { start: "22:00", end: "07:00" },
+            });
+        expect(ok.status).toBe(200);
+        expect(ok.body["notify.quietHours"]).toEqual({
+            start: "22:00",
+            end: "07:00",
+        });
+
+        // `null` is the documented off value, not a malformed one.
+        const off = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send({ "notify.quietHours": null });
+        expect(off.status).toBe(200);
+        expect(off.body["notify.quietHours"]).toBeNull();
+
+        // Unknown keys stay free-form: the raw editor remains an escape hatch.
+        const free = await request(app)
+            .put("/api/prefs")
+            .set("authorization", `Bearer ${token}`)
+            .send({ "integration.kept": { anything: [1, 2] } });
+        expect(free.status).toBe(200);
+    });
+
+    it("validates known pref values on the owner-only write path too", async () => {
+        const token = await prefsUser("prefs-known-owner");
+        const userId = store.getUserByUsername("prefs-known-owner")!.id;
+        const bad = await request(app)
+            .put(`/api/users/${userId}/prefs`)
+            .set("authorization", await ownerHeader())
+            .send({ "notify.enabled": "yes" });
+        expect(bad.status).toBe(400);
+        expect(store.getPrefs(userId)).toEqual({});
+
+        // Authorization comes first: a non-owner is refused whatever the body
+        // holds, so the value check cannot be probed from outside.
+        const denied = await request(app)
+            .put(`/api/users/${userId}/prefs`)
+            .set("authorization", `Bearer ${token}`)
+            .send({ "notify.enabled": "yes" });
+        expect(denied.status).toBe(403);
     });
 
     it("clears prefs over the ledger-backed DELETE routes", async () => {

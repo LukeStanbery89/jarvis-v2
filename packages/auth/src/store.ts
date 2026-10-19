@@ -25,6 +25,42 @@ import type {
     WebSessionRow,
 } from "./types";
 
+/**
+ * The notification states a row can never leave (#139, #90 phases 6c, 9c).
+ *
+ * `read` and `answered` are a user's terminal answers; `snoozed` joined them in
+ * #90 phase 6c, when a reminder could be *deferred* rather than merely read or
+ * ignored — the deferral settles the announcement it came from, so a late
+ * duplicate acknowledgement cannot resurrect the row.
+ *
+ * `dismissed` used to be a fourth, and left in **9c**: dismissal now deletes the
+ * row, because a dismissal means the user is finished with it and a row kept for
+ * the record of a shrug is a row nobody reads. A state nothing can write is
+ * better absent than documented, so the vocabulary narrowed here and the v16
+ * migration deletes the rows that were already in it.
+ *
+ * Declared up here, above the schema strings, because they are *built* from it:
+ * the table's CHECK names these states, and a `const` read from a template
+ * literal evaluated earlier in the module would throw in its temporal dead zone
+ * at import time. Everything that has to know is derived from this one list —
+ * the CHECK, the settle statement's guard, its `settled_at` stamp, and the unread
+ * count — so widening the set is one edit rather than four.
+ */
+export const NOTIFICATION_TERMINAL_STATES = [
+    "read",
+    "answered",
+    "snoozed",
+] as const;
+
+/** One of the states a notification can never leave. */
+export type NotificationTerminalState =
+    (typeof NOTIFICATION_TERMINAL_STATES)[number];
+
+/** The terminal states as SQL literals, for the statements built from them. */
+const NOTIFICATION_TERMINAL_SQL = NOTIFICATION_TERMINAL_STATES.map(
+    (state) => `'${state}'`,
+).join(", ");
+
 const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -33,6 +69,166 @@ const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
     created_at  TEXT NOT NULL,
     expires_at  TEXT NOT NULL
 );`;
+
+/**
+ * The scheduler's tables (#90): one row per scheduled job, one per run.
+ *
+ * A constant rather than an inline string because it is needed twice — by
+ * {@link SCHEMA} for a fresh database and by the v8 migration for an existing
+ * one — and the two must agree on the shape (the same reason
+ * {@link WEB_SESSIONS_SCHEMA} is one).
+ *
+ * `job_runs` is the job's *observable* history: what a run produced, when, and
+ * why it failed. The model's own context does not live here — it lives in the
+ * LangGraph checkpoint, under a `job:<id>` thread that never enters the
+ * chat-thread ledger, which is what keeps a job's runs from appearing as
+ * conversations.
+ *
+ * The `kind` CHECK is the table refusing to hold a job that could never run: a
+ * prompt job without a prompt, or a tool job without a tool.
+ */
+/**
+ * The `jobs` table's columns and constraints, parameterized by table name.
+ *
+ * A function rather than a literal because the v10 migration has to *rebuild*
+ * this table — SQLite cannot alter a CHECK in place — and the copy lands in a
+ * table that must have exactly this shape. Written once here, both the fresh
+ * schema and the rebuild ask for it, so they cannot drift.
+ *
+ * `class` is the delivery class the job's announcement will carry (2b);
+ * `message` is the payload a reminder or timer actually needs — text with
+ * nothing to run, neither a model nor a tool.
+ */
+function jobsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label       TEXT NOT NULL,
+    class       TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
+    kind        TEXT NOT NULL CHECK (kind IN ('prompt', 'tool', 'message')),
+    prompt      TEXT,
+    tool_name   TEXT,
+    tool_args   TEXT,
+    message     TEXT,
+    run_at      TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed', 'cancelled', 'missed')),
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    settled_at  TEXT,
+    last_error  TEXT,
+    repeat      TEXT,
+    gate        TEXT,
+    CHECK (
+        (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL AND message IS NULL) OR
+        (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL AND message IS NULL) OR
+        (kind = 'message' AND message IS NOT NULL AND prompt IS NULL AND tool_name IS NULL)
+    )
+)`;
+}
+
+/**
+ * The `notifications` table (#139), parameterized by table name.
+ *
+ * A function for the same reason {@link jobsTable} is one: the v12 migration has
+ * to *rebuild* this table — SQLite cannot widen a `CHECK` in place, and #90 phase
+ * 6c added `snoozed` to the state set — and the copy has to land in a table with
+ * exactly this shape. Written once, both ask for it, so they cannot drift.
+ *
+ * `job_id` sits last because that is where the v11 `ALTER TABLE` put it: a
+ * rebuilt table lists its columns in this order on the way in, so a migrated
+ * database and a fresh one converge on the same shape rather than merely the
+ * same columns.
+ */
+function notificationsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
+    id              TEXT PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,
+    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
+    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+    title           TEXT NOT NULL,
+    body            TEXT,
+    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', ${NOTIFICATION_TERMINAL_SQL})),
+    requires_answer INTEGER NOT NULL DEFAULT 0,
+    dedupe_key      TEXT,
+    answer          TEXT,
+    created_at      TEXT NOT NULL,
+    delivered_at    TEXT,
+    settled_at      TEXT,
+    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
+)`;
+}
+
+/**
+ * The `notifications` index, kept separate from the table because the v12 rebuild
+ * drops the table (taking its index with it) and must put it back — the same
+ * reason {@link JOB_INDEXES} exists.
+ */
+const NOTIFICATION_INDEXES = `CREATE INDEX IF NOT EXISTS idx_notifications_user
+    ON notifications (user_id, created_at DESC);`;
+
+/**
+ * The `jobs` indexes, kept separate from the table because the v10 rebuild
+ * drops the table (taking its indexes with it) and must put them back after the
+ * swap — a `CREATE INDEX IF NOT EXISTS` run before the drop would be undone by
+ * it, and silently leave the queue unindexed.
+ */
+const JOB_INDEXES = `CREATE INDEX IF NOT EXISTS idx_jobs_due
+    ON jobs (run_at) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS idx_jobs_user
+    ON jobs (user_id, created_at DESC);`;
+
+/**
+ * The day's model-run count (#90 phase 8c): one row per account per local day.
+ *
+ * A *budget* rather than a throttle, which is why it is a row here and not an
+ * in-memory limiter like the server's: the question is "how much model work has
+ * this account's schedule asked for today", and a restart must not hand the
+ * day's allowance back — exactly when a runaway job would spend it again. The
+ * server owns the limit and the meaning of a day; this table owns the count.
+ *
+ * Never pruned: one row per day is 365 rows a year.
+ */
+const JOB_MODEL_RUNS_TABLE = `CREATE TABLE IF NOT EXISTS job_model_runs (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day     TEXT NOT NULL,
+    runs    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+)`;
+
+/**
+ * The `job_runs` table (#90), parameterized by name.
+ *
+ * A function for the same reason {@link jobsTable} is one: the v15 migration has
+ * to *rebuild* this table — SQLite cannot widen a `CHECK` in place, and `skipped`
+ * widens the state set — and the copy has to land in a table with exactly this
+ * shape. Written once, both ask for it.
+ *
+ * `gate_output` and `gate_key` are the gate's memory (#90 phase 8f): what the
+ * check read, and *which* check read it. The key matters because a gate whose
+ * tool or arguments changed is a different question, and comparing its answer to
+ * a previous gate's would be comparing two things.
+ */
+function jobRunsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
+    id          TEXT PRIMARY KEY,
+    job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    state       TEXT NOT NULL CHECK (state IN ('running', 'ok', 'failed', 'skipped')),
+    output      TEXT,
+    error       TEXT,
+    gate_output TEXT,
+    gate_key    TEXT
+)`;
+}
+
+const JOBS_SCHEMA = `${jobsTable("jobs")};
+${JOB_INDEXES}
+${jobRunsTable("job_runs")};
+CREATE INDEX IF NOT EXISTS idx_job_runs_job
+    ON job_runs (job_id, started_at DESC);
+${JOB_MODEL_RUNS_TABLE};`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -69,23 +265,9 @@ CREATE TABLE IF NOT EXISTS prefs (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
-CREATE TABLE IF NOT EXISTS notifications (
-    id              TEXT PRIMARY KEY,
-    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kind            TEXT NOT NULL,
-    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
-    title           TEXT NOT NULL,
-    body            TEXT,
-    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed')),
-    requires_answer INTEGER NOT NULL DEFAULT 0,
-    dedupe_key      TEXT,
-    answer          TEXT,
-    created_at      TEXT NOT NULL,
-    delivered_at    TEXT,
-    settled_at      TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_notifications_user
-    ON notifications (user_id, created_at DESC);
+${notificationsTable("notifications")};
+${NOTIFICATION_INDEXES}
+${JOBS_SCHEMA}
 ${WEB_SESSIONS_SCHEMA}
 `;
 
@@ -215,15 +397,35 @@ export const NOTIFICATION_PRIORITIES = [
 export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
 
 /**
- * Where a notification is in its life (#139).
+ * What kind of attention a notification asks for (#90), in rising order of how
+ * much it may insist.
+ *
+ * Structurally mirrors the protocol's `NOTIFICATION_CLASSES` the same way
+ * {@link NOTIFICATION_PRIORITIES} mirrors the wire's priorities — the server
+ * passes values straight through, so the two packages stay independent. Keep
+ * the tuples in step. The row's CHECK is what actually enforces the set.
+ */
+export const NOTIFICATION_CLASSES = [
+    "notification",
+    "reminder",
+    "timer",
+] as const;
+
+/** What kind of attention a notification asks for. */
+export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
+
+/**
+ * Where a notification is in its life (#139, #90 phase 6c).
  *
  * `pending` — recorded but never pushed to a live client (nobody was
  * connected, the delivery cap was reached, or quiet hours suppressed it), so a
  * client that connects later finds it through the list. `delivered` — pushed
- * to at least one live socket. `read` / `dismissed` / `answered` are terminal
- * from the user's point of view. `answered` is the retirement path for a
- * `requiresAnswer` notification: a reply, not an acknowledgement, is what
- * settles it.
+ * to at least one live socket. Then the terminal states, from the one list that
+ * owns them ({@link NOTIFICATION_TERMINAL_STATES}): `read` is the user having
+ * seen it, `answered` is the retirement path for a `requiresAnswer` notification
+ * (a reply, not an acknowledgement, is what settles it), and `snoozed` is what a
+ * reminder the user deferred becomes. **Dismissal is not a state**: it deletes
+ * the row (#90 phase 9c) — see `deleteNotification`.
  *
  * Note that `pending` → `read` is a legal transition: a user who finds the
  * notification in the list and reads it there never needs it delivered.
@@ -231,9 +433,7 @@ export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
 export const NOTIFICATION_STATES = [
     "pending",
     "delivered",
-    "read",
-    "answered",
-    "dismissed",
+    ...NOTIFICATION_TERMINAL_STATES,
 ] as const;
 
 /** A notification's lifecycle state. */
@@ -249,6 +449,12 @@ export interface AppNotification {
     userId: number;
     /** Producer-defined category ("job.finished", "reminder", …). */
     kind: string;
+    /**
+     * What kind of attention this asks for (#90). Defaults to `notification`
+     * at the table, so a producer that has no opinion (today: every producer
+     * but the scheduler) stores the quiet class rather than a null.
+     */
+    class: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body: string | null;
@@ -263,6 +469,16 @@ export interface AppNotification {
     dedupeKey: string | null;
     /** The user's reply, for an answered notification. */
     answer: string | null;
+    /**
+     * The job whose run produced this notification (#90 phase 5), or `null`.
+     *
+     * An announcement about a job is the only notification anything can *act*
+     * on beyond reading it — a reminder banner's snooze needs to name the
+     * reminder it came from — so the link is stored rather than re-derived from
+     * the title. `ON DELETE SET NULL`: jobs are pruned as history, while a
+     * notification the user already received stays true.
+     */
+    jobId: string | null;
     createdAt: string;
     deliveredAt: string | null;
     /** When the notification reached a terminal state. */
@@ -272,11 +488,18 @@ export interface AppNotification {
 /** The producer-supplied half of a notification; identity and times are the store's. */
 export interface CreateNotificationInput {
     kind: string;
+    /**
+     * What kind of attention it asks for; the table's default is
+     * `notification` (quiet), so a caller that has no opinion omits it.
+     */
+    class?: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body?: string | null;
     requiresAnswer?: boolean;
     dedupeKey?: string | null;
+    /** The job this notification is about (#90 phase 5), when there is one. */
+    jobId?: string | null;
 }
 
 /**
@@ -300,22 +523,38 @@ export interface NotificationLedger {
     /** One notification, or `null` when it is missing or another user's. */
     getNotification(userId: number, id: string): AppNotification | null;
     /**
-     * A user's notifications, newest first. Dismissed rows are excluded by
-     * default; `limit` caps the page.
+     * A user's notifications, newest first. `limit` caps the page.
+     *
+     * There is no "include the dismissed ones" switch any more (#90 phase 9c):
+     * dismissing deletes the row, so the list is simply what the user has.
      */
     listNotifications(
         userId: number,
-        options?: { limit?: number; includeDismissed?: boolean },
+        options?: { limit?: number },
     ): AppNotification[];
-    /** How many of a user's notifications are neither read nor dismissed. */
+    /**
+     * A user's notifications about one job, newest first (#90 phase 6c).
+     *
+     * A job announces once per run, so this is normally exactly one row — but
+     * the caller settling "the announcement for this job" should ask the link
+     * rather than assume an id it does not have, and there is no upper bound the
+     * ledger can promise (a re-created reminder's predecessor announced too).
+     * Unsettled and settled rows both come back; the settle rules are
+     * {@link setNotificationState}'s.
+     */
+    listNotificationsForJob(userId: number, jobId: string): AppNotification[];
+    /** How many of a user's notifications are unsettled (the badge count). */
     countUnreadNotifications(userId: number): number;
     /**
      * Moves a notification to `state`, stamping `delivered_at` / `settled_at`
      * as that state implies, optionally recording the user's `answer`.
      *
-     * Terminal states are terminal: a transition out of `read`, `dismissed`,
-     * or `answered` is refused and the existing row returned unchanged, so a
-     * late duplicate ack cannot resurrect a settled notification.
+     * Terminal states are terminal — `read`, `answered` and `snoozed` — and a
+     * transition out of one is refused, returning the existing row unchanged: a
+     * late duplicate ack cannot resurrect a settled notification, and neither
+     * can a snooze that arrives after the user read the reminder. Dismissal is
+     * not a transition at all: it deletes the row
+     * ({@link deleteNotification}, #90 phase 9c).
      *
      * @returns The row after the attempt, or `null` when no such notification
      * belongs to `userId`.
@@ -326,6 +565,19 @@ export interface NotificationLedger {
         state: NotificationState,
         options?: { answer?: string },
     ): AppNotification | null;
+    /**
+     * Deletes a notification outright (#90 phase 9c) — what dismissing one
+     * means, and the only caller it has.
+     *
+     * A dismissal is the user saying they are finished with the row, so there is
+     * nothing left to list, count or report about it. The removed row comes back
+     * rather than a boolean, so a route can answer with what it took away.
+     *
+     * @returns The row as it was, or `null` when no such notification belongs to
+     * `userId` (the same indistinguishability {@link setNotificationState}
+     * keeps).
+     */
+    deleteNotification(userId: number, id: string): AppNotification | null;
     /**
      * Trims a user's notifications to the newest `keep`, so a long-lived
      * instance cannot grow the table without bound.
@@ -340,6 +592,449 @@ export interface NotificationLedger {
      * @returns The number of rows deleted.
      */
     pruneNotifications(userId: number, keep: number): number;
+}
+
+/**
+ * What a job runs when it fires (#90).
+ *
+ * `prompt` runs an agent turn — anything needing judgement ("send me a weather
+ * and news summary"). `tool` invokes one tool directly and never touches the
+ * model, which is what makes a "turn the light on" a job rather than a
+ * conversation. `message` has no payload to *run* at all: the job's own text is
+ * the whole point, and the runner's announcement is what delivers it — which is
+ * what a reminder or a timer actually is, needing neither a model nor a tool.
+ */
+export const JOB_KINDS = ["prompt", "tool", "message"] as const;
+
+/** What a job runs. */
+export type JobKind = (typeof JOB_KINDS)[number];
+
+/**
+ * Where a job is in its life.
+ *
+ * `pending` is the only state a job is *owed* in — it is the queue. `running`
+ * is claimed and in flight; `done`, `failed`, `cancelled` and `missed` are
+ * terminal. `missed` is distinct from `failed` on purpose: a job whose moment
+ * passed while the server was down did not fail, it was never attempted, and
+ * the two want different words in front of the user.
+ */
+export const JOB_STATES = [
+    "pending",
+    "running",
+    "done",
+    "failed",
+    "cancelled",
+    "missed",
+] as const;
+
+/** A job's lifecycle state. */
+export type JobState = (typeof JOB_STATES)[number];
+
+/** How one attempt at a job ended. */
+/**
+ * The states one attempt can end in (#90 phases 1, 8f).
+ *
+ * `skipped` is a firing that happened and declined — a gate's check said there
+ * was nothing to do — which is why it is a *run* rather than silence: the
+ * invariant this ledger serves is one run row per firing, so a firing that
+ * reached its payload check leaves the same trace as one that went further.
+ */
+export const JOB_RUN_STATES = ["running", "ok", "failed", "skipped"] as const;
+
+/** A run's state. */
+export type JobRunState = (typeof JOB_RUN_STATES)[number];
+
+/**
+ * One scheduled job (#90) as the store returns it.
+ *
+ * `toolArgs` is the tool call's arguments, already parsed, or `null` for a
+ * prompt job — the ledger round-trips `tool_args` the way `PrefLedger` does
+ * `value_json`, so the server validates the arguments and the store only holds
+ * them.
+ */
+export interface AppJob {
+    id: string;
+    userId: number;
+    /** User-facing name ("AC filter"), used in the announcement. */
+    label: string;
+    /**
+     * What kind of attention the job asks for (#90) — the delivery class its
+     * announcement carries, which is what decides whether quiet hours may
+     * hold it back. The same closed set as a notification's, because the
+     * announcement *is* one.
+     */
+    class: NotificationClass;
+    kind: JobKind;
+    /** The instruction, for `kind: "prompt"`. */
+    prompt: string | null;
+    /** The tool to call, for `kind: "tool"`. */
+    toolName: string | null;
+    /** That tool's arguments (parsed JSON), or `null`. */
+    toolArgs: unknown;
+    /** The text to deliver, for `kind: "message"`. */
+    message: string | null;
+    /** When it wants to run, ISO-8601 UTC. */
+    runAt: string;
+    state: JobState;
+    /** How many times it has been claimed (a claim is an attempt). */
+    attempts: number;
+    createdAt: string;
+    /** When it reached a terminal state. */
+    settledAt: string | null;
+    /** Why the last attempt failed, for a `failed` job. */
+    lastError: string | null;
+    /**
+     * The recurrence rule, as parsed JSON (#90 phase 8), or `null` for a
+     * one-shot job.
+     *
+     * Deliberately `unknown` rather than `JobRepeat`: this package owns row
+     * shapes and stays free of the protocol package, so the *rule's* type and
+     * its validator live in `@lukestanbery/jarvis-protocol` and the server
+     * names them. What the store guarantees is that the JSON parsed — and that
+     * a value which would not is handed back as its raw text (see
+     * {@link parseJsonColumn}), so the scheduler can say what it could not read
+     * instead of silently treating the job as a one-shot.
+     */
+    repeat: unknown;
+    /**
+     * The deterministic check a firing must pass before its payload runs (#90
+     * phase 8f), as parsed JSON, or `null` for a job that runs unconditionally.
+     *
+     * `unknown` for the same reason `repeat` is: the shape is the protocol's and
+     * the server names it, while this package owns the row.
+     */
+    gate: unknown;
+}
+
+/** One attempt at one job, as the store returns it. */
+export interface AppJobRun {
+    id: string;
+    jobId: string;
+    startedAt: string;
+    finishedAt: string | null;
+    state: JobRunState;
+    /** What the run produced (the reply, or the tool's result text). */
+    output: string | null;
+    /** Why the run failed, when it did. */
+    error: string | null;
+    /**
+     * What the gate's check read, when the job has one (#90 phase 8f), or `null`.
+     *
+     * It is on the *run* rather than the job because it is what that firing saw:
+     * the comparison reads the newest run's pair, and a payload run records it
+     * too — a baseline that only skips recorded would reset on every firing that
+     * did something.
+     */
+    gateOutput: string | null;
+    /** Which check read it: the gate's tool and arguments, as one string. */
+    gateKey: string | null;
+}
+
+/** The producer-supplied half of a job; identity and times are the store's. */
+export interface CreateJobInput {
+    label: string;
+    /** What kind of attention it asks for; the table's default is the quiet class. */
+    class?: NotificationClass;
+    kind: JobKind;
+    /** Required for `kind: "prompt"`; refused by the table's CHECK otherwise. */
+    prompt?: string | null;
+    /** Required for `kind: "tool"`. */
+    toolName?: string | null;
+    toolArgs?: unknown;
+    /** Required for `kind: "message"`: the text the announcement delivers. */
+    message?: string | null;
+    /** The recurrence rule (#90 phase 8); omitted for a one-shot job. */
+    repeat?: unknown;
+    /** The gate a firing must pass (#90 phase 8f); omitted to run always. */
+    gate?: unknown;
+    runAt: string;
+}
+
+/**
+ * One firing's ending, as {@link JobLedger.settleJobRun} records it (#90 phase
+ * 8b).
+ *
+ * A union on the job's state, because the two cases need different things: a
+ * re-arm needs the moment the next occurrence falls on, and a terminal settle
+ * must not be given one.
+ */
+export interface SettleFiringInput {
+    jobId: string;
+    runId: string;
+    /** What the attempt did, and what it produced or why it failed. */
+    run: {
+        state: Exclude<JobRunState, "running">;
+        output?: string;
+        error?: string;
+        gateOutput?: string;
+        gateKey?: string;
+    };
+    /**
+     * What becomes of the job: `pending` when it repeats and has a next
+     * occurrence (with the moment), or a terminal state when it does not.
+     */
+    job:
+        | { state: "pending"; runAt: string; error?: string }
+        | { state: Exclude<JobState, "pending" | "running">; error?: string };
+    /** When the firing ended. */
+    at: string;
+}
+
+/**
+ * Job-rows ledger: the scheduler's queue and history (#90).
+ *
+ * Unlike {@link NotificationLedger} — whose every method scopes by `userId`,
+ * because a notification is only ever read for its owner — this ledger has two
+ * deliberate surfaces:
+ *
+ * - **User-scoped** ({@link getJob} / {@link listJobs} / {@link cancelJob} /
+ *   {@link moveJob} /
+ *   {@link listJobRuns}): what the REST layer and the pages use. A foreign id
+ *   is indistinguishable from a missing one, as everywhere else.
+ * - **Scheduler-scoped** ({@link listDueJobs} / {@link claimJob} /
+ *   {@link rescheduleJob} / {@link settleJob} / {@link settleJobRun} /
+ *   {@link startJobRun} / {@link finishJobRun}): the
+ *   process acts *for every user*, so it selects due work across accounts and
+ *   settles it by the id it claimed. Nothing here is reachable from a request
+ *   handler; the scheduler is the only caller.
+ *
+ * The store owns rows and transitions; the *policy* (what may be scheduled,
+ * what a run means, retention, deferral) lives in the server's scheduler.
+ */
+export interface JobLedger {
+    /**
+     * Inserts a job and returns the stored row.
+     *
+     * The caller has already validated the payload; the table's CHECK rejects a
+     * mismatched `kind`/`prompt`/`tool_name` combination rather than storing a
+     * job that could never run.
+     */
+    createJob(
+        userId: number,
+        input: CreateJobInput & { id: string; createdAt: string },
+    ): AppJob;
+    /** One job, or `null` when it is missing or another user's. */
+    getJob(userId: number, id: string): AppJob | null;
+    /**
+     * A user's jobs, newest-created first. Settled jobs are hidden by default
+     * (they are history); `limit` caps the page.
+     */
+    listJobs(
+        userId: number,
+        options?: { limit?: number; includeSettled?: boolean },
+    ): AppJob[];
+    /**
+     * Every user's `pending` jobs whose `run_at` has arrived, oldest first —
+     * the scheduler's claim feed. Cross-user by design (see the interface doc).
+     */
+    listDueJobs(at: string, limit: number): AppJob[];
+    /**
+     * Every job currently `running`, across users — the recovery feed.
+     *
+     * A job is `running` only while a claim holds it, and a claim lives in the
+     * claiming process's memory, so at boot any `running` row was left behind
+     * by a process that died mid-run. What to do about that is the scheduler's
+     * policy (phase 1: fail it and say so), which is why the store only
+     * reports them.
+     */
+    listRunningJobs(limit: number): AppJob[];
+    /**
+     * Closes every still-open run of a job, recording why. This is the trace of
+     * an attempt that never finished — the process making it died — and a run
+     * row left saying `running` forever would be a lie about a dead process.
+     *
+     * @returns The number of run rows closed.
+     */
+    failOpenJobRuns(jobId: string, error: string, at: string): number;
+    /**
+     * Claims one job for this process: `pending` → `running`, counting the
+     * attempt. The transition is in the WHERE clause, so a second claim — from
+     * another tick, or from a process that restarted mid-run — touches no row.
+     *
+     * @returns `true` when *this* caller won the job.
+     */
+    claimJob(id: string): boolean;
+    /**
+     * Records the start of one attempt.
+     *
+     * Called after {@link claimJob}, so a claimed job always has a run row: an
+     * attempt that leaves no trace would be the "nothing happened" this whole
+     * area exists to remove.
+     */
+    startJobRun(input: { id: string; jobId: string; startedAt: string }): void;
+    /**
+     * Finishes one attempt, recording what it produced, why it failed, or — for
+     * a firing a gate declined — what the check read (#90 phase 8f).
+     */
+    finishJobRun(
+        runId: string,
+        state: Exclude<JobRunState, "running">,
+        result: {
+            output?: string;
+            error?: string;
+            gateOutput?: string;
+            gateKey?: string;
+        },
+        at: string,
+    ): void;
+    /**
+     * Moves a claimed job to a terminal state, stamping `settled_at`.
+     *
+     * Scheduler-scoped: it takes an id, not a user, because the caller holds a
+     * claim on that id. Terminal states are terminal — a settle of an already
+     * settled job returns the existing row unchanged — so a late duplicate
+     * cannot rewrite history.
+     */
+    settleJob(
+        id: string,
+        state: Exclude<JobState, "pending" | "running">,
+        options: { error?: string },
+        at: string,
+    ): AppJob | null;
+    /**
+     * Records a firing's ending: the attempt's row and the job's next state, in
+     * one transaction (#90 phase 8b).
+     *
+     * The pair is one fact — an attempt finished, and the job is either owed
+     * again or settled — so they commit together. A process that died between the
+     * two writes would otherwise leave a job `running` with no open run to
+     * explain it, or, once a job repeats, a series whose successor was never
+     * scheduled. The announcement and the prune stay outside: a better-sqlite3
+     * transaction is synchronous, and the announcement is a network round trip.
+     *
+     * Scheduler-scoped, like {@link settleJob}: the caller holds the claim. The
+     * re-arm is guarded on the row still being `running`, so a job cancelled
+     * mid-run is not brought back to life by the firing that was already in
+     * flight.
+     *
+     * @returns The row after the write — unchanged when the job was cancelled
+     * under the caller — or `null` when the id is gone.
+     */
+    settleJobRun(input: SettleFiringInput): AppJob | null;
+    /**
+     * Puts a *claimed* job back in the queue at a new moment, unchanged in every
+     * other way (#90 phase 8c).
+     *
+     * The sibling of {@link rescheduleJob} for the one case that one cannot
+     * cover: a repeating job whose slot passed while nobody was looking, where a
+     * claim is already held. No run row, because nothing was attempted — the same
+     * honesty a quiet-hours deferral keeps. Guarded on `running` like the re-arm
+     * inside {@link settleJobRun}, so a job cancelled mid-run stays cancelled and
+     * a stale caller cannot move a finished one.
+     *
+     * @returns The row after the attempt — unchanged when it was not `running`
+     * — or `null` when the id is gone.
+     */
+    rearmJob(id: string, runAt: string, error?: string): AppJob | null;
+    /**
+     * How much model work this account's schedule has spent today (#90 phase
+     * 8c), for the daily budget.
+     *
+     * `day` is the caller's local calendar day (`YYYY-MM-DD`): the budget is a
+     * human's day, not UTC's.
+     */
+    countModelRuns(userId: number, day: string): number;
+    /**
+     * Charges one model-calling run to the day's budget. Called after the payload
+     * actually ran — a gate skip or a deferred firing spends nothing.
+     */
+    recordModelRun(userId: number, day: string): void;
+    /**
+     * Moves a still-pending job's moment — how a reminder defers itself out of
+     * quiet hours (#90 2b).
+     *
+     * Only a `pending` job can be moved, and that is the whole safety property:
+     * a claimed job is being worked on, so its moment is history. The caller
+     * re-reads the row either way, so a refused move shows up as an unchanged
+     * `runAt` rather than as an exception.
+     */
+    rescheduleJob(id: string, runAt: string): AppJob | null;
+    /**
+     * Cancels one of the caller's own jobs (the only user-reachable state
+     * change).
+     *
+     * A `pending` job, always. A **repeating** one also while it runs (#90 phase
+     * 8b), because what the user is stopping is the series: the firing in flight
+     * is already paid for and will report when it ends, and the re-arm refuses to
+     * schedule a successor for a row that has stopped being `running`. A one-shot
+     * mid-run is not cancellable — its result is the whole job, and it is on its
+     * way.
+     *
+     * @returns The row after the attempt — unchanged when it was not
+     * cancellable — or `null` when no such job belongs to `userId`.
+     */
+    cancelJob(userId: number, id: string): AppJob | null;
+    /**
+     * Moves one of the caller's own pending jobs to a new moment — what a
+     * snooze does to a reminder that has not fired yet (#90 phase 3).
+     *
+     * The user-scoped sibling of {@link rescheduleJob}, and separate from it on
+     * purpose: that one is the scheduler's (it acts on an id it has claimed),
+     * while this one acts on the caller's own row and refuses anything that is
+     * not `pending` (a running job is being worked on; a settled one is
+     * history). The `user_id` predicate is the ownership check, in the same
+     * statement as the state check, so there is no read-then-write window.
+     *
+     * @returns The row after the attempt — unchanged when it could not move —
+     * or `null` when no such job belongs to `userId`.
+     */
+    moveJob(userId: number, id: string, runAt: string): AppJob | null;
+    /**
+     * Edits one of the caller's own pending jobs — the REST `PATCH` (#90 phase
+     * 5). Only the label, the message payload's text and the moment are
+     * editable: the class and the kind are what the job *is*, so changing
+     * either is a different job (and a class change is how loudly the user gets
+     * interrupted, which is not something to mutate in place).
+     *
+     * As with {@link moveJob}, the `user_id` predicate is the ownership check
+     * and `state = 'pending'` the state check, in the same statement as the
+     * write — so a foreign id, a claimed job and a settled one all change
+     * nothing.
+     *
+     * `repeat` has **three** states rather than two, and they are the wire's
+     * own: a rule to write, `null` to stop repeating, or `undefined` to leave the
+     * stored rule alone. JSON cannot spell `undefined`, so a request body's
+     * absent field and its explicit `null` already mean exactly these — no
+     * sentinel is needed to tell them apart.
+     *
+     * @returns The row after the attempt — unchanged when it could not be
+     * edited — or `null` when no such job belongs to `userId`.
+     */
+    editJob(
+        userId: number,
+        id: string,
+        patch: { label?: string; message?: string; runAt?: string },
+    ): AppJob | null;
+    /**
+     * A job's runs, newest first, for the pages and for tests.
+     */
+    listJobRuns(jobId: string, options?: { limit?: number }): AppJobRun[];
+    /**
+     * Trims a user's jobs to the newest `keep`, so a long-lived instance cannot
+     * grow the table without bound.
+     *
+     * A **repeating** job that is still owed is exempt, and that exemption is the
+     * reason this is one statement rather than the two the comment used to
+     * describe: `created_at` is when the user asked and a series' never moves, so
+     * age alone would eventually make a live series the next row the prune took.
+     * Creation caps a user's pending rows below this ceiling, so what is taken is
+     * overwhelmingly settled history.
+     *
+     * @returns The number of rows deleted.
+     */
+    pruneJobs(userId: number, keep: number): number;
+    /**
+     * Trims one job's runs to the newest `keep` (#90 phase 8b) — the other half
+     * of retention.
+     *
+     * A job that fires every few minutes writes a run row each time, so the runs
+     * table would grow without bound while the job count stayed small. The
+     * default is comfortably above the detail endpoint's page, so a caller that
+     * does not care still serves whole pages.
+     *
+     * @returns The number of rows deleted.
+     */
+    pruneJobRuns(jobId: string, keep?: number): number;
 }
 
 /**
@@ -377,7 +1072,8 @@ export type AppDatabase = UserLedger &
     WebSessionLedger &
     PrefLedger &
     SessionLedger &
-    NotificationLedger & {
+    NotificationLedger &
+    JobLedger & {
         /** Releases the underlying connection. */
         close(): void;
     };
@@ -430,6 +1126,7 @@ interface NotificationRow {
     id: string;
     userId: number;
     kind: string;
+    class: NotificationClass;
     priority: NotificationPriority;
     title: string;
     body: string | null;
@@ -437,6 +1134,7 @@ interface NotificationRow {
     requiresAnswer: number;
     dedupeKey: string | null;
     answer: string | null;
+    jobId: string | null;
     createdAt: string;
     deliveredAt: string | null;
     settledAt: string | null;
@@ -446,7 +1144,50 @@ interface NotificationRow {
  * The notification SELECT list, shared by every read so a new column cannot
  * reach one query and miss another (`mapNotification` is the other half).
  */
-const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, job_id AS jobId, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+
+/** A `jobs` table row as the SELECTs alias it (see {@link mapJob}). */
+interface JobRow {
+    id: string;
+    userId: number;
+    label: string;
+    class: NotificationClass;
+    kind: JobKind;
+    prompt: string | null;
+    toolName: string | null;
+    toolArgs: string | null;
+    message: string | null;
+    runAt: string;
+    state: JobState;
+    attempts: number;
+    createdAt: string;
+    settledAt: string | null;
+    lastError: string | null;
+    repeat: string | null;
+    gate: string | null;
+}
+
+/** A `job_runs` table row (see {@link mapJobRun}). */
+interface JobRunRow {
+    id: string;
+    jobId: string;
+    startedAt: string;
+    finishedAt: string | null;
+    state: JobRunState;
+    output: string | null;
+    error: string | null;
+    gateOutput: string | null;
+    gateKey: string | null;
+}
+
+/** The job SELECT list, shared by every read (`mapJob` is the other half). */
+const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError, repeat, gate FROM jobs`;
+
+/** The run SELECT list (`mapJobRun` is the other half). */
+const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error, gate_output AS gateOutput, gate_key AS gateKey FROM job_runs`;
+
+/** The states a job never returns from — settled, in the ledger's terms. */
+const SETTLED_JOB_STATES = `('done', 'failed', 'cancelled', 'missed')`;
 
 /**
  * Whether a rejected statement is better-sqlite3's UNIQUE-constraint
@@ -504,6 +1245,7 @@ function mapNotification(row: NotificationRow): AppNotification {
         id: row.id,
         userId: row.userId,
         kind: row.kind,
+        class: row.class,
         priority: row.priority,
         title: row.title,
         body: row.body,
@@ -511,15 +1253,77 @@ function mapNotification(row: NotificationRow): AppNotification {
         requiresAnswer: row.requiresAnswer === 1,
         dedupeKey: row.dedupeKey,
         answer: row.answer,
+        jobId: row.jobId,
         createdAt: row.createdAt,
         deliveredAt: row.deliveredAt,
         settledAt: row.settledAt,
     };
 }
 
+/**
+ * Parses a stored `tool_args` blob.
+ *
+ * A value that will not parse comes back as its raw text rather than as
+ * `null`, the way `getPrefs` treats a corrupt `value_json`: a run has to be
+ * able to say *why* it could not proceed, and a silent `null` would turn a
+ * corrupt row into "this job needs no arguments".
+ *
+ * Shared with the `repeat` column (#90 phase 8b), which is read the same way
+ * and for the same reason: an unreadable rule has to survive as itself, so the
+ * scheduler can tell the user what it could not read rather than presenting a
+ * job that quietly stopped repeating.
+ */
+function parseJsonColumn(value: string | null): unknown {
+    if (value === null) {
+        return null;
+    }
+    try {
+        return JSON.parse(value) as unknown;
+    } catch {
+        return value;
+    }
+}
+
+/** Maps a `jobs` row onto the ledger's public shape. */
+function mapJob(row: JobRow): AppJob {
+    return {
+        id: row.id,
+        userId: row.userId,
+        label: row.label,
+        class: row.class,
+        kind: row.kind,
+        prompt: row.prompt,
+        toolName: row.toolName,
+        toolArgs: parseJsonColumn(row.toolArgs),
+        message: row.message,
+        runAt: row.runAt,
+        state: row.state,
+        attempts: row.attempts,
+        createdAt: row.createdAt,
+        settledAt: row.settledAt,
+        lastError: row.lastError,
+        repeat: parseJsonColumn(row.repeat),
+        gate: parseJsonColumn(row.gate),
+    };
+}
+
+/** Maps a `job_runs` row onto the ledger's public shape. */
+function mapJobRun(row: JobRunRow): AppJobRun {
+    return {
+        id: row.id,
+        jobId: row.jobId,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+        state: row.state,
+        output: row.output,
+        error: row.error,
+        gateOutput: row.gateOutput,
+        gateKey: row.gateKey,
+    };
+}
+
 /** The named `(user_id, name)` index the v2 migration creates on legacy stores. */
 const DEVICE_NAME_INDEX = "idx_devices_user_name";
-
 /**
  * How many notifications a list call returns when the caller does not say.
  *
@@ -527,6 +1331,83 @@ const DEVICE_NAME_INDEX = "idx_devices_user_name";
  * busy day of background work.
  */
 const DEFAULT_NOTIFICATION_PAGE = 50;
+
+/**
+ * How many jobs a list call returns when the caller does not say.
+ *
+ * The same order of magnitude as a notification page: enough for an active
+ * account's scheduled work, small enough to render in one go.
+ */
+const DEFAULT_JOB_PAGE = 50;
+
+/**
+ * How many runs of one job a history call returns.
+ *
+ * A job is a repeating thing by nature (recurrence is phase 8), so the run
+ * history is the one list here that genuinely grows per job.
+ */
+const DEFAULT_JOB_RUN_PAGE = 20;
+
+/**
+ * How many runs of one job the store keeps (#90 phase 8b).
+ *
+ * Comfortably above {@link DEFAULT_JOB_RUN_PAGE}: the page is a view of the
+ * history, so the history has to be bigger than the page for the trim never to
+ * be the reason a detail view looks short.
+ */
+const DEFAULT_JOB_RUN_KEEP = 50;
+
+/**
+ * Whether `table` already has a column named `column`.
+ *
+ * An additive migration (`ALTER TABLE … ADD COLUMN`) is not idempotent the way
+ * `CREATE TABLE IF NOT EXISTS` is — SQLite has no `ADD COLUMN IF NOT EXISTS`,
+ * and running it twice is an error — so the step that adds a column must ask
+ * first, because it also runs against a fresh database that already has the
+ * column from SCHEMA.
+ */
+function hasColumn(
+    db: Database.Database,
+    table: string,
+    column: string,
+): boolean {
+    const columns = db.pragma(`table_info('${table}')`) as { name: string }[];
+    return columns.some((c) => c.name === column);
+}
+
+/**
+ * How many rows anywhere in the database reference a row that does not exist.
+ *
+ * `PRAGMA foreign_key_check` reports every violation in every table, which is the
+ * right scope when the caller wants to know whether *it* introduced one: a
+ * migration compares this count before and after its own work rather than
+ * demanding a database that is already clean.
+ */
+function countForeignKeyViolations(db: Database.Database): number {
+    return (db.pragma("foreign_key_check") as unknown[]).length;
+}
+
+/**
+ * Whether a table's stored DDL mentions `fragment`.
+ *
+ * `hasColumn` answers "does this column exist"; this answers "does this
+ * *constraint* exist", which is what a CHECK rebuild has to guard on — the state
+ * set is not a column of its own. Reading `sqlite_master` is the direct question:
+ * the table's own SQL either names the value or it does not.
+ */
+function tableSqlHas(
+    db: Database.Database,
+    table: string,
+    fragment: string,
+): boolean {
+    const row = db
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .get(table) as { sql: string | null } | undefined;
+    return row?.sql?.includes(fragment) ?? false;
+}
+
 /**
  * Whether `devices` already carries a UNIQUE index over exactly
  * `(user_id, name)` — either the named {@link DEVICE_NAME_INDEX} (v2's
@@ -586,7 +1467,157 @@ function hasInlineDeviceNameUniqueIndex(db: Database.Database): boolean {
     return false;
 }
 
-function migrate(db: Database.Database): void {
+/**
+ * What a migration had to change to bring an existing store up to date (#90
+ * phase 6c).
+ *
+ * Reported rather than logged, because the store has no logger: it records facts,
+ * and the process that opened it decides whether to say them (the server does, at
+ * `warn`, because a silent repair is the kind of thing that is only ever learned
+ * the hard way).
+ */
+export interface MigrationReport {
+    /**
+     * Notifications whose `job_id` pointed at a job that no longer exists, nulled
+     * before the v12 rebuild copied them.
+     *
+     * This is the action `ON DELETE SET NULL` would have taken, applied late. It
+     * happens when a job was deleted without foreign keys enforced — the
+     * `sqlite3` CLI leaves them off by default — so the row outlived the thing it
+     * named.
+     */
+    repairedNotificationJobLinks: number;
+    /**
+     * Notifications deleted because their account no longer exists: rows no
+     * account can reach, and what `ON DELETE CASCADE` would have done.
+     */
+    droppedOrphanedNotifications: number;
+    /**
+     * Notifications deleted because they were dismissed (#90 phase 9c) — rows
+     * the v16 migration removes now that nothing writes that state and a
+     * dismissal means "I am finished with this".
+     */
+    droppedDismissedNotifications: number;
+    /**
+     * Runs deleted because the job they belong to is gone (#90 phase 8f).
+     *
+     * Dropped rather than repaired: a run *is* its job's history, so a run with
+     * no job has nothing to be history *of* — and unlike a notification's link,
+     * the column cannot be nulled. The same cause as
+     * {@link repairedNotificationJobLinks}: a delete performed with foreign keys
+     * off, which the `sqlite3` CLI does by default.
+     */
+    droppedOrphanedJobRuns: number;
+}
+
+/** Options for opening or constructing a store. */
+export interface AppDatabaseOptions {
+    /**
+     * Called once per open, and only when a migration had to repair something —
+     * a clean database reports nothing at all.
+     */
+    onMigrationRepair?(report: MigrationReport): void;
+}
+
+/**
+ * Deletes the notifications that were dismissed (#90 phase 9c).
+ *
+ * Not a repair of corruption but of a **decision that changed**: dismissal used
+ * to be a terminal state a row sat in, and it now deletes the row outright, so
+ * the rows already in it are the vestige. They are counted rather than silently
+ * swept, because a migration that removes rows a user could still have been
+ * shown should say how many it removed.
+ *
+ * Runs inside the caller's transaction — v16 rebuilds the table with the narrowed
+ * CHECK, which could not carry them anyway — and counts only what it dropped.
+ *
+ * @param db - The connection being migrated (foreign keys on).
+ * @returns How many rows the purge touched, in the report's own fields.
+ */
+function purgeDismissedNotifications(db: Database.Database): MigrationReport {
+    const dropped = db
+        .prepare("DELETE FROM notifications WHERE state = 'dismissed'")
+        .run().changes;
+    return {
+        repairedNotificationJobLinks: 0,
+        droppedOrphanedNotifications: 0,
+        droppedDismissedNotifications: dropped,
+        droppedOrphanedJobRuns: 0,
+    };
+}
+
+/**
+ * Drops the runs whose job no longer exists (#90 phase 8f).
+ *
+ * The run-row sibling of {@link repairNotificationReferences}, and it *deletes*
+ * where that one nulls a link: `job_runs.job_id` is `NOT NULL`, and a run is
+ * only ever an attempt at its job, so there is no row left to keep.
+ *
+ * This exists because the v15 rebuild validates its copy with foreign keys on —
+ * the same choice v12 made, and the same lesson: a migration that refuses to open
+ * a store it could have carried is worse than one that repairs it. Left in place
+ * these rows refuse the boot; removed and reported, the store opens and the
+ * operator is told.
+ *
+ * Runs inside the caller's transaction, and counts only what it dropped.
+ *
+ * @param db - The connection being migrated (foreign keys on).
+ * @returns How many rows the repair touched, in the report's own fields.
+ */
+function repairJobRunReferences(db: Database.Database): MigrationReport {
+    const dropped = db
+        .prepare(
+            "DELETE FROM job_runs WHERE job_id NOT IN (SELECT id FROM jobs)",
+        )
+        .run().changes;
+    return {
+        repairedNotificationJobLinks: 0,
+        droppedOrphanedNotifications: 0,
+        droppedDismissedNotifications: 0,
+        droppedOrphanedJobRuns: dropped,
+    };
+}
+
+/**
+ * Repairs the notification references a bypassed delete left behind (#90 phase
+ * 6c).
+ *
+ * A migration carries rows forward, so it cannot assume they are sound: a job
+ * deleted by hand with `foreign_keys` off leaves a `job_id` pointing at nothing,
+ * and an account deleted the same way leaves a row nobody can read. Both are
+ * repaired to what the schema already promises rather than treated as a failure —
+ * the alternative is a server that refuses to boot on data it could have carried,
+ * which is exactly what happened the first time this shipped.
+ *
+ * Runs inside the caller's transaction. Removing a violation is always legal with
+ * foreign keys enforced, which is why the copy can then be validated with them on.
+ *
+ * @param db - The connection being migrated (foreign keys on).
+ * @returns How many rows each repair touched.
+ */
+function repairNotificationReferences(db: Database.Database): MigrationReport {
+    const repaired = db
+        .prepare(
+            `UPDATE notifications SET job_id = NULL
+              WHERE job_id IS NOT NULL
+                AND job_id NOT IN (SELECT id FROM jobs)`,
+        )
+        .run();
+    const dropped = db
+        .prepare(
+            `DELETE FROM notifications
+              WHERE user_id NOT IN (SELECT id FROM users)`,
+        )
+        .run();
+    return {
+        repairedNotificationJobLinks: repaired.changes,
+        droppedOrphanedNotifications: dropped.changes,
+        droppedDismissedNotifications: 0,
+        droppedOrphanedJobRuns: 0,
+    };
+}
+
+function migrate(db: Database.Database, options?: AppDatabaseOptions): void {
     const version = db.pragma("user_version", { simple: true }) as number;
     if (version < 1) {
         db.exec(SCHEMA);
@@ -682,11 +1713,322 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user
     ON notifications (user_id, created_at DESC);`);
         db.pragma("user_version = 7");
     }
+    if (version < 8) {
+        // v8: the scheduler's tables (#90). A fresh database gets them from
+        // SCHEMA; this branch brings an existing one to the same shape. The
+        // DDL comes from the same constant SCHEMA interpolates, so the two
+        // cannot drift.
+        db.exec(JOBS_SCHEMA);
+        db.pragma("user_version = 8");
+    }
+    if (version < 9) {
+        // v9: the notification class (#90). Additive rather than a table
+        // rebuild, because the default makes the migration total: every
+        // existing notification becomes the quiet class, so nothing a user
+        // already received changes meaning (and nothing is dropped).
+        //
+        // Guarded because ADD COLUMN is the one step in this function that is
+        // not idempotent — a fresh database already has the column from
+        // SCHEMA, and SQLite has no `ADD COLUMN IF NOT EXISTS`.
+        if (!hasColumn(db, "notifications", "class")) {
+            db.exec(
+                `ALTER TABLE notifications ADD COLUMN class TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer'))`,
+            );
+        }
+        db.pragma("user_version = 9");
+    }
+    if (version < 10) {
+        // v10: a job's delivery class, and the `message` payload (#90 phase 2b).
+        //
+        // SQLite cannot alter a CHECK constraint in place, so the table is
+        // rebuilt the way it documents — and with **foreign keys off** for the
+        // duration, because `job_runs` references `jobs`: dropping the old
+        // table with enforcement on would cascade a user's entire run history
+        // away, and an INSERT ... SELECT cannot save it (the cascade fires on
+        // the DROP). Guarded on the column, so a fresh database — which already
+        // has the new shape from SCHEMA — skips the rebuild entirely.
+        if (!hasColumn(db, "jobs", "message")) {
+            // The database's own violation count, before the swap: a migration
+            // carries rows forward and cannot assume they are sound, so what it
+            // must prove is that it added nothing — not that everything is
+            // perfect (the v12 rebuild learned this the expensive way, #90 phase
+            // 6c: a job deleted by hand with foreign keys off left an orphan, and
+            // the check below refused to open the store at all).
+            const violationsBefore = countForeignKeyViolations(db);
+            db.pragma("foreign_keys = OFF");
+            try {
+                db.exec(`${jobsTable("jobs_v10")};
+INSERT INTO jobs_v10 (
+    id, user_id, label, class, kind, prompt, tool_name, tool_args, message,
+    run_at, state, attempts, created_at, settled_at, last_error
+)
+SELECT id, user_id, label, 'notification', kind, prompt, tool_name, tool_args,
+       NULL, run_at, state, attempts, created_at, settled_at, last_error
+  FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_v10 RENAME TO jobs;
+${JOB_INDEXES}`);
+                // The documented last step, now a comparison: a rebuild that
+                // silently orphaned runs would be worse than a loud failure, and a
+                // pre-existing orphan is not this step's to fix.
+                const violationsAfter = countForeignKeyViolations(db);
+                if (violationsAfter > violationsBefore) {
+                    throw new Error(
+                        `the jobs rebuild added ${violationsAfter - violationsBefore} foreign-key violation(s)`,
+                    );
+                }
+            } finally {
+                // Restored even when the rebuild throws: the connection must
+                // not be left in the permissive state borrowed for one step.
+                db.pragma("foreign_keys = ON");
+            }
+        }
+        db.pragma("user_version = 10");
+    }
+    if (version < 11) {
+        // v11: the notification → job link (#90 phase 5). Additive rather than
+        // a rebuild, because NULL is the total default: every notification a
+        // user already received simply has no job behind it.
+        //
+        // Guarded for the usual reason — ADD COLUMN is the one step here that
+        // is not idempotent, and SCHEMA already carries the column on a fresh
+        // database. The FK is added by ALTER rather than by a table rebuild, so
+        // the column lands last, which is where SCHEMA puts it too: the two
+        // shapes converge exactly. `ON DELETE SET NULL` because jobs are
+        // pruned as history while a notification the user was already shown
+        // stays true — a dangling link would be worse than none.
+        if (!hasColumn(db, "notifications", "job_id")) {
+            db.exec(
+                `ALTER TABLE notifications ADD COLUMN job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL`,
+            );
+        }
+        db.pragma("user_version = 11");
+    }
+    if (version < 12) {
+        // v12: `snoozed` as a terminal notification state (#90 phase 6c).
+        //
+        // A rebuild, because SQLite cannot widen a CHECK in place — the same
+        // *shape* of step as v10's, guarded differently: there is no column to
+        // test for (the state set is not a column), so the guard reads the
+        // table's own SQL from `sqlite_master`. Without it a fresh database,
+        // which already has the wider CHECK from SCHEMA, would drop and re-create
+        // an empty table on every open.
+        //
+        // Foreign keys stay **on**, which v10 could not do (its table had a
+        // child, so the DROP would have cascaded) and this one can: nothing
+        // references `notifications`, so the DROP cascades nothing and the INSERT
+        // is validated on the way through. That only works because the references
+        // are repaired *first* — see `repairNotificationReferences`. A migration
+        // carries rows forward and cannot assume they are sound; letting a
+        // dangling link from an unenforced delete refuse the open is how this
+        // shipped broken the first time.
+        if (!tableSqlHas(db, "notifications", "'snoozed'")) {
+            let report: MigrationReport = {
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
+            };
+            // One transaction: SQLite makes DDL transactional, so a failure
+            // anywhere in this sequence — the repairs included — leaves the old
+            // table exactly as it was. A half-swapped notification list is the one
+            // outcome this step must not produce.
+            const rebuild = db.transaction((): void => {
+                report = repairNotificationReferences(db);
+                db.exec(`${notificationsTable("notifications_v12")};
+INSERT INTO notifications_v12 (
+    id, user_id, kind, class, priority, title, body, state, requires_answer,
+    dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+)
+SELECT id, user_id, kind, class, priority, title, body, state, requires_answer,
+       dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+  FROM notifications;
+DROP TABLE notifications;
+ALTER TABLE notifications_v12 RENAME TO notifications;
+${NOTIFICATION_INDEXES}`);
+                // A self-check, not a data check: the repairs above are supposed
+                // to leave every reference resolvable, so a violation here means
+                // this migration is wrong rather than the store is corrupt. Scoped
+                // to this table on purpose — the database may hold violations
+                // elsewhere that predate it and are not its business.
+                const dangling = db
+                    .prepare(
+                        `SELECT COUNT(*) AS n FROM notifications n
+                          WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = n.user_id)
+                             OR (n.job_id IS NOT NULL
+                                 AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = n.job_id))`,
+                    )
+                    .get() as { n: number };
+                if (dangling.n > 0) {
+                    throw new Error(
+                        `the notifications rebuild left ${dangling.n} dangling reference(s)`,
+                    );
+                }
+            });
+            rebuild();
+            if (
+                report.repairedNotificationJobLinks > 0 ||
+                report.droppedOrphanedNotifications > 0
+            ) {
+                options?.onMigrationRepair?.(report);
+            }
+        }
+        db.pragma("user_version = 12");
+    }
+    if (version < 13) {
+        // v13: the recurrence rule (#90 phase 8b). Additive, so the guard is the
+        // column check every ALTER in this chain uses — a fresh database already
+        // has it through `jobsTable`, and an existing one has never seen it.
+        //
+        // Nothing is repaired here on purpose. The rule is JSON, read defensively
+        // (`parseJsonColumn`): a value that will not parse is reported by the
+        // scheduler as a rule it cannot read, which is a better answer than a
+        // migration silently rewriting a user's schedule — and there is no
+        // constraint to widen, because the shape is validated where it is used.
+        if (!hasColumn(db, "jobs", "repeat")) {
+            db.exec("ALTER TABLE jobs ADD COLUMN repeat TEXT");
+        }
+        db.pragma("user_version = 13");
+    }
+    if (version < 14) {
+        // v14: the daily model-run budget (#90 phase 8c). A table rather than a
+        // column, so unlike the ALTERs above it is idempotent on its own —
+        // `IF NOT EXISTS` is the guard, and a fresh database already has it
+        // through `SCHEMA`.
+        db.exec(JOB_MODEL_RUNS_TABLE);
+        db.pragma("user_version = 14");
+    }
+    if (version < 15) {
+        // v15: the gate (#90 phase 8f) — a firing that can decline, and what its
+        // check read.
+        //
+        // Two steps with one cause. `jobs.gate` is additive, with the usual
+        // guard. `job_runs` has to be **rebuilt**, because `skipped` widens a
+        // CHECK that SQLite cannot alter in place — and this rebuild can keep
+        // foreign keys **on**, like v12's and unlike v10's: nothing references
+        // `job_runs`, so the DROP cascades nothing and the INSERT is validated on
+        // the way through.
+        //
+        // That only holds because the orphan rows are removed *first*.
+        // `job_runs.job_id` is NOT NULL, so a run whose job was deleted with
+        // enforcement off cannot be carried forward — it is dropped and reported,
+        // rather than refusing the open. This database really did hold thirteen
+        // of them, and the v12 incident is why the repair exists at all: a store
+        // that will not boot on data it could have carried is worse than one that
+        // says what it repaired.
+        if (!hasColumn(db, "jobs", "gate")) {
+            db.exec("ALTER TABLE jobs ADD COLUMN gate TEXT");
+        }
+        if (!tableSqlHas(db, "job_runs", "'skipped'")) {
+            let report: MigrationReport = {
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
+            };
+            // One transaction, for the reason v12 gives: SQLite makes DDL
+            // transactional, so a failure anywhere — the repair included — leaves
+            // the old table exactly as it was.
+            const rebuild = db.transaction((): void => {
+                report = repairJobRunReferences(db);
+                db.exec(`${jobRunsTable("job_runs_v15")};
+INSERT INTO job_runs_v15 (
+    id, job_id, started_at, finished_at, state, output, error, gate_output,
+    gate_key
+)
+SELECT id, job_id, started_at, finished_at, state, output, error, NULL, NULL
+  FROM job_runs;
+DROP TABLE job_runs;
+ALTER TABLE job_runs_v15 RENAME TO job_runs;
+CREATE INDEX IF NOT EXISTS idx_job_runs_job
+    ON job_runs (job_id, started_at DESC);`);
+                // A self-check, not a data check: the repair above is supposed to
+                // leave every reference resolvable, so a violation here means this
+                // migration is wrong rather than the store is corrupt.
+                const dangling = db
+                    .prepare(
+                        `SELECT COUNT(*) AS n FROM job_runs r
+                          WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = r.job_id)`,
+                    )
+                    .get() as { n: number };
+                if (dangling.n > 0) {
+                    throw new Error(
+                        `the job_runs rebuild left ${dangling.n} dangling reference(s)`,
+                    );
+                }
+            });
+            rebuild();
+            if (report.droppedOrphanedJobRuns > 0) {
+                options?.onMigrationRepair?.(report);
+            }
+        }
+        db.pragma("user_version = 15");
+    }
+    if (version < 16) {
+        // v16: dismissal deletes the row, so `dismissed` leaves the state
+        // vocabulary (#90 phase 9c).
+        //
+        // The purge comes first for the reason v12 and v15 both learned: the
+        // rebuild copies with foreign keys **on** and a narrowed CHECK, so a row
+        // still in the removed state would fail the insert and refuse the open.
+        // Nothing references `notifications`, so the DROP cascades nothing, and
+        // the table's index comes back through `NOTIFICATION_INDEXES` — the same
+        // shape as the v12 rebuild, without the repairs it does not need.
+        //
+        // Guarded on the table's SQL, and the polarity is the *opposite* of
+        // v12's: there the fragment named a state the old table lacked, here it
+        // names the one it still allows. A fresh database already has the narrow
+        // CHECK from `notificationsTable`, so this must refuse to rebuild it on
+        // every open.
+        if (tableSqlHas(db, "notifications", "'dismissed'")) {
+            let report: MigrationReport = {
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
+            };
+            const rebuild = db.transaction((): void => {
+                report = purgeDismissedNotifications(db);
+                db.exec(`${notificationsTable("notifications_v16")};
+INSERT INTO notifications_v16 (
+    id, user_id, kind, class, priority, title, body, state, requires_answer,
+    dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+)
+SELECT id, user_id, kind, class, priority, title, body, state, requires_answer,
+       dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+  FROM notifications;
+DROP TABLE notifications;
+ALTER TABLE notifications_v16 RENAME TO notifications;
+${NOTIFICATION_INDEXES}`);
+                // A self-check, not a data check: the purge is supposed to leave
+                // nothing in the removed state, so a surviving row means this
+                // migration is wrong rather than the store is corrupt.
+                const vestigial = db
+                    .prepare(
+                        "SELECT COUNT(*) AS n FROM notifications WHERE state = 'dismissed'",
+                    )
+                    .get() as { n: number };
+                if (vestigial.n > 0) {
+                    throw new Error(
+                        `the notifications rebuild left ${vestigial.n} dismissed row(s)`,
+                    );
+                }
+            });
+            rebuild();
+            if (report.droppedDismissedNotifications > 0) {
+                options?.onMigrationRepair?.(report);
+            }
+        }
+        db.pragma("user_version = 16");
+    }
 }
 
-export function openAppDatabase(dbPath: string): AppDatabase {
+export function openAppDatabase(
+    dbPath: string,
+    options?: AppDatabaseOptions,
+): AppDatabase {
     ensurePrivateStorage(dbPath);
-    const store = new SqliteAppDatabase(new Database(dbPath));
+    const store = new SqliteAppDatabase(new Database(dbPath), options);
     // Belt-and-suspenders chmod: the file was pre-created at 0600, but a
     // library migration that reopens it stays safe even on odd filesystems.
     ensurePrivateFile(dbPath);
@@ -695,6 +2037,8 @@ export function openAppDatabase(dbPath: string): AppDatabase {
 
 export class SqliteAppDatabase implements AppDatabase {
     private readonly db: Database.Database;
+    /** The run-ending + job-settling pair, compiled once (see the constructor). */
+    private readonly settleFiring: (input: SettleFiringInput) => void;
     private readonly statements: {
         insertUser: Database.Statement;
         selectUserByUsername: Database.Statement;
@@ -731,17 +2075,71 @@ export class SqliteAppDatabase implements AppDatabase {
         insertNotification: Database.Statement;
         selectNotification: Database.Statement;
         selectNotifications: Database.Statement;
-        selectNotificationsWithDismissed: Database.Statement;
+        deleteNotification: Database.Statement;
+        selectNotificationsForJob: Database.Statement;
         countUnreadNotifications: Database.Statement;
         settleNotification: Database.Statement;
         pruneSettledNotifications: Database.Statement;
         pruneNotifications: Database.Statement;
+        insertJob: Database.Statement;
+        selectJob: Database.Statement;
+        selectJobById: Database.Statement;
+        selectJobs: Database.Statement;
+        selectJobsWithSettled: Database.Statement;
+        selectDueJobs: Database.Statement;
+        selectRunningJobs: Database.Statement;
+        claimJob: Database.Statement;
+        rescheduleJob: Database.Statement;
+        settleJob: Database.Statement;
+        cancelJob: Database.Statement;
+        moveJob: Database.Statement;
+        editJob: Database.Statement;
+        insertJobRun: Database.Statement;
+        finishJobRun: Database.Statement;
+        failOpenJobRuns: Database.Statement;
+        selectJobRuns: Database.Statement;
+        pruneJobs: Database.Statement;
+        pruneJobRuns: Database.Statement;
+        rearmJob: Database.Statement;
+        countModelRuns: Database.Statement;
+        recordModelRun: Database.Statement;
     };
 
-    constructor(db: Database.Database) {
+    constructor(db: Database.Database, options?: AppDatabaseOptions) {
         this.db = db;
         db.pragma("foreign_keys = ON");
-        migrate(db);
+        migrate(db, options);
+        // One firing's ending, in one transaction: the run's row and the job's
+        // state are a single fact, and a process that died between them would
+        // leave a job claiming to run a job that is over (or, worse, a series
+        // with no successor). `announce` and the prune stay outside it — a
+        // better-sqlite3 transaction is synchronous, and the announcement is a
+        // network round trip.
+        this.settleFiring = db.transaction((input: SettleFiringInput) => {
+            this.statements.finishJobRun.run(
+                input.run.state,
+                input.run.output ?? null,
+                input.run.error ?? null,
+                input.run.gateOutput ?? null,
+                input.run.gateKey ?? null,
+                input.at,
+                input.runId,
+            );
+            if (input.job.state === "pending") {
+                this.statements.rearmJob.run(
+                    input.job.runAt,
+                    input.job.error ?? null,
+                    input.jobId,
+                );
+                return;
+            }
+            this.statements.settleJob.run(
+                input.job.state,
+                input.job.error ?? null,
+                input.at,
+                input.jobId,
+            );
+        });
         this.statements = {
             insertUser: db.prepare(
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
@@ -838,26 +2236,34 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
             insertNotification: db.prepare(
-                "INSERT INTO notifications (id, user_id, kind, priority, title, body, state, requires_answer, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, job_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
             ),
             selectNotification: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
             ),
             selectNotifications: db.prepare(
-                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND state != 'dismissed' ORDER BY created_at DESC, rowid DESC LIMIT ?`,
-            ),
-            selectNotificationsWithDismissed: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             ),
+            // Dismissal deletes the row (#90 phase 9c), so there is no second
+            // "include the dismissed ones" read: a row is either there or gone.
+            deleteNotification: db.prepare(
+                "DELETE FROM notifications WHERE user_id = ? AND id = ?",
+            ),
+            // The announcements a job produced (#90 phase 6c). A job announces
+            // once per run, so this is normally one row — but "normally one" is
+            // not a reason to guess an id: the link is the durable fact.
+            selectNotificationsForJob: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND job_id = ? ORDER BY created_at DESC, rowid DESC`,
+            ),
             countUnreadNotifications: db.prepare(
-                "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
+                `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
             ),
             // One statement covers every transition: the terminal guard lives
             // in the WHERE clause, so a late duplicate ack touches no row and
             // the caller re-reads the settled one instead. `delivered_at` and
             // `settled_at` are stamped only by the states that imply them.
             settleNotification: db.prepare(
-                "UPDATE notifications SET state = ?, answer = COALESCE(?, answer), delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, settled_at = CASE WHEN ? IN ('read', 'answered', 'dismissed') THEN ? ELSE settled_at END WHERE user_id = ? AND id = ? AND state NOT IN ('read', 'answered', 'dismissed')",
+                `UPDATE notifications SET state = ?, answer = COALESCE(?, answer), delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END, settled_at = CASE WHEN ? IN (${NOTIFICATION_TERMINAL_SQL}) THEN ? ELSE settled_at END WHERE user_id = ? AND id = ? AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
             ),
             // Two passes, because the ceiling has to hold for the table and
             // not merely for its settled rows: a client that is repeatedly
@@ -872,6 +2278,118 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             pruneNotifications: db.prepare(
                 "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
+            ),
+            insertJob: db.prepare(
+                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at, repeat, gate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            ),
+            selectJob: db.prepare(
+                `${JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
+            ),
+            selectJobById: db.prepare(`${JOB_COLUMNS} WHERE id = ?`),
+            selectJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE user_id = ? AND state NOT IN ${SETTLED_JOB_STATES} ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            selectJobsWithSettled: db.prepare(
+                `${JOB_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // The claim feed: due work across every account, oldest first, so
+            // the scheduler works through a backlog in the order it arrived.
+            selectDueJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE state = 'pending' AND run_at <= ? ORDER BY run_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // The recovery feed: any `running` row belongs to a process that
+            // died (a claim is in-memory), so the loop's boot pass asks for
+            // them and decides what they mean.
+            selectRunningJobs: db.prepare(
+                `${JOB_COLUMNS} WHERE state = 'running' ORDER BY run_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // A deferral is not a claim: the job keeps its attempt count and
+            // its pending state, and only its moment moves.
+            rescheduleJob: db.prepare(
+                "UPDATE jobs SET run_at = ? WHERE id = ? AND state = 'pending'",
+            ),
+            // The claim *is* the transition: `state = 'pending'` in the WHERE
+            // clause means a second claim — another tick, or a process that
+            // restarted mid-run — touches no row and cannot double-fire a job.
+            claimJob: db.prepare(
+                "UPDATE jobs SET state = 'running', attempts = attempts + 1 WHERE id = ? AND state = 'pending'",
+            ),
+            // Terminal states are terminal, so a late duplicate settle cannot
+            // rewrite history; the caller re-reads the settled row instead.
+            settleJob: db.prepare(
+                `UPDATE jobs SET state = ?, last_error = ?, settled_at = ? WHERE id = ? AND state NOT IN ${SETTLED_JOB_STATES}`,
+            ),
+            // A pending job is cancellable, and only its owner's — plus a
+            // *repeating* one that a claim is holding (#90 phase 8b). The firing
+            // in flight is already paid for and will report when it ends; what
+            // the user is stopping is the series. It cannot come back, because
+            // the re-arm below only fires on a row still `running`, and this
+            // leaves it `cancelled`. A one-shot mid-run stays uncancellable: its
+            // result is the whole job.
+            cancelJob: db.prepare(
+                "UPDATE jobs SET state = 'cancelled', settled_at = ? WHERE user_id = ? AND id = ? AND (state = 'pending' OR (state = 'running' AND repeat IS NOT NULL))",
+            ),
+            // Snoozing a reminder that has not fired: the owner's pending row
+            // only, in one statement — no attempt counted, nothing announced.
+            moveJob: db.prepare(
+                "UPDATE jobs SET run_at = ? WHERE user_id = ? AND id = ? AND state = 'pending'",
+            ),
+            // The REST edit (#90 phase 5): ownership and pending-only state in
+            // the WHERE clause, and COALESCE so a field the caller did not
+            // mention keeps its value. `message` on a tool job would violate the
+            // table's kind CHECK — the caller refuses that before it gets here,
+            // and the CHECK is the backstop.
+            editJob: db.prepare(
+                `UPDATE jobs SET label = COALESCE(?, label), message = COALESCE(?, message), run_at = COALESCE(?, run_at),
+                    repeat = CASE WHEN ? THEN ? ELSE repeat END
+                 WHERE user_id = ? AND id = ? AND state = 'pending'`,
+            ),
+            insertJobRun: db.prepare(
+                "INSERT INTO job_runs (id, job_id, started_at, state) VALUES (?, ?, ?, 'running')",
+            ),
+            finishJobRun: db.prepare(
+                "UPDATE job_runs SET state = ?, output = ?, error = ?, gate_output = ?, gate_key = ?, finished_at = ? WHERE id = ?",
+            ),
+            // A series' next occurrence (#90 phase 8b): the firing is over and
+            // the job is owed again, so `settled_at` is cleared — the row is not
+            // history. Guarded on `running`: a job the user cancelled mid-run is
+            // `cancelled` by the time this runs, so a re-arm cannot resurrect it.
+            rearmJob: db.prepare(
+                "UPDATE jobs SET state = 'pending', run_at = ?, settled_at = NULL, last_error = ? WHERE id = ? AND state = 'running'",
+            ),
+            failOpenJobRuns: db.prepare(
+                "UPDATE job_runs SET state = 'failed', error = ?, finished_at = ? WHERE job_id = ? AND state = 'running'",
+            ),
+            selectJobRuns: db.prepare(
+                `${JOB_RUN_COLUMNS} WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // Retention, in one statement: the newest `keep` rows survive and
+            // the rest are history. The `rowid` tiebreak matches the read
+            // ordering, so "the newest keep" means the same rows the pages list
+            // when two jobs share a timestamp.
+            //
+            // The exemption is the whole reason this stopped being two passes:
+            // `created_at` is when the user asked, and a *repeating* row's never
+            // moves, so age alone would eventually make a series that is still
+            // owed the next row the prune took. Creation caps a user's pending
+            // rows below this ceiling (`JARVIS_JOB_MAX_PER_USER`), so the rows
+            // taken here are overwhelmingly settled ones — which is what the old
+            // two-pass comment claimed and could not deliver, because its first
+            // pass deleted *unsettled* rows (`state NOT IN` the settled set) and
+            // was therefore a strict subset of its second.
+            pruneJobs: db.prepare(
+                `DELETE FROM jobs WHERE user_id = ? AND id NOT IN (SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?) AND (repeat IS NULL OR state IN ${SETTLED_JOB_STATES})`,
+            ),
+            // Runs are history too, and a gated job firing every five minutes
+            // writes 288 of them a day: the newest survive.
+            countModelRuns: db.prepare(
+                "SELECT runs FROM job_model_runs WHERE user_id = ? AND day = ?",
+            ),
+            recordModelRun: db.prepare(
+                "INSERT INTO job_model_runs (user_id, day, runs) VALUES (?, ?, 1) ON CONFLICT (user_id, day) DO UPDATE SET runs = runs + 1",
+            ),
+            pruneJobRuns: db.prepare(
+                `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
         };
     }
@@ -1219,11 +2737,17 @@ export class SqliteAppDatabase implements AppDatabase {
             input.id,
             userId,
             input.kind,
+            // The write path is explicit rather than leaning on the column's
+            // default: that default exists to make the v9 migration total (an
+            // existing row becomes the quiet class), and a store whose write
+            // behaviour depended on DDL would be a second place to look.
+            input.class ?? "notification",
             input.priority,
             input.title,
             input.body ?? null,
             input.requiresAnswer === true ? 1 : 0,
             input.dedupeKey ?? null,
+            input.jobId ?? null,
             input.createdAt,
         );
         // The row was just written, so a re-read cannot miss; the assertion
@@ -1243,13 +2767,37 @@ export class SqliteAppDatabase implements AppDatabase {
 
     listNotifications(
         userId: number,
-        options: { limit?: number; includeDismissed?: boolean } = {},
+        options: { limit?: number } = {},
     ): AppNotification[] {
         const limit = Math.max(1, options.limit ?? DEFAULT_NOTIFICATION_PAGE);
-        const statement = options.includeDismissed
-            ? this.statements.selectNotificationsWithDismissed
-            : this.statements.selectNotifications;
-        const rows = statement.all(userId, limit) as NotificationRow[];
+        const rows = this.statements.selectNotifications.all(
+            userId,
+            limit,
+        ) as NotificationRow[];
+        return rows.map(mapNotification);
+    }
+
+    /**
+     * Removes a notification (#90 phase 9c).
+     *
+     * Read first, because the caller wants the row it removed: a `DELETE` that
+     * reports only `changes` cannot tell a route what it took away, and the
+     * scoped read also keeps a foreign id indistinguishable from a missing one.
+     */
+    deleteNotification(userId: number, id: string): AppNotification | null {
+        const existing = this.getNotification(userId, id);
+        if (existing === null) {
+            return null;
+        }
+        this.statements.deleteNotification.run(userId, id);
+        return existing;
+    }
+
+    listNotificationsForJob(userId: number, jobId: string): AppNotification[] {
+        const rows = this.statements.selectNotificationsForJob.all(
+            userId,
+            jobId,
+        ) as NotificationRow[];
         return rows.map(mapNotification);
     }
 
@@ -1293,6 +2841,209 @@ export class SqliteAppDatabase implements AppDatabase {
             limit,
         );
         return settled.changes + excess.changes;
+    }
+
+    createJob(
+        userId: number,
+        input: CreateJobInput & { id: string; createdAt: string },
+    ): AppJob {
+        this.statements.insertJob.run(
+            input.id,
+            userId,
+            input.label,
+            // Explicit rather than leaning on the column default, as for a
+            // notification: the default exists so the v10 rebuild can widen an
+            // existing table, not so the write path has a second home.
+            input.class ?? "notification",
+            input.kind,
+            input.prompt ?? null,
+            input.toolName ?? null,
+            input.toolArgs === undefined || input.toolArgs === null
+                ? null
+                : JSON.stringify(input.toolArgs),
+            input.message ?? null,
+            input.runAt,
+            input.createdAt,
+            input.repeat === undefined || input.repeat === null
+                ? null
+                : JSON.stringify(input.repeat),
+            input.gate === undefined || input.gate === null
+                ? null
+                : JSON.stringify(input.gate),
+        );
+        // Just written, so a re-read cannot miss; the assertion documents that
+        // rather than papering over a null with a fake row.
+        const created = this.getJob(userId, input.id);
+        if (created === null) {
+            throw new Error("job insert vanished");
+        }
+        return created;
+    }
+
+    getJob(userId: number, id: string): AppJob | null {
+        const row = this.statements.selectJob.get(userId, id) as
+            JobRow | undefined;
+        return row ? mapJob(row) : null;
+    }
+
+    listJobs(
+        userId: number,
+        options: { limit?: number; includeSettled?: boolean } = {},
+    ): AppJob[] {
+        const limit = Math.max(1, options.limit ?? DEFAULT_JOB_PAGE);
+        const statement = options.includeSettled
+            ? this.statements.selectJobsWithSettled
+            : this.statements.selectJobs;
+        const rows = statement.all(userId, limit) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    listDueJobs(at: string, limit: number): AppJob[] {
+        const rows = this.statements.selectDueJobs.all(
+            at,
+            Math.max(1, limit),
+        ) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    listRunningJobs(limit: number): AppJob[] {
+        const rows = this.statements.selectRunningJobs.all(
+            Math.max(1, limit),
+        ) as JobRow[];
+        return rows.map(mapJob);
+    }
+
+    failOpenJobRuns(jobId: string, error: string, at: string): number {
+        return this.statements.failOpenJobRuns.run(error, at, jobId).changes;
+    }
+
+    claimJob(id: string): boolean {
+        return this.statements.claimJob.run(id).changes === 1;
+    }
+
+    rescheduleJob(id: string, runAt: string): AppJob | null {
+        this.statements.rescheduleJob.run(runAt, id);
+        return this.jobById(id);
+    }
+
+    startJobRun(input: { id: string; jobId: string; startedAt: string }): void {
+        this.statements.insertJobRun.run(
+            input.id,
+            input.jobId,
+            input.startedAt,
+        );
+    }
+
+    finishJobRun(
+        runId: string,
+        state: Exclude<JobRunState, "running">,
+        result: {
+            output?: string;
+            error?: string;
+            gateOutput?: string;
+            gateKey?: string;
+        },
+        at: string,
+    ): void {
+        this.statements.finishJobRun.run(
+            state,
+            result.output ?? null,
+            result.error ?? null,
+            result.gateOutput ?? null,
+            result.gateKey ?? null,
+            at,
+            runId,
+        );
+    }
+
+    settleJob(
+        id: string,
+        state: Exclude<JobState, "pending" | "running">,
+        options: { error?: string },
+        at: string,
+    ): AppJob | null {
+        this.statements.settleJob.run(state, options.error ?? null, at, id);
+        return this.jobById(id);
+    }
+
+    cancelJob(userId: number, id: string): AppJob | null {
+        this.statements.cancelJob.run(now(), userId, id);
+        return this.getJob(userId, id);
+    }
+
+    moveJob(userId: number, id: string, runAt: string): AppJob | null {
+        this.statements.moveJob.run(runAt, userId, id);
+        return this.getJob(userId, id);
+    }
+
+    editJob(
+        userId: number,
+        id: string,
+        patch: {
+            label?: string;
+            message?: string;
+            runAt?: string;
+            repeat?: unknown | null;
+        },
+    ): AppJob | null {
+        this.statements.editJob.run(
+            patch.label ?? null,
+            patch.message ?? null,
+            patch.runAt ?? null,
+            patch.repeat === undefined ? 0 : 1,
+            patch.repeat === null ? null : JSON.stringify(patch.repeat),
+            userId,
+            id,
+        );
+        return this.getJob(userId, id);
+    }
+
+    listJobRuns(jobId: string, options: { limit?: number } = {}): AppJobRun[] {
+        const rows = this.statements.selectJobRuns.all(
+            jobId,
+            Math.max(1, options.limit ?? DEFAULT_JOB_RUN_PAGE),
+        ) as JobRunRow[];
+        return rows.map(mapJobRun);
+    }
+
+    pruneJobs(userId: number, keep: number): number {
+        return this.statements.pruneJobs.run(userId, userId, Math.max(0, keep))
+            .changes;
+    }
+
+    pruneJobRuns(jobId: string, keep: number = DEFAULT_JOB_RUN_KEEP): number {
+        return this.statements.pruneJobRuns.run(jobId, jobId, Math.max(0, keep))
+            .changes;
+    }
+
+    settleJobRun(input: SettleFiringInput): AppJob | null {
+        this.settleFiring(input);
+        return this.jobById(input.jobId);
+    }
+
+    rearmJob(id: string, runAt: string, error?: string): AppJob | null {
+        this.statements.rearmJob.run(runAt, error ?? null, id);
+        return this.jobById(id);
+    }
+
+    countModelRuns(userId: number, day: string): number {
+        const row = this.statements.countModelRuns.get(userId, day) as
+            { runs: number } | undefined;
+        return row?.runs ?? 0;
+    }
+
+    recordModelRun(userId: number, day: string): void {
+        this.statements.recordModelRun.run(userId, day);
+    }
+
+    /**
+     * A job by id, with no owner filter — the scheduler's read, for the row it
+     * has just settled. Deliberately not on {@link JobLedger}: a request
+     * handler must never reach a job by id alone.
+     */
+    private jobById(id: string): AppJob | null {
+        const row = this.statements.selectJobById.get(id) as JobRow | undefined;
+        return row ? mapJob(row) : null;
     }
 
     close(): void {

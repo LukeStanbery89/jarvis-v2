@@ -1,8 +1,10 @@
 # @lukestanbery/jarvis-portal
 
 Web admin portal for J.A.R.V.I.S. — a React single-page app (issue #24) that
-the server serves at `/` and that manages the server entirely through the REST
-API from `@lukestanbery/jarvis-server`.
+the server serves at `/admin` (it lived at `/` until #90 phase 6a, when the
+app's front door moved there and the portal became the admin surface) and that
+manages the server entirely through the REST API from
+`@lukestanbery/jarvis-server`.
 
 It is the owner-facing management surface: accounts, devices, sessions, and
 prefs. It authenticates with the browser **cookie session** (`jarvis_session`)
@@ -22,7 +24,12 @@ which is why the portal only ships alongside the TLS/CSRF-capable server.
 - **Sessions** — list/delete the chat-thread ledger; the owner sees all sessions
   with their owning user.
 - **Prefs** — key/value JSON editor per user (owners can target any account);
-  "Clear all" empties via the DELETE routes.
+  "Clear all" empties via the DELETE routes. This is the escape hatch: the
+  settings panel in `packages/web` covers the two keys the server reads
+  (`notify.*`, see the server README's preferences section), while integration
+  keys and cross-account edits live here. A malformed value for a known key is
+  refused with a 400 from this editor too, which is the point — the check lives
+  in the route, not in one client.
 
 Non-owner role gating matches the REST policy (`requireOwner`); the UI simply
 hides the Users view and user-scoped selects.

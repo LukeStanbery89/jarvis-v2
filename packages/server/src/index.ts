@@ -21,7 +21,7 @@ import {
     DEFAULT_ATTACHMENT_CONFIG,
 } from "./config";
 import { attachChatServer } from "./ws";
-import { initAgentGraph } from "./agent";
+import { initAgentGraph, getAgentTools } from "./agent";
 import { createVisionModel } from "./llm/visionModel";
 import { createTavilyClient } from "./llm/tools/search/tavily";
 import { createSerperClient } from "./llm/tools/search/serper";
@@ -38,6 +38,9 @@ import { KokoroTtsProvider } from "./tts/kokoro";
 import { createNotificationHub } from "./notify/hub";
 import { createInAppChannel } from "./notify/channels/inApp";
 import { createNotificationService } from "./notify/service";
+import { createJobCreator } from "./scheduler/create";
+import { createJobRunner } from "./scheduler/runner";
+import { createScheduler } from "./scheduler/loop";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -203,7 +206,28 @@ logger.info(
         : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
 );
 
-const store = openAppDatabase(appConfig.appDbPath);
+const store = openAppDatabase(appConfig.appDbPath, {
+    /**
+     * A migration repaired something on the way in (#90 phase 6c).
+     *
+     * At `warn`, and it names the counts: a silent repair of real data is the
+     * kind of thing that is only ever learned the hard way, and the repair is
+     * evidence that something wrote to this database without foreign keys
+     * enforced (the `sqlite3` CLI leaves them off by default).
+     */
+    onMigrationRepair: (report) => {
+        logger.warn(
+            `App database repaired during migration: ${report.repairedNotificationJobLinks} notification job link(s) nulled, ${report.droppedOrphanedNotifications} orphaned notification row(s) dropped`,
+        );
+    },
+});
+
+// Say *which* database this process opened, before anything else can be
+// mistaken for "the database". The checkpoint path is logged when the graph
+// comes up; without this line, a job inserted into the file a hand-written
+// `sqlite3` command happened to point at looks exactly like a scheduler that
+// never fires (it happened, on 2026-10-17).
+logger.info(`App database: ${appConfig.appDbPath}`);
 
 // Notifications (#139): the connection registry is built here and handed to
 // the REST surface (which needs it to know whether the user is reachable), the
@@ -234,7 +258,55 @@ initAgentGraph({
     ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
     ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
     ...(notifications ? { notifications: { service: notifications } } : {}),
+    // The scheduling tools (#90 phase 3) create rows in the same queue the
+    // scheduler drains, so they are wired exactly when the loop is: storing a
+    // job nobody would run is a promise the server cannot keep. The horizon is
+    // the config's days as an instant, because the tools compare moments.
+    ...(appConfig.scheduler && notifications
+        ? {
+              jobs: {
+                  ledger: store,
+                  maxPerUser: appConfig.scheduler.maxPerUser,
+                  maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
+              },
+          }
+        : {}),
 });
+
+// The scheduler (#90): one loop over the `jobs` table, running each due job
+// through the same agent seam and the same tool instances a chat turn uses.
+// Built after the graph so it can be handed those tools, and only when there is
+// a notification service to announce a run's outcome with — a loop nobody can
+// be told about would be worse than no loop. `JARVIS_SCHEDULER=off` (or
+// `JARVIS_NOTIFY=off`) leaves it out entirely.
+const scheduler =
+    appConfig.scheduler && notifications
+        ? createScheduler({
+              ledger: store,
+              runner: createJobRunner({
+                  ledger: store,
+                  notifications,
+                  tools: getAgentTools(),
+                  turnTimeoutMs: appConfig.turnTimeoutMs,
+                  maxPerUser: appConfig.scheduler.maxPerUser,
+                  maxLatenessMs: appConfig.scheduler.maxLatenessMs,
+                  modelRunsPerDay: appConfig.scheduler.modelRunsPerDay,
+              }),
+              tickMs: appConfig.scheduler.tickMs,
+              maxConcurrent: appConfig.scheduler.maxPerTick,
+          })
+        : undefined;
+
+// The jobs REST surface (#90 phase 5): the same creation policy the tools use,
+// over the same ledger, so a page and the model cannot schedule different things.
+const jobCreator =
+    appConfig.scheduler && notifications
+        ? createJobCreator({
+              ledger: store,
+              maxPerUser: appConfig.scheduler.maxPerUser,
+              maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
+          })
+        : undefined;
 
 const webApp = createApp(
     store,
@@ -242,6 +314,7 @@ const webApp = createApp(
     attachments,
     inFlight,
     notifications,
+    jobCreator,
 );
 
 const { server } = createJarvisServer(webApp, {
@@ -257,3 +330,8 @@ attachChatServer(server, store, {
     ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
     ...(notificationHub ? { notifications: notificationHub } : {}),
 });
+
+// Last, once the socket layer is attached: the first thing `start` does is
+// fail the runs a previous process left in flight, and a job firing in the
+// same tick can then reach a live hub rather than recording into the void.
+void scheduler?.start();

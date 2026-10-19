@@ -1,10 +1,14 @@
 /**
- * Unit tests for the voice status-line text derivation and the barge-in
- * watch's arming window (#114).
+ * Unit tests for the voice status-line text derivation, the app-level line the
+ * chat and the bar share, and the barge-in watch's arming window (#114).
  */
 import { describe, expect, it } from "vitest";
 import type { VoiceSnapshot, VoiceState } from "@lukestanbery/jarvis-voice";
-import { voiceStatusText, watchBargeIn } from "./useVoiceSession";
+import {
+    voiceStatusLine,
+    voiceStatusText,
+    watchBargeIn,
+} from "./useVoiceSession";
 
 /** A voice snapshot with idle defaults; override the state under test. */
 function snap(over: Partial<VoiceSnapshot>): VoiceSnapshot {
@@ -44,6 +48,38 @@ describe("voiceStatusText", () => {
         expect(voiceStatusText(snap({ state: "responding" }))).toBeNull();
         expect(voiceStatusText(snap({ state: "speaking" }))).toBeNull();
         expect(voiceStatusText(snap({ state: "idle" }))).toBeNull();
+    });
+});
+
+describe("voiceStatusLine", () => {
+    it("is the stage while a session runs", () => {
+        expect(
+            voiceStatusLine(
+                snap({ state: "listening", partial: "hey" }),
+                false,
+            ),
+        ).toBe("hey");
+        expect(voiceStatusLine(snap({ state: "waiting" }), false)).toBe(
+            "Thinking…",
+        );
+    });
+
+    it("reads Speaking… through the reply's audio tail (#90 phase 6d)", () => {
+        // The turn's `done` frame leaves the lifecycle at `idle` while the
+        // player still has speech queued; the line follows the sound.
+        expect(voiceStatusLine(snap({ state: "speaking" }), false)).toBe(
+            "Speaking…",
+        );
+        expect(voiceStatusLine(snap({ state: "idle" }), true)).toBe(
+            "Speaking…",
+        );
+    });
+
+    it("says nothing while idle and silent", () => {
+        expect(voiceStatusLine(snap({ state: "idle" }), false)).toBeNull();
+        expect(
+            voiceStatusLine(snap({ state: "responding" }), false),
+        ).toBeNull();
     });
 });
 
