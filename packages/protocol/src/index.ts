@@ -25,6 +25,14 @@ export type {
     NotificationPriority,
     ServerFrame,
 } from "./types";
+export type {
+    JobRepeat,
+    NextOccurrenceResult,
+    RepeatFrequency,
+    RepeatParseResult,
+    Weekday,
+    Zone,
+} from "./repeat";
 export {
     CHAT_MODES,
     CLIENT_CAPABILITIES,
@@ -44,6 +52,17 @@ export {
     NOTIFICATION_PRIORITIES,
     REVOKED_TOKEN_ERROR,
 } from "./types";
+export {
+    LOCAL_ZONE,
+    MAX_REPEAT_INTERVAL,
+    MAX_REPEAT_ORDINAL,
+    MAX_REPEAT_STEPS,
+    nextOccurrence,
+    parseJobRepeat,
+    repeatExhausted,
+    REPEAT_FREQUENCIES,
+    WEEKDAYS,
+} from "./repeat";
 export {
     MALFORMED_SERVER_FRAME,
     parseClientMessage,
