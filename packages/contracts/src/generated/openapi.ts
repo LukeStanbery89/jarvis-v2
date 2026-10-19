@@ -389,7 +389,7 @@ export interface paths {
         };
         /**
          * List the caller's notifications
-         * @description Newest first. Dismissed notifications are excluded unless `includeDismissed=true`; a `snoozed` one is still listed, since the user should be able to find what they deferred. `unread` counts everything not settled — neither read, answered, dismissed nor snoozed — for a badge.
+         * @description Newest first, and only what the user still has: dismissing one deletes it, so there is no "include the dismissed ones" read. A `snoozed` row is still listed, since the user should be able to find what they deferred. `unread` counts everything not settled — neither read, answered nor snoozed — for a badge.
          */
         get: operations["notificationsList"];
         put?: never;
@@ -435,7 +435,7 @@ export interface paths {
         put?: never;
         /**
          * Dismiss a notification
-         * @description Removes it from the default list without marking it read. Idempotent, with the same 404 scope as `read`.
+         * @description Deletes it — the user is finished with the row, so nothing is kept and nothing is marked read. Idempotent in the sense that matters: a row that is already gone is what the call asked for, so a repeat dismissal answers 404 with the same scope as `read`.
          */
         post: operations["notificationsDismiss"];
         delete?: never;
@@ -730,10 +730,10 @@ export interface components {
             title: string;
             body?: string;
             /**
-             * @description `pending` — recorded, never pushed (nobody was connected, the delivery budget was spent, or quiet hours suppressed it), so a client finds it through this list instead. `delivered` — pushed to at least one live socket. `read` / `answered` / `dismissed` / `snoozed` are terminal: `answered` is the retirement path for a notification raised with `requiresAnswer`, and `snoozed` is what a reminder the user deferred becomes — the deferral settles the announcement it answered, so a late acknowledgement cannot resurrect it (#90 phase 6c). A `snoozed` row stays in the list, unlike a dismissed one.
+             * @description `pending` — recorded, never pushed (nobody was connected, the delivery budget was spent, or quiet hours suppressed it), so a client finds it through this list instead. `delivered` — pushed to at least one live socket. `read` / `answered` / `snoozed` are terminal: `answered` is the retirement path for a notification raised with `requiresAnswer`, and `snoozed` is what a reminder the user deferred becomes — the deferral settles the announcement it answered, so a late acknowledgement cannot resurrect it (#90 phase 6c). Both stay in the list; **dismissal is not a state at all**, because it deletes the row (#90 phase 9c).
              * @enum {string}
              */
-            state: "pending" | "delivered" | "read" | "answered" | "dismissed" | "snoozed";
+            state: "pending" | "delivered" | "read" | "answered" | "snoozed";
             requiresAnswer?: boolean;
             /** @description The user's reply, on an answered notification. */
             answer?: string;
@@ -749,7 +749,7 @@ export interface components {
         /** @description Body of `GET /api/notifications`. */
         NotificationList: {
             notifications: components["schemas"]["Notification"][];
-            /** @description Notifications not settled — neither read, answered, dismissed nor snoozed (a badge count, so it counts past the page size). */
+            /** @description Notifications not settled — neither read, answered, answered nor snoozed (a badge count, so it counts past the page size). */
             unread: number;
         };
         /** @description Body of the `read` / `dismiss` / `answer` routes: the notification as it now stands. */
@@ -2278,8 +2278,6 @@ export interface operations {
             query?: {
                 /** @description Page size (1–200, default 50). Out-of-range or unparsable values fall back to the default rather than failing the request. */
                 limit?: number;
-                /** @description Include notifications the user dismissed. */
-                includeDismissed?: boolean;
             };
             header?: never;
             path?: never;

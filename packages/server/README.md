@@ -484,6 +484,17 @@ every insert, evicting settled rows first — an undelivered notification is the
 last thing a prune takes, but it is not exempt, because the rows that pile up
 most easily are precisely the `pending` ones nobody was online to receive.
 
+**A dismissal deletes the row** (#90 phase 9c), which is the one lifecycle
+decision this section owns. `dismissed` used to be a terminal state a row sat in
+— hidden from the list, but on record — and a row kept to record a shrug is a row
+nobody reads. So `POST /api/notifications/{id}/dismiss` removes it, `dismissed`
+left the state vocabulary (a v16 rebuild deletes the rows that were in it, and
+reports how many), and there is no `includeDismissed` read to ask for them. Two
+consequences worth stating: a dismissal is idempotent in the sense that a row
+already gone is what the call wanted (the second one answers 404, like a foreign
+id), and the supersede path is a delete too — which is what keeps a series that
+repeats every minute at one live row rather than a thousand tombstones.
+
 ### Scheduled-job model-run budget — `src/scheduler/runner.ts`
 
 The one budget here that is **not** in memory. A repeating `prompt` job is a

@@ -243,14 +243,11 @@ export function createApi(
          */
         listNotifications(
             token: string,
-            options: { limit?: number; includeDismissed?: boolean } = {},
+            options: { limit?: number } = {},
         ): Promise<NotificationList> {
             const params = new URLSearchParams();
             if (options.limit !== undefined) {
                 params.set("limit", String(options.limit));
-            }
-            if (options.includeDismissed === true) {
-                params.set("includeDismissed", "true");
             }
             const query = params.size > 0 ? `?${params.toString()}` : "";
             return request("GET", `/api/notifications${query}`, { token });
@@ -282,7 +279,10 @@ export function createApi(
                 body: input,
             });
         },
-        /** Dismisses one notification (idempotent; 404 for a foreign id). */
+        /**
+         * Dismisses one notification: **deletes** it (#90 phase 9c). The row
+         * comes back as it was, and a repeat answers 404 like a foreign id.
+         */
         async dismissNotification(
             token: string,
             id: string,

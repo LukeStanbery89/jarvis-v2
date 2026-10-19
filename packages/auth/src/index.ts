@@ -32,6 +32,7 @@ export {
     NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
     NOTIFICATION_STATES,
+    NOTIFICATION_TERMINAL_STATES,
 } from "./store";
 export type {
     AppDatabase,
@@ -51,6 +52,7 @@ export type {
     NotificationLedger,
     NotificationPriority,
     NotificationState,
+    NotificationTerminalState,
     PrefLedger,
     SessionLedger,
     UserLedger,

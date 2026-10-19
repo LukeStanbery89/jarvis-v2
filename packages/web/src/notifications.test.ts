@@ -25,6 +25,7 @@ import {
     selectAlerts,
     selectBanner,
     TOAST_LIMIT,
+    removeNotification,
     selectToasts,
     settleNotification,
     shouldToast,
@@ -72,7 +73,7 @@ describe("mergeNotification", () => {
         expect(merged.find((n) => n.id === "a")?.title).toBe("from the frame");
     });
 
-    it("never un-settles a notification the user already read or dismissed", () => {
+    it("never un-settles a notification the user already read or deferred", () => {
         const read = mergeNotification(
             [make({ id: "a", state: "read" })],
             // A frame (or refetch) arrives with the wire's implicit
@@ -81,11 +82,11 @@ describe("mergeNotification", () => {
         );
         expect(read[0].state).toBe("read");
 
-        const dismissed = mergeNotification(
-            [make({ id: "b", state: "dismissed" })],
+        const deferred = mergeNotification(
+            [make({ id: "b", state: "snoozed" })],
             make({ id: "b", state: "pending" }),
         );
-        expect(dismissed[0].state).toBe("dismissed");
+        expect(deferred[0].state).toBe("snoozed");
     });
 
     it("keeps a stored answer when a later frame repeats the id", () => {
@@ -116,17 +117,35 @@ describe("mergeNotification", () => {
     });
 });
 
+describe("removeNotification (#90 phase 9c)", () => {
+    it("takes the row out rather than settling it", () => {
+        // Dismissal deletes server-side, so there is no state to leave behind:
+        // nothing to show, count, or sort into a column.
+        const list = [make({ id: "a" }), make({ id: "b" })];
+        expect(removeNotification(list, "a").map((n) => n.id)).toEqual(["b"]);
+    });
+
+    it("hands back the same list when the row is not there", () => {
+        // Same array, so a render that removed an already-gone row (a repeat
+        // dismissal racing a frame) does not re-render the page for nothing.
+        const list = [make({ id: "a" })];
+        expect(removeNotification(list, "gone")).toBe(list);
+    });
+});
+
 describe("mergeNotificationPage", () => {
-    it("keeps a locally dismissed row that the page no longer includes", () => {
+    it("keeps a local row the page no longer includes", () => {
+        // The page is a window, not the whole list: a row past its limit is
+        // absent for arithmetic reasons, not because it was removed.
         const local = [
-            make({ id: "gone", state: "dismissed" }),
+            make({ id: "gone", state: "read" }),
             make({ id: "kept" }),
         ];
         const merged = mergeNotificationPage(local, [
             make({ id: "kept", title: "refetched" }),
         ]);
         expect(merged.map((n) => n.id).sort()).toEqual(["gone", "kept"]);
-        expect(merged.find((n) => n.id === "gone")?.state).toBe("dismissed");
+        expect(merged.find((n) => n.id === "gone")?.state).toBe("read");
     });
 
     it("adopts the page's content for a row it re-sends", () => {
@@ -187,14 +206,14 @@ describe("selectBanner and unreadCount", () => {
         expect(selectBanner([])).toBeNull();
     });
 
-    it("counts everything not read, answered, or dismissed", () => {
+    it("counts everything not settled", () => {
         expect(
             unreadCount([
                 make({ id: "a", state: "delivered" }),
                 make({ id: "b", state: "pending" }),
                 make({ id: "c", state: "read" }),
                 make({ id: "d", state: "answered" }),
-                make({ id: "e", state: "dismissed" }),
+                make({ id: "e", state: "snoozed" }),
             ]),
         ).toBe(2);
     });
@@ -204,7 +223,7 @@ describe("selectBanner and unreadCount", () => {
         expect(describeNotificationState("delivered")).toBe("new");
         expect(describeNotificationState("read")).toBe("read");
         expect(describeNotificationState("answered")).toBe("answered");
-        expect(describeNotificationState("dismissed")).toBe("dismissed");
+        expect(describeNotificationState("snoozed")).toBe("snoozed");
     });
 
     it("does not blame the user's absence for a held-back notification", () => {
@@ -219,7 +238,7 @@ describe("selectBanner and unreadCount", () => {
         expect(isSettled("delivered")).toBe(false);
         expect(isSettled("read")).toBe(true);
         expect(isSettled("answered")).toBe(true);
-        expect(isSettled("dismissed")).toBe(true);
+        expect(isSettled("snoozed")).toBe(true);
     });
 });
 
@@ -387,7 +406,7 @@ describe("shouldToast and selectToasts (#90 phases 6b–6c)", () => {
     it("skips rows the user already settled", () => {
         const list = [
             make({ id: "read", class: "reminder", state: "read" }),
-            make({ id: "dismissed", class: "reminder", state: "dismissed" }),
+            make({ id: "snoozed", class: "reminder", state: "snoozed" }),
         ];
         expect(selectToasts(list, { enabled: true })).toEqual([]);
     });

@@ -131,7 +131,10 @@ describe("notification store (#139)", () => {
         ).toEqual(["c", "b"]);
     });
 
-    it("hides dismissed notifications unless asked for them", () => {
+    it("deletes a dismissed notification rather than keeping it (#90 9c)", () => {
+        // Dismissal used to be a terminal state the row sat in, hidden from the
+        // list. It is a delete now: the user is finished with it, so there is
+        // nothing to list, count or hide.
         store.createNotification(userId, {
             id: "a",
             kind: "k",
@@ -139,13 +142,17 @@ describe("notification store (#139)", () => {
             title: "a",
             createdAt: "2026-10-15T10:00:00.000Z",
         });
-        store.setNotificationState(userId, "a", "dismissed");
+
+        expect(store.deleteNotification(userId, "a")).toMatchObject({
+            id: "a",
+        });
         expect(store.listNotifications(userId)).toEqual([]);
-        expect(
-            store
-                .listNotifications(userId, { includeDismissed: true })
-                .map((n) => n.id),
-        ).toEqual(["a"]);
+        expect(store.getNotification(userId, "a")).toBeNull();
+        expect(store.countUnreadNotifications(userId)).toBe(0);
+        // A row that is already gone is what a repeat dismissal asked for.
+        expect(store.deleteNotification(userId, "a")).toBeNull();
+        // And a foreign id is indistinguishable from a missing one.
+        expect(store.deleteNotification(userId + 1, "a")).toBeNull();
     });
 
     it("stamps delivered_at on delivery and settled_at on a terminal state", () => {
@@ -175,7 +182,7 @@ describe("notification store (#139)", () => {
             createdAt: "2026-10-15T10:00:00.000Z",
         });
         store.setNotificationState(userId, "a", "read", { answer: undefined });
-        const again = store.setNotificationState(userId, "a", "dismissed");
+        const again = store.setNotificationState(userId, "a", "snoozed");
         expect(again?.state).toBe("read");
     });
 
@@ -235,9 +242,7 @@ describe("notification store (#139)", () => {
         });
         const deleted = store.pruneNotifications(userId, 2);
         expect(deleted).toBe(4);
-        const remaining = store
-            .listNotifications(userId, { includeDismissed: true })
-            .map((n) => n.id);
+        const remaining = store.listNotifications(userId).map((n) => n.id);
         expect(remaining).toEqual(["pending", "read-4"]);
     });
 
@@ -529,7 +534,7 @@ describe("notification service policy (#139)", () => {
         expect(service.list(userId).notifications).toHaveLength(3);
     });
 
-    it("settles a notification read, dismissed, or answered", async () => {
+    it("settles a notification read, dismissed, or answered (#90 9c)", async () => {
         const { store, service } = makeService({});
         const userId = makeUser(store);
         const question = await service.notify(userId, {
@@ -552,10 +557,17 @@ describe("notification service policy (#139)", () => {
             ok: true,
             notification: { state: "read" },
         });
+        // Dismissal deletes: the row handed back is the one that was there, and
+        // the store no longer has it.
         const later = await service.notify(userId, { kind: "k", title: "ho" });
         expect(service.dismiss(userId, later.notification.id)).toMatchObject({
             ok: true,
-            notification: { state: "dismissed" },
+            notification: { id: later.notification.id },
+        });
+        expect(store.getNotification(userId, later.notification.id)).toBeNull();
+        expect(service.dismiss(userId, later.notification.id)).toEqual({
+            ok: false,
+            reason: "missing",
         });
     });
 
@@ -589,16 +601,10 @@ describe("notification service policy (#139)", () => {
 
         const list = service.list(userId).notifications;
         expect(list.map((n) => n.title)).toEqual(["step 2 of 3"]);
-        // Dismissed rather than deleted: the superseded row is still on
-        // record, just out of the way.
-        expect(
-            service
-                .list(userId, { includeDismissed: true })
-                .notifications.map((n) => n.id),
-        ).toEqual([second.notification.id, first.notification.id]);
-        expect(
-            store.getNotification(userId, first.notification.id)?.state,
-        ).toBe("dismissed");
+        // Deleted rather than dismissed (#90 9c): one live row per key is the
+        // point — a minutely series must not stack a thousand tombstones.
+        expect(list.map((n) => n.id)).toEqual([second.notification.id]);
+        expect(store.getNotification(userId, first.notification.id)).toBeNull();
     });
 
     it("still stacks notifications that carry no dedupe key", async () => {
@@ -689,7 +695,7 @@ describe("notification routes (#139)", () => {
         expect(after.body.unread).toBe(0);
     });
 
-    it("honours limit and includeDismissed from the query string", async () => {
+    it("honours limit from the query string, on a list dismissal removes from", async () => {
         // The contract validator coerces `req.query` in place, so these
         // assertions only hold if the handler reads the *coerced* types — the
         // bug this test exists for silently ignored both knobs.
@@ -706,7 +712,7 @@ describe("notification routes (#139)", () => {
                 createdAt: at,
             });
         }
-        store.setNotificationState(userId, "b", "dismissed");
+        store.deleteNotification(userId, "b");
 
         const all = await request(buildApp())
             .get("/api/notifications")
@@ -723,14 +729,6 @@ describe("notification routes (#139)", () => {
         expect(
             limited.body.notifications.map((n: { id: string }) => n.id),
         ).toEqual(["c"]);
-
-        const withDismissed = await request(buildApp())
-            .get("/api/notifications?includeDismissed=true")
-            .set("authorization", `Bearer ${token}`)
-            .expect(200);
-        expect(
-            withDismissed.body.notifications.map((n: { id: string }) => n.id),
-        ).toEqual(["c", "b", "a"]);
     });
 
     it("answers an answerable notification and rejects the wrong kinds", async () => {

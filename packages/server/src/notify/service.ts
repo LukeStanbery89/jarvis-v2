@@ -32,6 +32,7 @@
  * signal about *interruption*, never about whether the user will see it.
  */
 import { randomBytes } from "node:crypto";
+import { NOTIFICATION_TERMINAL_STATES } from "@lukestanbery/jarvis-auth";
 import type {
     AppNotification,
     NotificationLedger,
@@ -78,11 +79,18 @@ export interface NotificationService {
     /** A page of the user's notifications, plus the unread count for a badge. */
     list(
         userId: number,
-        options?: { limit?: number; includeDismissed?: boolean },
+        options?: { limit?: number },
     ): { notifications: AppNotification[]; unread: number };
     /** Marks a notification read (from any unsettled state). */
     markRead(userId: number, id: string): SettlementResult;
-    /** Dismisses a notification without reading it. */
+    /**
+     * Dismisses a notification without reading it — which **deletes** it (#90
+     * phase 9c).
+     *
+     * The row comes back as it was, so a caller can say what it took away; the
+     * length of time a dismissal was a state (a tombstone in the list) was a
+     * phase-1 choice, and a row the user is finished with is a row nobody needs.
+     */
     dismiss(userId: number, id: string): SettlementResult;
     /** Answers an answerable notification: a hybrid of read and dismissed. */
     answer(userId: number, id: string, answer: unknown): SettlementResult;
@@ -103,11 +111,7 @@ export function createNotificationService(
     const now = options.now ?? (() => new Date());
     const deliveryQuota = new FixedWindowQuota(deliveriesPerWindow);
 
-    const settle = (
-        userId: number,
-        id: string,
-        state: "read" | "dismissed",
-    ): SettlementResult => {
+    const settle = (userId: number, id: string): SettlementResult => {
         const existing = store.getNotification(userId, id);
         if (existing === null) {
             return { ok: false, reason: "missing" };
@@ -117,7 +121,7 @@ export function createNotificationService(
             // asked about rather than an error for something that is done.
             return { ok: true, notification: existing };
         }
-        const updated = store.setNotificationState(userId, id, state);
+        const updated = store.setNotificationState(userId, id, "read");
         return updated === null
             ? { ok: false, reason: "missing" }
             : { ok: true, notification: updated };
@@ -219,10 +223,7 @@ export function createNotificationService(
             };
         },
 
-        list(
-            userId: number,
-            listOptions: { limit?: number; includeDismissed?: boolean } = {},
-        ) {
+        list(userId: number, listOptions: { limit?: number } = {}) {
             return {
                 notifications: store.listNotifications(userId, listOptions),
                 unread: store.countUnreadNotifications(userId),
@@ -230,11 +231,17 @@ export function createNotificationService(
         },
 
         markRead(userId: number, id: string): SettlementResult {
-            return settle(userId, id, "read");
+            return settle(userId, id);
         },
 
         dismiss(userId: number, id: string): SettlementResult {
-            return settle(userId, id, "dismissed");
+            // Deleting is idempotent in the way a settlement is not: a row that
+            // is already gone is exactly what the caller asked for, so a repeat
+            // dismissal is `missing` rather than an error about a settled row.
+            const removed = store.deleteNotification(userId, id);
+            return removed === null
+                ? { ok: false, reason: "missing" }
+                : { ok: true, notification: removed };
         },
 
         answer(userId: number, id: string, answer: unknown): SettlementResult {
@@ -262,16 +269,16 @@ export function createNotificationService(
 /**
  * Retires the notifications a new one is replacing (its `dedupeKey`).
  *
- * The superseded row is **dismissed, not deleted**: the user may already have
- * seen it, and a notification that silently vanished from history would be
- * worse than one that says it was replaced. Only unsettled rows count as
- * supersedable — a notification the user has already read or answered is
- * history, and a producer re-raising the same key is not asking to have it
- * retracted.
+ * One live row per key is the whole point — a series that repeats every minute
+ * must not stack a thousand rows (#90 phase 9a) — so the superseded row is
+ * **deleted**, which is also what dismissing it would now do (#90 phase 9c).
+ * Only unsettled rows count as supersedable: a notification the user has already
+ * read or answered is history, and a producer re-raising the same key is not
+ * asking to have it retracted.
  *
  * The scan is bounded by the list page rather than an index: a producer's key
- * is only ever matched against recent notifications, and adding a partial
- * index over an unsettled predicate would cost schema for a lookup this size.
+ * is only ever matched against recent notifications, and adding a partial index
+ * over an unsettled predicate would cost schema for a lookup this size.
  */
 function supersedeDedupeKey(
     store: NotificationLedger,
@@ -285,23 +292,23 @@ function supersedeDedupeKey(
         if (existing.state !== "pending" && existing.state !== "delivered") {
             continue;
         }
-        store.setNotificationState(userId, existing.id, "dismissed");
+        store.deleteNotification(userId, existing.id);
     }
 }
 
 /**
  * Whether the notification's authority is already spent.
  *
- * `read` and `dismissed` are the user's own acts; `answered` is a reply. All
- * three are terminal, and the store refuses to move a row out of them, so this
- * predicate exists to answer "did you already settle this?" before the store
- * has to.
+ * The list is the ledger's own ({@link NOTIFICATION_TERMINAL_STATES}) rather than
+ * a second opinion kept here: the store refuses to move a row out of a terminal
+ * state, so this predicate only exists to answer "did you already settle this?"
+ * *before* the store has to — and a local copy had already drifted, missing
+ * `snoozed`, which let an answer to a deferred reminder look recorded when the
+ * store had quietly refused it.
  */
 function isTerminal(notification: AppNotification): boolean {
-    return (
-        notification.state === "read" ||
-        notification.state === "dismissed" ||
-        notification.state === "answered"
+    return (NOTIFICATION_TERMINAL_STATES as readonly string[]).includes(
+        notification.state,
     );
 }
 

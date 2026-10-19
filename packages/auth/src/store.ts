@@ -26,14 +26,18 @@ import type {
 } from "./types";
 
 /**
- * The notification states a row can never leave (#139, #90 phase 6c).
+ * The notification states a row can never leave (#139, #90 phases 6c, 9c).
  *
- * `read`, `answered` and `dismissed` are a user's terminal answers. `snoozed`
- * joined them in #90 phase 6c, when a reminder could be *deferred* rather than
- * merely read or ignored: the deferral settles the announcement it came from, so
- * a late duplicate acknowledgement cannot resurrect the row — and the row goes on
- * saying what actually happened, where `dismissed` would have erased the fact
- * that it was snoozed.
+ * `read` and `answered` are a user's terminal answers; `snoozed` joined them in
+ * #90 phase 6c, when a reminder could be *deferred* rather than merely read or
+ * ignored — the deferral settles the announcement it came from, so a late
+ * duplicate acknowledgement cannot resurrect the row.
+ *
+ * `dismissed` used to be a fourth, and left in **9c**: dismissal now deletes the
+ * row, because a dismissal means the user is finished with it and a row kept for
+ * the record of a shrug is a row nobody reads. A state nothing can write is
+ * better absent than documented, so the vocabulary narrowed here and the v16
+ * migration deletes the rows that were already in it.
  *
  * Declared up here, above the schema strings, because they are *built* from it:
  * the table's CHECK names these states, and a `const` read from a template
@@ -42,12 +46,15 @@ import type {
  * the CHECK, the settle statement's guard, its `settled_at` stamp, and the unread
  * count — so widening the set is one edit rather than four.
  */
-const NOTIFICATION_TERMINAL_STATES = [
+export const NOTIFICATION_TERMINAL_STATES = [
     "read",
     "answered",
-    "dismissed",
     "snoozed",
 ] as const;
+
+/** One of the states a notification can never leave. */
+export type NotificationTerminalState =
+    (typeof NOTIFICATION_TERMINAL_STATES)[number];
 
 /** The terminal states as SQL literals, for the statements built from them. */
 const NOTIFICATION_TERMINAL_SQL = NOTIFICATION_TERMINAL_STATES.map(
@@ -414,10 +421,11 @@ export type NotificationClass = (typeof NOTIFICATION_CLASSES)[number];
  * connected, the delivery cap was reached, or quiet hours suppressed it), so a
  * client that connects later finds it through the list. `delivered` — pushed
  * to at least one live socket. Then the terminal states, from the one list that
- * owns them ({@link NOTIFICATION_TERMINAL_STATES}): `read` and `dismissed` are
- * the user's answers, `answered` is the retirement path for a `requiresAnswer`
- * notification (a reply, not an acknowledgement, is what settles it), and
- * `snoozed` is what a reminder the user deferred becomes.
+ * owns them ({@link NOTIFICATION_TERMINAL_STATES}): `read` is the user having
+ * seen it, `answered` is the retirement path for a `requiresAnswer` notification
+ * (a reply, not an acknowledgement, is what settles it), and `snoozed` is what a
+ * reminder the user deferred becomes. **Dismissal is not a state**: it deletes
+ * the row (#90 phase 9c) — see `deleteNotification`.
  *
  * Note that `pending` → `read` is a legal transition: a user who finds the
  * notification in the list and reads it there never needs it delivered.
@@ -515,12 +523,14 @@ export interface NotificationLedger {
     /** One notification, or `null` when it is missing or another user's. */
     getNotification(userId: number, id: string): AppNotification | null;
     /**
-     * A user's notifications, newest first. Dismissed rows are excluded by
-     * default; `limit` caps the page.
+     * A user's notifications, newest first. `limit` caps the page.
+     *
+     * There is no "include the dismissed ones" switch any more (#90 phase 9c):
+     * dismissing deletes the row, so the list is simply what the user has.
      */
     listNotifications(
         userId: number,
-        options?: { limit?: number; includeDismissed?: boolean },
+        options?: { limit?: number },
     ): AppNotification[];
     /**
      * A user's notifications about one job, newest first (#90 phase 6c).
@@ -533,17 +543,18 @@ export interface NotificationLedger {
      * {@link setNotificationState}'s.
      */
     listNotificationsForJob(userId: number, jobId: string): AppNotification[];
-    /** How many of a user's notifications are neither read nor dismissed. */
+    /** How many of a user's notifications are unsettled (the badge count). */
     countUnreadNotifications(userId: number): number;
     /**
      * Moves a notification to `state`, stamping `delivered_at` / `settled_at`
      * as that state implies, optionally recording the user's `answer`.
      *
-     * Terminal states are terminal — `read`, `answered`, `dismissed` and
-     * `snoozed` — and a transition out of one is refused, returning the existing
-     * row unchanged: a late duplicate ack cannot resurrect a settled
-     * notification, and neither can a snooze that arrives after the user read
-     * the reminder.
+     * Terminal states are terminal — `read`, `answered` and `snoozed` — and a
+     * transition out of one is refused, returning the existing row unchanged: a
+     * late duplicate ack cannot resurrect a settled notification, and neither
+     * can a snooze that arrives after the user read the reminder. Dismissal is
+     * not a transition at all: it deletes the row
+     * ({@link deleteNotification}, #90 phase 9c).
      *
      * @returns The row after the attempt, or `null` when no such notification
      * belongs to `userId`.
@@ -554,6 +565,19 @@ export interface NotificationLedger {
         state: NotificationState,
         options?: { answer?: string },
     ): AppNotification | null;
+    /**
+     * Deletes a notification outright (#90 phase 9c) — what dismissing one
+     * means, and the only caller it has.
+     *
+     * A dismissal is the user saying they are finished with the row, so there is
+     * nothing left to list, count or report about it. The removed row comes back
+     * rather than a boolean, so a route can answer with what it took away.
+     *
+     * @returns The row as it was, or `null` when no such notification belongs to
+     * `userId` (the same indistinguishability {@link setNotificationState}
+     * keeps).
+     */
+    deleteNotification(userId: number, id: string): AppNotification | null;
     /**
      * Trims a user's notifications to the newest `keep`, so a long-lived
      * instance cannot grow the table without bound.
@@ -1469,6 +1493,12 @@ export interface MigrationReport {
      */
     droppedOrphanedNotifications: number;
     /**
+     * Notifications deleted because they were dismissed (#90 phase 9c) — rows
+     * the v16 migration removes now that nothing writes that state and a
+     * dismissal means "I am finished with this".
+     */
+    droppedDismissedNotifications: number;
+    /**
      * Runs deleted because the job they belong to is gone (#90 phase 8f).
      *
      * Dropped rather than repaired: a run *is* its job's history, so a run with
@@ -1487,6 +1517,33 @@ export interface AppDatabaseOptions {
      * a clean database reports nothing at all.
      */
     onMigrationRepair?(report: MigrationReport): void;
+}
+
+/**
+ * Deletes the notifications that were dismissed (#90 phase 9c).
+ *
+ * Not a repair of corruption but of a **decision that changed**: dismissal used
+ * to be a terminal state a row sat in, and it now deletes the row outright, so
+ * the rows already in it are the vestige. They are counted rather than silently
+ * swept, because a migration that removes rows a user could still have been
+ * shown should say how many it removed.
+ *
+ * Runs inside the caller's transaction — v16 rebuilds the table with the narrowed
+ * CHECK, which could not carry them anyway — and counts only what it dropped.
+ *
+ * @param db - The connection being migrated (foreign keys on).
+ * @returns How many rows the purge touched, in the report's own fields.
+ */
+function purgeDismissedNotifications(db: Database.Database): MigrationReport {
+    const dropped = db
+        .prepare("DELETE FROM notifications WHERE state = 'dismissed'")
+        .run().changes;
+    return {
+        repairedNotificationJobLinks: 0,
+        droppedOrphanedNotifications: 0,
+        droppedDismissedNotifications: dropped,
+        droppedOrphanedJobRuns: 0,
+    };
 }
 
 /**
@@ -1516,6 +1573,7 @@ function repairJobRunReferences(db: Database.Database): MigrationReport {
     return {
         repairedNotificationJobLinks: 0,
         droppedOrphanedNotifications: 0,
+        droppedDismissedNotifications: 0,
         droppedOrphanedJobRuns: dropped,
     };
 }
@@ -1554,6 +1612,7 @@ function repairNotificationReferences(db: Database.Database): MigrationReport {
     return {
         repairedNotificationJobLinks: repaired.changes,
         droppedOrphanedNotifications: dropped.changes,
+        droppedDismissedNotifications: 0,
         droppedOrphanedJobRuns: 0,
     };
 }
@@ -1767,6 +1826,7 @@ ${JOB_INDEXES}`);
             let report: MigrationReport = {
                 repairedNotificationJobLinks: 0,
                 droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
                 droppedOrphanedJobRuns: 0,
             };
             // One transaction: SQLite makes DDL transactional, so a failure
@@ -1863,6 +1923,7 @@ ${NOTIFICATION_INDEXES}`);
             let report: MigrationReport = {
                 repairedNotificationJobLinks: 0,
                 droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
                 droppedOrphanedJobRuns: 0,
             };
             // One transaction, for the reason v12 gives: SQLite makes DDL
@@ -1902,6 +1963,63 @@ CREATE INDEX IF NOT EXISTS idx_job_runs_job
             }
         }
         db.pragma("user_version = 15");
+    }
+    if (version < 16) {
+        // v16: dismissal deletes the row, so `dismissed` leaves the state
+        // vocabulary (#90 phase 9c).
+        //
+        // The purge comes first for the reason v12 and v15 both learned: the
+        // rebuild copies with foreign keys **on** and a narrowed CHECK, so a row
+        // still in the removed state would fail the insert and refuse the open.
+        // Nothing references `notifications`, so the DROP cascades nothing, and
+        // the table's index comes back through `NOTIFICATION_INDEXES` — the same
+        // shape as the v12 rebuild, without the repairs it does not need.
+        //
+        // Guarded on the table's SQL, and the polarity is the *opposite* of
+        // v12's: there the fragment named a state the old table lacked, here it
+        // names the one it still allows. A fresh database already has the narrow
+        // CHECK from `notificationsTable`, so this must refuse to rebuild it on
+        // every open.
+        if (tableSqlHas(db, "notifications", "'dismissed'")) {
+            let report: MigrationReport = {
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
+            };
+            const rebuild = db.transaction((): void => {
+                report = purgeDismissedNotifications(db);
+                db.exec(`${notificationsTable("notifications_v16")};
+INSERT INTO notifications_v16 (
+    id, user_id, kind, class, priority, title, body, state, requires_answer,
+    dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+)
+SELECT id, user_id, kind, class, priority, title, body, state, requires_answer,
+       dedupe_key, answer, created_at, delivered_at, settled_at, job_id
+  FROM notifications;
+DROP TABLE notifications;
+ALTER TABLE notifications_v16 RENAME TO notifications;
+${NOTIFICATION_INDEXES}`);
+                // A self-check, not a data check: the purge is supposed to leave
+                // nothing in the removed state, so a surviving row means this
+                // migration is wrong rather than the store is corrupt.
+                const vestigial = db
+                    .prepare(
+                        "SELECT COUNT(*) AS n FROM notifications WHERE state = 'dismissed'",
+                    )
+                    .get() as { n: number };
+                if (vestigial.n > 0) {
+                    throw new Error(
+                        `the notifications rebuild left ${vestigial.n} dismissed row(s)`,
+                    );
+                }
+            });
+            rebuild();
+            if (report.droppedDismissedNotifications > 0) {
+                options?.onMigrationRepair?.(report);
+            }
+        }
+        db.pragma("user_version = 16");
     }
 }
 
@@ -1957,7 +2075,7 @@ export class SqliteAppDatabase implements AppDatabase {
         insertNotification: Database.Statement;
         selectNotification: Database.Statement;
         selectNotifications: Database.Statement;
-        selectNotificationsWithDismissed: Database.Statement;
+        deleteNotification: Database.Statement;
         selectNotificationsForJob: Database.Statement;
         countUnreadNotifications: Database.Statement;
         settleNotification: Database.Statement;
@@ -2124,16 +2242,18 @@ export class SqliteAppDatabase implements AppDatabase {
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
             ),
             selectNotifications: db.prepare(
-                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND state != 'dismissed' ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // Dismissal deletes the row (#90 phase 9c), so there is no second
+            // "include the dismissed ones" read: a row is either there or gone.
+            deleteNotification: db.prepare(
+                "DELETE FROM notifications WHERE user_id = ? AND id = ?",
             ),
             // The announcements a job produced (#90 phase 6c). A job announces
             // once per run, so this is normally one row — but "normally one" is
             // not a reason to guess an id: the link is the durable fact.
             selectNotificationsForJob: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND job_id = ? ORDER BY created_at DESC, rowid DESC`,
-            ),
-            selectNotificationsWithDismissed: db.prepare(
-                `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             ),
             countUnreadNotifications: db.prepare(
                 `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
@@ -2647,14 +2767,30 @@ export class SqliteAppDatabase implements AppDatabase {
 
     listNotifications(
         userId: number,
-        options: { limit?: number; includeDismissed?: boolean } = {},
+        options: { limit?: number } = {},
     ): AppNotification[] {
         const limit = Math.max(1, options.limit ?? DEFAULT_NOTIFICATION_PAGE);
-        const statement = options.includeDismissed
-            ? this.statements.selectNotificationsWithDismissed
-            : this.statements.selectNotifications;
-        const rows = statement.all(userId, limit) as NotificationRow[];
+        const rows = this.statements.selectNotifications.all(
+            userId,
+            limit,
+        ) as NotificationRow[];
         return rows.map(mapNotification);
+    }
+
+    /**
+     * Removes a notification (#90 phase 9c).
+     *
+     * Read first, because the caller wants the row it removed: a `DELETE` that
+     * reports only `changes` cannot tell a route what it took away, and the
+     * scoped read also keeps a foreign id indistinguishable from a missing one.
+     */
+    deleteNotification(userId: number, id: string): AppNotification | null {
+        const existing = this.getNotification(userId, id);
+        if (existing === null) {
+            return null;
+        }
+        this.statements.deleteNotification.run(userId, id);
+        return existing;
     }
 
     listNotificationsForJob(userId: number, jobId: string): AppNotification[] {

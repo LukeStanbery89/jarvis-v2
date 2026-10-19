@@ -112,7 +112,7 @@ describe("shouldAnnounce", () => {
     });
 
     it("stays quiet for anything already settled", () => {
-        for (const state of ["read", "answered", "dismissed"]) {
+        for (const state of ["read", "answered", "snoozed"]) {
             expect(
                 shouldAnnounce(
                     { id: "n1", state },
@@ -219,7 +219,7 @@ describe("the server's decision outranks the browser (#90)", () => {
         // `pending` means recorded, not announced: quiet hours, the switch,
         // the delivery budget, or nobody connected. The OS channel must not
         // promote a row the server chose not to interrupt for.
-        for (const state of ["pending", "read", "answered", "dismissed"]) {
+        for (const state of ["pending", "read", "answered", "snoozed"]) {
             expect(
                 shouldAnnounce(
                     { id: "n1", state },

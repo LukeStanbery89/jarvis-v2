@@ -34,7 +34,7 @@ export type { NotificationClass };
 
 /** Lifecycle states, mirroring the REST schema's `Notification.state`. */
 export type NotificationState =
-    "pending" | "delivered" | "read" | "answered" | "dismissed" | "snoozed";
+    "pending" | "delivered" | "read" | "answered" | "snoozed";
 
 /**
  * A notification as the client holds it: the live frame's fields, plus the
@@ -122,12 +122,7 @@ export const NOTIFICATION_LIMIT = 50;
  * or the badge would keep the deferral in front of them.
  */
 export function isSettled(state: NotificationState): boolean {
-    return (
-        state === "read" ||
-        state === "answered" ||
-        state === "dismissed" ||
-        state === "snoozed"
-    );
+    return state === "read" || state === "answered" || state === "snoozed";
 }
 
 /**
@@ -135,7 +130,7 @@ export function isSettled(state: NotificationState): boolean {
  *
  * A known id is replaced in place (the freshest content wins) **except** for a
  * settled state, which is preserved: a frame or a re-fetch must never resurrect
- * a notification the user has already read or dismissed. An unknown id is
+ * a notification the user has already read or deferred. An unknown id is
  * inserted by `createdAt`, so a frame that raced the page fetch lands in the
  * right order rather than always on top.
  */
@@ -160,14 +155,35 @@ export function mergeNotification(
 }
 
 /**
+ * Drops one notification from the list (#90 phase 9c).
+ *
+ * A dismissal is a *deletion* server-side, so the local list loses the row
+ * rather than settling it into a state: there is nothing left to show, count, or
+ * sort into a "dismissed" column, and the optimistic case is the same one the
+ * next fetch would report.
+ *
+ * @param list - The list to drop it from.
+ * @param id - The notification to remove.
+ * @returns The list without it (the same array when it was not there).
+ */
+export function removeNotification(
+    list: ClientNotification[],
+    id: string,
+): ClientNotification[] {
+    if (!list.some((item) => item.id === id)) {
+        return list;
+    }
+    return list.filter((item) => item.id !== id);
+}
+
+/**
  * Merges a fetched page into the local list.
  *
  * The page is authoritative for *content*; the local list may hold fresher
- * states (a dismissal that has not been re-fetched), which is why this is a
- * fold over {@link mergeNotification} rather than a replacement. Notifications
- * that exist locally but not in the page (dismissed ones are excluded from the
- * page) are kept, so a dismissal does not make the row vanish and reappear on
- * the next load.
+ * states (a read that has not been re-fetched), which is why this is a fold over
+ * {@link mergeNotification} rather than a replacement. Notifications that exist
+ * locally but not in the page are kept — the page is one *window* of a longer
+ * list, so absence is not deletion.
  */
 export function mergeNotificationPage(
     list: ClientNotification[],
@@ -536,8 +552,6 @@ export function describeNotificationState(state: NotificationState): string {
             return "read";
         case "answered":
             return "answered";
-        case "dismissed":
-            return "dismissed";
         case "snoozed":
             // Bare, because the page that lists a snoozed row knows which job it
             // came from and can say "until 7:00 AM" (`describeSnooze`) — this
@@ -577,7 +591,7 @@ export function describeDelivery(
 export type NotificationSuppression =
     "disabled" | "quiet-hours" | "absent" | "cap";
 
-/** How many notifications are neither read nor dismissed (the badge count). */
+/** How many notifications are unsettled (the badge count). */
 export function unreadCount(list: ClientNotification[]): number {
     return list.filter((item) => !isSettled(item.state)).length;
 }

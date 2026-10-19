@@ -56,8 +56,9 @@ only the surface they call:
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
 - `NotificationLedger` — JARVIS's outbound messages to a user (#139) over the
   `notifications` table: `createNotification` / `getNotification` /
-  `listNotifications` (newest first, dismissed hidden by default) /
-  `countUnreadNotifications` / `setNotificationState` / `pruneNotifications`.
+  `listNotifications` (newest first, the whole list) /
+  `countUnreadNotifications` / `setNotificationState` / `deleteNotification`
+  (what dismissing means, #90 phase 9c) / `pruneNotifications`.
   Every method scopes by `userId`, so a foreign id is indistinguishable from a
   missing one — the reason the REST layer needs no ownership check. The store
   owns _transitions_ (terminal states are terminal, `delivered_at` and
@@ -162,7 +163,9 @@ router and middleware span every ledger and therefore take the full
   waits) + `priority` (display
   emphasis only), the
   `title`/`body` text, a `state` lifecycle (`pending` →
-  `delivered` → then the terminal set: `read`/`answered`/`dismissed`/**`snoozed`**,
+  `delivered` → then the terminal set: `read`/`answered`/**`snoozed`** — and, for
+  the terminal state that left in #90 phase 9c, no row at all, since dismissal
+  deletes rather than files,
   with `pending` → `read` legal
   for a notification the user found in the list rather than had pushed), an
   optional `requires_answer`, `dedupe_key`, and `answer`, plus the timestamps.

@@ -28,7 +28,7 @@ import {
 import type { AppDatabase, AppNotification } from "@lukestanbery/jarvis-auth";
 import { MAX_NOTIFICATION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { authed, requireAuth, requireCsrf } from "../http/middleware";
-import { parseBoolean, parseLimit } from "../http/params";
+import { parseLimit } from "../http/params";
 import { sessionCookieName } from "../http/cookies";
 import { logger } from "../logger";
 import type { AppConfig } from "../config";
@@ -159,7 +159,6 @@ export function createNotificationRouter(
                     fallback: DEFAULT_LIMIT,
                     max: MAX_LIMIT,
                 }),
-                includeDismissed: parseBoolean(req.query.includeDismissed),
             });
             res.status(200).json({
                 notifications: notifications.map(toNotificationResponse),

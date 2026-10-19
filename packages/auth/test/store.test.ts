@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 15;
+const LATEST_VERSION = 16;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -648,7 +648,7 @@ describe("notifications", () => {
                 title: `n${i}`,
                 createdAt: `2026-10-15T0${i}:00:00.000Z`,
             });
-            store.setNotificationState(user.id, `n${i}`, "dismissed");
+            store.setNotificationState(user.id, `n${i}`, "read");
         }
         // Newest of all, and never delivered: the row a prune must keep if
         // there is any choice.
@@ -663,11 +663,10 @@ describe("notifications", () => {
         // Five rows, a ceiling of two: the three settled ones outside the cut
         // go, and the undelivered row survives because there was a choice.
         expect(store.pruneNotifications(user.id, 2)).toBe(3);
-        expect(
-            store
-                .listNotifications(user.id, { includeDismissed: true })
-                .map((n) => n.id),
-        ).toEqual(["keep", "n3"]);
+        expect(store.listNotifications(user.id).map((n) => n.id)).toEqual([
+            "keep",
+            "n3",
+        ]);
     });
 
     it("still bounds the table when the pending rows are the ones piling up", () => {
@@ -704,8 +703,8 @@ describe("notifications", () => {
 
         const snoozed = store.setNotificationState(user.id, "rem", "snoozed");
         expect(snoozed?.state).toBe("snoozed");
-        // Settled by the deferral, with the same stamps `dismissed` gets, so it
-        // stops counting as unread the moment the user acts on it (#90 phase 6c).
+        // Settled by the deferral, with the same stamps any terminal state gets,
+        // so it stops counting as unread the moment the user acts on it (#90 6c).
         expect(snoozed?.settledAt).not.toBeNull();
         expect(store.countUnreadNotifications(user.id)).toBe(0);
         // Terminal like the rest of them: a late acknowledgement cannot move it
@@ -713,8 +712,8 @@ describe("notifications", () => {
         expect(store.setNotificationState(user.id, "rem", "read")?.state).toBe(
             "snoozed",
         );
-        // And unlike a dismissed row it stays in the list: "snoozed until 7:00"
-        // is a thing the user should still be able to find.
+        // And it stays in the list, which is the difference dismissal now makes
+        // (#90 9c): "snoozed until 7:00" is a thing the user should find.
         expect(store.listNotifications(user.id).map((n) => n.id)).toEqual([
             "rem",
         ]);
@@ -1072,6 +1071,7 @@ describe("openAppDatabase", () => {
             expect(reported).toEqual({
                 repairedNotificationJobLinks: 1,
                 droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
                 droppedOrphanedJobRuns: 0,
             });
             // The widened CHECK is in force: the state this migration exists for
@@ -1092,6 +1092,87 @@ describe("openAppDatabase", () => {
                 )
                 .get() as { sql: string };
             expect(table.sql).toContain("'snoozed'");
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("deletes dismissed notifications and narrows the state CHECK (v16)", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "jarvis.sqlite");
+        try {
+            // A store as v15 left it, where dismissal was a terminal state a row
+            // sat in — hidden from the list, but on record. Written out by hand
+            // because a fresh database already carries the *narrow* CHECK, so the
+            // table has to be put back into its old shape before the rows that
+            // exercise the migration can exist at all.
+            openAppDatabase(path).close();
+            const legacy = new Database(path);
+            legacy.exec(`
+                DROP TABLE notifications;
+                CREATE TABLE notifications (
+                    id              TEXT PRIMARY KEY,
+                    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    kind            TEXT NOT NULL,
+                    class           TEXT NOT NULL DEFAULT 'notification' CHECK (class IN ('notification', 'reminder', 'timer')),
+                    priority        TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+                    title           TEXT NOT NULL,
+                    body            TEXT,
+                    state           TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'read', 'answered', 'dismissed', 'snoozed')),
+                    requires_answer INTEGER NOT NULL DEFAULT 0,
+                    dedupe_key      TEXT,
+                    answer          TEXT,
+                    created_at      TEXT NOT NULL,
+                    delivered_at    TEXT,
+                    settled_at      TEXT,
+                    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
+                );
+                CREATE INDEX idx_notifications_user
+                    ON notifications (user_id, created_at DESC);
+                INSERT INTO users (id, username, password_hash, role, disabled, created_at)
+                    VALUES (1, 'luke', 'hash', 'owner', 0, '2026-10-01T00:00:00.000Z');
+                INSERT INTO notifications (id, user_id, kind, priority, title, state, created_at)
+                    VALUES ('n-gone', 1, 'k', 'low', 'shrugged off', 'dismissed', '2026-10-18T09:00:00.000Z');
+                INSERT INTO notifications (id, user_id, kind, priority, title, state, created_at)
+                    VALUES ('n-kept', 1, 'k', 'low', 'still here', 'read', '2026-10-18T10:00:00.000Z');
+                PRAGMA user_version = 15;
+            `);
+            legacy.close();
+
+            let reported: MigrationReport | null = null;
+            const upgraded = openAppDatabase(path, {
+                onMigrationRepair: (report) => {
+                    reported = report;
+                },
+            });
+
+            // The dismissed row is gone and the read one survived...
+            expect(upgraded.listNotifications(1).map((n) => n.id)).toEqual([
+                "n-kept",
+            ]);
+            // ...and the purge was counted rather than silent, because a
+            // migration that removes rows the user could still have been shown
+            // should say how many.
+            expect(reported).toEqual({
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 1,
+                droppedOrphanedJobRuns: 0,
+            });
+            upgraded.close();
+
+            // The narrowed CHECK is in force: the state this migration exists to
+            // retire cannot be written again.
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
+            expect(() =>
+                check.exec(
+                    "UPDATE notifications SET state = 'dismissed' WHERE id = 'n-kept'",
+                ),
+            ).toThrow(/CHECK constraint failed/);
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });
@@ -1158,6 +1239,7 @@ describe("openAppDatabase", () => {
             expect(reported).toEqual({
                 repairedNotificationJobLinks: 0,
                 droppedOrphanedNotifications: 0,
+                droppedDismissedNotifications: 0,
                 droppedOrphanedJobRuns: 1,
             });
             // The widened CHECK is in force: the state this migration exists for

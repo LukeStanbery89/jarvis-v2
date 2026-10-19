@@ -99,9 +99,7 @@ function NotificationRow({
             : describeNotificationState(item.state);
     return (
         <li
-            className={`notification-item notification-${item.priority} notification-${item.class}${
-                item.state === "dismissed" ? " dismissed" : ""
-            }`}
+            className={`notification-item notification-${item.priority} notification-${item.class}`}
         >
             <div className="notification-text">
                 <span className="notification-eyebrow">

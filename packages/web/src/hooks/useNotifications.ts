@@ -28,12 +28,12 @@ import {
     mergeNotification,
     mergeNotificationPage,
     selectAlerts,
+    removeNotification,
     settleNotification,
     unreadCount,
 } from "../notifications";
 import type {
     ClientNotification,
-    NotificationState,
     NotificationSuppression,
 } from "../notifications";
 import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
@@ -46,7 +46,7 @@ export interface NotificationsState {
     ring: ClientNotification | null;
     /** The newest unsettled notification, for the prominent surface. */
     banner: ClientNotification | null;
-    /** Count of notifications neither read nor dismissed. */
+    /** Count of notifications that are not settled. */
     unread: number;
     /** Whether a fetch is in flight (the list can render empty meanwhile). */
     loading: boolean;
@@ -203,21 +203,27 @@ export function useNotifications(options: {
         [],
     );
 
-    const settle = useCallback(
+    /**
+     * Applies one local change optimistically, and undoes it if the call fails.
+     *
+     * The rollback restores the *row* rather than the list: a notification that
+     * arrives between the click and a failure must survive, and nothing refetches
+     * mid-session, so dropping it would stay dropped.
+     */
+    const apply = useCallback(
         (
             id: string,
-            state: NotificationState,
+            label: string,
+            update: (list: ClientNotification[]) => ClientNotification[],
             call: () => Promise<unknown>,
         ) => {
-            debugLog("notify", `${state} id=${id}`);
+            debugLog("notify", `${label} id=${id}`);
             // Snapshot the *row*, not the list: a notification that arrives
             // between this click and a failure must survive the rollback, and
             // restoring a whole-list snapshot would silently discard it — and
             // nothing refetches mid-session, so it would stay gone.
             const before = notifications.find((item) => item.id === id);
-            setNotifications((current) =>
-                settleNotification(current, id, state),
-            );
+            setNotifications((current) => update(current));
             call().catch((err: unknown) => {
                 // Roll back to what the server still believes: an optimistic
                 // dismissal that never landed is a lie the next fetch would
@@ -239,16 +245,29 @@ export function useNotifications(options: {
 
     const markRead = useCallback(
         (id: string) => {
-            settle(id, "read", () => api.markNotificationRead(token, id));
+            apply(
+                id,
+                "read",
+                (list) => settleNotification(list, id, "read"),
+                () => api.markNotificationRead(token, id),
+            );
         },
-        [settle, token],
+        [apply, token],
     );
 
     const dismiss = useCallback(
         (id: string) => {
-            settle(id, "dismissed", () => api.dismissNotification(token, id));
+            // A dismissal deletes the row (#90 phase 9c), so the optimistic change
+            // is a removal — and `removeNotification` rather than a filter here,
+            // because the test suite owns that behaviour.
+            apply(
+                id,
+                "dismiss",
+                (list) => removeNotification(list, id),
+                () => api.dismissNotification(token, id),
+            );
         },
-        [settle, token],
+        [apply, token],
     );
 
     /**

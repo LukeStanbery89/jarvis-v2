@@ -130,7 +130,7 @@ export function shouldAnnounce(
     }
     // `delivered` is the server saying "this reached a live client"; anything
     // else was recorded without being pushed, and the browser has no standing
-    // to promote it. Read/dismissed/answered cannot be delivered, so this one
+    // to promote it. Read/answered/snoozed cannot be delivered, so this one
     // comparison covers the old settled check too.
     return notification.state === "delivered";
 }
