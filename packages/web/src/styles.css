@@ -22,6 +22,24 @@
     --text: var(--primary);
     --error: #ff6b6b;
     --attention: #ffdd00;
+
+    /*
+     * Frosted-glass panes (#146 phase B).
+     *
+     * One tint, one hairline, one blur, shared by every "window" in the app.
+     * The tint stays low-alpha on purpose: the particle field behind the app is
+     * what the blur is *for* — a pane over plain black would only look darker —
+     * and the hairline is what keeps a pane's edge legible where the field is
+     * sparse. `--glass-strong` is the modal weight: a dialog has to stay
+     * readable over whatever it covers.
+     */
+    --glass: rgba(0, 22, 29, 0.52);
+    --glass-strong: rgba(0, 16, 22, 0.74);
+    --glass-line: rgba(0, 221, 255, 0.16);
+    --glass-blur: 12px;
+    --glass-blur-strong: 18px;
+    --pane-radius: 0.9rem;
+    --pane-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.45);
 }
 
 * {
@@ -314,6 +332,10 @@ textarea::placeholder {
     display: grid;
     grid-template-columns: 16rem 1fr;
     grid-template-rows: 1fr;
+    /* The gap and the padding are what turn the two columns into two floating
+       panes instead of a split screen (#146 phase B). */
+    gap: 0.75rem;
+    padding: 0.75rem;
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -324,8 +346,12 @@ textarea::placeholder {
     flex-direction: column;
     gap: 0.5rem;
     padding: 1rem 0.75rem;
-    background: var(--panel);
-    border-right: 1px solid var(--primary-border);
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
     overflow-y: auto;
 }
 
@@ -394,6 +420,9 @@ textarea::placeholder {
     box-shadow: 0 0 10px rgba(0, 221, 255, 0.45);
 }
 
+/* The conversation is deliberately *not* a pane: the field shows through it and
+   the glass belongs to the bubbles (and the composer) instead, so each turn
+   reads as its own window lying on the background. */
 .conversation {
     display: flex;
     flex-direction: column;
@@ -423,20 +452,29 @@ textarea::placeholder {
 .msg {
     max-width: 46rem;
     padding: 0.6rem 0.9rem;
-    border-radius: 10px;
+    border-radius: var(--pane-radius);
     overflow-wrap: anywhere;
+    /* Every turn is its own pane (#146 phase B, second pass). No shadow: a
+       column of twenty bubbles each casting one reads as clutter, and the
+       hairline already separates a bubble from the field behind it. */
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
 }
 
+/* The user's bubble keeps its cyan identity as a *tint* rather than a solid
+   fill — a solid one would be opaque glass, and the text would have to stay
+   black on it. The tint plus a stronger hairline is the whole distinction. */
 .msg.user {
     align-self: flex-end;
-    background: var(--primary);
-    color: #000;
+    background: rgba(0, 221, 255, 0.16);
+    border: 1px solid var(--primary-dim);
+    color: var(--text);
 }
 
 .msg.assistant {
     align-self: flex-start;
-    background: var(--panel);
-    border: 1px solid var(--primary);
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
 }
 
 /* Markdown blocks (p, ul, …) carry their own margins — trimming the first
@@ -474,8 +512,15 @@ textarea::placeholder {
     display: flex;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    background: var(--panel);
-    border-top: 1px solid var(--primary-border);
+    /* The conversation is not a pane any more, so the composer is: the one
+       window that stays put while the turns scroll past it. */
+    margin-top: 0.5rem;
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
     flex-wrap: wrap;
 }
 
@@ -1048,8 +1093,10 @@ textarea::placeholder {
 
 .toast-stack .notification-banner {
     margin: 0;
-    background: var(--panel);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.7);
+    background: var(--glass-strong);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
     /* A corner card **stacks**. The banner's single row was designed for the
        conversation column, which had the whole width; four actions and a title
        do not fit in 26rem, and forcing them into one row wrapped the title to a
@@ -1186,10 +1233,13 @@ textarea::placeholder {
     max-height: calc(100dvh - 4rem);
     overflow-y: auto;
     padding: 1rem 1.1rem 1.25rem;
-    background: var(--panel);
+    background: var(--glass-strong);
     color: var(--text);
-    border: 1px solid var(--primary-border);
-    border-radius: 10px;
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
 }
 
 .settings::backdrop {
@@ -1321,10 +1371,13 @@ textarea::placeholder {
     max-height: calc(100dvh - 4rem);
     overflow-y: auto;
     padding: 1rem 1.1rem 1.25rem;
-    background: var(--panel);
+    background: var(--glass-strong);
     color: var(--text);
-    border: 1px solid var(--primary-border);
-    border-radius: 10px;
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
 }
 
 .job-form::backdrop {
@@ -1492,11 +1545,13 @@ textarea::placeholder {
 .timer-ring {
     width: min(26rem, calc(100vw - 2rem));
     padding: 1.6rem 1.4rem 1.35rem;
-    background: var(--panel);
+    background: var(--glass-strong);
     color: var(--text);
     border: 2px solid var(--primary);
-    border-radius: 12px;
+    border-radius: var(--pane-radius);
     text-align: center;
+    backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
     box-shadow:
         0 0 0 1px var(--primary-faint),
         0 0 32px var(--primary-wash);
@@ -1587,8 +1642,19 @@ textarea::placeholder {
     gap: 1rem;
     width: 100%;
     max-width: 44rem;
-    margin: 0 auto;
+    /* Breathing room from the bar above and the viewport below: the pane is a
+       window *in* the app, not a sheet glued to the chrome. */
+    margin: 0.75rem auto;
     padding: 2rem 1.25rem;
+    /* The page itself is the window on the list pages (#146 phase B): one pane
+       holding the head, the rows and the history, rather than each row being
+       its own card. */
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
 }
 
 /* The page head, with the page's one action at its far end (#90 phase 7): the
@@ -1859,6 +1925,18 @@ textarea::placeholder {
     max-width: 40rem;
     margin: 0 auto;
     padding: 2.5rem 1.25rem;
+}
+
+/* The dashboard's "coming up" card is the pane; the clock above it stays on the
+   field, which is what makes the glass read as a window rather than a panel. */
+.dashboard-card {
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: var(--pane-radius);
+    box-shadow: var(--pane-shadow);
+    padding: 1rem 1.15rem;
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
 }
 
 .dashboard-head {
