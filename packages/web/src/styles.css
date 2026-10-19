@@ -41,6 +41,17 @@
     --pane-radius: 0.9rem;
     --pane-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.45);
 
+    /*
+     * The layout's measure (#146 phase D). The shell is the widest the app ever
+     * gets; the particle field is fixed to the viewport, so the space either
+     * side of it is field, not empty chrome. `--reading-measure` is the column
+     * the transcript centres itself in — wide enough for a table or a code
+     * block, narrow enough that a paragraph does not become a scan line.
+     */
+    --shell-max: 96rem;
+    --reading-measure: 64rem;
+    --page-measure: 64rem;
+
     /* The composed filters the panes actually read. No pane names the blur
        directly, which is what lets one attribute below switch the effect off
        everywhere at once (#146 phase B2). */
@@ -192,6 +203,11 @@ textarea::placeholder {
     z-index: 1;
     display: grid;
     grid-template-rows: auto 1fr;
+    /* Centred on wide displays: past ~96rem the app stops growing and the field
+       becomes the margin (#146 phase D). */
+    width: 100%;
+    max-width: var(--shell-max);
+    margin-inline: auto;
     height: 100dvh;
     overflow: hidden;
 }
@@ -288,6 +304,17 @@ textarea::placeholder {
     margin-left: auto;
 }
 
+/* The thread drawer's control exists only where the list *is* a drawer (#146
+   phase D); on wide screens the list is a column and the button has nothing to
+   open.
+ *
+ * Two classes because `.icon-btn` — defined further down the sheet — also sets
+ * `display: inline-flex`, and at equal specificity the later rule wins. One
+ * class here would leave the button visible on every wide screen. */
+.icon-btn.navbar-threads {
+    display: none;
+}
+
 .navbar-status {
     display: inline-flex;
     align-items: center;
@@ -352,6 +379,25 @@ textarea::placeholder {
     gap: 2px;
 }
 
+/* The drawer's one entry that is not a destination: Settings is the bar's gear
+   on wide screens and an item in the menu where the bar has no room for it
+   (#146 phase D). It borrows the link look and resets the button. */
+.navbar-drawer-action {
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+
+/* The line between what stays in this app and what leaves it. */
+.navbar-drawer-sep {
+    height: 1px;
+    margin: 0.25rem 0.6rem;
+    background: var(--primary-border);
+}
+
 @media (max-width: 48rem) {
     .navbar-links,
     .navbar-user {
@@ -360,6 +406,27 @@ textarea::placeholder {
 
     .navbar .navbar-menu {
         display: inline-flex;
+    }
+
+    .icon-btn.navbar-threads {
+        display: inline-flex;
+    }
+
+    /* The gear gives its place to the menu, which carries Settings itself
+       (#146 phase D). Two classes, for the same reason as the toggle above:
+       `.icon-btn` sets `display: inline-flex` further down the sheet. */
+    .icon-btn.navbar-settings {
+        display: none;
+    }
+
+    /* The wordmark centres between two flanks of different widths — the thread
+       toggle at the start, the gear and menu at the end — so it is taken out of
+       the flex flow and pinned to the bar's middle rather than centred in
+       whatever space is left over. */
+    .navbar-brand {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
     }
 }
 
@@ -373,12 +440,18 @@ textarea::placeholder {
     grid-template-columns: 16rem 1fr;
     grid-template-rows: 1fr;
     /* The gap and the padding are what turn the two columns into two floating
-       panes instead of a split screen (#146 phase B). */
+       panes instead of a split screen (#146 phase B). `position: relative` is
+       the drawer's containing block under 48rem (#146 phase D). */
     gap: 0.75rem;
     padding: 0.75rem;
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    position: relative;
+}
+
+.chat-scrim {
+    display: none;
 }
 
 .sidebar {
@@ -484,6 +557,10 @@ textarea::placeholder {
     flex: 1;
     overflow-y: auto;
     padding: 1rem;
+    /* The turns centre themselves in a reading column on a wide pane. Padding
+       rather than a narrower scroller on purpose: the scrollbar should stay at
+       the pane's edge, not float in the middle of it. */
+    padding-inline: max(1rem, calc((100% - var(--reading-measure)) / 2));
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
@@ -562,6 +639,58 @@ textarea::placeholder {
     backdrop-filter: var(--glass-filter);
     -webkit-backdrop-filter: var(--glass-filter);
     flex-wrap: wrap;
+}
+
+/*
+ * The chat at phone widths (#146 phase D).
+ *
+ * One column, and the thread list becomes a drawer over the conversation: a
+ * 16rem column beside a 1fr column is two unreadable slivers on a 390px
+ * screen. `visibility` — not only the transform — is what keeps the closed
+ * drawer out of the tab order.
+ */
+@media (max-width: 48rem) {
+    .chat {
+        grid-template-columns: 1fr;
+    }
+
+    .sidebar {
+        position: absolute;
+        top: 0.75rem;
+        bottom: 0.75rem;
+        left: 0.75rem;
+        width: min(18rem, calc(100vw - 1.5rem));
+        z-index: 2;
+        visibility: hidden;
+        transform: translateX(calc(-100% - 1rem));
+        transition:
+            transform 160ms ease-out,
+            visibility 0s linear 160ms;
+    }
+
+    .sidebar.drawer-open {
+        visibility: visible;
+        transform: none;
+        transition:
+            transform 160ms ease-out,
+            visibility 0s;
+    }
+
+    .chat-scrim {
+        display: block;
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        padding: 0;
+        border: 0;
+        background: rgba(0, 0, 0, 0.45);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar {
+        transition: none;
+    }
 }
 
 /* Pending attachment chips above the composer row (#10). */
@@ -1681,7 +1810,7 @@ textarea::placeholder {
     flex-direction: column;
     gap: 1rem;
     width: 100%;
-    max-width: 44rem;
+    max-width: var(--page-measure);
     /* Breathing room from the bar above and the viewport below: the pane is a
        window *in* the app, not a sheet glued to the chrome. */
     margin: 0.75rem auto;
@@ -1962,7 +2091,7 @@ textarea::placeholder {
     flex-direction: column;
     gap: 1.25rem;
     width: 100%;
-    max-width: 40rem;
+    max-width: 48rem;
     margin: 0 auto;
     padding: 2.5rem 1.25rem;
 }

@@ -92,6 +92,32 @@ export function AppShell({
     onSignedOut,
 }: AppShellProps) {
     const route = useRoute();
+    /**
+     * Whether the chat's narrow-screen thread drawer is showing (#146 phase D).
+     *
+     * The control lives in the top bar, which is the shell's, while the drawer
+     * it opens belongs to the chat view — so the state sits here and both ends
+     * read it. The bar only shows the button on the chat route.
+     */
+    const [threadsOpen, setThreadsOpen] = useState(false);
+    // A navigation leaves the chat, so the drawer must not greet the next visit
+    // open — and Escape closes it, the same courtesy the page menu pays.
+    useEffect(() => {
+        setThreadsOpen(false);
+    }, [route]);
+    useEffect(() => {
+        if (!threadsOpen) {
+            return;
+        }
+        const onKey = (event: KeyboardEvent): void => {
+            if (event.key === "Escape") {
+                setThreadsOpen(false);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [threadsOpen]);
+
     /** Whether a turn is in flight, typed or spoken (the composer's state). */
     const [turning, setTurning] = useState(false);
     /** Whether the settings panel is showing (the bar's gear owns it now). */
@@ -442,7 +468,13 @@ export function AppShell({
             );
         }
         if (route === "chat") {
-            return <Chat app={state} />;
+            return (
+                <Chat
+                    app={state}
+                    threadsOpen={threadsOpen}
+                    onCloseThreads={() => setThreadsOpen(false)}
+                />
+            );
         }
         if (route === "notifications") {
             return (
@@ -490,6 +522,8 @@ export function AppShell({
             <NavBar
                 username={credential.username}
                 unread={notifications.unread}
+                threadsOpen={threadsOpen}
+                onToggleThreads={() => setThreadsOpen((open) => !open)}
                 status={socket.status}
                 settingsOpen={settingsOpen}
                 onOpenSettings={() => setSettingsOpen(true)}

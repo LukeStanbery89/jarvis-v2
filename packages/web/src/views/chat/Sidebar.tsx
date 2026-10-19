@@ -23,6 +23,11 @@ export interface SidebarProps {
     onNewChat(): void;
     /** Opens a conversation. */
     onOpenThread(id: string): void;
+    /**
+     * Whether the narrow-screen drawer is showing (#146 phase D). Ignored on
+     * wide screens, where the list is a column — the stylesheet decides.
+     */
+    drawerOpen?: boolean;
     /** Deletes a conversation. */
     onRemoveThread(id: string): void;
 }
@@ -39,9 +44,13 @@ export function Sidebar({
     onNewChat,
     onOpenThread,
     onRemoveThread,
+    drawerOpen = false,
 }: SidebarProps) {
     return (
-        <aside className="sidebar">
+        <aside
+            id="chat-threads"
+            className={drawerOpen ? "sidebar drawer-open" : "sidebar"}
+        >
             <button
                 type="button"
                 className="new-chat"

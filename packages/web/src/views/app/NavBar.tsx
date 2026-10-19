@@ -30,6 +30,7 @@ import {
     ExternalLink,
     MapPin,
     Menu,
+    MessagesSquare,
     Mic,
     Settings as SettingsIcon,
     X,
@@ -79,6 +80,10 @@ export interface NavBarProps {
     username: string;
     /** Notifications neither read nor dismissed (the badge). */
     unread: number;
+    /** Whether the chat's narrow-screen thread drawer is showing (#146 D). */
+    threadsOpen: boolean;
+    /** Flips it; the button only exists on the chat route. */
+    onToggleThreads(): void;
     /** The socket's lifecycle, for the connection chip. */
     status: ChatStatus;
     /** Whether the settings panel is showing (the gear's `aria-expanded`). */
@@ -210,6 +215,8 @@ function LocationChip({
 export function NavBar({
     username,
     unread,
+    threadsOpen,
+    onToggleThreads,
     status,
     settingsOpen,
     onOpenSettings,
@@ -279,6 +286,24 @@ export function NavBar({
 
     return (
         <header className="navbar" ref={barRef}>
+            {/* The thread drawer's control (#146 phase D). It lives at the
+                bar's start, where the wordmark is on wide screens — the drawer
+                only exists under 48rem, so the button does too (the stylesheet
+                hides it above that; on the chat route it is always mounted, so
+                the breakpoint stays a CSS fact rather than a width probe). */}
+            {route === "chat" && (
+                <button
+                    type="button"
+                    className="icon-btn navbar-threads"
+                    aria-expanded={threadsOpen}
+                    aria-controls="chat-threads"
+                    aria-label="Threads"
+                    title="Threads"
+                    onClick={onToggleThreads}
+                >
+                    <MessagesSquare size={16} aria-hidden="true" />
+                </button>
+            )}
             <AppLink to="home" className="navbar-brand" label="Dashboard">
                 JARVIS
             </AppLink>
@@ -314,7 +339,7 @@ export function NavBar({
                 <span className="navbar-user">{username}</span>
                 <button
                     type="button"
-                    className="icon-btn"
+                    className="icon-btn navbar-settings"
                     aria-expanded={settingsOpen}
                     aria-controls="settings-panel"
                     aria-label="Settings"
@@ -351,15 +376,33 @@ export function NavBar({
                         {LINKS.map((entry) =>
                             link(entry.to, entry.label, "navbar-drawer-link"),
                         )}
-                        <a
-                            className="navbar-drawer-link navbar-external"
-                            href={ADMIN_HREF}
-                            title="Admin portal — a separate app"
-                        >
-                            Admin
-                            <ExternalLink size={11} aria-hidden="true" />
-                        </a>
                     </nav>
+                    {/* Settings is the bar's gear on wide screens; at this width
+                        the gear gives its place to the menu (#146 phase D), so
+                        the panel opens from here instead. The menu closes
+                        first, or it would sit behind the dialog. */}
+                    <button
+                        type="button"
+                        className="navbar-drawer-link navbar-drawer-action"
+                        onClick={() => {
+                            setMenuOpen(false);
+                            onOpenSettings();
+                        }}
+                    >
+                        Settings
+                    </button>
+                    {/* Below the line, because Admin is not a page of this app:
+                        it leaves for the portal. Settings stays above it — it
+                        is still part of this app's own chrome. */}
+                    <span className="navbar-drawer-sep" aria-hidden="true" />
+                    <a
+                        className="navbar-drawer-link navbar-external"
+                        href={ADMIN_HREF}
+                        title="Admin portal — a separate app"
+                    >
+                        Admin
+                        <ExternalLink size={11} aria-hidden="true" />
+                    </a>
                 </div>
             )}
         </header>
