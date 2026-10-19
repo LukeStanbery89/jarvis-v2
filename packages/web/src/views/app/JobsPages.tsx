@@ -6,7 +6,10 @@
  * cancellation, the same words for a moment, the same form — differing only in
  * which class they show and whether a deferral is offered (a timer is a
  * countdown: the only things to do with it are edit it and cancel it). Two files
- * would be two places for the rows to drift apart.
+ * would be two places for the rows to drift apart. The row itself and the form
+ * lifecycle are shared with the Notifications page's scheduled section (see
+ * `JobRow.tsx` and `hooks/useJobPage.ts`), so this file is the two pages that
+ * differ, not the parts they have in common.
  *
  * Phase 7 gave them hands. **New** and **Edit** open the shared `JobForm` (the
  * class is the page's, so a form cannot turn a reminder into a timer), a save
@@ -22,24 +25,17 @@
  * the list within a tick — and the announcement arrives through the toast or the
  * ring, not through here.
  */
-import { useState } from "react";
 import type { ReactNode } from "react";
-import {
-    describeMoment,
-    describeQuiet,
-    describeRunAt,
-    jobBody,
-    recentJobs,
-    upcomingJobs,
-} from "../../jobs";
+import { describeMoment, recentJobs, upcomingJobs } from "../../jobs";
 import { snoozeReminder } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
+import { useJobPage } from "../../hooks/useJobPage";
 import type { JobClass } from "../../jobs";
 import type { JobsState } from "../../hooks/useJobs";
 import type { NotificationsState } from "../../hooks/useNotifications";
-import type { Job, JobSaved } from "../../api";
+import type { Job } from "../../api";
 import { JobForm } from "./JobForm";
-import { SnoozeMenu } from "./SnoozeMenu";
+import { JobRow } from "./JobRow";
 
 /** How many owed rows a list shows before the dashboard's glance takes over. */
 const JOB_PAGE_LIMIT = 50;
@@ -53,69 +49,6 @@ export interface JobsPageProps {
     jobs: JobsState;
     /** The notification list, so a deferral settles the row it answered. */
     notifications: NotificationsState;
-}
-
-/** Props for one owed row. */
-interface JobRowProps {
-    job: Job;
-    now: Date;
-    /** Whether to offer the deferral (a reminder's, not a countdown's). */
-    snoozable: boolean;
-    onCancel(id: string): void;
-    onEdit(job: Job): void;
-    onSnooze(job: Job, minutes: number): void;
-}
-
-/**
- * One owed job, with the actions it allows.
- *
- * `running now` replaces the moment while the scheduler holds the row: a countdown
- * that says "in 0 minutes" while the work is happening would be a worse answer
- * than saying so. Edit is offered only while the job is still `pending` — a
- * running one cannot be changed, and the server says so rather than the button
- * failing.
- */
-function JobRow({
-    job,
-    now,
-    snoozable,
-    onCancel,
-    onEdit,
-    onSnooze,
-}: JobRowProps) {
-    // The detail the row should say — never the label again (see `jobBody`).
-    const body = jobBody(job);
-    return (
-        <li className={`job-item job-${job.class}`}>
-            <div className="job-text">
-                <span className="job-eyebrow">
-                    {job.class === "timer" ? "Timer" : "Reminder"}
-                </span>
-                <strong>{job.label}</strong>
-                {body !== null && <span> {body}</span>}
-            </div>
-            <div className="job-actions">
-                <span className="job-when">
-                    {job.state === "running"
-                        ? "running now"
-                        : describeRunAt(job.runAt, now)}
-                </span>
-                {snoozable && (
-                    <SnoozeMenu
-                        onSnooze={(minutes) => onSnooze(job, minutes)}
-                    />
-                )}
-                {job.state === "pending" && (
-                    <button type="button" onClick={() => onEdit(job)}>
-                        Edit
-                    </button>
-                )}
-                <button type="button" onClick={() => onCancel(job.id)}>
-                    Cancel
-                </button>
-            </div>
-        </li>
-    );
 }
 
 /**
@@ -172,16 +105,20 @@ function JobList({
                     key={job.id}
                     job={job}
                     now={now}
-                    snoozable={jobClass === "reminder"}
                     onCancel={(id) => {
                         void jobs.cancel(id);
                     }}
                     onEdit={onEdit}
-                    onSnooze={(target, minutes) =>
-                        snoozeReminder(
-                            { notifications, jobs },
-                            { jobId: target.id, minutes },
-                        )
+                    // A reminder is the one class a deferral applies to, and the
+                    // prop's presence is how the row is told (`JobRow`).
+                    onSnooze={
+                        jobClass === "reminder"
+                            ? (target, minutes) =>
+                                  snoozeReminder(
+                                      { notifications, jobs },
+                                      { jobId: target.id, minutes },
+                                  )
+                            : undefined
                     }
                 />
             ))}
@@ -263,46 +200,6 @@ function JobsPageFrame({
             {children}
         </main>
     );
-}
-
-/**
- * The state both pages share: which object the form has open, and the line the
- * last save left behind.
- *
- * Kept together because it is one lifecycle — opening the form clears the
- * previous note, a save replaces it, closing the form leaves it in place — and
- * because a second copy would be the place the two pages disagreed about what
- * "saved" means.
- */
-function useJobPage() {
-    /** `null` while closed; `{ job: null }` to create; `{ job }` to edit. */
-    const [form, setForm] = useState<{ job: Job | null } | null>(null);
-    const [note, setNote] = useState<string | null>(null);
-
-    return {
-        form,
-        note,
-        create(): void {
-            setNote(null);
-            setForm({ job: null });
-        },
-        edit(job: Job): void {
-            setNote(null);
-            setForm({ job });
-        },
-        close(): void {
-            setForm(null);
-        },
-        /** A save landed: say what the server said about how it will arrive. */
-        saved(saved: JobSaved): void {
-            const quiet = describeQuiet(saved.quiet, saved.job.class);
-            setNote(
-                quiet === null
-                    ? `Saved · “${saved.job.label}” is set.`
-                    : `Saved · ${quiet}`,
-            );
-        },
-    };
 }
 
 /**

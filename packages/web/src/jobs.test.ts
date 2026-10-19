@@ -25,6 +25,7 @@ import {
     momentInputValue,
     parseMomentInput,
     recentJobs,
+    runDuration,
     snoozeUntil,
     splitJobs,
     DURATION_PRESETS,
@@ -39,7 +40,7 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
 import type { JobDraft } from "./jobs";
-import type { Job } from "./api";
+import type { Job, JobRun } from "./api";
 
 /** A job with everything the list needs, overridable per test. */
 function job(overrides: Partial<Job>): Job {
@@ -214,6 +215,56 @@ describe("describeRunAt", () => {
 
     it("says so when the moment cannot be read", () => {
         expect(describeRunAt("", now)).toBe("at an unknown time");
+    });
+});
+
+describe("runDuration (#90 phase 7d)", () => {
+    // Seconds and milliseconds matter at this size, so the stamps are built with
+    // the full `Date` precision.
+    const at = (seconds: number, ms = 0) =>
+        new Date(2026, 9, 17, 12, 0, seconds, ms).toISOString();
+
+    /** One attempt, overridable per test. */
+    function run(startedAt: string, finishedAt?: string): JobRun {
+        return {
+            id: "run-1",
+            state: "ok",
+            startedAt,
+            ...(finishedAt === undefined ? {} : { finishedAt }),
+        };
+    }
+
+    it("measures a tool's attempt in milliseconds", () => {
+        // A tool job is done before the network notices; "0 minutes" would be
+        // the answer `describeSpan` alone would give.
+        expect(runDuration(run(at(0), at(0, 12)))).toBe("12 ms");
+    });
+
+    it("measures a prompt's attempt in seconds", () => {
+        expect(runDuration(run(at(0), at(1, 400)))).toBe("1 second");
+        expect(runDuration(run(at(0), at(42)))).toBe("42 seconds");
+    });
+
+    it("falls back to the span every other surface reads", () => {
+        expect(runDuration(run(at(0), at(3 * 60 + 30)))).toBe("3 minutes");
+    });
+
+    it("says nothing about an attempt still in flight", () => {
+        expect(runDuration(run(at(0)))).toBeNull();
+    });
+
+    it("says nothing when the stamps disagree or cannot be read", () => {
+        // A `finishedAt` before its start is a clock that moved, not a negative
+        // duration to render.
+        expect(runDuration(run(at(10), at(0)))).toBeNull();
+        expect(
+            runDuration({
+                id: "run-2",
+                state: "ok",
+                startedAt: "x",
+                finishedAt: "y",
+            }),
+        ).toBeNull();
     });
 });
 

@@ -8,8 +8,10 @@
     line-height: 1.5;
 
     /* Dual-chromatic theme: pure black + holographic cyan (#00ddff).
-       All hierarchy is alpha of the one hue on black; red is the single
-       functional exception (errors). */
+       All hierarchy is alpha of the one hue on black; red and amber are the two
+       functional exceptions — red is an error, amber is *unseen* (a notification
+       nobody has read yet). Both say something the cyan ladder cannot, which is
+       why they are allowed to be off-hue at all. */
     --primary: #00ddff;
     --primary-faint: rgba(0, 221, 255, 0.35);
     --primary-dim: rgba(0, 221, 255, 0.6);
@@ -19,6 +21,7 @@
     --bg: #000000;
     --text: var(--primary);
     --error: #ff6b6b;
+    --attention: #ffdd00;
 }
 
 * {
@@ -1095,6 +1098,15 @@ textarea::placeholder {
     text-transform: uppercase;
 }
 
+/* An unread notification says "NEW" in amber, the one word in the list that is
+   about the *reader* rather than the notification: everything else here (a
+   class, a state, a moment) describes the thing, and this describes the fact
+   that they have not seen it. It stops the moment it is read. */
+.notification-state-new {
+    color: var(--attention);
+    font-weight: 700;
+}
+
 /* The debug-gated test affordance (#139): a development control, styled as
    such so it never reads as part of the product surface. */
 .notification-test {
@@ -1593,6 +1605,86 @@ textarea::placeholder {
 
 .page-new:hover {
     filter: brightness(1.1);
+}
+
+/* The halves of a page that lists two kinds of thing (#90 phase 7d): the work
+   still owed and the history it leaves. A signpost, not a heading — the page's
+   h1 is the title, and these only say which half is which. */
+.page-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.page-section-head {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+/* A record's run disclosure (#90 phase 7d): what the job actually did, under the
+   notification it produced. */
+.job-runs {
+    margin-top: 0.35rem;
+}
+
+.job-runs > summary {
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.job-runs[open] > summary {
+    margin-bottom: 0.3rem;
+}
+
+.job-runs-note {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.75rem;
+}
+
+.job-runs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.job-runs-head {
+    display: block;
+    color: var(--primary-dim);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* A model's reply is not a row's worth of text: bounded and scrollable rather
+   than allowed to stretch the record it hangs under. */
+.job-runs-output {
+    max-height: 10rem;
+    margin: 0.2rem 0 0;
+    padding: 0.35rem 0.5rem;
+    overflow: auto;
+    font-family: inherit;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--bg);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+}
+
+.job-runs-error {
+    margin: 0.2rem 0 0;
+    color: var(--error);
+    font-size: 0.75rem;
 }
 
 /* The snooze control (#90 phase 6c): one button, and its three presets when

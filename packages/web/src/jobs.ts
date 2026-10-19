@@ -8,7 +8,7 @@
  * time beyond that, the day named only when it is not today), and what a snoozed
  * row is waiting for.
  */
-import type { Job, JobUpdateRequest, QuietForecast } from "./api";
+import type { Job, JobRun, JobUpdateRequest, QuietForecast } from "./api";
 import {
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
@@ -164,6 +164,40 @@ export function describeRunAt(runAt: string, now: Date): string {
         return `in ${describeSpan(aheadMs)}`;
     }
     return describeMoment(runAt, now);
+}
+
+/**
+ * How long one attempt took, in the unit its size deserves (#90 phase 7d).
+ *
+ * `describeSpan` floors to whole minutes, which is right for a list of moments
+ * ("3 minutes ago") and wrong for a run: a tool job is done in milliseconds and
+ * a prompt job in seconds, and "0 minutes" is the answer neither of them
+ * deserves. So an attempt measures itself — milliseconds, then seconds, then the
+ * same span every other surface reads.
+ *
+ * `null` when there is nothing to measure: an attempt still in flight (no
+ * `finishedAt`), or timestamps that do not parse. The caller then simply says
+ * nothing about duration rather than inventing one.
+ *
+ * @param run - The attempt, as `GET /api/jobs/{id}` reports it.
+ * @returns The duration in words, or `null` when it cannot be known.
+ */
+export function runDuration(run: JobRun): string | null {
+    if (run.finishedAt === undefined) {
+        return null;
+    }
+    const ms = Date.parse(run.finishedAt) - Date.parse(run.startedAt);
+    if (!Number.isFinite(ms) || ms < 0) {
+        return null;
+    }
+    if (ms < 1000) {
+        return `${ms} ms`;
+    }
+    if (ms < 60_000) {
+        const seconds = Math.round(ms / 1000);
+        return `${seconds} second${seconds === 1 ? "" : "s"}`;
+    }
+    return describeSpan(ms);
 }
 
 /**

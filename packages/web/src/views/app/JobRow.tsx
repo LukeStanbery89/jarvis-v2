@@ -1,0 +1,85 @@
+/**
+ * One owed job, as every page that lists them shows it (#90 phase 7).
+ *
+ * It lives on its own because three surfaces now render the same row: the
+ * Timers page, the Reminders page, and the Notifications page's scheduled
+ * section (where the notification class is managed). Copying it would be the
+ * place the three disagreed about what a job says, how a moment reads, or which
+ * actions a `running` job still allows.
+ *
+ * What the row does **not** decide is the deferral: `onSnooze` is present only
+ * where the class has one — a reminder's, since a timer is a countdown and a
+ * notification is already filed — so the menu's presence is the caller's
+ * statement about the class rather than a second flag to keep in step.
+ */
+import { describeRunAt, jobBody } from "../../jobs";
+import type { Job } from "../../api";
+import { SnoozeMenu } from "./SnoozeMenu";
+
+/** Props for {@link JobRow}. */
+export interface JobRowProps {
+    /** The job to render. */
+    job: Job;
+    /** The clock the moment is compared against (injected, for the tests). */
+    now: Date;
+    /** Cancels the job. */
+    onCancel(id: string): void;
+    /** Opens the form for this job. */
+    onEdit(job: Job): void;
+    /**
+     * Defers the job by `minutes`. Omitted for a class that cannot be deferred,
+     * which is what keeps the Snooze menu off a timer and a notification.
+     */
+    onSnooze?(job: Job, minutes: number): void;
+}
+
+/**
+ * One owed job, with the actions its state and class allow.
+ *
+ * `running now` replaces the moment while the scheduler holds the row: a
+ * countdown that says "in 0 minutes" while the work is happening would be a
+ * worse answer than saying so. Edit is offered only while the job is still
+ * `pending` — a running one cannot be changed, and the server says so rather
+ * than the button failing.
+ *
+ * @param props - See {@link JobRowProps}.
+ */
+export function JobRow({ job, now, onCancel, onEdit, onSnooze }: JobRowProps) {
+    // The detail the row should say — never the label again (see `jobBody`).
+    const body = jobBody(job);
+    return (
+        <li className={`job-item job-${job.class}`}>
+            <div className="job-text">
+                <span className="job-eyebrow">
+                    {job.class === "timer"
+                        ? "Timer"
+                        : job.class === "reminder"
+                          ? "Reminder"
+                          : "Notification"}
+                </span>
+                <strong>{job.label}</strong>
+                {body !== null && <span> {body}</span>}
+            </div>
+            <div className="job-actions">
+                <span className="job-when">
+                    {job.state === "running"
+                        ? "running now"
+                        : describeRunAt(job.runAt, now)}
+                </span>
+                {onSnooze !== undefined && (
+                    <SnoozeMenu
+                        onSnooze={(minutes) => onSnooze(job, minutes)}
+                    />
+                )}
+                {job.state === "pending" && (
+                    <button type="button" onClick={() => onEdit(job)}>
+                        Edit
+                    </button>
+                )}
+                <button type="button" onClick={() => onCancel(job.id)}>
+                    Cancel
+                </button>
+            </div>
+        </li>
+    );
+}

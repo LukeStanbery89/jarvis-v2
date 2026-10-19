@@ -436,7 +436,11 @@ export function AppShell({
         }
         if (route === "notifications") {
             return (
-                <NotificationsPage notifications={notifications} jobs={jobs} />
+                <NotificationsPage
+                    notifications={notifications}
+                    jobs={jobs}
+                    token={credential.token}
+                />
             );
         }
         if (route === "timers") {
