@@ -184,7 +184,8 @@ router and middleware span every ledger and therefore take the full
   `message`) with the prompt, the tool call, _or_ the message text (a CHECK
   refuses a row whose payload does not match its kind), `run_at`, a `state`
   lifecycle (`pending` → `running` → `done`/`failed`/`cancelled`/`missed`),
-  `attempts`, `last_error`, and `repeat` (the recurrence rule as JSON, v13 —
+  `attempts`, `last_error`, `gate` (the deterministic check a firing must pass,
+  as JSON, v15) and `repeat` (the recurrence rule as JSON, v13 —
   read defensively: a value that will not parse comes back as its raw text, so
   the scheduler can report a rule it cannot read rather than pretending the job
   is a one-shot). Indexed on `(user_id, created_at DESC)` for the
@@ -203,8 +204,13 @@ router and middleware span every ledger and therefore take the full
   hand the day's allowance back, exactly when a runaway job would spend it again.
   The server owns the ceiling and what a day means; this table owns the count.
 - `job_runs` — one row per attempt at a job: `started_at`/`finished_at`, the
-  run's `state` (`running`/`ok`/`failed`), the `output` it produced (the reply,
-  or a tool's result text) and the `error` it ended with. Cascade-deleted with
+  run's `state` (`running`/`ok`/`failed`/`skipped`), the `output` it produced (the
+  reply, or a tool's result text) and the `error` it ended with. `skipped` is a
+  firing that _declined_ — a gate's check found nothing to do — which is why it is
+  a run rather than silence: one run row per firing is the trace this table owes.
+  `gate_output`/`gate_key` are that check's memory (#90 phase 8f): what it read,
+  and which check read it, so a changed gate is a different question rather than a
+  changed answer. Cascade-deleted with
   its job even when the _job_ is pruned. The newest runs of each job are kept
   (`pruneJobRuns`, 50 by default — comfortably above the detail endpoint's
   page): a job that fires every few minutes writes one per firing, so the job

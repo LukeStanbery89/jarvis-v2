@@ -110,6 +110,7 @@ function jobsTable(name: string): string {
     settled_at  TEXT,
     last_error  TEXT,
     repeat      TEXT,
+    gate        TEXT,
     CHECK (
         (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL AND message IS NULL) OR
         (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL AND message IS NULL) OR
@@ -188,17 +189,36 @@ const JOB_MODEL_RUNS_TABLE = `CREATE TABLE IF NOT EXISTS job_model_runs (
     PRIMARY KEY (user_id, day)
 )`;
 
-const JOBS_SCHEMA = `${jobsTable("jobs")};
-${JOB_INDEXES}
-CREATE TABLE IF NOT EXISTS job_runs (
+/**
+ * The `job_runs` table (#90), parameterized by name.
+ *
+ * A function for the same reason {@link jobsTable} is one: the v15 migration has
+ * to *rebuild* this table — SQLite cannot widen a `CHECK` in place, and `skipped`
+ * widens the state set — and the copy has to land in a table with exactly this
+ * shape. Written once, both ask for it.
+ *
+ * `gate_output` and `gate_key` are the gate's memory (#90 phase 8f): what the
+ * check read, and *which* check read it. The key matters because a gate whose
+ * tool or arguments changed is a different question, and comparing its answer to
+ * a previous gate's would be comparing two things.
+ */
+function jobRunsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
     id          TEXT PRIMARY KEY,
     job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     started_at  TEXT NOT NULL,
     finished_at TEXT,
-    state       TEXT NOT NULL CHECK (state IN ('running', 'ok', 'failed')),
+    state       TEXT NOT NULL CHECK (state IN ('running', 'ok', 'failed', 'skipped')),
     output      TEXT,
-    error       TEXT
-);
+    error       TEXT,
+    gate_output TEXT,
+    gate_key    TEXT
+)`;
+}
+
+const JOBS_SCHEMA = `${jobsTable("jobs")};
+${JOB_INDEXES}
+${jobRunsTable("job_runs")};
 CREATE INDEX IF NOT EXISTS idx_job_runs_job
     ON job_runs (job_id, started_at DESC);
 ${JOB_MODEL_RUNS_TABLE};`;
@@ -587,7 +607,15 @@ export const JOB_STATES = [
 export type JobState = (typeof JOB_STATES)[number];
 
 /** How one attempt at a job ended. */
-export const JOB_RUN_STATES = ["running", "ok", "failed"] as const;
+/**
+ * The states one attempt can end in (#90 phases 1, 8f).
+ *
+ * `skipped` is a firing that happened and declined — a gate's check said there
+ * was nothing to do — which is why it is a *run* rather than silence: the
+ * invariant this ledger serves is one run row per firing, so a firing that
+ * reached its payload check leaves the same trace as one that went further.
+ */
+export const JOB_RUN_STATES = ["running", "ok", "failed", "skipped"] as const;
 
 /** A run's state. */
 export type JobRunState = (typeof JOB_RUN_STATES)[number];
@@ -644,6 +672,14 @@ export interface AppJob {
      * instead of silently treating the job as a one-shot.
      */
     repeat: unknown;
+    /**
+     * The deterministic check a firing must pass before its payload runs (#90
+     * phase 8f), as parsed JSON, or `null` for a job that runs unconditionally.
+     *
+     * `unknown` for the same reason `repeat` is: the shape is the protocol's and
+     * the server names it, while this package owns the row.
+     */
+    gate: unknown;
 }
 
 /** One attempt at one job, as the store returns it. */
@@ -657,6 +693,17 @@ export interface AppJobRun {
     output: string | null;
     /** Why the run failed, when it did. */
     error: string | null;
+    /**
+     * What the gate's check read, when the job has one (#90 phase 8f), or `null`.
+     *
+     * It is on the *run* rather than the job because it is what that firing saw:
+     * the comparison reads the newest run's pair, and a payload run records it
+     * too — a baseline that only skips recorded would reset on every firing that
+     * did something.
+     */
+    gateOutput: string | null;
+    /** Which check read it: the gate's tool and arguments, as one string. */
+    gateKey: string | null;
 }
 
 /** The producer-supplied half of a job; identity and times are the store's. */
@@ -674,6 +721,8 @@ export interface CreateJobInput {
     message?: string | null;
     /** The recurrence rule (#90 phase 8); omitted for a one-shot job. */
     repeat?: unknown;
+    /** The gate a firing must pass (#90 phase 8f); omitted to run always. */
+    gate?: unknown;
     runAt: string;
 }
 
@@ -693,6 +742,8 @@ export interface SettleFiringInput {
         state: Exclude<JobRunState, "running">;
         output?: string;
         error?: string;
+        gateOutput?: string;
+        gateKey?: string;
     };
     /**
      * What becomes of the job: `pending` when it repeats and has a next
@@ -787,11 +838,19 @@ export interface JobLedger {
      * area exists to remove.
      */
     startJobRun(input: { id: string; jobId: string; startedAt: string }): void;
-    /** Finishes one attempt, recording what it produced or why it failed. */
+    /**
+     * Finishes one attempt, recording what it produced, why it failed, or — for
+     * a firing a gate declined — what the check read (#90 phase 8f).
+     */
     finishJobRun(
         runId: string,
         state: Exclude<JobRunState, "running">,
-        result: { output?: string; error?: string },
+        result: {
+            output?: string;
+            error?: string;
+            gateOutput?: string;
+            gateKey?: string;
+        },
         at: string,
     ): void;
     /**
@@ -1081,6 +1140,7 @@ interface JobRow {
     settledAt: string | null;
     lastError: string | null;
     repeat: string | null;
+    gate: string | null;
 }
 
 /** A `job_runs` table row (see {@link mapJobRun}). */
@@ -1092,13 +1152,15 @@ interface JobRunRow {
     state: JobRunState;
     output: string | null;
     error: string | null;
+    gateOutput: string | null;
+    gateKey: string | null;
 }
 
 /** The job SELECT list, shared by every read (`mapJob` is the other half). */
-const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError, repeat FROM jobs`;
+const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError, repeat, gate FROM jobs`;
 
 /** The run SELECT list (`mapJobRun` is the other half). */
-const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error FROM job_runs`;
+const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error, gate_output AS gateOutput, gate_key AS gateKey FROM job_runs`;
 
 /** The states a job never returns from — settled, in the ledger's terms. */
 const SETTLED_JOB_STATES = `('done', 'failed', 'cancelled', 'missed')`;
@@ -1217,6 +1279,7 @@ function mapJob(row: JobRow): AppJob {
         settledAt: row.settledAt,
         lastError: row.lastError,
         repeat: parseJsonColumn(row.repeat),
+        gate: parseJsonColumn(row.gate),
     };
 }
 
@@ -1230,6 +1293,8 @@ function mapJobRun(row: JobRunRow): AppJobRun {
         state: row.state,
         output: row.output,
         error: row.error,
+        gateOutput: row.gateOutput,
+        gateKey: row.gateKey,
     };
 }
 
@@ -1403,6 +1468,16 @@ export interface MigrationReport {
      * account can reach, and what `ON DELETE CASCADE` would have done.
      */
     droppedOrphanedNotifications: number;
+    /**
+     * Runs deleted because the job they belong to is gone (#90 phase 8f).
+     *
+     * Dropped rather than repaired: a run *is* its job's history, so a run with
+     * no job has nothing to be history *of* — and unlike a notification's link,
+     * the column cannot be nulled. The same cause as
+     * {@link repairedNotificationJobLinks}: a delete performed with foreign keys
+     * off, which the `sqlite3` CLI does by default.
+     */
+    droppedOrphanedJobRuns: number;
 }
 
 /** Options for opening or constructing a store. */
@@ -1412,6 +1487,37 @@ export interface AppDatabaseOptions {
      * a clean database reports nothing at all.
      */
     onMigrationRepair?(report: MigrationReport): void;
+}
+
+/**
+ * Drops the runs whose job no longer exists (#90 phase 8f).
+ *
+ * The run-row sibling of {@link repairNotificationReferences}, and it *deletes*
+ * where that one nulls a link: `job_runs.job_id` is `NOT NULL`, and a run is
+ * only ever an attempt at its job, so there is no row left to keep.
+ *
+ * This exists because the v15 rebuild validates its copy with foreign keys on —
+ * the same choice v12 made, and the same lesson: a migration that refuses to open
+ * a store it could have carried is worse than one that repairs it. Left in place
+ * these rows refuse the boot; removed and reported, the store opens and the
+ * operator is told.
+ *
+ * Runs inside the caller's transaction, and counts only what it dropped.
+ *
+ * @param db - The connection being migrated (foreign keys on).
+ * @returns How many rows the repair touched, in the report's own fields.
+ */
+function repairJobRunReferences(db: Database.Database): MigrationReport {
+    const dropped = db
+        .prepare(
+            "DELETE FROM job_runs WHERE job_id NOT IN (SELECT id FROM jobs)",
+        )
+        .run().changes;
+    return {
+        repairedNotificationJobLinks: 0,
+        droppedOrphanedNotifications: 0,
+        droppedOrphanedJobRuns: dropped,
+    };
 }
 
 /**
@@ -1448,6 +1554,7 @@ function repairNotificationReferences(db: Database.Database): MigrationReport {
     return {
         repairedNotificationJobLinks: repaired.changes,
         droppedOrphanedNotifications: dropped.changes,
+        droppedOrphanedJobRuns: 0,
     };
 }
 
@@ -1660,6 +1767,7 @@ ${JOB_INDEXES}`);
             let report: MigrationReport = {
                 repairedNotificationJobLinks: 0,
                 droppedOrphanedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
             };
             // One transaction: SQLite makes DDL transactional, so a failure
             // anywhere in this sequence — the repairs included — leaves the old
@@ -1729,6 +1837,71 @@ ${NOTIFICATION_INDEXES}`);
         // through `SCHEMA`.
         db.exec(JOB_MODEL_RUNS_TABLE);
         db.pragma("user_version = 14");
+    }
+    if (version < 15) {
+        // v15: the gate (#90 phase 8f) — a firing that can decline, and what its
+        // check read.
+        //
+        // Two steps with one cause. `jobs.gate` is additive, with the usual
+        // guard. `job_runs` has to be **rebuilt**, because `skipped` widens a
+        // CHECK that SQLite cannot alter in place — and this rebuild can keep
+        // foreign keys **on**, like v12's and unlike v10's: nothing references
+        // `job_runs`, so the DROP cascades nothing and the INSERT is validated on
+        // the way through.
+        //
+        // That only holds because the orphan rows are removed *first*.
+        // `job_runs.job_id` is NOT NULL, so a run whose job was deleted with
+        // enforcement off cannot be carried forward — it is dropped and reported,
+        // rather than refusing the open. This database really did hold thirteen
+        // of them, and the v12 incident is why the repair exists at all: a store
+        // that will not boot on data it could have carried is worse than one that
+        // says what it repaired.
+        if (!hasColumn(db, "jobs", "gate")) {
+            db.exec("ALTER TABLE jobs ADD COLUMN gate TEXT");
+        }
+        if (!tableSqlHas(db, "job_runs", "'skipped'")) {
+            let report: MigrationReport = {
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
+            };
+            // One transaction, for the reason v12 gives: SQLite makes DDL
+            // transactional, so a failure anywhere — the repair included — leaves
+            // the old table exactly as it was.
+            const rebuild = db.transaction((): void => {
+                report = repairJobRunReferences(db);
+                db.exec(`${jobRunsTable("job_runs_v15")};
+INSERT INTO job_runs_v15 (
+    id, job_id, started_at, finished_at, state, output, error, gate_output,
+    gate_key
+)
+SELECT id, job_id, started_at, finished_at, state, output, error, NULL, NULL
+  FROM job_runs;
+DROP TABLE job_runs;
+ALTER TABLE job_runs_v15 RENAME TO job_runs;
+CREATE INDEX IF NOT EXISTS idx_job_runs_job
+    ON job_runs (job_id, started_at DESC);`);
+                // A self-check, not a data check: the repair above is supposed to
+                // leave every reference resolvable, so a violation here means this
+                // migration is wrong rather than the store is corrupt.
+                const dangling = db
+                    .prepare(
+                        `SELECT COUNT(*) AS n FROM job_runs r
+                          WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = r.job_id)`,
+                    )
+                    .get() as { n: number };
+                if (dangling.n > 0) {
+                    throw new Error(
+                        `the job_runs rebuild left ${dangling.n} dangling reference(s)`,
+                    );
+                }
+            });
+            rebuild();
+            if (report.droppedOrphanedJobRuns > 0) {
+                options?.onMigrationRepair?.(report);
+            }
+        }
+        db.pragma("user_version = 15");
     }
 }
 
@@ -1829,6 +2002,8 @@ export class SqliteAppDatabase implements AppDatabase {
                 input.run.state,
                 input.run.output ?? null,
                 input.run.error ?? null,
+                input.run.gateOutput ?? null,
+                input.run.gateKey ?? null,
                 input.at,
                 input.runId,
             );
@@ -1985,7 +2160,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
             insertJob: db.prepare(
-                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at, repeat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at, repeat, gate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
             ),
             selectJob: db.prepare(
                 `${JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -2053,7 +2228,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "INSERT INTO job_runs (id, job_id, started_at, state) VALUES (?, ?, ?, 'running')",
             ),
             finishJobRun: db.prepare(
-                "UPDATE job_runs SET state = ?, output = ?, error = ?, finished_at = ? WHERE id = ?",
+                "UPDATE job_runs SET state = ?, output = ?, error = ?, gate_output = ?, gate_key = ?, finished_at = ? WHERE id = ?",
             ),
             // A series' next occurrence (#90 phase 8b): the firing is over and
             // the job is owed again, so `settled_at` is cleared — the row is not
@@ -2556,6 +2731,9 @@ export class SqliteAppDatabase implements AppDatabase {
             input.repeat === undefined || input.repeat === null
                 ? null
                 : JSON.stringify(input.repeat),
+            input.gate === undefined || input.gate === null
+                ? null
+                : JSON.stringify(input.gate),
         );
         // Just written, so a re-read cannot miss; the assertion documents that
         // rather than papering over a null with a fake row.
@@ -2623,13 +2801,20 @@ export class SqliteAppDatabase implements AppDatabase {
     finishJobRun(
         runId: string,
         state: Exclude<JobRunState, "running">,
-        result: { output?: string; error?: string },
+        result: {
+            output?: string;
+            error?: string;
+            gateOutput?: string;
+            gateKey?: string;
+        },
         at: string,
     ): void {
         this.statements.finishJobRun.run(
             state,
             result.output ?? null,
             result.error ?? null,
+            result.gateOutput ?? null,
+            result.gateKey ?? null,
             at,
             runId,
         );

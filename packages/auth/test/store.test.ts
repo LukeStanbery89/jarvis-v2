@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 14;
+const LATEST_VERSION = 15;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -1072,6 +1072,7 @@ describe("openAppDatabase", () => {
             expect(reported).toEqual({
                 repairedNotificationJobLinks: 1,
                 droppedOrphanedNotifications: 0,
+                droppedOrphanedJobRuns: 0,
             });
             // The widened CHECK is in force: the state this migration exists for
             // is now accepted.
@@ -1091,6 +1092,115 @@ describe("openAppDatabase", () => {
                 )
                 .get() as { sql: string };
             expect(table.sql).toContain("'snoozed'");
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("rebuilds job_runs to accept `skipped`, dropping orphan runs (v15)", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "jarvis.sqlite");
+        try {
+            // A store as v14 left it: the old run shape, and — the case this
+            // migration exists for — a run whose job was deleted with foreign
+            // keys off (which the sqlite3 CLI does by default).
+            openAppDatabase(path).close();
+            const legacy = new Database(path);
+            legacy.exec(`
+                -- As it happened: enforcement off (the sqlite3 CLI's default),
+                -- so a run can outlive the job it points at.
+                PRAGMA foreign_keys = OFF;
+                INSERT INTO users (id, username, password_hash, role, disabled, created_at)
+                    VALUES (1, 'luke', 'hash', 'owner', 0, '2026-10-01T00:00:00.000Z');
+                DROP TABLE job_runs;
+                CREATE TABLE job_runs (
+                    id          TEXT PRIMARY KEY,
+                    job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                    started_at  TEXT NOT NULL,
+                    finished_at TEXT,
+                    state       TEXT NOT NULL CHECK (state IN ('running', 'ok', 'failed')),
+                    output      TEXT,
+                    error       TEXT
+                );
+                CREATE INDEX idx_job_runs_job ON job_runs (job_id, started_at DESC);
+                ALTER TABLE jobs DROP COLUMN gate;
+                INSERT INTO jobs (id, user_id, label, class, kind, prompt, run_at, state, attempts, created_at)
+                    VALUES ('j1', 1, 'Standup', 'reminder', 'prompt', 'Say the thing', '2026-10-20T09:00:00.000Z', 'done', 1, '2026-10-15T18:00:00.000Z');
+                INSERT INTO job_runs (id, job_id, started_at, state, output)
+                    VALUES ('run-kept', 'j1', '2026-10-20T09:00:01.000Z', 'ok', 'said it');
+                INSERT INTO job_runs (id, job_id, started_at, state, error)
+                    VALUES ('run-orphan', 'job-that-is-gone', '2026-10-19T09:00:01.000Z', 'failed', 'nobody here');
+                PRAGMA user_version = 14;
+            `);
+            legacy.close();
+
+            let reported: MigrationReport | null = null;
+            const upgraded = openAppDatabase(path, {
+                onMigrationRepair: (report) => {
+                    reported = report;
+                },
+            });
+
+            // The store opened at all — which is the point: with the orphan left
+            // in place the copy is validated on the way through and refuses.
+            // The run that belongs to a job survived with its output...
+            const runs = upgraded.listJobRuns("j1");
+            expect(runs).toHaveLength(1);
+            expect(runs[0]).toMatchObject({
+                id: "run-kept",
+                state: "ok",
+                output: "said it",
+                gateOutput: null,
+                gateKey: null,
+            });
+            // ...and the one that does not was dropped and reported, not silently.
+            expect(reported).toEqual({
+                repairedNotificationJobLinks: 0,
+                droppedOrphanedNotifications: 0,
+                droppedOrphanedJobRuns: 1,
+            });
+            // The widened CHECK is in force: the state this migration exists for
+            // is now accepted, and the gate's columns came with it.
+            const created = upgraded.createJob(1, {
+                id: "j2",
+                label: "Watch the door",
+                kind: "prompt",
+                prompt: "Say if it changed",
+                runAt: "2026-10-21T09:00:00.000Z",
+                createdAt: "2026-10-20T09:00:00.000Z",
+                gate: { tool: "homeAssistant", when: "changed" },
+            });
+            expect(created.gate).toEqual({
+                tool: "homeAssistant",
+                when: "changed",
+            });
+            upgraded.claimJob("j2");
+            upgraded.startJobRun({
+                id: "run-skip",
+                jobId: "j2",
+                startedAt: "2026-10-21T09:00:01.000Z",
+            });
+            upgraded.finishJobRun(
+                "run-skip",
+                "skipped",
+                { gateOutput: "front door: closed", gateKey: "k" },
+                "2026-10-21T09:00:02.000Z",
+            );
+            expect(upgraded.listJobRuns("j2")[0]).toMatchObject({
+                state: "skipped",
+                gateOutput: "front door: closed",
+            });
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
+            const columns = check.pragma("table_info(jobs)") as {
+                name: string;
+            }[];
+            expect(columns.some((column) => column.name === "gate")).toBe(true);
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });

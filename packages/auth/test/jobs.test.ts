@@ -68,6 +68,7 @@ describe("jobs ledger", () => {
             settledAt: null,
             lastError: null,
             repeat: null,
+            gate: null,
         });
         expect(store.getJob(userId, "j1")).toEqual(created);
     });
@@ -316,6 +317,8 @@ describe("jobs ledger", () => {
                 state: "running",
                 output: null,
                 error: null,
+                gateOutput: null,
+                gateKey: null,
             },
         ]);
 
@@ -810,5 +813,65 @@ describe("recurrence and retention (#90 phase 8b)", () => {
         expect(store.cancelJob(userId, "series")?.state).toBe("cancelled");
         expect(store.pruneJobs(userId, 2)).toBe(1);
         expect(store.getJob(userId, "series")).toBeNull();
+    });
+});
+
+describe("the gate's memory (#90 phase 8f)", () => {
+    /** A gate: one read-only tool call, compared against the previous firing. */
+    const gate = {
+        tool: "homeAssistant",
+        args: { action: "get", entity_id: "binary_sensor.front_door" },
+        when: "changed",
+    };
+
+    it("stores a gate and reads it back", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, {
+            ...promptJob(),
+            gate,
+        });
+
+        expect(created.gate).toEqual(gate);
+        expect(store.getJob(userId, created.id)?.gate).toEqual(gate);
+    });
+
+    it("records what a check read, on a firing it declined", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, {
+            ...promptJob(),
+            gate,
+        });
+        expect(store.claimJob(created.id)).toBe(true);
+        store.startJobRun({
+            id: "run-1",
+            jobId: created.id,
+            startedAt: "2026-10-20T09:00:01.000Z",
+        });
+
+        const settled = store.settleJobRun({
+            jobId: created.id,
+            runId: "run-1",
+            run: {
+                state: "skipped",
+                gateOutput: "front door: closed",
+                gateKey: "homeAssistant:changed",
+            },
+            job: { state: "pending", runAt: "2026-10-20T09:05:00.000Z" },
+            at: "2026-10-20T09:00:02.000Z",
+        });
+
+        // The firing is over and the job is owed again...
+        expect(settled).toMatchObject({
+            state: "pending",
+            runAt: "2026-10-20T09:05:00.000Z",
+        });
+        // ...and the run says what the check saw, which is the whole reason a
+        // skip is a row rather than silence.
+        expect(store.listJobRuns(created.id)[0]).toMatchObject({
+            state: "skipped",
+            output: null,
+            gateOutput: "front door: closed",
+            gateKey: "homeAssistant:changed",
+        });
     });
 });
