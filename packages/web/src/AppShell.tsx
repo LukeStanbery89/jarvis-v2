@@ -45,6 +45,7 @@ import { useChatClient } from "./hooks/useChatClient";
 import { useJobs } from "./hooks/useJobs";
 import { useVoiceSession, voiceStatusLine } from "./hooks/useVoiceSession";
 import { useLocationSharing } from "./hooks/useLocationSharing";
+import { useAppearance } from "./hooks/useAppearance";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
@@ -98,6 +99,12 @@ export function AppShell({
 
     const threads = useThreads(credential.username);
     const audio = useAudio();
+    /**
+     * This browser's visual preferences (#146 phase B2): whether the field is
+     * mounted, and whether the panes blur. Per browser rather than per account
+     * — see `appearance.ts` for why.
+     */
+    const appearance = useAppearance();
 
     // The settings panel (#143) renders in a view's chrome, but the preference
     // *read* is the shell's: the notification hook's ring policy is gated by the
@@ -467,11 +474,19 @@ export function AppShell({
     }
 
     return (
-        <div className="app">
+        <div
+            className="app"
+            /* The glass switch is a variable override in CSS (#146 phase B2),
+               so turning it off is one attribute rather than a second set of
+               pane rules. */
+            data-glass={appearance.appearance.glass ? "on" : "off"}
+        >
             {/* The background belongs to the app, not to a page (#146): it is
                 fixed behind everything and survives every route change, so a
-                navigation does not restart the field. */}
-            <ParticleCanvas />
+                navigation does not restart the field. Unmounting it when the
+                switch is off also stops the loop, rather than hiding a canvas
+                that keeps drawing. */}
+            {appearance.appearance.particles && <ParticleCanvas />}
             <NavBar
                 username={credential.username}
                 unread={notifications.unread}
@@ -527,6 +542,14 @@ export function AppShell({
                 locationOn={location.locationOn}
                 locationState={location.locationState}
                 onToggleLocation={location.toggleLocation}
+                particlesOn={appearance.appearance.particles}
+                onToggleParticles={() =>
+                    appearance.setParticles(!appearance.appearance.particles)
+                }
+                glassOn={appearance.appearance.glass}
+                onToggleGlass={() =>
+                    appearance.setGlass(!appearance.appearance.glass)
+                }
                 onSignOut={() => {
                     socket.client?.close();
                     onSignedOut();

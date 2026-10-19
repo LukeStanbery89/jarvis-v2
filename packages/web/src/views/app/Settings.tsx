@@ -1,12 +1,17 @@
 /**
  * The settings panel: the account's notification preferences beside the
- * settings that only exist in this browser.
+ * settings that only exist in this browser, and the appearance switches.
  *
- * The two groups are the point of the surface, not decoration. A setting the
+ * The groups are the point of the surface, not decoration. A setting the
  * *server* applies (whether to interrupt you, and when) has to hold on every
  * device, while a setting the *browser* owns (its notification permission, a
  * microphone, a location) cannot be synced without lying — so the panel says
  * which is which rather than presenting one flat list of switches.
+ * **Appearance** (#146) is browser-local like that second group, but it gets
+ * its own heading: "This browser" is about permissions and hardware, and two
+ * switches that change what the app looks like would be lost at the bottom of
+ * it. Its hint still states the storage rule, because the group no longer sits
+ * under a heading that implies it.
  *
  * Presentational, like `Sidebar.tsx`: state comes in as props, changes go out
  * as callbacks. The one exception is the quiet-hours fields, which are a draft
@@ -77,6 +82,14 @@ export interface SettingsProps {
     locationState: LocationUiState;
     /** Flips location sharing. */
     onToggleLocation(): void;
+    /** The particle field behind the app is showing (#146). */
+    particlesOn: boolean;
+    /** Flips the particle field. */
+    onToggleParticles(): void;
+    /** The frosted-glass treatment is on (#146). */
+    glassOn: boolean;
+    /** Flips the frosted glass (off = solid panes, same layout). */
+    onToggleGlass(): void;
 
     /** Signs out of this browser. */
     onSignOut(): void;
@@ -112,6 +125,10 @@ export function Settings(props: SettingsProps) {
         locationOn,
         locationState,
         onToggleLocation,
+        particlesOn,
+        onToggleParticles,
+        glassOn,
+        onToggleGlass,
         onSignOut,
     } = props;
 
@@ -355,6 +372,44 @@ export function Settings(props: SettingsProps) {
                     role="status"
                 >
                     {describeLocationState(locationState)}
+                </p>
+            </section>
+
+            {/* Appearance (#146 phase B2) is its own group rather than a corner
+                of "This browser": these two switches change what the app looks
+                like, and they are the only ones that do. They are still stored
+                in this browser, so the hint says so — the group no longer sits
+                under a heading that implies it. */}
+            <section className="settings-group">
+                <h3>Appearance</h3>
+                <p className="settings-hint">
+                    Stored in this browser only — each device can differ.
+                </p>
+
+                <label className="settings-row">
+                    <input
+                        type="checkbox"
+                        checked={particlesOn}
+                        onChange={onToggleParticles}
+                    />
+                    <span>Background particles</span>
+                </label>
+                <p className="settings-note">
+                    The drifting field behind the app.
+                </p>
+
+                <label className="settings-row">
+                    <input
+                        type="checkbox"
+                        checked={glassOn}
+                        onChange={onToggleGlass}
+                    />
+                    <span>Frosted glass</span>
+                </label>
+                <p className="settings-note">
+                    {glassOn
+                        ? "Panes blur what is behind them."
+                        : "Panes are solid — cheaper to draw on a slow machine."}
                 </p>
             </section>
 

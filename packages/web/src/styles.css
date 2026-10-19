@@ -40,6 +40,28 @@
     --glass-blur-strong: 18px;
     --pane-radius: 0.9rem;
     --pane-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.45);
+
+    /* The composed filters the panes actually read. No pane names the blur
+       directly, which is what lets one attribute below switch the effect off
+       everywhere at once (#146 phase B2). */
+    --glass-filter: blur(var(--glass-blur)) saturate(1.15);
+    --glass-filter-strong: blur(var(--glass-blur-strong)) saturate(1.15);
+}
+
+/*
+ * "Frosted glass" off (#146 phase B2).
+ *
+ * One attribute on `.app` flattens both halves of the effect — no filter, and a
+ * near-opaque tint so the text keeps the contrast the blur was giving it. The
+ * layout is untouched: the switch is about the surface, not the shape. Custom
+ * properties inherit, so every pane below the shell picks these up without a
+ * second set of rules.
+ */
+.app[data-glass="off"] {
+    --glass-filter: none;
+    --glass-filter-strong: none;
+    --glass: rgba(0, 14, 19, 0.92);
+    --glass-strong: rgba(0, 10, 14, 0.96);
 }
 
 * {
@@ -350,8 +372,8 @@ textarea::placeholder {
     border: 1px solid var(--glass-line);
     border-radius: var(--pane-radius);
     box-shadow: var(--pane-shadow);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
     overflow-y: auto;
 }
 
@@ -457,8 +479,8 @@ textarea::placeholder {
     /* Every turn is its own pane (#146 phase B, second pass). No shadow: a
        column of twenty bubbles each casting one reads as clutter, and the
        hairline already separates a bubble from the field behind it. */
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
 }
 
 /* The user's bubble keeps its cyan identity as a *tint* rather than a solid
@@ -519,8 +541,8 @@ textarea::placeholder {
     border: 1px solid var(--glass-line);
     border-radius: var(--pane-radius);
     box-shadow: var(--pane-shadow);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
     flex-wrap: wrap;
 }
 
@@ -1095,8 +1117,8 @@ textarea::placeholder {
     margin: 0;
     background: var(--glass-strong);
     box-shadow: var(--pane-shadow);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
     /* A corner card **stacks**. The banner's single row was designed for the
        conversation column, which had the whole width; four actions and a title
        do not fit in 26rem, and forcing them into one row wrapped the title to a
@@ -1238,8 +1260,8 @@ textarea::placeholder {
     border: 1px solid var(--glass-line);
     border-radius: var(--pane-radius);
     box-shadow: var(--pane-shadow);
-    backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
+    backdrop-filter: var(--glass-filter-strong);
+    -webkit-backdrop-filter: var(--glass-filter-strong);
 }
 
 .settings::backdrop {
@@ -1376,8 +1398,8 @@ textarea::placeholder {
     border: 1px solid var(--glass-line);
     border-radius: var(--pane-radius);
     box-shadow: var(--pane-shadow);
-    backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
+    backdrop-filter: var(--glass-filter-strong);
+    -webkit-backdrop-filter: var(--glass-filter-strong);
 }
 
 .job-form::backdrop {
@@ -1550,8 +1572,8 @@ textarea::placeholder {
     border: 2px solid var(--primary);
     border-radius: var(--pane-radius);
     text-align: center;
-    backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(1.15);
+    backdrop-filter: var(--glass-filter-strong);
+    -webkit-backdrop-filter: var(--glass-filter-strong);
     box-shadow:
         0 0 0 1px var(--primary-faint),
         0 0 32px var(--primary-wash);
@@ -1653,8 +1675,8 @@ textarea::placeholder {
     border: 1px solid var(--glass-line);
     border-radius: var(--pane-radius);
     box-shadow: var(--pane-shadow);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
 }
 
 /* The page head, with the page's one action at its far end (#90 phase 7): the
@@ -1935,8 +1957,8 @@ textarea::placeholder {
     border-radius: var(--pane-radius);
     box-shadow: var(--pane-shadow);
     padding: 1rem 1.15rem;
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    backdrop-filter: var(--glass-filter);
+    -webkit-backdrop-filter: var(--glass-filter);
 }
 
 .dashboard-head {

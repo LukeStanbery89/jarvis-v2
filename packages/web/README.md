@@ -90,6 +90,15 @@ answer's audio).
 `prefers-reduced-motion: reduce` draws a single static frame; the media query is
 watched, so toggling the OS setting takes effect without a reload.
 
+Both appearance effects are switches in the settings panel's **Appearance**
+group (`src/appearance.ts`, `localStorage` key `jarvis.appearance`). They are
+per-browser, not per-account: a busy background on a phone and a quiet one on a
+wall display are facts about the device. Turning the field off **unmounts** the
+canvas, so its loop stops rather than drawing into something invisible; turning
+the glass off sets `data-glass="off"` on `.app`, which flattens the composed
+`--glass-filter` to `none` and darkens the tint. The layout is identical either
+way — the switch is about the surface, not the shape.
+
 ## Sign-in and credentials
 
 The client is signed-in-only: the login screen exchanges username +
