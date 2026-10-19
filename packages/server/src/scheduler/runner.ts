@@ -15,13 +15,19 @@
  *    repeats, stamped with when;
  * 3. one **notification**, whose `kind` says which of the three it was.
  *
- * **The announcement is per payload run, not per firing.** A firing that was
- * declined — a slot missed while the server was down, an occurrence skipped by
- * the day's model-run budget — moves the job forward instead: it leaves no run
- * row and announces nothing, because nothing was promised for the new moment.
- * What this module guarantees is that every firing which reached its payload
- * leaves a run row and exactly one announcement; a skip is a different thing,
- * and the job row is where it says so.
+ * **One run row per firing; exactly one announcement per _payload_ run.** A
+ * firing can end without a payload in three ways, and each is shaped
+ * deliberately rather than merely tolerated. A slot that passed while the server
+ * was down, and an occurrence skipped by the day's model-run budget, leave **no**
+ * run row: nothing was ever begun, so there is nothing to record. A firing a
+ * **gate** declined (#90 phase 8f) *is* recorded — it was claimed and its check
+ * was made — as `state: "skipped"` with the answer the check read, because a job
+ * that declines often is legible only in its own history. None of the three
+ * announces the ordinary finished/failed pair; the one exception is the budget,
+ * whose single deduped notice for the day exists because a schedule starving in
+ * silence is the failure this module must not become. What this module
+ * guarantees is that every firing which reached its payload leaves a run row and
+ * exactly one announcement.
  *
  * **A repeating job is a job that is owed again.** When a firing settles, the
  * rule decides whether the row returns to `pending` at its next occurrence or
@@ -48,6 +54,17 @@
  *   call, no tool, and (since `sendNotification` is not schedulable) exactly
  *   one notification rather than two.
  *
+ * A firing may also carry a **gate** (#90 phase 8f): one read-only tool call,
+ * made before any payload, whose answer is compared with the answer at the
+ * previous firing. The same answer to the same question ends the firing there —
+ * `skipped`, no payload, no announcement, no tokens — while a different one (or
+ * no previous answer to compare, or a gate whose own identity changed) runs the
+ * payload and records what the check read on that run too. A gate that *cannot*
+ * be evaluated fails the firing rather than running the payload blind: "only if
+ * it changed" is not a request to run regardless, so the reason it could not read
+ * goes in the run and in the failure — the same shape as a tool job whose tool
+ * the server no longer has.
+ *
  * The job's **class** rides along to that announcement unchanged, so quiet
  * hours are decided by the thing the user scheduled rather than by anything
  * this module invents — and a `reminder` that lands inside them does not run at
@@ -61,15 +78,17 @@
  * the durable half.
  */
 import { randomBytes } from "node:crypto";
-import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
+import type { AppJob, AppJobRun, JobLedger } from "@lukestanbery/jarvis-auth";
 import {
+    gateKey,
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
     nextOccurrence,
+    parseJobGate,
     parseJobRepeat,
     repeatExhausted,
 } from "@lukestanbery/jarvis-protocol";
-import type { JobRepeat } from "@lukestanbery/jarvis-protocol";
+import type { JobGate, JobRepeat } from "@lukestanbery/jarvis-protocol";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { runAgent } from "../agent";
 import { createKeyedLock } from "../keyedLock";
@@ -83,7 +102,7 @@ import {
     quietHoursEnd,
     quietHoursHold,
 } from "../notify/prefs";
-import { resolveSchedulableTool } from "./tools";
+import { resolveGateTool, resolveSchedulableTool } from "./tools";
 
 /** The agent seam, narrow enough to stub in tests (no model, no graph). */
 export type JobAgentRunner = typeof runAgent;
@@ -105,10 +124,17 @@ export function jobThreadId(jobId: string): string {
  *
  * `skipped` is not a failure: it means another claimant got there first (or
  * this process already holds the job), which is the normal outcome of an
- * overlapping tick.
+ * overlapping tick — nothing was begun, so nothing was recorded.
+ *
+ * `declined` is the gate's outcome (#90 phase 8f) and is *not* the same thing:
+ * the firing was claimed and recorded (`state: "skipped"`), and its check found
+ * nothing changed, so no payload ran and nothing was announced. It is a separate
+ * kind so that a caller counting "jobs the scheduler did not get to" cannot
+ * confuse a decision the job made with a tick that overlapped.
  */
 export type RunOutcome =
     | { kind: "skipped"; reason: string }
+    | { kind: "declined"; reason: string }
     /**
      * A reminder moved itself out of quiet hours: nothing ran, nothing was
      * announced, and the job is still `pending` at its new moment.
@@ -117,6 +143,20 @@ export type RunOutcome =
     | { kind: "missed" }
     | { kind: "done"; output: string }
     | { kind: "failed"; error: string };
+
+/**
+ * What a gate's check observed (#90 phase 8f).
+ *
+ * `key` is the *question* (see `gateKey`), carried beside the answer because the
+ * two are compared together: a gate that was edited asks something new, and an
+ * answer to the old question is not evidence about the new one.
+ */
+interface GateObservation {
+    /** The tool's result, as the payload path would have rendered it. */
+    output: string;
+    /** The check's identity: its tool and arguments, as one string. */
+    key: string;
+}
 
 /** Runs one job and reports what happened, having recorded it either way. */
 export interface JobRunner {
@@ -286,6 +326,92 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     }
 
     /**
+     * The job's gate, or `null` for a job that runs unconditionally (#90 phase 8f).
+     *
+     * A *structurally* unreadable gate is reported and treated as absent, exactly
+     * as {@link repeatOf} treats an unreadable rule: the row still holds the text
+     * for inspection, and running the job the user asked for beats refusing every
+     * firing forever. A gate that is well-formed but **cannot be evaluated here**
+     * is a different case, and fails its firing instead — see {@link checkGate}.
+     */
+    function gateOf(job: AppJob): JobGate | null {
+        if (job.gate === null || job.gate === undefined) {
+            return null;
+        }
+        const parsed = parseJobGate(job.gate);
+        if (!parsed.ok) {
+            logger.warn(
+                `job ${job.id} has an unreadable gate (${parsed.reason}); running without a check`,
+            );
+            return null;
+        }
+        return parsed.gate;
+    }
+
+    /**
+     * Whether this firing's read says nothing has changed since the last one.
+     *
+     * Three things have to line up: there was a previous firing, it recorded an
+     * answer, and it asked the *same* question. Any of them missing means the
+     * payload runs — the direction that keeps a job from skipping forever against
+     * a baseline it never had (a job whose gate was just added, or one whose runs
+     * the retention trim has aged out). The comparison is the check's **text**,
+     * which is why a gate's action must render stably while nothing changes: a
+     * volatile read would answer "different" on every poll.
+     */
+    function gateDeclined(
+        observed: GateObservation,
+        previous: AppJobRun | null,
+    ): boolean {
+        return (
+            previous !== null &&
+            previous.gateKey === observed.key &&
+            previous.gateOutput === observed.output
+        );
+    }
+
+    /**
+     * Makes the gate's read, returning what it saw or why it could not.
+     *
+     * Two refusals live here rather than at creation, because a stored tool call
+     * is a durable capability and this server's configuration can change between
+     * the two: the tool may be gone at 3am, and the action it names must still be
+     * one that only reads. Both are returned as text rather than thrown, so they
+     * land in the run row and in the failure the user is told about — the same
+     * treatment a tool job gets when its target has vanished.
+     */
+    async function checkGate(
+        job: AppJob,
+        gate: JobGate,
+        signal: AbortSignal,
+    ): Promise<{ observation: GateObservation } | { error: string }> {
+        const resolved = resolveGateTool(tools, gate);
+        if (!resolved.ok) {
+            return { error: resolved.reason };
+        }
+        try {
+            const result = await resolved.tool.invoke(gate.args, {
+                configurable: {
+                    sessionId: jobThreadId(job.id),
+                    userId: job.userId,
+                },
+                signal,
+            });
+            return {
+                observation: {
+                    output:
+                        typeof result === "string"
+                            ? result
+                            : JSON.stringify(result),
+                    key: gateKey(gate),
+                },
+            };
+        } catch (err) {
+            return { error: failureText(err, signal, turnTimeoutMs) };
+        }
+    }
+
+    /**
      * When a series fires next, or `null` when the firing in hand was its last.
      *
      * `attempts` is the count the decision is made against, and the callers
@@ -369,12 +495,20 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         return { kind: "missed" };
     }
 
-    /** Records a run's ending, settles the job, announces, prunes. */
+    /**
+     * Records a run's ending, settles the job, announces, prunes.
+     *
+     * `observed` is the gate's answer, when the job has one: it is written on
+     * **every** gated firing, not only on the declined ones, because the
+     * comparison reads the newest run — a payload run that recorded nothing would
+     * reset the baseline and every other firing would run.
+     */
     async function settle(
         job: AppJob,
         runId: string,
         state: "ok" | "failed",
         result: { output?: string; error?: string },
+        observed: GateObservation | null = null,
     ): Promise<RunOutcome> {
         const at = now();
         // A repeating job is owed again unless this firing was its last: the
@@ -384,7 +518,13 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         ledger.settleJobRun({
             jobId: job.id,
             runId,
-            run: { state, ...result },
+            run: {
+                state,
+                ...result,
+                ...(observed !== null
+                    ? { gateOutput: observed.output, gateKey: observed.key }
+                    : {}),
+            },
             job:
                 next === null
                     ? {
@@ -422,6 +562,79 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         return state === "ok"
             ? { kind: "done", output: result.output ?? "" }
             : { kind: "failed", error: result.error ?? "the run failed" };
+    }
+
+    /**
+     * Records a firing a gate declined, and moves its job forward (#90 8f).
+     *
+     * The run row is the record — `skipped`, with what the check read and which
+     * check read it — so the next firing has a baseline and the history says why
+     * nothing happened. Nothing is announced: the user asked to hear about this
+     * job when something *changed*, and nothing did. A one-shot ends `done` rather
+     * than `missed`, because its one firing did happen; it is the run row that
+     * carries the reason it produced nothing.
+     *
+     * The firing counts toward `ends.after`, because being claimed is what a
+     * firing *is* here — the rule counts firings, not payloads.
+     */
+    async function settleDeclined(
+        job: AppJob,
+        runId: string,
+        observed: GateObservation,
+    ): Promise<RunOutcome> {
+        const at = now();
+        const next = nextFiring(job, at, job.attempts + 1);
+        ledger.settleJobRun({
+            jobId: job.id,
+            runId,
+            run: {
+                state: "skipped",
+                gateOutput: observed.output,
+                gateKey: observed.key,
+            },
+            job:
+                next === null
+                    ? { state: "done" }
+                    : { state: "pending", runAt: next },
+            at: at.toISOString(),
+        });
+        if (next !== null) {
+            logger.info(
+                `job ${job.id} "${job.label}" declined (the check found nothing changed); next ${next}`,
+            );
+        } else {
+            logger.info(
+                `job ${job.id} "${job.label}" declined (the check found nothing changed); nothing left to run`,
+            );
+        }
+        ledger.pruneJobs(job.userId, maxPerUser);
+        ledger.pruneJobRuns(job.id, runsToKeep);
+        return { kind: "declined", reason: "the check found nothing changed" };
+    }
+
+    /**
+     * The default-level line for one firing that reached its payload.
+     *
+     * "Running" followed by silence is exactly the "nothing happened" reading
+     * this whole area exists to remove, and a failed job is a line an operator
+     * should see without turning on debug. A decline logs its own line in
+     * {@link settleDeclined} instead — it is a decision, not an attempt.
+     */
+    function report(
+        job: AppJob,
+        startedAt: Date,
+        outcome: RunOutcome,
+    ): RunOutcome {
+        const elapsed = now().getTime() - startedAt.getTime();
+        const line = `job ${job.id} "${job.label}" ${outcome.kind} in ${elapsed}ms${
+            outcome.kind === "failed" ? `: ${outcome.error}` : ""
+        }`;
+        if (outcome.kind === "failed") {
+            logger.warn(line);
+        } else {
+            logger.info(line);
+        }
+        return outcome;
     }
 
     /**
@@ -618,45 +831,79 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                         reason: "claimed by another tick",
                     };
                 }
+                // The gate compares against the **previous** firing, so the
+                // baseline is read before this one records its own start:
+                // `listJobRuns` is newest-first, so the newest row at this
+                // instant is the last firing that finished.
+                const previousRun =
+                    ledger.listJobRuns(job.id, { limit: 1 })[0] ?? null;
                 const runId = newId();
                 ledger.startJobRun({
                     id: runId,
                     jobId: job.id,
                     startedAt: at.toISOString(),
                 });
-                logger.info(
-                    `job ${job.id} "${job.label}" running (${job.kind}, attempt ${job.attempts + 1})`,
-                );
                 const signal = AbortSignal.timeout(turnTimeoutMs);
-                const result = await execute(job, signal);
-                // Only a prompt reaches the model, and only once it has been
-                // attempted — a tool or message job spends nothing, and neither
-                // does a firing that never got this far.
-                if (job.kind === "prompt") {
+                const gate = gateOf(job);
+                let observed: GateObservation | null = null;
+                let gateError: string | null = null;
+                if (gate !== null) {
+                    const check = await checkGate(job, gate, signal);
+                    if ("error" in check) {
+                        // The condition this job was created under cannot be
+                        // evaluated, so its payload does not run: "only if it
+                        // changed" is not a request to run regardless. The
+                        // reason is what the run row and the failure both say.
+                        gateError = check.error;
+                    } else if (gateDeclined(check.observation, previousRun)) {
+                        return await settleDeclined(
+                            job,
+                            runId,
+                            check.observation,
+                        );
+                    } else {
+                        observed = check.observation;
+                    }
+                }
+                let payloadRan = false;
+                let result: { output: string } | { error: string };
+                if (gateError !== null) {
+                    result = { error: gateError };
+                } else {
+                    logger.info(
+                        `job ${job.id} "${job.label}" running (${job.kind}, attempt ${job.attempts + 1})`,
+                    );
+                    result = await execute(job, signal);
+                    payloadRan = true;
+                }
+                // Only a prompt reaches the model, and only when its payload
+                // actually ran — a tool or message job spends nothing, and
+                // neither does a firing a gate declined or one whose gate could
+                // not read.
+                if (job.kind === "prompt" && payloadRan) {
                     ledger.recordModelRun(job.userId, localDay(at));
                 }
                 const outcome =
                     "error" in result
-                        ? await settle(job, runId, "failed", {
-                              error: result.error,
-                          })
-                        : await settle(job, runId, "ok", {
-                              output: result.output,
-                          });
-                // The outcome belongs at the default level: "running" followed
-                // by silence is exactly the "nothing happened" reading this
-                // whole area exists to remove, and a failed job is a line an
-                // operator should see without turning on debug.
-                const elapsed = now().getTime() - at.getTime();
-                const line = `job ${job.id} "${job.label}" ${outcome.kind} in ${elapsed}ms${
-                    outcome.kind === "failed" ? `: ${outcome.error}` : ""
-                }`;
-                if (outcome.kind === "failed") {
-                    logger.warn(line);
-                } else {
-                    logger.info(line);
-                }
-                return outcome;
+                        ? await settle(
+                              job,
+                              runId,
+                              "failed",
+                              {
+                                  error: result.error,
+                              },
+                              observed,
+                          )
+                        : await settle(
+                              job,
+                              runId,
+                              "ok",
+                              {
+                                  output: result.output,
+                              },
+                              observed,
+                          );
+                return report(job, at, outcome);
             } finally {
                 locks.release(key);
             }

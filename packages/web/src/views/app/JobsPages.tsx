@@ -41,6 +41,7 @@ import type { NotificationsState } from "../../hooks/useNotifications";
 import type { Job } from "../../api";
 import { JobForm } from "./JobForm";
 import { JobRow } from "./JobRow";
+import { JobRuns } from "./JobRuns";
 
 /** How many owed rows a list shows before the dashboard's glance takes over. */
 const JOB_PAGE_LIMIT = 50;
@@ -54,14 +55,29 @@ export interface JobsPageProps {
     jobs: JobsState;
     /** The notification list, so a deferral settles the row it answered. */
     notifications: NotificationsState;
+    /** The device credential, for the runs a row can show (#90 phase 8f). */
+    token: string;
 }
 
 /**
  * One settled job: how it ended, when it was due, and — when it went wrong —
  * why. This is the half of a job's life that no notification necessarily
  * records (a cancellation records nothing at all).
+ *
+ * It offers the runs too (#90 phase 8f), and for one shape of row it is the only
+ * place the whole truth exists: a one-shot a gate declined ends `done` having
+ * announced nothing, so the reason it produced nothing is its run history and
+ * nowhere else.
  */
-function RecentRow({ job, now }: { job: Job; now: Date }) {
+function RecentRow({
+    job,
+    now,
+    token,
+}: {
+    job: Job;
+    now: Date;
+    token: string;
+}) {
     return (
         <li className={`job-item job-${job.class} job-settled`}>
             <div className="job-text">
@@ -75,6 +91,7 @@ function RecentRow({ job, now }: { job: Job; now: Date }) {
                         repeats {repeatText(job)}
                     </span>
                 )}
+                <JobRuns token={token} jobId={job.id} />
             </div>
             <div className="job-actions">
                 <span className="job-when">
@@ -94,12 +111,14 @@ function JobList({
     notifications,
     jobClass,
     empty,
+    token,
     onEdit,
 }: {
     jobs: JobsState;
     notifications: NotificationsState;
     jobClass: JobClass;
     empty: string;
+    token: string;
     onEdit(job: Job): void;
 }) {
     const now = useClock();
@@ -115,6 +134,7 @@ function JobList({
                     key={job.id}
                     job={job}
                     now={now}
+                    token={token}
                     onCancel={(id) => {
                         void jobs.cancel(id);
                     }}
@@ -147,9 +167,11 @@ function JobList({
 function RecentJobs({
     jobs,
     jobClass,
+    token,
 }: {
     jobs: JobsState;
     jobClass: JobClass;
+    token: string;
 }) {
     const now = useClock();
     const rows = recentJobs(jobs.settled, { limit: RECENT_LIMIT, jobClass });
@@ -161,7 +183,7 @@ function RecentJobs({
             <summary>Recent</summary>
             <ul className="job-list">
                 {rows.map((job) => (
-                    <RecentRow key={job.id} job={job} now={now} />
+                    <RecentRow key={job.id} job={job} now={now} token={token} />
                 ))}
             </ul>
         </details>
@@ -217,7 +239,7 @@ function JobsPageFrame({
  *
  * @param props - See {@link JobsPageProps}.
  */
-export function TimersPage({ jobs, notifications }: JobsPageProps) {
+export function TimersPage({ jobs, notifications, token }: JobsPageProps) {
     const page = useJobPage();
     const count = upcomingJobs(jobs.jobs, {
         limit: JOB_PAGE_LIMIT,
@@ -240,9 +262,10 @@ export function TimersPage({ jobs, notifications }: JobsPageProps) {
                     notifications={notifications}
                     jobClass="timer"
                     empty="Set one by asking: “set a timer for ten minutes”, or here."
+                    token={token}
                     onEdit={page.edit}
                 />
-                <RecentJobs jobs={jobs} jobClass="timer" />
+                <RecentJobs jobs={jobs} jobClass="timer" token={token} />
             </JobsPageFrame>
             {page.form !== null && (
                 <JobForm
@@ -262,7 +285,7 @@ export function TimersPage({ jobs, notifications }: JobsPageProps) {
  *
  * @param props - See {@link JobsPageProps}.
  */
-export function RemindersPage({ jobs, notifications }: JobsPageProps) {
+export function RemindersPage({ jobs, notifications, token }: JobsPageProps) {
     const page = useJobPage();
     const count = upcomingJobs(jobs.jobs, {
         limit: JOB_PAGE_LIMIT,
@@ -283,9 +306,10 @@ export function RemindersPage({ jobs, notifications }: JobsPageProps) {
                     notifications={notifications}
                     jobClass="reminder"
                     empty="Ask for one: “remind me to change the AC filter tomorrow”, or here."
+                    token={token}
                     onEdit={page.edit}
                 />
-                <RecentJobs jobs={jobs} jobClass="reminder" />
+                <RecentJobs jobs={jobs} jobClass="reminder" token={token} />
             </JobsPageFrame>
             {page.form !== null && (
                 <JobForm

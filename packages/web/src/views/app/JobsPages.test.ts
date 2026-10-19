@@ -33,10 +33,10 @@ function job(overrides: Partial<Job> = {}): Job {
 }
 
 /** The jobs state the pages read, standing in for the shell's. */
-function jobsState(jobs: Job[]): JobsState {
+function jobsState(jobs: Job[], settled: Job[] = []): JobsState {
     return {
         jobs,
-        settled: [],
+        settled,
         loading: false,
         loaded: true,
         error: null,
@@ -79,6 +79,7 @@ describe("the jobs pages render", () => {
                     }),
                 ]),
                 notifications,
+                token: "device-token",
             }),
         );
 
@@ -93,6 +94,7 @@ describe("the jobs pages render", () => {
             createElement(TimersPage, {
                 jobs: jobsState([job({ class: "timer", label: "Kettle" })]),
                 notifications,
+                token: "device-token",
             }),
         );
 
@@ -100,11 +102,43 @@ describe("the jobs pages render", () => {
         expect(html).not.toContain("repeats");
     });
 
+    it("offers an owed row, and a settled one, their own runs", () => {
+        // #90 phase 8f: a gated firing that declines announces nothing, so the
+        // job row's own history is the only place it exists — for an owed row
+        // and, just as much, for one that has already settled.
+        const html = renderToStaticMarkup(
+            createElement(RemindersPage, {
+                jobs: jobsState(
+                    [job({ id: "owed" })],
+                    [
+                        job({
+                            id: "settled",
+                            state: "done",
+                            settledAt: new Date(
+                                2026,
+                                9,
+                                20,
+                                9,
+                                0,
+                            ).toISOString(),
+                        }),
+                    ],
+                ),
+                notifications,
+                token: "device-token",
+            }),
+        );
+
+        // One disclosure per row, and the settled half renders too.
+        expect(html.match(/<summary>Runs<\/summary>/g)).toHaveLength(2);
+    });
+
     it("draws a row whose stored rule cannot be read, without throwing", () => {
         const html = renderToStaticMarkup(
             createElement(RemindersPage, {
                 jobs: jobsState([job({ repeat: "not a rule" as never })]),
                 notifications,
+                token: "device-token",
             }),
         );
 

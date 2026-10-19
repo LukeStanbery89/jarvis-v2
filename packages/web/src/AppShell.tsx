@@ -444,11 +444,23 @@ export function AppShell({
             );
         }
         if (route === "timers") {
-            return <TimersPage jobs={jobs} notifications={notifications} />;
+            return (
+                <TimersPage
+                    jobs={jobs}
+                    notifications={notifications}
+                    token={credential.token}
+                />
+            );
         }
         // The last route standing: every path the app links to is a real page
         // now, so there is no placeholder left to fall through to.
-        return <RemindersPage jobs={jobs} notifications={notifications} />;
+        return (
+            <RemindersPage
+                jobs={jobs}
+                notifications={notifications}
+                token={credential.token}
+            />
+        );
     }
 
     return (

@@ -205,6 +205,37 @@ export function runDuration(run: JobRun): string | null {
 }
 
 /**
+ * How one attempt reads in a run list: its headline, and what a gate checked
+ * (#90 phases 7d, 8f).
+ *
+ * Pure rather than inline in the markup for a reason the suite makes concrete:
+ * a run list is only mounted once a disclosure is opened, which the node-only
+ * render tests cannot do — and the interesting half of a declined firing is
+ * exactly what this says about it. The headline is `state` plus a duration,
+ * except for a decline, where a duration measures the microseconds it took to
+ * read one value and would read as noise beside "skipped".
+ *
+ * `check` is the gate's own text, labelled as what it is: on a declined firing it
+ * is the whole reason nothing happened, and on a payload run it is the baseline
+ * the next firing will compare against.
+ *
+ * @param run - The attempt, as `GET /api/jobs/{id}` reports it.
+ * @returns The headline (without the attempt number, which is the caller's) and
+ * the check line, or `null` when the job has no gate.
+ */
+export function describeRun(run: JobRun): {
+    headline: string;
+    check: string | null;
+} {
+    const duration = run.state === "skipped" ? null : runDuration(run);
+    return {
+        headline: duration === null ? run.state : `${run.state} · ${duration}`,
+        check:
+            run.gateOutput !== undefined ? `checked: ${run.gateOutput}` : null,
+    };
+}
+
+/**
  * A page's history: the settled rows of one class, most recently settled first.
  *
  * "Recently settled" is its own order — a history list is about *when it ended*,

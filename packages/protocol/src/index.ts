@@ -33,6 +33,7 @@ export type {
     Weekday,
     Zone,
 } from "./repeat";
+export type { GateCondition, GateParseResult, JobGate } from "./gate";
 export {
     CHAT_MODES,
     CLIENT_CAPABILITIES,
@@ -64,6 +65,13 @@ export {
     REPEAT_FREQUENCIES,
     WEEKDAYS,
 } from "./repeat";
+export {
+    GATE_CONDITIONS,
+    gateKey,
+    MAX_GATE_ARGS_LENGTH,
+    MAX_GATE_TOOL_LENGTH,
+    parseJobGate,
+} from "./gate";
 export {
     MALFORMED_SERVER_FRAME,
     parseClientMessage,

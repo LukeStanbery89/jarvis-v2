@@ -501,8 +501,11 @@ it is a row and not a counter:
   argument retires the other two mechanisms here: `RateLimiter` is failure
   backoff, and `FixedWindowQuota` counts successes per process.
 - **It charges only what costs.** A `message` or `tool` job never calls the
-  model, a quiet-hours deferral never runs, and a firing whose own schedule has
-  ended spends nothing — so none of them touch the budget.
+  model, a quiet-hours deferral never runs, a firing a gate declined spends
+  nothing, and a firing whose own schedule has ended spends nothing — so none of
+  them touch the budget. It is checked before the claim, and so before the gate:
+  a spent budget ends the job's day at the notice, because claiming a firing that
+  will not run would consume one of `ends.after`'s firings.
 
 Being spent is deliberately loud enough to be seen, once: a one-shot is settled
 `missed` with the reason (its moment passed and it was not attempted, which is
@@ -743,15 +746,19 @@ thread list; the checkpoint still gives the job memory across its own runs, and
 Everything a run must not get wrong is in `scheduler/runner.ts` — the module
 that owns one job's life — and the four rules worth knowing here:
 
-- **One outcome, always announced.** Every firing that reaches its payload ends
-  in a run row, a job state, and exactly one notification: `job.finished` with
-  the reply, `job.failed` with the reason, or `job.missed` when its moment
-  passed while the server was down. A scheduled job that does nothing visible is
-  the "nothing happened" class #139 exists to remove, and a _scheduled_ one has
-  nobody watching to notice. A firing that **declined** — a slot missed while
-  the server was down, an occurrence the day's model budget skipped — is the one
-  exception, and it earns it: nothing ran, so there is nothing to report, and the
-  job row says where it went next.
+- **One run row per firing; one announcement per payload run.** Every firing
+  that reaches its payload ends in a run row, a job state and exactly one
+  notification: `job.finished` with the reply, `job.failed` with the reason, or
+  `job.missed` when its moment passed while the server was down. A scheduled job
+  that does nothing visible is the "nothing happened" class #139 exists to
+  remove, and a _scheduled_ one has nobody watching to notice. Three firings end
+  without a payload and do not announce the finished/failed pair: a slot missed
+  while the server was down and an occurrence the day's model budget skipped
+  leave **no** run row (nothing was begun), while a firing a **gate** declined
+  leaves a `skipped` row and says nothing (nothing changed, which is what the
+  user asked to be told about). The budget's one deduped notice is the sole
+  exception, and it exists because a schedule starving in silence would be worse
+  than the spending it prevents.
 - **A claim is the transition.** `state = 'pending'` lives in the claim's WHERE
   clause, so a second tick — or a process that restarted mid-run — touches no
   row. The same statement is why an overlapping tick is safe.
@@ -830,6 +837,52 @@ the month does not have is clamped to its last day, an ordinal that month does
 not have ("the 5th Monday") skips the month and the create flow says when the
 next one is, and something that can never exist ("the 32nd", "the 7th Monday") is
 refused. See the rule's own doc for the full semantics.
+
+### The gate (#90 phase 8f)
+
+A job that fires every five minutes cannot afford a model call every five
+minutes, and a reminder cannot afford to speak every five minutes. So a job may
+carry a **gate**: one read-only tool call, made by the runner _before_ any
+payload, whose answer is compared with the answer the previous firing recorded.
+
+```
+fire → claim → gate (one read) ─┬─ same question, same answer → run row `skipped`
+                                │                               no payload · no announcement
+                                └─ different (or no baseline)   → payload runs, announced
+                                                                  and the answer is recorded
+```
+
+- **Only `changed` exists.** A richer condition is either a predicate language or
+  a model call; half of one would be worse than an honest refusal.
+- **Gateable is declared, not inferred.** `homeAssistant` mixes reads and writes
+  behind one name, so `scheduler/tools.ts` lists the actions that only read
+  (`list`/`lights`/`switches`/`get`); a tool absent from that map cannot be a
+  gate, and the refusal reaches the conversation when the job is created and the
+  run when it fires. The read-only tools are deliberately absent for now: a
+  `changed` gate over `webSearch` would answer differently on every poll and
+  turn an affordable job into a flood. An entry is a promise that the answer is
+  stable while nothing changes.
+- **The answer is recorded on every gated firing**, not only the declined ones:
+  the comparison reads the newest run, so a payload run that recorded nothing
+  would reset the baseline and every other firing would run. `gate_key` is the
+  `{tool, args}` identity — a gate that was edited asks a _different question_,
+  so its predecessor's answer is not evidence and the payload runs.
+- **A check that cannot be made fails the firing.** The tool may be gone at 3am,
+  or the stored value may name a write; "only if it changed" is not a request to
+  run regardless, so the refusal goes in the run row and in the failure — the
+  same shape a tool job gets when its target has vanished. A _structurally_
+  unreadable gate (a stored value that no longer parses) is a different case and
+  runs the job unguarded with a warning, as an unreadable `repeat` rule fires
+  once: the request is still the request.
+- **A decline costs nothing.** No model run is charged and nothing is announced.
+  The one interaction worth knowing: the model-run budget is checked before the
+  claim, and therefore before the gate, so an account that has spent its day
+  ends the job's day at the notice rather than at the free check — a claim spent
+  on a firing that never runs would consume an `ends.after` count.
+- **Skips are visible where jobs live.** A gated job that only ever declines
+  produces no notification at all, so the **Runs** disclosure sits on the job row
+  (owed and settled) on `/timers`, `/reminders` and the notifications page's
+  Scheduled half — the first place a timer's own history is reachable too.
 
 ### The scheduling tools (#90 phase 3; `repeat` in 8d)
 

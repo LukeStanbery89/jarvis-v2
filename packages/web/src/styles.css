@@ -1739,6 +1739,17 @@ textarea::placeholder {
     font-size: 0.75rem;
 }
 
+/* What a job's gate read on one firing (#90 phase 8f): the reason a declined
+   firing produced nothing, and the baseline a payload run leaves. `pre-wrap`
+   because a check's answer can be a short list rather than one line. */
+.job-runs-gate {
+    margin: 0.2rem 0 0;
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 /* The snooze control (#90 phase 6c): one button, and its three presets when
    asked for. Inline, so it sits with whatever actions the row already has; the
    buttons themselves are styled by the row's own action rules. */

@@ -7,6 +7,12 @@
  * place the three disagreed about what a job says, how a moment reads, or which
  * actions a `running` job still allows.
  *
+ * It also carries the job's **runs** (#90 phase 8f), which is what makes a
+ * frequently declining job legible: a gated firing that found nothing changed
+ * announces nothing, so its `skipped` run row is the only trace it leaves — and
+ * before this, a job's history was reachable only from a notification it had
+ * produced.
+ *
  * What the row does **not** decide is the deferral: `onSnooze` is present only
  * where the class has one — a reminder's, since a timer is a countdown and a
  * notification is already filed — so the menu's presence is the caller's
@@ -14,6 +20,7 @@
  */
 import { describeRunAt, jobBody, repeatText } from "../../jobs";
 import type { Job } from "../../api";
+import { JobRuns } from "./JobRuns";
 import { SnoozeMenu } from "./SnoozeMenu";
 
 /** Props for {@link JobRow}. */
@@ -22,6 +29,8 @@ export interface JobRowProps {
     job: Job;
     /** The clock the moment is compared against (injected, for the tests). */
     now: Date;
+    /** The device credential, for the job's own runs (8f). */
+    token: string;
     /** Cancels the job. */
     onCancel(id: string): void;
     /** Opens the form for this job. */
@@ -44,7 +53,14 @@ export interface JobRowProps {
  *
  * @param props - See {@link JobRowProps}.
  */
-export function JobRow({ job, now, onCancel, onEdit, onSnooze }: JobRowProps) {
+export function JobRow({
+    job,
+    now,
+    token,
+    onCancel,
+    onEdit,
+    onSnooze,
+}: JobRowProps) {
     // The detail the row should say — never the label again (see `jobBody`).
     const body = jobBody(job);
     return (
@@ -64,6 +80,7 @@ export function JobRow({ job, now, onCancel, onEdit, onSnooze }: JobRowProps) {
                         repeats {repeatText(job)}
                     </span>
                 )}
+                <JobRuns token={token} jobId={job.id} />
             </div>
             <div className="job-actions">
                 <span className="job-when">

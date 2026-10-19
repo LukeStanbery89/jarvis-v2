@@ -884,8 +884,11 @@ export interface components {
         /** @description One attempt at a job — the history a detail view reads. */
         JobRun: {
             id: string;
-            /** @enum {string} */
-            state: "running" | "ok" | "failed";
+            /**
+             * @description `running` — in progress. `ok` — it ran. `failed` — it did not. `skipped` — the firing happened and its gate found nothing changed (#90 phase 8f), so no payload ran and nothing was announced; `gateOutput` says what the check read.
+             * @enum {string}
+             */
+            state: "running" | "ok" | "failed" | "skipped";
             /** Format: date-time */
             startedAt: string;
             /** Format: date-time */
@@ -894,6 +897,8 @@ export interface components {
             output?: string;
             /** @description Why it failed, when it did. */
             error?: string;
+            /** @description What the job's gate read on this firing (#90 phase 8f), when it has one — present on a run that ran its payload too, because the next firing compares against the newest run's value. */
+            gateOutput?: string;
         };
         /** @description Body of `GET /api/jobs`. */
         JobList: {

@@ -18,6 +18,7 @@ import {
     describeMoment,
     describeQuiet,
     describeRunAt,
+    describeRun,
     describeSnooze,
     editPatchFor,
     instantFromDuration,
@@ -269,6 +270,55 @@ describe("runDuration (#90 phase 7d)", () => {
                 finishedAt: "y",
             }),
         ).toBeNull();
+    });
+});
+
+describe("describeRun (#90 phase 8f)", () => {
+    const at = (seconds: number, ms = 0) =>
+        new Date(2026, 9, 17, 12, 0, seconds, ms).toISOString();
+
+    /** One attempt, overridable per test. */
+    function run(overrides: Partial<JobRun> = {}): JobRun {
+        return {
+            id: "run-1",
+            state: "ok",
+            startedAt: at(0),
+            finishedAt: at(0, 12),
+            ...overrides,
+        };
+    }
+
+    it("reads a payload run as its state and how long it took", () => {
+        expect(describeRun(run())).toEqual({
+            headline: "ok · 12 ms",
+            check: null,
+        });
+    });
+
+    it("keeps the gate's answer, labelled as a check", () => {
+        // The pair is written on payload runs too, because the next firing
+        // compares against the newest run's value.
+        expect(describeRun(run({ gateOutput: "front door: closed" }))).toEqual({
+            headline: "ok · 12 ms",
+            check: "checked: front door: closed",
+        });
+    });
+
+    it("says a declined firing was skipped, without a duration", () => {
+        // A skip measures the microseconds it took to read one value; the
+        // number is noise beside the fact, and the check is the whole story.
+        expect(
+            describeRun(
+                run({
+                    state: "skipped",
+                    output: undefined,
+                    gateOutput: "front door: closed",
+                }),
+            ),
+        ).toEqual({
+            headline: "skipped",
+            check: "checked: front door: closed",
+        });
     });
 });
 

@@ -1,5 +1,5 @@
 /**
- * A record's attempts, as a disclosure on the row (#90 phase 7d).
+ * A job's attempts, as a disclosure on the row (#90 phases 7d, 8f).
  *
  * The notification says what arrived; this says what happened. For a tool job it
  * is the result text ("living room light: on"); for a prompt job it is the reply
@@ -7,11 +7,16 @@
  * record itself cannot show — a failed job's notification carries the error, but
  * the *history* of attempts belongs to the job.
  *
+ * Since phase 8f it hangs off the **job row** as well as a notification record,
+ * and that is what makes a gated job legible: a firing a gate declined announces
+ * nothing at all, so its `skipped` run row (with what the check read) is the only
+ * place it exists. It is also the first time a timer's own history is reachable.
+ *
  * Two things about it are deliberate:
  *
  * - **The fetch waits for the open.** A `<details>` renders its children whether
  *   or not it is open, so a hook mounted straight into one would fire a
- *   `GET /api/jobs/{id}` per record on every visit to the page — for rows nobody
+ *   `GET /api/jobs/{id}` per row on every visit to the page — for rows nobody
  *   asked about. The disclosure mounts the reader on the first `toggle` that
  *   opens it and keeps it mounted afterwards, so reopening does not re-read.
  * - **A missing job is not an error.** The schema nulls a record's `job_id` when
@@ -24,7 +29,7 @@
  * reply is not a row's worth of text.
  */
 import { useState } from "react";
-import { runDuration } from "../../jobs";
+import { describeRun } from "../../jobs";
 import { useJobRuns } from "../../hooks/useJobRuns";
 
 /** Props for {@link JobRuns} — and for the reader it mounts. */
@@ -91,18 +96,25 @@ function Runs({ token, jobId }: JobRunsProps) {
     return (
         <ol className="job-runs-list">
             {state.runs.map((run, index) => {
-                const duration = runDuration(run);
+                const line = describeRun(run);
                 return (
                     <li key={run.id}>
                         <span className="job-runs-head">
-                            attempt {state.runs.length - index} · {run.state}
-                            {duration !== null && ` · ${duration}`}
+                            attempt {state.runs.length - index} ·{" "}
+                            {line.headline}
                         </span>
                         {run.output !== undefined && (
                             <pre className="job-runs-output">{run.output}</pre>
                         )}
                         {run.error !== undefined && (
                             <p className="job-runs-error">{run.error}</p>
+                        )}
+                        {/* What the gate read, on a firing it declined and on one
+                            it let through: the first is the reason nothing
+                            happened, the second is the baseline the next firing
+                            compares against. */}
+                        {line.check !== null && (
+                            <p className="job-runs-gate">{line.check}</p>
                         )}
                     </li>
                 );

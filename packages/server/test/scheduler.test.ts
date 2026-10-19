@@ -20,7 +20,8 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AppDatabase, CreateJobInput } from "@lukestanbery/jarvis-auth";
-import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
+import { gateKey, parseJobGate } from "@lukestanbery/jarvis-protocol";
+import type { JobGate, ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { createNotificationHub } from "../src/notify/hub";
 import type { HubSocket } from "../src/notify/hub";
 import { createInAppChannel } from "../src/notify/channels/inApp";
@@ -127,6 +128,89 @@ function recordingTool(
         },
     );
     return { instance, calls };
+}
+
+/**
+ * A stand-in for `homeAssistant`: the one tool a gate may read (#90 phase 8f).
+ *
+ * `read` is called per invocation rather than captured, so a test can move the
+ * house between firings — which is the only way to see the difference between the
+ * two answers a gate exists to compare. The schema mirrors the real tool's
+ * discriminating argument, because the gate's action is checked against it.
+ */
+function homeAssistantDouble(read: () => string): {
+    instance: StructuredToolInterface;
+    calls: unknown[];
+} {
+    const calls: unknown[] = [];
+    const instance = tool(
+        async (args) => {
+            calls.push(args);
+            return read();
+        },
+        {
+            name: "homeAssistant",
+            description: "fake home assistant",
+            schema: z.object({
+                action: z.string(),
+                entity_id: z.string().optional(),
+            }),
+        },
+    );
+    return { instance, calls };
+}
+
+/** A gate over the front door: the plan's own example. */
+function doorGate(): JobGate {
+    return {
+        tool: "homeAssistant",
+        args: { action: "get", entity_id: "binary_sensor.front_door" },
+        when: "changed",
+    };
+}
+
+/** A gate's identity, computed the way the runner computes it. */
+function keyOf(gate: JobGate): string {
+    const parsed = parseJobGate(gate);
+    if (!parsed.ok) {
+        throw new Error(`test fixture is not a valid gate: ${parsed.reason}`);
+    }
+    return gateKey(parsed.gate);
+}
+
+/**
+ * Puts one finished firing into a job's history, and returns the job to due.
+ *
+ * A gate's comparison reads the *newest run*, so a test that wants a baseline
+ * without firing the job first has to write one — through the same ledger calls
+ * the runner makes, and then `rearmJob` (the recovery path), which is the one way
+ * a claimed row goes back to `pending`.
+ */
+function seedPreviousRun(
+    store: AppDatabase,
+    jobId: string,
+    run: {
+        state: "skipped" | "ok";
+        output?: string;
+        gateOutput?: string;
+        gateKey?: string;
+    },
+    at: Date,
+): void {
+    const runId = `seed-${jobId}`;
+    store.claimJob(jobId);
+    store.startJobRun({ id: runId, jobId, startedAt: at.toISOString() });
+    store.finishJobRun(
+        runId,
+        run.state,
+        {
+            output: run.output,
+            gateOutput: run.gateOutput,
+            gateKey: run.gateKey,
+        },
+        at.toISOString(),
+    );
+    store.rearmJob(jobId, at.toISOString());
 }
 
 /** The pieces one test needs, wired the way `index.ts` wires them. */
@@ -1475,5 +1559,285 @@ describe("scheduler: a repeating job (#90 phase 8c)", () => {
         await h.scheduler.tick();
 
         expect(h.store.listJobRuns("j1")).toHaveLength(2);
+    });
+});
+
+describe("scheduler: a gated job (#90 phase 8f)", () => {
+    it("reads the check before running, and records what it read", async () => {
+        const { agent, calls } = fakeAgent("It is closed.");
+        const door = homeAssistantDouble(() => "front door: closed");
+        const h = harness({ at: AT, actor: agent, tools: [door.instance] });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+            gate: doorGate(),
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "It is closed." },
+        ]);
+        // The check ran exactly once, with the arguments the gate named.
+        expect(door.calls).toEqual([
+            { action: "get", entity_id: "binary_sensor.front_door" },
+        ]);
+        // The payload ran, so this firing announces like any other...
+        expect(pushed(h.socket)).toHaveLength(1);
+        expect(calls).toHaveLength(1);
+        // ...and the run records the answer, because the *next* firing compares
+        // against it: a payload run that recorded nothing would reset the
+        // baseline, and every other firing would run.
+        expect(h.store.listJobRuns("j1")).toMatchObject([
+            {
+                state: "ok",
+                output: "It is closed.",
+                gateOutput: "front door: closed",
+                gateKey: keyOf(doorGate()),
+            },
+        ]);
+    });
+
+    it("declines, silently, while the check's answer is the same", async () => {
+        const { agent, calls } = fakeAgent("It is closed.");
+        let answer = "front door: closed";
+        const door = homeAssistantDouble(() => answer);
+        const h = harness({ at: AT, actor: agent, tools: [door.instance] });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+            gate: doorGate(),
+        });
+
+        await h.scheduler.tick();
+        // The series is owed again at its next occurrence; bring that occurrence
+        // back to the clock, which is the only way to watch a second firing.
+        h.store.rescheduleJob("j1", AT.toISOString());
+
+        const second = await h.scheduler.tick();
+
+        expect(second.outcomes).toEqual([
+            { kind: "declined", reason: "the check found nothing changed" },
+        ]);
+        // Nothing ran and nothing was said: the user asked to hear about this job
+        // when something changed, and nothing had.
+        expect(calls).toHaveLength(1);
+        expect(pushed(h.socket)).toHaveLength(1);
+        // The declined firing is a *run row* — which is what keeps a job that
+        // declines hundreds of times a day legible in its own history.
+        expect(h.store.listJobRuns("j1")).toMatchObject([
+            {
+                state: "skipped",
+                output: null,
+                gateOutput: "front door: closed",
+                gateKey: keyOf(doorGate()),
+            },
+            { state: "ok" },
+        ]);
+        // Claimed, so it counts toward `ends.after` — and the series is owed again.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(AT),
+            attempts: 2,
+        });
+        // A decline spends no model run: the budget counts payloads, not checks.
+        expect(h.store.countModelRuns(h.userId, localDayOf(AT))).toBe(1);
+
+        // The house changes, so the next firing runs — and announces what it did.
+        answer = "front door: open";
+        h.store.rescheduleJob("j1", AT.toISOString());
+        const third = await h.scheduler.tick();
+
+        expect(third.outcomes).toEqual([
+            { kind: "done", output: "It is closed." },
+        ]);
+        expect(pushed(h.socket)).toHaveLength(2);
+        expect(door.calls).toHaveLength(3);
+    });
+
+    it("fails the firing when the check cannot be evaluated", async () => {
+        const { agent, calls } = fakeAgent("unused");
+        const door = homeAssistantDouble(() => "front door: closed");
+        const h = harness({ at: AT, actor: agent, tools: [door.instance] });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            gate: {
+                tool: "homeAssistant",
+                // A write: a gate that turned the light on to see whether it
+                // changed is neither deterministic nor free.
+                args: { action: "turn_on", entity_id: "light.kitchen" },
+                when: "changed",
+            },
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toMatchObject([{ kind: "failed" }]);
+        // The payload did not run: "only if it changed" is not a request to run
+        // regardless, so an unanswerable check stops the firing rather than
+        // waving it through.
+        expect(calls).toHaveLength(0);
+        expect(door.calls).toHaveLength(0);
+        expect(h.store.listJobRuns("j1")).toMatchObject([
+            { state: "failed", error: expect.stringMatching(/may only read/) },
+        ]);
+        expect(h.store.getJob(h.userId, "j1")?.lastError).toMatch(
+            /may only read/,
+        );
+        // A one-shot ends failed, and the failure is what tells the user.
+        expect(h.store.getJob(h.userId, "j1")?.state).toBe("failed");
+        expect(pushed(h.socket)[0]).toMatchObject({ kind: "job.failed" });
+    });
+
+    it("fails the firing when the check's tool is gone from this server", async () => {
+        const { agent } = fakeAgent("unused");
+        // No tools wired at all: the credentials were removed between the
+        // conversation that created the job and the moment it came due.
+        const h = harness({ at: AT, actor: agent, tools: [] });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+            gate: doorGate(),
+        });
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toMatchObject([{ kind: "failed" }]);
+        expect(h.store.listJobRuns("j1")).toMatchObject([
+            {
+                state: "failed",
+                error: "the 'homeAssistant' tool is not available on this server",
+            },
+        ]);
+        // A series is not over because one firing could not be checked: the next
+        // occurrence is where it tries again.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            runAt: nextLocalDay(AT),
+        });
+        expect(pushed(h.socket)[0]).toMatchObject({ kind: "job.failed" });
+    });
+
+    it("runs the job anyway when the stored gate is unreadable", async () => {
+        const { agent, calls } = fakeAgent("Ran unguarded.");
+        const door = homeAssistantDouble(() => "front door: closed");
+        const warn = vi
+            .spyOn(logger, "warn")
+            .mockImplementation(() => undefined);
+        try {
+            const h = harness({ at: AT, actor: agent, tools: [door.instance] });
+            h.store.createJob(h.userId, {
+                ...promptJob(),
+                id: "j1",
+                createdAt: "2026-10-15T18:00:00.000Z",
+                // A condition the protocol never defined: the row still holds the
+                // text, and refusing every firing forever would be the worse
+                // answer to a value nobody can mean.
+                gate: { tool: "homeAssistant", args: {}, when: "sometimes" },
+            });
+
+            const summary = await h.scheduler.tick();
+
+            expect(summary.outcomes).toEqual([
+                { kind: "done", output: "Ran unguarded." },
+            ]);
+            expect(calls).toHaveLength(1);
+            expect(door.calls).toHaveLength(0);
+            expect(h.store.listJobRuns("j1")[0]?.gateOutput).toBeNull();
+            expect(
+                warn.mock.calls.map((call) => String(call[0])).join("\n"),
+            ).toMatch(/unreadable gate/);
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
+    it("treats a changed gate as a new question, not a changed answer", async () => {
+        const { agent } = fakeAgent("Ran because the question changed.");
+        const door = homeAssistantDouble(() => "front door: closed");
+        const h = harness({ at: AT, actor: agent, tools: [door.instance] });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            gate: doorGate(),
+        });
+        // A baseline that answered *exactly* what this firing will read, but
+        // asked a different question (a different action). Comparing the answer
+        // alone would decline a firing whose check is not the one that answered.
+        seedPreviousRun(
+            h.store,
+            "j1",
+            {
+                state: "skipped",
+                gateOutput: "front door: closed",
+                gateKey: keyOf({
+                    tool: "homeAssistant",
+                    args: { action: "list" },
+                    when: "changed",
+                }),
+            },
+            AT,
+        );
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "done", output: "Ran because the question changed." },
+        ]);
+        expect(h.store.getJob(h.userId, "j1")?.state).toBe("done");
+    });
+
+    it("ends a one-shot that declines, without saying anything", async () => {
+        const { agent, calls } = fakeAgent("unused");
+        const door = homeAssistantDouble(() => "front door: closed");
+        const h = harness({ at: AT, actor: agent, tools: [door.instance] });
+        h.store.createJob(h.userId, {
+            id: "j1",
+            label: "Tell me if the door opened",
+            kind: "message",
+            message: "The front door opened.",
+            runAt: AT.toISOString(),
+            createdAt: "2026-10-15T18:00:00.000Z",
+            gate: doorGate(),
+        });
+        seedPreviousRun(
+            h.store,
+            "j1",
+            {
+                state: "skipped",
+                gateOutput: "front door: closed",
+                gateKey: keyOf(doorGate()),
+            },
+            AT,
+        );
+
+        const summary = await h.scheduler.tick();
+
+        expect(summary.outcomes).toEqual([
+            { kind: "declined", reason: "the check found nothing changed" },
+        ]);
+        // Its one firing happened, so the job is over rather than missed — and
+        // the run row is where the reason it produced nothing lives.
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "done",
+            settledAt: AT.toISOString(),
+        });
+        expect(h.store.listJobRuns("j1")).toMatchObject([
+            { state: "skipped", gateOutput: "front door: closed" },
+            { state: "skipped" },
+        ]);
+        // Nothing was announced either: a message job's announcement *is* its
+        // payload, and there was nothing to deliver.
+        expect(pushed(h.socket)).toHaveLength(0);
+        expect(calls).toHaveLength(0);
     });
 });

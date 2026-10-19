@@ -324,6 +324,7 @@ export function NotificationsPage({
                                         key={job.id}
                                         job={job}
                                         now={now}
+                                        token={token}
                                         onCancel={(id) => {
                                             void jobs.cancel(id);
                                         }}

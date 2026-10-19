@@ -154,6 +154,10 @@ export function toJobRunResponse(run: AppJobRun): JobRunResponse {
         ...(run.finishedAt !== null ? { finishedAt: run.finishedAt } : {}),
         ...(run.output !== null ? { output: run.output } : {}),
         ...(run.error !== null ? { error: run.error } : {}),
+        // What the gate read, when the job has one (#90 phase 8f): the answer a
+        // declined firing is defined by, and the baseline a payload run leaves
+        // for the next comparison.
+        ...(run.gateOutput !== null ? { gateOutput: run.gateOutput } : {}),
     };
 }
 
