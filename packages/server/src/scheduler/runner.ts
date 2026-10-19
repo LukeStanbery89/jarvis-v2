@@ -27,7 +27,13 @@
  * whose single deduped notice for the day exists because a schedule starving in
  * silence is the failure this module must not become. What this module
  * guarantees is that every firing which reached its payload leaves a run row and
- * exactly one announcement.
+ * exactly one announcement — with one deliberate exception (#90 phase 9b): a
+ * **plain `message` series** (no gate) records no run row. Its firing's output is
+ * the job's own text, identical every time, and the announcement is the whole
+ * record; the job row's `attempts` counts the firings for the life of the row, so
+ * a minutely reminder does not write 1,440 identical rows a day. A failure still
+ * keeps its row (that is information), and a gated job keeps every row, because a
+ * `skipped` row is the only trace of a decline.
  *
  * **A series keeps one live announcement.** Each firing's announcement carries a
  * dedupe key of the job's own id (#90 phase 9a), so the previous one is replaced
@@ -508,6 +514,33 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     }
 
     /**
+     * Whether a firing needs a run row (#90 phase 9b).
+     *
+     * A **plain `message` series** does not: the row's output would be the job's
+     * own text, identical on every firing, and the announcement is the whole
+     * record — while `attempts` on the job row counts the firings and
+     * `last_error` keeps the last failure. A minutely reminder therefore writes
+     * no history at all rather than 1,440 identical rows a day.
+     *
+     * Everything else keeps one. Anything that **spends** (a tool call, a model
+     * turn) has a result worth reading, and anything with a **gate** must keep
+     * one for two reasons: the check's answer is the next firing's baseline, and
+     * a declined firing's `skipped` row is the only trace that it happened. A
+     * one-shot's single row is its whole record.
+     *
+     * The decision is made *before* the run starts, because a row opened and
+     * never finished would sit in the ledger as `running` forever.
+     */
+    function needsRecord(job: AppJob): boolean {
+        return !(
+            job.kind === "message" &&
+            job.repeat !== null &&
+            job.repeat !== undefined &&
+            (job.gate === null || job.gate === undefined)
+        );
+    }
+
+    /**
      * The dedupe key a series' announcements share (#90 phase 9a).
      *
      * One key per job, so each firing replaces the one before it. The budget
@@ -528,7 +561,7 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
      */
     async function settle(
         job: AppJob,
-        runId: string,
+        runId: string | null,
         state: "ok" | "failed",
         result: { output?: string; error?: string },
         observed: GateObservation | null = null,
@@ -541,33 +574,44 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         // claim counted it, so `ends.after` is decided against the count
         // including it.
         const next = nextFiring(job, at, job.attempts + 1, rule);
-        ledger.settleJobRun({
-            jobId: job.id,
-            runId,
-            run: {
-                state,
-                ...result,
-                ...(observed !== null
-                    ? { gateOutput: observed.output, gateKey: observed.key }
-                    : {}),
-            },
-            job:
-                next === null
-                    ? {
-                          state: state === "ok" ? "done" : "failed",
-                          ...(result.error !== undefined
-                              ? { error: result.error }
-                              : {}),
-                      }
-                    : {
-                          state: "pending",
-                          runAt: next,
-                          ...(result.error !== undefined
-                              ? { error: result.error }
-                              : {}),
-                      },
-            at: at.toISOString(),
-        });
+        if (runId !== null) {
+            ledger.settleJobRun({
+                jobId: job.id,
+                runId,
+                run: {
+                    state,
+                    ...result,
+                    ...(observed !== null
+                        ? { gateOutput: observed.output, gateKey: observed.key }
+                        : {}),
+                },
+                job:
+                    next === null
+                        ? {
+                              state: state === "ok" ? "done" : "failed",
+                              ...(result.error !== undefined
+                                  ? { error: result.error }
+                                  : {}),
+                          }
+                        : {
+                              state: "pending",
+                              runAt: next,
+                              ...(result.error !== undefined
+                                  ? { error: result.error }
+                                  : {}),
+                          },
+                at: at.toISOString(),
+            });
+        } else if (next === null) {
+            // Nothing to file, and the series is over: `done` puts the row in the
+            // pages' Recent history like any other ending.
+            ledger.settleJob(job.id, "done", {}, at.toISOString());
+        } else {
+            // Nothing to file, and it is owed again. `rearmJob` is the recovery
+            // path's call and exactly this shape: a claimed row that is owed
+            // again, with no attempt to record.
+            ledger.rearmJob(job.id, next);
+        }
         await announce(
             state === "ok" ? "job.finished" : "job.failed",
             job,
@@ -867,14 +911,16 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 // instant is the last firing that finished.
                 const previousRun =
                     ledger.listJobRuns(job.id, { limit: 1 })[0] ?? null;
-                const runId = newId();
-                ledger.startJobRun({
-                    id: runId,
-                    jobId: job.id,
-                    startedAt: at.toISOString(),
-                });
-                const signal = AbortSignal.timeout(turnTimeoutMs);
                 const gate = gateOf(job);
+                const runId = needsRecord(job) ? newId() : null;
+                if (runId !== null) {
+                    ledger.startJobRun({
+                        id: runId,
+                        jobId: job.id,
+                        startedAt: at.toISOString(),
+                    });
+                }
+                const signal = AbortSignal.timeout(turnTimeoutMs);
                 let observed: GateObservation | null = null;
                 let gateError: string | null = null;
                 if (gate !== null) {
@@ -886,9 +932,13 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                         // reason is what the run row and the failure both say.
                         gateError = check.error;
                     } else if (gateDeclined(check.observation, previousRun)) {
+                        // A stored gate always takes a run row (`needsRecord`), so
+                        // this id exists; the fallback is for a shape that cannot
+                        // happen, and would move the job forward without filing
+                        // the check rather than pinning it.
                         return await settleDeclined(
                             job,
-                            runId,
+                            runId ?? newId(),
                             check.observation,
                         );
                     } else {

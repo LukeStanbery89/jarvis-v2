@@ -21,6 +21,7 @@ import {
     describeRun,
     describeSnooze,
     editPatchFor,
+    emptyRunsNote,
     gateText,
     instantFromDuration,
     jobBody,
@@ -271,6 +272,23 @@ describe("runDuration (#90 phase 7d)", () => {
                 finishedAt: "y",
             }),
         ).toBeNull();
+    });
+});
+
+describe("emptyRunsNote (#90 phase 9b)", () => {
+    it("says nothing was recorded when the job has not fired", () => {
+        expect(emptyRunsNote(0)).toBe("No attempt was recorded.");
+        // A caller with no count at all (a notification record's disclosure) is
+        // in the same position: it cannot claim the job never fired.
+        expect(emptyRunsNote(undefined)).toBe("No attempt was recorded.");
+    });
+
+    it("reports the firings a plain reminder keeps no rows for", () => {
+        // The rows would all be the job's own text, so the count is the answer.
+        expect(emptyRunsNote(1)).toBe(
+            "Fired once. A plain reminder keeps no per-firing history — the job itself is the record.",
+        );
+        expect(emptyRunsNote(12)).toContain("Fired 12 times.");
     });
 });
 

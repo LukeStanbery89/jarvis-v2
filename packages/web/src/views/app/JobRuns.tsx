@@ -27,9 +27,14 @@
  * Output is not truncated in the DOM — the job's run cap already bounds it at
  * 2,000 characters — but it is styled as a scrollable block, because a model's
  * reply is not a row's worth of text.
+ *
+ * Since 9b an empty list is a *normal* answer as well as an absence: a plain
+ * recurring reminder keeps no per-firing rows at all, because each would be the
+ * same sentence. The disclosure then reports the count the job row carries
+ * (`emptyRunsNote`) rather than claiming nothing was recorded.
  */
 import { useState } from "react";
-import { describeRun } from "../../jobs";
+import { describeRun, emptyRunsNote } from "../../jobs";
 import { useJobRuns } from "../../hooks/useJobRuns";
 
 /** Props for {@link JobRuns} — and for the reader it mounts. */
@@ -38,6 +43,12 @@ export interface JobRunsProps {
     token: string;
     /** The job the record came from. */
     jobId: string;
+    /**
+     * How many times the job has fired, when the caller has the job in hand
+     * (#90 phase 9b). It is what the disclosure says instead of a list for a job
+     * that keeps none — see `emptyRunsNote`.
+     */
+    attempts?: number;
 }
 
 /**
@@ -45,7 +56,7 @@ export interface JobRunsProps {
  *
  * @param props - See {@link JobRunsProps}.
  */
-export function JobRuns({ token, jobId }: JobRunsProps) {
+export function JobRuns({ token, jobId, attempts }: JobRunsProps) {
     /** Whether the reader has been mounted (the first open; see the module doc). */
     const [asked, setAsked] = useState(false);
     return (
@@ -58,7 +69,7 @@ export function JobRuns({ token, jobId }: JobRunsProps) {
             }}
         >
             <summary>Runs</summary>
-            {asked && <Runs token={token} jobId={jobId} />}
+            {asked && <Runs token={token} jobId={jobId} attempts={attempts} />}
         </details>
     );
 }
@@ -69,7 +80,7 @@ export function JobRuns({ token, jobId }: JobRunsProps) {
  * The number is counted back from the end because that is the order the server
  * sends them in (newest first) and "attempt 1" has to mean the first one.
  */
-function Runs({ token, jobId }: JobRunsProps) {
+function Runs({ token, jobId, attempts }: JobRunsProps) {
     const state = useJobRuns({ token, jobId });
 
     if (state.status === "loading") {
@@ -91,7 +102,7 @@ function Runs({ token, jobId }: JobRunsProps) {
         );
     }
     if (state.runs.length === 0) {
-        return <p className="job-runs-note">No attempt was recorded.</p>;
+        return <p className="job-runs-note">{emptyRunsNote(attempts)}</p>;
     }
     return (
         <ol className="job-runs-list">

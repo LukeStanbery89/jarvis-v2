@@ -1369,6 +1369,78 @@ describe("scheduler: a repeating job (#90 phase 8c)", () => {
         expect(pushed(h.socket)[0]).toMatchObject({ kind: "job.failed" });
     });
 
+    it("a plain message series records no per-firing history", async () => {
+        // #90 phase 9b: a run row for this firing would hold the job's own text,
+        // identical every time — a minutely reminder would write 1,440 of them a
+        // day. The job row is the record (`attempts` counts the firings), and the
+        // announcement is the whole of what the user sees.
+        const h = harness({ at: AT });
+        h.store.createJob(h.userId, {
+            id: "j1",
+            label: "Drink water",
+            kind: "message",
+            message: "Drink water.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+
+        await h.scheduler.tick();
+        h.store.rescheduleJob("j1", AT.toISOString());
+        await h.scheduler.tick();
+
+        expect(h.store.listJobRuns("j1")).toEqual([]);
+        expect(h.store.getJob(h.userId, "j1")).toMatchObject({
+            state: "pending",
+            attempts: 2,
+        });
+        // What it *does* leave behind is the announcement — one live row, since
+        // a series supersedes itself (#90 phase 9a). The socket saw two frames,
+        // which is the reminder arriving twice; the list holds one row.
+        expect(h.store.listNotifications(h.userId)).toHaveLength(1);
+        expect(pushed(h.socket)).toHaveLength(2);
+    });
+
+    it("keeps rows where a firing carries something", async () => {
+        // The exception is precisely "plain". A one-shot's single row is its
+        // record; a gated firing's row is the next firing's baseline, and when it
+        // declines it is the only trace that the check happened at all.
+        const once = harness({ at: AT });
+        once.store.createJob(once.userId, {
+            id: "once",
+            label: "Call Mum",
+            kind: "message",
+            message: "Call Mum.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        await once.scheduler.tick();
+        expect(once.store.listJobRuns("once")).toHaveLength(1);
+
+        const door = homeAssistantDouble(() => "front door: closed");
+        const h = harness({ at: AT, tools: [door.instance] });
+        h.store.createJob(h.userId, {
+            id: "gated",
+            label: "Front door",
+            kind: "message",
+            message: "It opened.",
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+            gate: doorGate(),
+        });
+
+        await h.scheduler.tick();
+        h.store.rescheduleJob("gated", AT.toISOString());
+        await h.scheduler.tick();
+
+        // Ran once, then declined — both recorded, newest first.
+        expect(h.store.listJobRuns("gated")).toMatchObject([
+            { state: "skipped", gateOutput: "front door: closed" },
+            { state: "ok" },
+        ]);
+    });
+
     it("ends after the number of firings it was given", async () => {
         const { agent } = fakeAgent("Last one");
         const h = harness({ at: AT, actor: agent });

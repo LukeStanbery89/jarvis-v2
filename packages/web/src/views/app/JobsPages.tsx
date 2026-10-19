@@ -100,7 +100,7 @@ function RecentRow({
                         {gateText(job)}
                     </span>
                 )}
-                <JobRuns token={token} jobId={job.id} />
+                <JobRuns token={token} jobId={job.id} attempts={job.attempts} />
             </div>
             <div className="job-actions">
                 <span className="job-when">

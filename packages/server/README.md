@@ -748,7 +748,12 @@ that owns one job's life — and the four rules worth knowing here:
 
 - **One run row per firing; one announcement per payload run.** Every firing
   that reaches its payload ends in a run row, a job state and exactly one
-  notification: `job.finished` with the reply, `job.failed` with the reason, or
+  notification — with one deliberate exception (#90 phase 9b): a **plain
+  `message` series** records no run row at all, because every one of them would
+  hold the job's own text and a minutely reminder would write 1,440 identical
+  rows a day. The job row is the record there (`attempts` counts the firings,
+  `last_error` the last failure), and a failure, a gate's answer or a one-shot
+  still files its row. The announcements are: `job.finished` with the reply, `job.failed` with the reason, or
   `job.missed` when its moment passed while the server was down. A scheduled job
   that does nothing visible is the "nothing happened" class #139 exists to
   remove, and a _scheduled_ one has nobody watching to notice. Three firings end

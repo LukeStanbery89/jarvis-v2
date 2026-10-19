@@ -205,6 +205,29 @@ export function runDuration(run: JobRun): string | null {
 }
 
 /**
+ * What a **Runs** disclosure says when the job has no attempt rows (#90 9b).
+ *
+ * That is now a normal state rather than a fault: a plain (ungated) recurring
+ * reminder keeps no per-firing history, because every row would hold the same
+ * sentence — the job's own text — and a minutely reminder would write 1,440 of
+ * them a day. So the disclosure answers the question the rows would have: how
+ * many times it fired, from the count the job row already carries.
+ *
+ * `attempts` is the job's own count, which is why it is passed in rather than
+ * read from the runs: zero rows and zero firings mean different things.
+ *
+ * @param attempts - The job's `attempts`, or `undefined` when the caller has none.
+ * @returns The note to show in place of a run list.
+ */
+export function emptyRunsNote(attempts: number | undefined): string {
+    if (attempts === undefined || attempts === 0) {
+        return "No attempt was recorded.";
+    }
+    const firings = attempts === 1 ? "Fired once" : `Fired ${attempts} times`;
+    return `${firings}. A plain reminder keeps no per-firing history — the job itself is the record.`;
+}
+
+/**
  * The row's note that a job is **conditional** (#90 phases 8f, 8g), or `null`.
  *
  * "Checks first" rather than the check's own words: what the row owes a reader is
