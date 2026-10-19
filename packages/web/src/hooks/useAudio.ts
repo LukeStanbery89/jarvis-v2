@@ -23,6 +23,14 @@ export interface UseAudioResult {
     startRing(): void;
     /** Stops the timer ring. */
     stopRing(): void;
+    /**
+     * The spoken response's current loudness, 0..1 (#146 phase E).
+     *
+     * A plain function rather than state: the particle field reads it once per
+     * animation frame, and a value that changed 60 times a second must not
+     * re-render the shell.
+     */
+    energy(): number;
 }
 
 /**
@@ -58,6 +66,7 @@ export function useAudio(options?: {
     const unlock = useCallback((): void => audio.unlock(), [audio]);
     const startRing = useCallback((): void => audio.startRing(), [audio]);
     const stopRing = useCallback((): void => audio.stopRing(), [audio]);
+    const energy = useCallback((): number => audio.energy(), [audio]);
 
-    return { audio, speaking, stop, unlock, startRing, stopRing };
+    return { audio, speaking, stop, unlock, startRing, stopRing, energy };
 }

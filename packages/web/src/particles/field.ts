@@ -13,9 +13,9 @@
  * a thin loop. It also means the look can be tuned from a test — the shape of
  * the disc is asserted, not eyeballed.
  *
- * `energy` is 0..1 and only widens the breathe. It is always 0 in phase A; the
- * voice-reactive phase (#146's own future note) will feed it the audio
- * envelope, which is why it is a parameter now rather than a later rewrite.
+ * `energy` is 0..1 and only widens the breathe (and brightens the disc). Phase
+ * A always passed 0; phase E feeds it the spoken response's loudness, which is
+ * why it was a parameter from the start rather than a later rewrite.
  */
 
 /** One particle, in polar coordinates around the field's centre. */
@@ -77,8 +77,15 @@ export const BREATHE_AMPLITUDE = 0.06;
  */
 export const PHASE_SPREAD = 0.36;
 
-/** Extra breathe amplitude at full energy: the voice phase's whole effect. */
-export const ENERGY_AMPLITUDE = 2.5;
+/**
+ * Extra breathe amplitude at full energy: the voice phase's whole effect.
+ *
+ * A spoken RMS rarely reaches the top of the range (see `ENERGY_GAIN`), so this
+ * is sized for the middle of it: ordinary speech lands around ±17 % of a
+ * particle's radius against the resting ±6 %, and only a shout reaches the
+ * full ±33 %.
+ */
+export const ENERGY_AMPLITUDE = 4;
 
 /**
  * The largest delta {@link step} will honour, in milliseconds.
@@ -226,7 +233,7 @@ export function project(
         out[offset + 2] = particle.size;
         out[offset + 3] = Math.min(
             1,
-            particle.alpha * (1 + 0.35 * field.energy),
+            particle.alpha * (1 + 0.55 * field.energy),
         );
     }
 }

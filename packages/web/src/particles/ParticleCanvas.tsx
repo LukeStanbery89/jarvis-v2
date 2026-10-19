@@ -17,6 +17,9 @@
  *   of teleporting.
  * - **Nothing allocated per frame.** The projected buffer is reused, and the
  *   field mutates in place.
+ * - **Loudness, not beats.** Phase E hands `step` the spoken response's RMS,
+ *   smoothed over ~200 ms through a ref, so the disc breathes with the voice
+ *   and settles with it instead of strobing once per syllable.
  *
  * `prefers-reduced-motion: reduce` draws a single static frame: the field is
  * still there (it is the background), it just does not move. The media query
@@ -51,13 +54,40 @@ const RESIZE_SLACK = 20;
 const FIELD_RADIUS = 0.46;
 
 /**
+ * How fast the field's loudness follows the voice, per frame (#146 phase E).
+ *
+ * A syllable lasts a few frames; at 0.1 the loudness settles over roughly
+ * 170 ms, so the disc breathes with the sentence rather than strobing with
+ * every phoneme. Attack and release share the coefficient deliberately — a
+ * background should follow a conversation, not punctuate it.
+ */
+const ENERGY_SMOOTHING = 0.1;
+
+/** Props for {@link ParticleCanvas}. */
+export interface ParticleCanvasProps {
+    /**
+     * The current loudness of the spoken response, 0..1 (#146 phase E).
+     *
+     * Called once per frame. Absent (the sign-in screen, or a runtime with no
+     * audio) means a field that only breathes on its own clock.
+     */
+    energy?: () => number;
+}
+
+/**
  * The field's canvas, or `null` where 2D canvas is unavailable.
  *
  * Rendered once by {@link AppShell} as a sibling behind `.app`, so it survives
  * every route change and the page content paints over it.
+ *
+ * @param props - See {@link ParticleCanvasProps}.
  */
-export function ParticleCanvas() {
+export function ParticleCanvas({ energy }: ParticleCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    // Read through a ref: the loop is set up once, and a caller may pass a new
+    // function on any render without the field being torn down and re-seeded.
+    const energyRef = useRef(energy);
+    energyRef.current = energy;
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -76,6 +106,8 @@ export function ParticleCanvas() {
         let radius = 0;
         let frame = 0;
         let last = 0;
+        /** The smoothed loudness handed to `step` (#146 phase E). */
+        let loudness = 0;
 
         const draw = () => {
             if (field === null || width === 0 || height === 0) {
@@ -145,7 +177,9 @@ export function ParticleCanvas() {
             const delta = now - last;
             last = now;
             if (field !== null) {
-                step(field, delta, 0);
+                const reading = energyRef.current?.() ?? 0;
+                loudness += (reading - loudness) * ENERGY_SMOOTHING;
+                step(field, delta, loudness);
                 draw();
             }
         };

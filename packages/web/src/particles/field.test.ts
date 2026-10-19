@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
     BASE_OMEGA,
     BREATHE_AMPLITUDE,
+    BREATHE_HZ,
     DENSITY_POWER,
     ENERGY_AMPLITUDE,
     MAX_STEP_MS,
@@ -34,14 +35,20 @@ function single(r: number): Field {
     return field;
 }
 
-/** The largest and smallest projected radius over a full breathe cycle. */
+/**
+ * The largest and smallest projected radius over a full breathe cycle.
+ *
+ * The particle starts at half the disc rather than near its rim: `project`
+ * clamps a radius at 1, so a rim particle flattens against the edge at the top
+ * of a loud breathe and would hide the swing the model actually produces.
+ */
 function breatheSwing(energy: number): { min: number; max: number } {
     const radius = 100;
     const out = new Float32Array(4);
     let min = Infinity;
     let max = -Infinity;
     for (let i = 0; i < 720; i += 1) {
-        const field = single(0.8);
+        const field = single(0.5);
         field.energy = energy;
         field.tMs = (i * 1000) / 60;
         project(field, 0, 0, radius, out);
@@ -196,16 +203,28 @@ describe("project", () => {
         const quiet = breatheSwing(0);
         const loud = breatheSwing(1);
 
-        // Resting radius is 0.8; the breathe is a fraction of it. Three
+        // Resting radius is 0.5; the breathe is a fraction of it. Three
         // decimals is the buffer's precision, not the model's.
-        expect(quiet.max).toBeCloseTo(0.8 * (1 + BREATHE_AMPLITUDE), 3);
-        expect(quiet.min).toBeCloseTo(0.8 * (1 - BREATHE_AMPLITUDE), 3);
+        expect(quiet.max).toBeCloseTo(0.5 * (1 + BREATHE_AMPLITUDE), 3);
+        expect(quiet.min).toBeCloseTo(0.5 * (1 - BREATHE_AMPLITUDE), 3);
         expect(loud.max - loud.min).toBeGreaterThan(quiet.max - quiet.min);
         // The loud swing is the documented multiple, not an open-ended one.
         expect(loud.max).toBeCloseTo(
-            0.8 * (1 + BREATHE_AMPLITUDE * (1 + ENERGY_AMPLITUDE)),
+            0.5 * (1 + BREATHE_AMPLITUDE * (1 + ENERGY_AMPLITUDE)),
             3,
         );
+    });
+
+    it("never projects past the disc's edge, even at full energy", () => {
+        const field = single(1);
+        field.energy = 1;
+        // A quarter of the breathe cycle, where the swing is at its peak.
+        field.tMs = 1000 / (4 * BREATHE_HZ);
+        const out = new Float32Array(4);
+
+        project(field, 0, 0, 100, out);
+
+        expect(Math.hypot(out[0], out[1])).toBeLessThanOrEqual(100);
     });
 
     it("brightens every particle as energy rises", () => {

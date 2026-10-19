@@ -518,7 +518,9 @@ export function AppShell({
                 navigation does not restart the field. Unmounting it when the
                 switch is off also stops the loop, rather than hiding a canvas
                 that keeps drawing. */}
-            {appearance.appearance.particles && <ParticleCanvas />}
+            {appearance.appearance.particles && (
+                <ParticleCanvas energy={audio.energy} />
+            )}
             <NavBar
                 username={credential.username}
                 unread={notifications.unread}

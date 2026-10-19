@@ -35,6 +35,8 @@ function makeFakeContext() {
     let currentTime = 0;
     let resumed = 0;
     let closed = 0;
+    /** What the fake analyser reports, or `null` for silence (#146 phase E). */
+    let wave: Float32Array | null = null;
     const ctx = {
         get currentTime() {
             return currentTime;
@@ -90,6 +92,17 @@ function makeFakeContext() {
             },
             connect: () => {},
         }),
+        createAnalyser: () => ({
+            fftSize: 0,
+            smoothingTimeConstant: 1,
+            connect: () => {},
+            getFloatTimeDomainData: (out: Float32Array) => {
+                out.fill(0);
+                if (wave !== null) {
+                    out.set(wave.subarray(0, out.length));
+                }
+            },
+        }),
         createBufferSource: () => {
             // One object serves as both the returned source node and the
             // record — the player assigns `onended` to what it receives,
@@ -117,6 +130,10 @@ function makeFakeContext() {
         copies,
         advance: (seconds: number) => {
             currentTime += seconds;
+        },
+        /** Fills the analyser's next window with a flat sample value. */
+        setWave: (amplitude: number) => {
+            wave = new Float32Array(256).fill(amplitude);
         },
         get resumed() {
             return resumed;
@@ -418,5 +435,43 @@ describe("AudioPlayer: the timer ring (#90)", () => {
             player.startRing();
             player.stopRing();
         }).not.toThrow();
+    });
+
+    it("reports the spoken response's loudness, and falls silent with it", () => {
+        const fake = makeFakeContext();
+        const player = new AudioPlayer({ createContext: () => fake.ctx });
+
+        // No context has been created, so there is no tap to read.
+        expect(player.energy()).toBe(0);
+
+        player.play(new Float32Array(1_000));
+        // Speaking, but the analyser hears silence.
+        expect(player.energy()).toBe(0);
+
+        fake.setWave(0.25);
+        const loud = player.energy();
+        expect(loud).toBeGreaterThan(0);
+        expect(loud).toBeLessThanOrEqual(1);
+
+        // A shout clamps at 1 rather than overshooting the field's range.
+        fake.setWave(4);
+        expect(player.energy()).toBe(1);
+
+        player.stop();
+        expect(player.energy()).toBe(0);
+    });
+
+    it("has no energy when the context cannot analyse", () => {
+        const fake = makeFakeContext();
+        const ctx = {
+            ...(fake.ctx as unknown as Record<string, unknown>),
+            createAnalyser: undefined,
+        };
+        const player = new AudioPlayer({
+            createContext: () => ctx as unknown as AudioContext,
+        });
+
+        player.play(new Float32Array(1_000));
+        expect(player.energy()).toBe(0);
     });
 });

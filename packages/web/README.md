@@ -86,10 +86,19 @@ backgrounded tab resumes instead of teleporting.
 The split is the app's usual one: `src/particles/field.ts` is the whole motion
 model — seeded PRNG, rotation, breathe, projection into a `Float32Array` — and
 is unit-tested without a browser; `src/particles/ParticleCanvas.tsx` is the
-loop around it. `step(field, dt, energy)` already takes a 0..1 `energy` that
-widens the breathe; nothing supplies it yet, which is the seam for the
-voice-reactive background (the issue's deferred half: the disc pulsing with the
-answer's audio).
+loop around it.
+
+`step(field, dt, energy)` takes a 0..1 `energy` that widens the breathe and
+brightens the disc, and phase E feeds it the answer's voice: `AudioPlayer`
+routes the spoken PCM through an `AnalyserNode` (256 samples, ~5 ms at the
+protocol's 24 kHz) and exposes `energy()` as the RMS of that window, scaled ×6
+because a voice sits well below full scale. The alarm and the wake cue stay
+direct-to-destination — the field answers the assistant, not every sound the app
+makes. `ParticleCanvas` reads it through a ref once per frame and smooths it
+over ~170 ms, so the disc breathes with the sentence rather than strobing per
+syllable, and `energy()` returns 0 the moment nothing is speaking, so it settles
+with the last word instead of holding the peak. A context without
+`createAnalyser` simply has no tap and a still field.
 
 `prefers-reduced-motion: reduce` draws a single static frame; the media query is
 watched, so toggling the OS setting takes effect without a reload.
