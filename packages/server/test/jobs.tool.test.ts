@@ -563,7 +563,9 @@ describe("jobs tools: schedulePrompt and the gate (#90 phase 8g)", () => {
             repeat: { every: "minute", interval: 5 },
         });
 
-        expect(text).toMatch(/fastest a job may repeat is every 15 minutes/);
+        expect(text).toMatch(
+            /a prompt job calls the model on every firing, so it needs at least 15 minutes/,
+        );
         expect(text).toContain("gate");
         expect(h.jobs()).toEqual([]);
     });
@@ -679,7 +681,9 @@ describe("jobs tools: the cadence, however it arrives (#90 phase 8d)", () => {
             every: "minute",
             interval: 5,
         });
-        expect(ungated).toMatch(/fastest a job may repeat is every 15 minutes/);
+        expect(ungated).toMatch(
+            /needs at least 15 minutes between firings, or a gate that can decline one/,
+        );
     });
 });
 
@@ -1065,13 +1069,25 @@ describe("scheduling a repeating job (#90 phase 8d)", () => {
     it("refuses what this server will not keep, in the model's words", async () => {
         const h = harness();
 
-        // A reminder that fires every five minutes announces every firing.
-        const tooFast = await h.call("remindMe", {
+        // A reminder may now repeat every minute: a series' announcement
+        // supersedes its predecessor (#90 phase 9a), so there is no flood to
+        // prevent. What keeps a floor is a job whose firing spends.
+        const everyMinute = await h.call("remindMe", {
+            label: "Water",
+            inMinutes: 5,
+            repeat: { every: "minute" },
+        });
+        expect(everyMinute).toContain("repeating every minute");
+
+        const spends = await h.call("schedulePrompt", {
             label: "Nag",
+            prompt: "Say something.",
             inMinutes: 60,
             repeat: { every: "minute", interval: 5 },
         });
-        expect(tooFast).toMatch(/every 5 minutes is too often/);
+        expect(spends).toMatch(
+            /a prompt job calls the model on every firing, so it needs at least 15 minutes/,
+        );
 
         // Days of the week belong to a week or a month, which the rule says.
         const mixed = await h.call("remindMe", {

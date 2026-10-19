@@ -29,6 +29,14 @@
  * guarantees is that every firing which reached its payload leaves a run row and
  * exactly one announcement.
  *
+ * **A series keeps one live announcement.** Each firing's announcement carries a
+ * dedupe key of the job's own id (#90 phase 9a), so the previous one is replaced
+ * rather than stacked: a reminder that repeats every minute is one row in the
+ * list that keeps saying the newest thing, not a thousand rows of the same
+ * sentence. That is what lets a `message` series repeat at any cadence — the
+ * notification-rate argument for a floor stops applying once the rows cannot
+ * accumulate. A one-shot has no predecessor, so the key costs it nothing.
+ *
  * **A repeating job is a job that is owed again.** When a firing settles, the
  * rule decides whether the row returns to `pending` at its next occurrence or
  * becomes terminal — in one transaction, in the ledger, so a dead process can
@@ -420,13 +428,17 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
      * does not — which is the whole meaning of `ends.after`: it counts firings,
      * so a schedule that lost a day to an outage spans more calendar time than
      * its count suggests.
+     *
+     * `rule` lets a caller that already parsed the job's rule hand it over —
+     * `settle` needs the same answer to decide whether the firing belongs to a
+     * series, and parsing twice would warn twice about an unreadable one.
      */
     function nextFiring(
         job: AppJob,
         at: Date,
         attempts: number,
+        rule: JobRepeat | null = repeatOf(job),
     ): string | null {
-        const rule = repeatOf(job);
         if (rule === null) {
             return null;
         }
@@ -496,6 +508,17 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
     }
 
     /**
+     * The dedupe key a series' announcements share (#90 phase 9a).
+     *
+     * One key per job, so each firing replaces the one before it. The budget
+     * notice deliberately uses a different key (`job-budget:<user>:<day>`): a
+     * firing that did not happen must not erase the last one that did.
+     */
+    function seriesKey(job: AppJob): string {
+        return `job:${job.id}`;
+    }
+
+    /**
      * Records a run's ending, settles the job, announces, prunes.
      *
      * `observed` is the gate's answer, when the job has one: it is written on
@@ -511,10 +534,13 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         observed: GateObservation | null = null,
     ): Promise<RunOutcome> {
         const at = now();
+        // Parsed once: the rule decides both whether this job is owed again and
+        // whether its announcement replaces a predecessor (#90 phase 9a).
+        const rule = repeatOf(job);
         // A repeating job is owed again unless this firing was its last: the
         // claim counted it, so `ends.after` is decided against the count
         // including it.
-        const next = nextFiring(job, at, job.attempts + 1);
+        const next = nextFiring(job, at, job.attempts + 1, rule);
         ledger.settleJobRun({
             jobId: job.id,
             runId,
@@ -548,6 +574,10 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
             state === "ok"
                 ? (result.output ?? "")
                 : (result.error ?? "the run failed"),
+            // A series keeps one live announcement: this firing's replaces the
+            // one before it, so a minutely reminder is one row rather than a
+            // thousand. A one-shot has nothing to replace, and the key is inert.
+            rule !== null ? { dedupeKey: seriesKey(job) } : {},
         );
         if (next !== null) {
             logger.info(

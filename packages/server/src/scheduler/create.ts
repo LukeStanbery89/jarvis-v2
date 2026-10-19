@@ -86,32 +86,37 @@ export const MAX_DURATION_MINUTES = 1440;
 export const MIN_SNOOZE_MINUTES = 0.5;
 
 /**
- * The shortest gap between two firings an **ungated** schedule may ask for (#90
- * phases 8d, 8g).
+ * The shortest gap a **spending** schedule may ask for (#90 phases 8d, 8g, 9a).
  *
- * A `message` job's firing **is** its announcement, so its cadence is a
- * notification rate: fifteen minutes caps an announcing series at 96 rows a day,
- * which is already loud. A `tool` or `prompt` job has the same floor while every
- * firing is a model call or a device write, and the day's budget is the only
- * other thing between the user and a mistake.
+ * "Spending" means a firing costs something beyond itself: a `tool` job writes to
+ * a device, a `prompt` job calls the model. Fifteen minutes is the honest floor
+ * there — the day's model-run budget is the only other thing between the user and
+ * a mistake, and a device write is not something to do every minute on a timer.
+ *
+ * A `message` job is **not** spending, which is why it is no longer subject to
+ * this floor: its firing's whole output is an announcement, and since 9a a
+ * series' announcement supersedes its predecessor rather than stacking, so the
+ * notification-rate argument that used to justify fifteen minutes here is gone.
+ * See {@link MIN_FREE_REPEAT_MINUTES}.
  */
 export const MIN_REPEAT_MINUTES = 15;
 
 /**
- * The shortest gap a **gated** schedule may ask for (#90 phase 8g).
+ * The shortest gap a **free** schedule may ask for (#90 phases 8g, 9a).
  *
- * A gate makes a frequent schedule affordable by declining the firings that have
- * nothing to do, and a declined firing announces nothing — so the notification
- * rate that sets {@link MIN_REPEAT_MINUTES} no longer applies, and what is left
- * is the scheduler's own resolution. One minute is the fastest a job can usefully
- * poll: the loop's tick is coarse, and anything faster would be a spin rather
- * than a schedule.
+ * "Free" means a firing leaves nothing behind that accumulates: a `message`
+ * job's announcement replaces the previous one (the runner dedupes a series on
+ * its own id), and a **gated** firing that finds nothing changed records a
+ * `skipped` run row and says nothing at all. Both make a frequent schedule
+ * affordable, and what is left is the scheduler's own resolution — the loop ticks
+ * coarsely, so a minute is the fastest a job can usefully poll and anything
+ * faster would be a spin rather than a schedule.
  *
- * This is why the gate exists: "every five minutes, but only if the door opened"
- * is the shape that makes a minutely job defensible, and it is the only schedule
- * allowed below the ungated floor.
+ * This is why the gate exists ("every five minutes, but only if the door
+ * opened"), and why a reminder may now repeat every minute: it is the user's own
+ * call, because neither kind of firing can flood anything.
  */
-export const MIN_GATED_REPEAT_MINUTES = 1;
+export const MIN_FREE_REPEAT_MINUTES = 1;
 
 /**
  * The long end of a snooze: a week (#90 phase 7 fix).
@@ -491,9 +496,11 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
      * - **A timer may not repeat.** A timer pierces quiet hours; a repeating one
      *   would be a standing breach of them, and "every night at 3am" is never a
      *   countdown. A reminder is the class for something that comes back.
-     * - **The cadence has a floor** — {@link MIN_REPEAT_MINUTES} ungated, or
-     *   {@link MIN_GATED_REPEAT_MINUTES} when the job carries a gate, because a
-     *   declined firing announces nothing (the reason written at each).
+     * - **The cadence has a floor**, and which one depends on what a firing
+     *   costs: {@link MIN_REPEAT_MINUTES} for a job that runs a tool or a prompt,
+     *   {@link MIN_FREE_REPEAT_MINUTES} for a message job or one carrying a gate,
+     *   because neither leaves anything behind per firing (the reasons written at
+     *   each).
      *
      * The parse is strict, and its reason is what the user reads: "the 7th
      * Monday" is refused with wording that says which part is impossible.
@@ -501,7 +508,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     function repeatCheck(
         cls: NotificationClass,
         repeat: unknown,
-        gated: boolean,
+        options: { gated: boolean; kind: JobPayload["kind"] },
     ): { ok: true; rule: JobRepeat | null } | { ok: false; reason: string } {
         if (repeat === undefined || repeat === null) {
             return { ok: true, rule: null };
@@ -517,17 +524,18 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
             };
         }
         const gap = repeatGapMinutes(parsed.repeat);
-        const floor = gated ? MIN_GATED_REPEAT_MINUTES : MIN_REPEAT_MINUTES;
-        if (gap < floor) {
-            const fastest =
-                floor === 1 ? "every minute" : `every ${floor} minutes`;
+        const free = options.kind === "message" || options.gated;
+        if (gap < (free ? MIN_FREE_REPEAT_MINUTES : MIN_REPEAT_MINUTES)) {
+            // Only a spending job can reach this: a message job's floor is a
+            // minute and a rule cannot ask for less than one. So the wording is
+            // about cost, and it names both ways out.
+            const spends =
+                options.kind === "prompt"
+                    ? "a prompt job calls the model on every firing"
+                    : "a task runs a tool on every firing";
             return {
                 ok: false,
-                reason: `every ${gap} minute${gap === 1 ? "" : "s"} is too often — the fastest a job may repeat is ${fastest}${
-                    gated
-                        ? ""
-                        : ", or every minute if it carries a gate that can decline a firing"
-                }.`,
+                reason: `every ${gap} minute${gap === 1 ? "" : "s"} is too often — ${spends}, so it needs at least ${MIN_REPEAT_MINUTES} minutes between firings, or a gate that can decline one.`,
             };
         }
         return { ok: true, rule: parsed.repeat };
@@ -586,11 +594,10 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 reason: gated.reason,
             };
         }
-        const checked = repeatCheck(
-            request.class,
-            request.repeat,
-            gated.gate !== null,
-        );
+        const checked = repeatCheck(request.class, request.repeat, {
+            gated: gated.gate !== null,
+            kind: payload.kind,
+        });
         if (!checked.ok) {
             return {
                 ok: false,
@@ -793,11 +800,10 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
         if (patch.repeat !== undefined) {
             // The job's own gate decides the floor: editing a minutely gated
             // series must not turn the schedule it already has into a refusal.
-            const checked = repeatCheck(
-                job.class,
-                patch.repeat,
-                job.gate !== null && job.gate !== undefined,
-            );
+            const checked = repeatCheck(job.class, patch.repeat, {
+                gated: job.gate !== null && job.gate !== undefined,
+                kind: job.kind,
+            });
             if (!checked.ok) {
                 return {
                     ok: false,

@@ -1319,6 +1319,34 @@ describe("scheduler: a repeating job (#90 phase 8c)", () => {
         expect(pushed(h.socket)).toHaveLength(1);
     });
 
+    it("keeps one live announcement, however many times it fires", async () => {
+        // #90 phase 9a: a series' firing replaces the announcement before it,
+        // so a minutely reminder is one row that keeps saying the newest thing
+        // rather than a thousand rows of the same sentence. That is what lets a
+        // message series repeat at any cadence.
+        const { agent } = fakeAgent("Drink water");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "j1",
+            createdAt: "2026-10-15T18:00:00.000Z",
+            repeat: dailyFrom(AT),
+        });
+
+        await h.scheduler.tick();
+        h.store.rescheduleJob("j1", AT.toISOString());
+        await h.scheduler.tick();
+
+        // One live row (the store's list already hides the superseded one), and
+        // it is the newest firing's.
+        expect(h.store.listNotifications(h.userId)).toMatchObject([
+            { jobId: "j1", kind: "job.finished", body: "Drink water" },
+        ]);
+        // Superseding is about the announcement, never the ledger: both firings
+        // are still in the run history.
+        expect(h.store.listJobRuns("j1")).toHaveLength(2);
+    });
+
     it("re-arms on failure too, because the next occurrence is the retry", async () => {
         const { agent } = fakeAgent("unused");
         const h = harness({ at: AT, actor: agent, tools: [] });

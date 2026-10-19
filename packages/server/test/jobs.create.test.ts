@@ -380,6 +380,22 @@ describe("recurrence (#90 phase 8d)", () => {
     /** Tomorrow at the fixed clock — what that rule fires next. */
     const tomorrowAt1905 = new Date(2026, 0, 2, 19, 5).toISOString();
 
+    /** A tool job ten minutes out — the payload a firing spends on. */
+    function createTool(h: Harness, repeat: unknown) {
+        return h.creator.create(h.userId, {
+            label: "Porch",
+            class: "notification",
+            payload: {
+                kind: "tool",
+                toolName: "homeAssistant",
+                toolArgs: { action: "turn_on", entity_id: "light.porch" },
+            },
+            runAt: new Date(NOW.getTime() + 10 * 60_000),
+            repeat,
+            at: NOW,
+        });
+    }
+
     /** A message job ten minutes out, optionally repeating. */
     function createMessage(
         h: Harness,
@@ -420,26 +436,32 @@ describe("recurrence (#90 phase 8d)", () => {
         }
     });
 
-    it("refuses a cadence that would announce too often", () => {
+    it("lets a message job repeat every minute, and prices a spending one", () => {
         const h = harness();
-        const tooFast = createMessage(h, {
+        // A series' announcement supersedes its predecessor (#90 phase 9a), so a
+        // minute-cadence reminder is one row in the list rather than 1,440 — the
+        // notification-rate argument for a floor is gone, and the cadence is the
+        // user's own call.
+        const everyMinute = createMessage(h, {
+            every: "minute",
+            interval: 1,
+            start: NOW.toISOString(),
+        });
+        expect(everyMinute).toMatchObject({ ok: true });
+
+        // A `tool` or `prompt` firing spends — a device write or a model call —
+        // so fifteen minutes is the floor there, and the refusal says why.
+        const spends = createTool(h, {
             every: "minute",
             interval: 5,
             start: NOW.toISOString(),
         });
-
-        expect(tooFast).toMatchObject({ ok: false, code: "invalid-repeat" });
-        if (!tooFast.ok) {
-            expect(tooFast.reason).toMatch(/every 5 minutes is too often/);
+        expect(spends).toMatchObject({ ok: false, code: "invalid-repeat" });
+        if (!spends.ok) {
+            expect(spends.reason).toMatch(
+                /a task runs a tool on every firing, so it needs at least 15 minutes/,
+            );
         }
-        // The floor itself is allowed, and a calendar frequency is always fine.
-        expect(
-            createMessage(h, {
-                every: "minute",
-                interval: 15,
-                start: NOW.toISOString(),
-            }).ok,
-        ).toBe(true);
     });
 
     it("refuses a day that can never exist, in the parser's words", () => {
@@ -581,7 +603,7 @@ describe("the prompt payload and the gate (#90 phase 8g)", () => {
         expect(ungated).toMatchObject({ ok: false, code: "invalid-repeat" });
         // The refusal names the way out rather than only the rule.
         expect(ungated.ok ? "" : ungated.reason).toMatch(
-            /every 15 minutes, or every minute if it carries a gate/,
+            /needs at least 15 minutes between firings, or a gate that can decline one/,
         );
 
         const gated = createPrompt(h, { repeat: minutely, gate: doorGate });

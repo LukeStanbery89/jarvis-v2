@@ -935,12 +935,22 @@ the way it states everything else — a tool, that tool's arguments, and
 user is still in the conversation: the tool must be one that declares a read
 action, it must be installed on this server, and its arguments must satisfy its
 own schema (the same check a scheduled target's arguments get). What the gate
-buys is the **cadence floor**: an ungated schedule may not repeat faster than
-every 15 minutes, because a firing is an announcement or a model call, while a
-gated one may go to a minute — a declined firing announces nothing, which is the
-whole point. The reply says both halves ("repeating every 5 minutes, but only
-when homeAssistant changes"), so the user can correct a condition they did not
-ask for in the same turn.
+buys is the **cadence floor**: a job that runs a tool or a prompt may not repeat
+faster than every 15 minutes unless it carries a gate, because every firing is a
+device write or a model call — a gated one may go to a minute, since a declined
+firing does nothing. The reply says both halves ("repeating every 5 minutes, but
+only when homeAssistant changes"), so the user can correct a condition they did
+not ask for in the same turn.
+
+**A series keeps one live announcement** (#90 phase 9a), which is the other half
+of the floor: a firing's announcement carries a dedupe key of its job's id, so
+each one _replaces_ the previous rather than stacking. A reminder every minute is
+one row in the list that keeps saying the newest thing — not 1,440 rows of the
+same sentence — and the toast stack collapses by job for the same reason. That is
+why a `message` job may now repeat as often as every minute: its cadence is no
+longer a notification rate. A `tool`/`prompt` job keeps its 15-minute floor
+because what it spends per firing is real, and a gate — which declines before
+spending — is the way past it.
 
 **The cadence arrives in whichever spelling the model reached for** (fixed after
 the first live run of a repeating reminder). The nested object — `repeat`, the
@@ -1039,11 +1049,13 @@ rather than an implementation detail:
   `scheduler/create.ts` — so a page and a model cannot disagree about what a
   schedule is, or about why one is refused. Two refusals are this server's rather
   than the rule's: a **timer may not repeat** (a timer pierces quiet hours, and a
-  repeating one would be a standing breach of them), and nothing may repeat
-  faster than **every 15 minutes** — or every minute when the job carries a gate
-  (#90 phase 8g), which is the schedule a gate exists to make affordable. A repeating job's moment comes from its rule, so the request's own
-  `runAt` is ignored when `repeat` is present, and `PATCH`'s `repeat: null` is how
-  a series is stopped (`absent` leaves the schedule alone).
+  repeating one would be a standing breach of them), and a job whose firing
+  **spends** — a tool write or a model call — may not repeat faster than
+  **every 15 minutes** unless it carries a gate (#90 phases 8g, 9a). A message
+  job, which spends nothing and whose announcement replaces its predecessor, may
+  repeat every minute. A repeating job's moment comes from its rule, so the
+  request's own `runAt` is ignored when `repeat` is present, and `PATCH`'s
+  `repeat: null` is how a series is stopped (`absent` leaves the schedule alone).
 - **A page-created job is always a `message` job.** Text with nothing to run is
   what a timer or a reminder actually needs. Scheduling a _tool_ or a _prompt_
   stays with the model's tools, where the allowlist and the target tool's own

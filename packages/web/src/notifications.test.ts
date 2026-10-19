@@ -361,6 +361,20 @@ describe("shouldToast and selectToasts (#90 phases 6b–6c)", () => {
         ).toEqual(["reminder", "older"]);
     });
 
+    it("shows one card per job, even when a series fired twice", () => {
+        // #90 phase 9a: a series supersedes its own announcement, and the stack
+        // agrees — the newest firing of a minutely reminder is one card that
+        // updates, not three identical ones in the corner.
+        const list = [
+            make({ id: "newest", class: "reminder", jobId: "j1" }),
+            make({ id: "older", class: "reminder", jobId: "j1" }),
+            make({ id: "other", class: "reminder", jobId: "j2" }),
+        ];
+        expect(
+            selectToasts(list, { enabled: true }).map((row) => row.id),
+        ).toEqual(["newest", "other"]);
+    });
+
     it("stops at the limit, however many are owed", () => {
         // Past the limit the list and the badge are the answer; a corner with ten
         // cards is a wall, not a notification.

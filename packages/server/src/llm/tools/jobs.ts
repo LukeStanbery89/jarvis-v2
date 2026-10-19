@@ -270,16 +270,24 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
         });
     }
 
-    /** "Reminder scheduled: …" once `storeJob` succeeded. */
+    /**
+     * The model's reply for a creation, in two halves.
+     *
+     * `done` opens a success ("Reminder scheduled") and `refused` opens a
+     * refusal ("The reminder was not set"). A second string rather than a suffix
+     * on the first because appending " failed" produced "Reminder scheduled
+     * failed: …" in the first live test of a refusal — broken English relayed to
+     * the user as if it were the assistant's own sentence.
+     */
     function scheduledText(
-        verb: string,
+        words: { done: string; refused: string },
         outcome: CreateOutcome,
         at: Date,
     ): string {
         if (!outcome.ok) {
-            return `${verb} failed: ${outcome.reason}`;
+            return `${words.refused}: ${outcome.reason}`;
         }
-        return `${verb}: ${describeJob(outcome.job, at)}.${outcome.note}`;
+        return `${words.done}: ${describeJob(outcome.job, at)}.${outcome.note}`;
     }
 
     const labelSchema = z
@@ -458,7 +466,7 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             const at = now();
             const runAt = new Date(at.getTime() + duration.ms);
             return scheduledText(
-                "Timer set",
+                { done: "Timer set", refused: "The timer was not set" },
                 storeJob(access.userId, {
                     label,
                     class: "timer",
@@ -527,7 +535,10 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 return `The reminder was not set: ${first.reason}`;
             }
             return scheduledText(
-                "Reminder scheduled",
+                {
+                    done: "Reminder scheduled",
+                    refused: "The reminder was not set",
+                },
                 storeJob(access.userId, {
                     label,
                     class: "reminder",
@@ -634,7 +645,10 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 return `The task was not scheduled: ${gated.reason}`;
             }
             return scheduledText(
-                "Task scheduled",
+                {
+                    done: "Task scheduled",
+                    refused: "The task was not scheduled",
+                },
                 storeJob(access.userId, {
                     label,
                     class: "notification",
@@ -730,7 +744,10 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                 return `The job was not scheduled: ${gated.reason}`;
             }
             return scheduledText(
-                "Job scheduled",
+                {
+                    done: "Job scheduled",
+                    refused: "The job was not scheduled",
+                },
                 storeJob(access.userId, {
                     label,
                     class: "notification",

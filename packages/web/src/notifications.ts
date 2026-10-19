@@ -282,9 +282,28 @@ export function selectToasts(
     if (!context.enabled) {
         return [];
     }
-    return list
-        .filter((item) => !isSettled(item.state) && shouldToast(item))
-        .slice(0, TOAST_LIMIT);
+    // One card per job (#90 phase 9a): a series' firings supersede each other on
+    // the server, and the stack says the same thing rather than filling itself
+    // with the same reminder. The list is newest-first, so the first card seen
+    // for a job is the one to keep.
+    const seen = new Set<string>();
+    const cards: ClientNotification[] = [];
+    for (const item of list) {
+        if (isSettled(item.state) || !shouldToast(item)) {
+            continue;
+        }
+        if (item.jobId !== undefined) {
+            if (seen.has(item.jobId)) {
+                continue;
+            }
+            seen.add(item.jobId);
+        }
+        cards.push(item);
+        if (cards.length === TOAST_LIMIT) {
+            break;
+        }
+    }
+    return cards;
 }
 
 /**
