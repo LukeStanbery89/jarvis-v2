@@ -77,5 +77,9 @@ export {
     serializeHello,
     serializeLocation,
     serializeRequest,
-    SerializeRequestOptions,
 } from "./frame";
+// A *type*, which no `isolatedModules` transform can re-export from a value
+// block: `tsc` dropped it silently from the emitted JavaScript, so the mistake
+// only showed itself when a consumer compiled the sources directly (#90 phase
+// 8e, where the web's Vite alias to `src/` caught it).
+export type { SerializeRequestOptions } from "./frame";

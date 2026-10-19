@@ -12,7 +12,7 @@
  * notification is already filed — so the menu's presence is the caller's
  * statement about the class rather than a second flag to keep in step.
  */
-import { describeRunAt, jobBody } from "../../jobs";
+import { describeRunAt, jobBody, repeatText } from "../../jobs";
 import type { Job } from "../../api";
 import { SnoozeMenu } from "./SnoozeMenu";
 
@@ -59,6 +59,11 @@ export function JobRow({ job, now, onCancel, onEdit, onSnooze }: JobRowProps) {
                 </span>
                 <strong>{job.label}</strong>
                 {body !== null && <span> {body}</span>}
+                {repeatText(job) !== null && (
+                    <span className="job-repeat">
+                        repeats {repeatText(job)}
+                    </span>
+                )}
             </div>
             <div className="job-actions">
                 <span className="job-when">

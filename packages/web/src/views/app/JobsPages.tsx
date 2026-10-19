@@ -26,7 +26,12 @@
  * ring, not through here.
  */
 import type { ReactNode } from "react";
-import { describeMoment, recentJobs, upcomingJobs } from "../../jobs";
+import {
+    describeMoment,
+    recentJobs,
+    repeatText,
+    upcomingJobs,
+} from "../../jobs";
 import { snoozeReminder } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
 import { useJobPage } from "../../hooks/useJobPage";
@@ -64,6 +69,11 @@ function RecentRow({ job, now }: { job: Job; now: Date }) {
                 <strong>{job.label}</strong>
                 {job.lastError !== undefined && (
                     <span className="job-error"> {job.lastError}</span>
+                )}
+                {repeatText(job) !== null && (
+                    <span className="job-repeat">
+                        repeats {repeatText(job)}
+                    </span>
                 )}
             </div>
             <div className="job-actions">

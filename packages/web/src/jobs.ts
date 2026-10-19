@@ -10,9 +10,13 @@
  */
 import type { Job, JobRun, JobUpdateRequest, QuietForecast } from "./api";
 import {
+    describeRepeat,
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
+    nextOccurrence,
+    parseJobRepeat,
 } from "@lukestanbery/jarvis-protocol";
+import type { JobRepeat, Weekday } from "@lukestanbery/jarvis-protocol";
 import { clockText, describeSpan, weekdayText } from "./clock";
 import { describeBody } from "./notifications";
 
@@ -584,6 +588,322 @@ export function parseMomentInput(value: string): Date | null {
     return at;
 }
 
+/**
+ * The cadences the form offers as one tap (#90 phase 8e).
+ *
+ * Chips rather than a cron field: these are what people actually say ("every
+ * day", "every weekday", "the first of the month"), and anything they cannot
+ * express by tapping is expressible in chat, where the model maps the words.
+ */
+export const REPEAT_CHOICES = [
+    { id: "never", label: "Never" },
+    { id: "daily", label: "Daily" },
+    { id: "weekdays", label: "Weekdays" },
+    { id: "weekly", label: "Weekly" },
+    { id: "monthly", label: "Monthly" },
+] as const;
+
+/** One cadence the form offers. */
+export type RepeatChoice = (typeof REPEAT_CHOICES)[number]["id"];
+
+/**
+ * What a form has in hand about repetition (#90 phase 8e).
+ *
+ * A flat draft rather than a rule: the rule's shape depends on its frequency
+ * (`weekdays` means nothing to a daily rule), and a form is a set of controls
+ * that are all visible at once. {@link repeatDraftToRule} is the one place that
+ * turns one into the other, and {@link repeatDraftFromRule} reads a stored rule
+ * back, so opening an edit never loses a schedule it cannot render.
+ */
+export interface RepeatDraft {
+    choice: RepeatChoice;
+    /** Every N days, weeks or months — "every 3 weeks". */
+    interval: number;
+    /** The days a weekly repeat names, in calendar order. */
+    weekdays: Weekday[];
+    /** What a monthly repeat names: a day of the month, or an ordinal weekday. */
+    monthly: "day" | "ordinal";
+    /** The day of the month, 1..31 — or -1 for the last day. */
+    monthDay: number;
+    /** The ordinal weekday, spelled `2tu` / `-1fr` as the rule takes it. */
+    weekOrdinal: string;
+    /** When it stops: never, after N firings, or on a date (through that day). */
+    ends: "never" | "after" | "until";
+    after: number;
+    until: Date | null;
+}
+
+/** A draft that repeats nothing — the state every new job starts in. */
+export function noRepeat(): RepeatDraft {
+    return {
+        choice: "never",
+        interval: 1,
+        weekdays: ["mo"],
+        monthly: "day",
+        monthDay: 1,
+        weekOrdinal: "1mo",
+        ends: "never",
+        after: 4,
+        until: null,
+    };
+}
+
+/** The ordinal weekdays the monthly control offers, in the order it lists them. */
+export const MONTH_ORDINALS: { value: string; label: string }[] = [
+    { value: "1mo", label: "first Monday" },
+    { value: "1tu", label: "first Tuesday" },
+    { value: "1we", label: "first Wednesday" },
+    { value: "1th", label: "first Thursday" },
+    { value: "1fr", label: "first Friday" },
+    { value: "1sa", label: "first Saturday" },
+    { value: "1su", label: "first Sunday" },
+    { value: "2mo", label: "second Monday" },
+    { value: "2tu", label: "second Tuesday" },
+    { value: "2we", label: "second Wednesday" },
+    { value: "2th", label: "second Thursday" },
+    { value: "2fr", label: "second Friday" },
+    { value: "2sa", label: "second Saturday" },
+    { value: "2su", label: "second Sunday" },
+    { value: "3mo", label: "third Monday" },
+    { value: "3tu", label: "third Tuesday" },
+    { value: "3we", label: "third Wednesday" },
+    { value: "3th", label: "third Thursday" },
+    { value: "3fr", label: "third Friday" },
+    { value: "3sa", label: "third Saturday" },
+    { value: "3su", label: "third Sunday" },
+    { value: "4mo", label: "fourth Monday" },
+    { value: "4tu", label: "fourth Tuesday" },
+    { value: "4we", label: "fourth Wednesday" },
+    { value: "4th", label: "fourth Thursday" },
+    { value: "4fr", label: "fourth Friday" },
+    { value: "4sa", label: "fourth Saturday" },
+    { value: "4su", label: "fourth Sunday" },
+    { value: "5mo", label: "fifth Monday" },
+    { value: "5tu", label: "fifth Tuesday" },
+    { value: "5we", label: "fifth Wednesday" },
+    { value: "5th", label: "fifth Thursday" },
+    { value: "5fr", label: "fifth Friday" },
+    { value: "5sa", label: "fifth Saturday" },
+    { value: "5su", label: "fifth Sunday" },
+    { value: "-1mo", label: "last Monday" },
+    { value: "-1tu", label: "last Tuesday" },
+    { value: "-1we", label: "last Wednesday" },
+    { value: "-1th", label: "last Thursday" },
+    { value: "-1fr", label: "last Friday" },
+    { value: "-1sa", label: "last Saturday" },
+    { value: "-1su", label: "last Sunday" },
+];
+
+/** The weekday toggles the weekly control offers, in calendar order. */
+export const WEEKDAY_CHIPS: { day: Weekday; label: string }[] = [
+    { day: "su", label: "S" },
+    { day: "mo", label: "M" },
+    { day: "tu", label: "T" },
+    { day: "we", label: "W" },
+    { day: "th", label: "T" },
+    { day: "fr", label: "F" },
+    { day: "sa", label: "S" },
+];
+
+/** The same set with one day added or removed, in calendar order. */
+export function toggleWeekday(days: Weekday[], day: Weekday): Weekday[] {
+    const next = days.includes(day)
+        ? days.filter((value) => value !== day)
+        : [...days, day];
+    return next.sort(
+        (a, b) =>
+            WEEKDAY_CHIPS.findIndex((c) => c.day === a) -
+            WEEKDAY_CHIPS.findIndex((c) => c.day === b),
+    );
+}
+
+/** The weekdays a "weekday" repeat means, in calendar order. */
+const BUSINESS_DAYS: Weekday[] = ["mo", "tu", "we", "th", "fr"];
+
+/**
+ * The last instant of a local day, which is what an "until" date means.
+ *
+ * A millisecond before the next midnight rather than the midnight itself: the
+ * rule keeps occurrences up to and including its `until`, and a midnight daily
+ * job whose end date was the 20th should not also fire at 00:00 on the 21st.
+ */
+function endOfDay(date: Date): Date {
+    return new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate(),
+        23,
+        59,
+        59,
+        999,
+    );
+}
+
+/** What an "ends" choice becomes, in the rule's own words. */
+function endsFor(
+    draft: RepeatDraft,
+): { until: string } | { after: number } | undefined {
+    if (draft.ends === "after") {
+        return { after: Math.max(1, Math.floor(draft.after)) };
+    }
+    if (draft.ends === "until" && draft.until !== null) {
+        return { until: endOfDay(draft.until).toISOString() };
+    }
+    return undefined;
+}
+
+/**
+ * The rule a draft asks for, anchored at the moment the form has, or `null` when
+ * it repeats nothing (#90 phase 8e).
+ *
+ * The anchor is the *first occurrence* — the moment the user picked — which is
+ * what a rule's `start` means, so the server derives the same instant back and
+ * the two agree by construction rather than by luck. The result is handed
+ * straight to `parseJobRepeat`-validating code either side, so a bug here is a
+ * refusal rather than a strange schedule.
+ *
+ * @param draft - What the form has.
+ * @param first - The moment the form's picker holds.
+ * @returns The rule, or `null`.
+ */
+export function repeatDraftToRule(
+    draft: RepeatDraft,
+    first: Date,
+): JobRepeat | null {
+    if (draft.choice === "never") {
+        return null;
+    }
+    const interval = Math.max(1, Math.floor(draft.interval));
+    const ends = endsFor(draft);
+    const start = first.toISOString();
+    const common = { interval, start, ...(ends !== undefined ? { ends } : {}) };
+    if (draft.choice === "daily") {
+        return { every: "day", ...common };
+    }
+    if (draft.choice === "weekdays") {
+        return { every: "week", weekdays: [...BUSINESS_DAYS], ...common };
+    }
+    if (draft.choice === "weekly") {
+        const weekdays = [...draft.weekdays].sort(
+            (a, b) =>
+                ["su", "mo", "tu", "we", "th", "fr", "sa"].indexOf(a) -
+                ["su", "mo", "tu", "we", "th", "fr", "sa"].indexOf(b),
+        );
+        return {
+            every: "week",
+            weekdays: weekdays.length > 0 ? weekdays : ["mo"],
+            ...common,
+        };
+    }
+    return {
+        every: "month",
+        ...(draft.monthly === "day"
+            ? { monthDays: [draft.monthDay] }
+            : { weekOrdinals: [draft.weekOrdinal] }),
+        ...common,
+    };
+}
+
+/**
+ * The draft that reproduces a stored rule (#90 phase 8e).
+ *
+ * An edit has to render what is there, or opening the form on a series would
+ * quietly change it. Anything the chips cannot express lands on the nearest
+ * choice that keeps the *rule* intact where it can — and a rule that will not
+ * parse at all comes back as "never", which the form shows and the server would
+ * refuse to accept back as a change.
+ *
+ * @param repeat - The job's stored rule, as the wire delivers it.
+ * @returns The draft the form opens with.
+ */
+export function repeatDraftFromRule(repeat: unknown): RepeatDraft {
+    const draft = noRepeat();
+    const parsed = parseJobRepeat(repeat);
+    if (!parsed.ok) {
+        return draft;
+    }
+    const rule = parsed.repeat;
+    draft.interval = rule.interval;
+    if (rule.ends !== undefined) {
+        if ("after" in rule.ends) {
+            draft.ends = "after";
+            draft.after = rule.ends.after;
+        } else {
+            draft.ends = "until";
+            draft.until = new Date(Date.parse(rule.ends.until));
+        }
+    }
+    if (rule.every === "day") {
+        draft.choice = "daily";
+        return draft;
+    }
+    if (rule.every === "week") {
+        const days = rule.weekdays ?? [];
+        const weekdays =
+            days.length === BUSINESS_DAYS.length &&
+            BUSINESS_DAYS.every((day) => days.includes(day));
+        draft.choice = weekdays ? "weekdays" : "weekly";
+        if (!weekdays && days.length > 0) {
+            draft.weekdays = [...days];
+        }
+        return draft;
+    }
+    if (rule.every === "month") {
+        draft.choice = "monthly";
+        if ((rule.monthDays ?? []).length > 0) {
+            draft.monthly = "day";
+            draft.monthDay = (rule.monthDays ?? [])[0];
+        } else if ((rule.weekOrdinals ?? []).length > 0) {
+            draft.monthly = "ordinal";
+            draft.weekOrdinal = (rule.weekOrdinals ?? [])[0];
+        }
+        return draft;
+    }
+    // A sub-day cadence has no chip and no fields; the form offers "never" so a
+    // save cannot silently keep a cadence it cannot show. Sub-day repeats are
+    // made in chat, or by a later control.
+    return draft;
+}
+
+/**
+ * The first thing wrong with a draft's schedule, in the server's own spirit
+ * (#90 phase 8e).
+ *
+ * @param draft - What the form has.
+ * @param jobClass - The class the page owns.
+ * @returns The problem in words, or `null`.
+ */
+export function checkRepeatDraft(
+    draft: RepeatDraft,
+    jobClass: JobClass,
+): string | null {
+    if (draft.choice === "never") {
+        return null;
+    }
+    if (jobClass === "timer") {
+        return "a timer is a countdown, not a schedule — set a reminder instead.";
+    }
+    if (draft.choice === "weekly" && draft.weekdays.length === 0) {
+        return "pick at least one day of the week.";
+    }
+    if (draft.monthly === "day" || draft.choice === "monthly") {
+        if (
+            draft.monthDay === 0 ||
+            draft.monthDay > 31 ||
+            draft.monthDay < -31
+        ) {
+            return "a day of the month is 1 to 31, or -1 for the last day.";
+        }
+    }
+    if (draft.ends === "after" && draft.after < 1) {
+        return "give it at least one repeat.";
+    }
+    if (draft.ends === "until" && draft.until === null) {
+        return "pick the date it should stop after.";
+    }
+    return null;
+}
+
 /** What a form has in hand, before the server sees it (#90 phase 7). */
 export interface JobDraft {
     /** The headline ("Kettle", "Call Mum"). */
@@ -594,6 +914,8 @@ export interface JobDraft {
     runAt: Date | null;
     /** The class the job will carry — the page's, never a field of its own. */
     jobClass: JobClass;
+    /** The schedule, or "never" (#90 phase 8e). */
+    repeat: RepeatDraft;
 }
 
 /**
@@ -616,7 +938,7 @@ export interface JobDraft {
  * @returns The patch to send, or `null` when the draft matches the job.
  */
 export function editPatchFor(
-    job: Pick<Job, "label" | "message" | "runAt">,
+    job: Pick<Job, "label" | "message" | "runAt"> & { repeat?: unknown },
     draft: JobDraft,
 ): JobUpdateRequest | null {
     const patch: JobUpdateRequest = {};
@@ -633,6 +955,26 @@ export function editPatchFor(
         momentInputValue(draft.runAt) !== momentInputValue(new Date(job.runAt))
     ) {
         patch.runAt = draft.runAt.toISOString();
+    }
+    // A rule is sent when it *changes*, and its absence is how the server is told
+    // to stop repeating: `null` clears, absent leaves alone. A repeating job's
+    // moment is its rule's, so the server derives `runAt` and the one above is
+    // ignored — the same instant, because the draft's anchor is the picker's.
+    const hadRule = job.repeat !== null && job.repeat !== undefined;
+    const wantsRule = draft.repeat.choice !== "never";
+    if (hadRule !== wantsRule) {
+        patch.repeat =
+            wantsRule && draft.runAt !== null
+                ? (repeatDraftToRule(draft.repeat, draft.runAt) ?? null)
+                : null;
+    } else if (wantsRule && draft.runAt !== null) {
+        const next = repeatDraftToRule(draft.repeat, draft.runAt);
+        if (
+            next !== null &&
+            JSON.stringify(next) !== JSON.stringify(job.repeat)
+        ) {
+            patch.repeat = next;
+        }
     }
     return Object.keys(patch).length === 0 ? null : patch;
 }
@@ -676,5 +1018,48 @@ export function checkJobInput(draft: JobDraft, now: Date): string | null {
     if (aheadMs > HORIZON_DAYS * 24 * 60 * 60_000) {
         return `that is more than ${HORIZON_DAYS} days away.`;
     }
-    return null;
+    return checkRepeatDraft(draft.repeat, draft.jobClass);
+}
+
+/**
+ * A job's cadence in words (#90 phase 8e), or `null` for a one-shot.
+ *
+ * The protocol's phrase verbatim, because it is the same sentence the model says
+ * back when it sets a schedule in chat: a row that read differently from the
+ * confirmation would be a second answer to one question.
+ *
+ * @param job - The job as stored.
+ * @returns The cadence, or `null`.
+ */
+export function repeatText(job: Pick<Job, "repeat">): string | null {
+    if (job.repeat === null || job.repeat === undefined) {
+        return null;
+    }
+    const parsed = parseJobRepeat(job.repeat);
+    return parsed.ok ? describeRepeat(parsed.repeat) : null;
+}
+
+/**
+ * When a draft's schedule fires next (#90 phase 8e), or `null` when it does not
+ * repeat (or the rule's next occurrence cannot be found).
+ *
+ * The *same* function the server schedules with, so the preview cannot disagree
+ * with what will happen. It runs in the browser's zone, which is the server's for
+ * this app's one-box deployment; a cross-zone browser would see its own local
+ * reading of the same instant, which is why the row it describes is the server's.
+ *
+ * @param draft - What the form has.
+ * @param now - The clock to search forward from.
+ * @returns The next instant, or `null`.
+ */
+export function nextRepeatAt(draft: RepeatDraft, now: Date): Date | null {
+    if (draft.choice === "never") {
+        return null;
+    }
+    const rule = repeatDraftToRule(draft, now);
+    if (rule === null) {
+        return null;
+    }
+    const next = nextOccurrence(rule, now);
+    return next.ok ? next.at : null;
 }

@@ -23,7 +23,11 @@ import {
     instantFromDuration,
     jobBody,
     momentInputValue,
+    nextRepeatAt,
+    noRepeat,
     parseMomentInput,
+    repeatDraftFromRule,
+    repeatDraftToRule,
     recentJobs,
     runDuration,
     snoozeUntil,
@@ -39,7 +43,7 @@ import {
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
-import type { JobDraft } from "./jobs";
+import type { JobDraft, RepeatDraft } from "./jobs";
 import type { Job, JobRun } from "./api";
 
 /** A job with everything the list needs, overridable per test. */
@@ -498,6 +502,7 @@ describe("checkJobInput", () => {
             message: "",
             runAt: minute(10),
             jobClass: "timer",
+            repeat: noRepeat(),
             ...overrides,
         };
     }
@@ -618,6 +623,7 @@ describe("editPatchFor", () => {
             message: "",
             runAt: parseMomentInput(momentInputValue(new Date(target.runAt))),
             jobClass: "timer",
+            repeat: noRepeat(),
         });
         expect(patch).toBeNull();
     });
@@ -629,6 +635,7 @@ describe("editPatchFor", () => {
             message: "",
             runAt: parseMomentInput(momentInputValue(new Date(target.runAt))),
             jobClass: "timer",
+            repeat: noRepeat(),
         });
         // The detail rides along, and has to: a blank field *is* the label, so a
         // rename that left the stored message behind would read "Tea Kettle".
@@ -642,6 +649,7 @@ describe("editPatchFor", () => {
             message: target.message ?? "",
             runAt: null,
             jobClass: "timer",
+            repeat: noRepeat(),
         });
         expect(patch).toEqual({ label: "Tea" });
     });
@@ -656,6 +664,7 @@ describe("editPatchFor", () => {
             message: "",
             runAt: new Date(2026, 9, 18, 12, 34, 0),
             jobClass: "timer",
+            repeat: noRepeat(),
         });
         expect(patch).toEqual({ label: "Tea", message: "Tea" });
     });
@@ -668,6 +677,7 @@ describe("editPatchFor", () => {
             message: "",
             runAt: moved,
             jobClass: "timer",
+            repeat: noRepeat(),
         });
         expect(patch).toEqual({ runAt: moved.toISOString() });
     });
@@ -683,6 +693,7 @@ describe("editPatchFor", () => {
                 message: "   ",
                 runAt: null,
                 jobClass: "timer",
+                repeat: noRepeat(),
             }),
         ).toBeNull();
 
@@ -693,6 +704,7 @@ describe("editPatchFor", () => {
                 message: "",
                 runAt: null,
                 jobClass: "timer",
+                repeat: noRepeat(),
             }),
         ).toEqual({ message: "Kettle" });
     });
@@ -787,5 +799,248 @@ describe("describeQuiet", () => {
         expect(
             describeQuiet({ state: "held", until: "not a time" }, "reminder"),
         ).toBeNull();
+    });
+});
+
+describe("the repeat control (#90 phase 8e)", () => {
+    /** The form's clock: a Thursday, so "tomorrow" is unambiguous. */
+    const now = new Date(2026, 0, 1, 19, 5, 0, 0);
+    /** The moment a picker holds, ten minutes out. */
+    const first = new Date(2026, 0, 1, 19, 15, 0, 0);
+
+    /** A draft with one field overridden. */
+    function draft(overrides: Partial<RepeatDraft> = {}): RepeatDraft {
+        return { ...noRepeat(), ...overrides };
+    }
+
+    it("builds a rule with the picker's moment as its anchor", () => {
+        expect(repeatDraftToRule(noRepeat(), first)).toBeNull();
+
+        expect(repeatDraftToRule(draft({ choice: "daily" }), first)).toEqual({
+            every: "day",
+            interval: 1,
+            start: first.toISOString(),
+        });
+        // "Weekdays" is Mon–Fri, in calendar order.
+        expect(
+            repeatDraftToRule(draft({ choice: "weekdays" }), first),
+        ).toMatchObject({
+            every: "week",
+            weekdays: ["mo", "tu", "we", "th", "fr"],
+        });
+        // A weekly set is sorted, whatever order the toggles were tapped in.
+        expect(
+            repeatDraftToRule(
+                draft({ choice: "weekly", weekdays: ["sa", "mo"] }),
+                first,
+            ),
+        ).toMatchObject({ every: "week", weekdays: ["mo", "sa"] });
+    });
+
+    it("builds a monthly rule from either control, and an end from either", () => {
+        expect(
+            repeatDraftToRule(
+                draft({ choice: "monthly", monthly: "day", monthDay: 1 }),
+                first,
+            ),
+        ).toMatchObject({ every: "month", monthDays: [1] });
+        expect(
+            repeatDraftToRule(
+                draft({ choice: "monthly", monthly: "day", monthDay: -1 }),
+                first,
+            ),
+        ).toMatchObject({ monthDays: [-1] });
+        expect(
+            repeatDraftToRule(
+                draft({
+                    choice: "monthly",
+                    monthly: "ordinal",
+                    weekOrdinal: "2tu",
+                }),
+                first,
+            ),
+        ).toMatchObject({ every: "month", weekOrdinals: ["2tu"] });
+        expect(
+            repeatDraftToRule(
+                draft({
+                    choice: "daily",
+                    interval: 3,
+                    ends: "after",
+                    after: 4,
+                }),
+                first,
+            ),
+        ).toMatchObject({ interval: 3, ends: { after: 4 } });
+        // A date means "through that day", so the end is its last instant.
+        const until = new Date(2026, 5, 20, 23, 59, 59, 999);
+        expect(
+            repeatDraftToRule(
+                draft({
+                    choice: "daily",
+                    ends: "until",
+                    until: new Date(2026, 5, 20),
+                }),
+                first,
+            ),
+        ).toMatchObject({ ends: { until: until.toISOString() } });
+    });
+
+    it("reads a stored rule back into the controls", () => {
+        expect(
+            repeatDraftFromRule({
+                every: "week",
+                interval: 1,
+                start: first.toISOString(),
+                weekdays: ["mo", "tu", "we", "th", "fr"],
+            }),
+        ).toMatchObject({ choice: "weekdays" });
+        expect(
+            repeatDraftFromRule({
+                every: "week",
+                interval: 2,
+                start: first.toISOString(),
+                weekdays: ["sa", "mo"],
+            }),
+            // Parsed rules arrive sorted, so the toggles open in calendar order.
+        ).toMatchObject({
+            choice: "weekly",
+            interval: 2,
+            weekdays: ["mo", "sa"],
+        });
+        expect(
+            repeatDraftFromRule({
+                every: "month",
+                interval: 1,
+                start: first.toISOString(),
+                weekOrdinals: ["-1fr"],
+                ends: { after: 6 },
+            }),
+        ).toMatchObject({
+            choice: "monthly",
+            monthly: "ordinal",
+            weekOrdinal: "-1fr",
+            ends: "after",
+            after: 6,
+        });
+        expect(
+            repeatDraftFromRule({
+                every: "month",
+                interval: 1,
+                start: first.toISOString(),
+                monthDays: [15],
+            }),
+        ).toMatchObject({ choice: "monthly", monthly: "day", monthDay: 15 });
+        // Nothing to repeat, and nothing that will not parse, both open on Never.
+        expect(repeatDraftFromRule(undefined).choice).toBe("never");
+        expect(repeatDraftFromRule({ every: "fortnight" }).choice).toBe(
+            "never",
+        );
+    });
+
+    it("round-trips a rule through the form without changing it", () => {
+        const rules = [
+            { every: "day", interval: 1, start: first.toISOString() },
+            {
+                every: "week",
+                interval: 2,
+                start: first.toISOString(),
+                weekdays: ["mo", "sa"],
+            },
+            {
+                every: "month",
+                interval: 1,
+                start: first.toISOString(),
+                monthDays: [1],
+                ends: { after: 3 },
+            },
+        ];
+        for (const rule of rules) {
+            const draft = repeatDraftFromRule(rule);
+            expect(repeatDraftToRule(draft, first)).toEqual(rule);
+        }
+    });
+
+    it("refuses a timer's schedule, as the server would", () => {
+        const timer = {
+            label: "Kettle",
+            message: "",
+            runAt: first,
+            jobClass: "timer" as const,
+            repeat: draft({ choice: "daily" }),
+        };
+        expect(checkJobInput(timer, now)).toMatch(/a timer is a countdown/);
+        expect(
+            checkJobInput({ ...timer, jobClass: "reminder" }, now),
+        ).toBeNull();
+    });
+
+    it("says when it will next fire, with the server's own function", () => {
+        // 19:15 today, every day: tomorrow at the same clock time.
+        expect(
+            nextRepeatAt(draft({ choice: "daily" }), first)?.toISOString(),
+        ).toBe(new Date(2026, 0, 2, 19, 15).toISOString());
+        expect(nextRepeatAt(noRepeat(), first)).toBeNull();
+    });
+
+    it("adds, keeps and clears a rule through an edit", () => {
+        const job = {
+            label: "Standup",
+            message: "Standup",
+            runAt: first.toISOString(),
+        };
+        // Adding one sends the rule anchored at the draft's moment.
+        expect(
+            editPatchFor(job, {
+                label: "Standup",
+                message: "",
+                runAt: first,
+                jobClass: "reminder",
+                repeat: draft({ choice: "daily" }),
+            }),
+        ).toMatchObject({
+            repeat: { every: "day", interval: 1, start: first.toISOString() },
+        });
+
+        // An unchanged rule sends nothing.
+        expect(
+            editPatchFor(
+                {
+                    ...job,
+                    repeat: {
+                        every: "day",
+                        interval: 1,
+                        start: first.toISOString(),
+                    },
+                },
+                {
+                    label: "Standup",
+                    message: "",
+                    runAt: first,
+                    jobClass: "reminder",
+                    repeat: draft({ choice: "daily" }),
+                },
+            ),
+        ).toBeNull();
+
+        // Turning it off is `null`, which is how the server is told to stop.
+        expect(
+            editPatchFor(
+                {
+                    ...job,
+                    repeat: {
+                        every: "day",
+                        interval: 1,
+                        start: first.toISOString(),
+                    },
+                },
+                {
+                    label: "Standup",
+                    message: "",
+                    runAt: first,
+                    jobClass: "reminder",
+                    repeat: noRepeat(),
+                },
+            ),
+        ).toEqual({ repeat: null });
     });
 });

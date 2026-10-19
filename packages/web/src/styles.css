@@ -1625,6 +1625,58 @@ textarea::placeholder {
     text-transform: uppercase;
 }
 
+/* A repeating job's cadence, under its label (#90 phase 8e). The protocol's own
+   words, so the row reads exactly like the confirmation the model gave in chat —
+   and like the live preview the form shows before it is saved. */
+.job-repeat {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+}
+
+/* The repeat control's own fields (#90 phase 8e): the chips row picks the
+   cadence, and what is under it depends on that choice. */
+.job-form-repeat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+    padding: 0.5rem 0.6rem;
+    background: var(--primary-wash);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+}
+
+.job-form-repeat-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+}
+
+.job-form-repeat-line input,
+.job-form-repeat-line select {
+    font: inherit;
+    padding: 0.25rem 0.4rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+}
+
+.job-form-repeat-line input[type="number"] {
+    width: 4.5rem;
+}
+
+/* The live line: the cadence in words, and when it next fires. */
+.job-form-repeat-preview {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.78rem;
+}
+
 /* A record's run disclosure (#90 phase 7d): what the job actually did, under the
    notification it produced. */
 .job-runs {

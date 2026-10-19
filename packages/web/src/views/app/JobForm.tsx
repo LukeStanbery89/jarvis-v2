@@ -26,15 +26,24 @@ import { X } from "lucide-react";
 import {
     checkJobInput,
     defaultMoment,
+    describeMoment,
     editPatchFor,
     instantFromDuration,
     jobBody,
     momentInputValue,
+    noRepeat,
     parseMomentInput,
+    repeatDraftFromRule,
+    repeatDraftToRule,
+    toggleWeekday,
     DURATION_PRESETS,
     MOMENT_CHIPS,
+    MONTH_ORDINALS,
+    REPEAT_CHOICES,
+    WEEKDAY_CHIPS,
 } from "../../jobs";
-import type { DurationUnit, JobClass } from "../../jobs";
+import type { DurationUnit, JobClass, RepeatDraft } from "../../jobs";
+import { describeRepeat, nextOccurrence } from "@lukestanbery/jarvis-protocol";
 import type { JobsState } from "../../hooks/useJobs";
 import type { Job, JobSaved } from "../../api";
 
@@ -102,6 +111,14 @@ export function JobForm({
                 : new Date(editing.runAt),
         ),
     );
+    /**
+     * The schedule, as the pure helpers read it (#90 phase 8e). An edit opens on
+     * the job's own rule, rendered into the controls — a form that could not show
+     * a stored rule would change it by saving.
+     */
+    const [repeat, setRepeat] = useState<RepeatDraft>(() =>
+        editing === null ? noRepeat() : repeatDraftFromRule(editing.repeat),
+    );
     const [problem, setProblem] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -121,19 +138,51 @@ export function JobForm({
         labelRef.current?.focus();
     }, []);
 
+    /** The moment the form currently holds, or `null` when it cannot read one. */
+    function momentOf(): Date | null {
+        return byDuration
+            ? instantFromDuration(new Date(), { amount: Number(amount), unit })
+            : parseMomentInput(moment);
+    }
+
     /** The draft as the pure checks (and the patch builder) read it. */
     function draft() {
         return {
             label,
             message,
-            runAt: byDuration
-                ? instantFromDuration(new Date(), {
-                      amount: Number(amount),
-                      unit,
-                  })
-                : parseMomentInput(moment),
+            runAt: momentOf(),
             jobClass: jobClassOf,
+            repeat,
         };
+    }
+
+    /**
+     * The schedule as it stands, live (#90 phase 8e): the cadence in the words
+     * the model would use, and when it fires next.
+     *
+     * `nextOccurrence` is the *server's* function, so the preview cannot disagree
+     * with what will happen — and the anchor is the moment in the picker, which
+     * is what the rule is built with, so "next" is the first occurrence the user
+     * is looking at rather than a guess.
+     */
+    function repeatPreview(): string | null {
+        if (repeat.choice === "never") {
+            return null;
+        }
+        const first = momentOf();
+        if (first === null) {
+            return null;
+        }
+        const rule = repeatDraftToRule(repeat, first);
+        if (rule === null) {
+            return null;
+        }
+        const now = new Date();
+        const next = nextOccurrence(rule, now);
+        const cadence = describeRepeat(rule);
+        return next.ok
+            ? `${cadence} · next ${describeMoment(next.at.toISOString(), now)}`
+            : cadence;
     }
 
     /**
@@ -183,6 +232,7 @@ export function JobForm({
         setProblem(null);
         setSaving(true);
         try {
+            const rule = repeatDraftToRule(repeat, input.runAt);
             const result = await jobs.create({
                 label: input.label.trim(),
                 class: jobClassOf,
@@ -191,6 +241,7 @@ export function JobForm({
                     input.message.trim() === ""
                         ? input.label.trim()
                         : input.message.trim(),
+                ...(rule !== null ? { repeat: rule } : {}),
             });
             if (!result.ok) {
                 setProblem(result.error);
@@ -331,6 +382,227 @@ export function JobForm({
                                 </button>
                             ))}
                         </div>
+                    </div>
+                )}
+                {jobClassOf !== "timer" && (
+                    <div className="job-form-row">
+                        <span>Repeats</span>
+                        <div className="job-form-chips">
+                            {REPEAT_CHOICES.map((choice) => (
+                                <button
+                                    key={choice.id}
+                                    type="button"
+                                    className={
+                                        repeat.choice === choice.id
+                                            ? "job-form-chip current"
+                                            : "job-form-chip"
+                                    }
+                                    onClick={() =>
+                                        setRepeat({
+                                            ...repeat,
+                                            choice: choice.id,
+                                        })
+                                    }
+                                >
+                                    {choice.label}
+                                </button>
+                            ))}
+                        </div>
+                        {repeat.choice !== "never" && (
+                            <div className="job-form-repeat">
+                                {repeat.choice !== "weekdays" && (
+                                    <label className="job-form-repeat-line">
+                                        <span>Every</span>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            step="1"
+                                            value={repeat.interval}
+                                            aria-label="How many between repeats"
+                                            onChange={(event) =>
+                                                setRepeat({
+                                                    ...repeat,
+                                                    interval: Number(
+                                                        event.target.value,
+                                                    ),
+                                                })
+                                            }
+                                        />
+                                        <span>
+                                            {repeat.choice === "daily"
+                                                ? "day(s)"
+                                                : repeat.choice === "weekly"
+                                                  ? "week(s)"
+                                                  : "month(s)"}
+                                        </span>
+                                    </label>
+                                )}
+                                {repeat.choice === "weekly" && (
+                                    <div className="job-form-chips">
+                                        {WEEKDAY_CHIPS.map(({ day, label }) => (
+                                            <button
+                                                key={day}
+                                                type="button"
+                                                aria-label={day}
+                                                className={
+                                                    repeat.weekdays.includes(
+                                                        day,
+                                                    )
+                                                        ? "job-form-chip current"
+                                                        : "job-form-chip"
+                                                }
+                                                onClick={() =>
+                                                    setRepeat({
+                                                        ...repeat,
+                                                        weekdays: toggleWeekday(
+                                                            repeat.weekdays,
+                                                            day,
+                                                        ),
+                                                    })
+                                                }
+                                            >
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                                {repeat.choice === "monthly" && (
+                                    <div className="job-form-repeat-line">
+                                        <select
+                                            value={repeat.monthly}
+                                            aria-label="What the month names"
+                                            onChange={(event) =>
+                                                setRepeat({
+                                                    ...repeat,
+                                                    monthly: event.target
+                                                        .value as RepeatDraft["monthly"],
+                                                })
+                                            }
+                                        >
+                                            <option value="day">
+                                                a day of the month
+                                            </option>
+                                            <option value="ordinal">
+                                                a weekday of the month
+                                            </option>
+                                        </select>
+                                        {repeat.monthly === "day" ? (
+                                            <input
+                                                type="number"
+                                                min="-31"
+                                                max="31"
+                                                step="1"
+                                                value={repeat.monthDay}
+                                                aria-label="Day of the month"
+                                                onChange={(event) =>
+                                                    setRepeat({
+                                                        ...repeat,
+                                                        monthDay: Number(
+                                                            event.target.value,
+                                                        ),
+                                                    })
+                                                }
+                                            />
+                                        ) : (
+                                            <select
+                                                value={repeat.weekOrdinal}
+                                                aria-label="Which weekday"
+                                                onChange={(event) =>
+                                                    setRepeat({
+                                                        ...repeat,
+                                                        weekOrdinal:
+                                                            event.target.value,
+                                                    })
+                                                }
+                                            >
+                                                {MONTH_ORDINALS.map(
+                                                    (ordinal) => (
+                                                        <option
+                                                            key={ordinal.value}
+                                                            value={
+                                                                ordinal.value
+                                                            }
+                                                        >
+                                                            {ordinal.label}
+                                                        </option>
+                                                    ),
+                                                )}
+                                            </select>
+                                        )}
+                                    </div>
+                                )}
+                                <label className="job-form-repeat-line">
+                                    <span>Ends</span>
+                                    <select
+                                        value={repeat.ends}
+                                        aria-label="When the schedule ends"
+                                        onChange={(event) =>
+                                            setRepeat({
+                                                ...repeat,
+                                                ends: event.target
+                                                    .value as RepeatDraft["ends"],
+                                            })
+                                        }
+                                    >
+                                        <option value="never">
+                                            never (until cancelled)
+                                        </option>
+                                        <option value="after">after</option>
+                                        <option value="until">on a date</option>
+                                    </select>
+                                    {repeat.ends === "after" && (
+                                        <>
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                step="1"
+                                                value={repeat.after}
+                                                aria-label="How many times"
+                                                onChange={(event) =>
+                                                    setRepeat({
+                                                        ...repeat,
+                                                        after: Number(
+                                                            event.target.value,
+                                                        ),
+                                                    })
+                                                }
+                                            />
+                                            <span>time(s)</span>
+                                        </>
+                                    )}
+                                    {repeat.ends === "until" && (
+                                        <input
+                                            type="date"
+                                            aria-label="Stop after this date"
+                                            value={
+                                                repeat.until === null
+                                                    ? ""
+                                                    : momentInputValue(
+                                                          repeat.until,
+                                                      ).slice(0, 10)
+                                            }
+                                            onChange={(event) =>
+                                                setRepeat({
+                                                    ...repeat,
+                                                    until:
+                                                        event.target.value ===
+                                                        ""
+                                                            ? null
+                                                            : (parseMomentInput(
+                                                                  `${event.target.value}T23:59`,
+                                                              ) ?? null),
+                                                })
+                                            }
+                                        />
+                                    )}
+                                </label>
+                                {repeatPreview() !== null && (
+                                    <p className="job-form-repeat-preview">
+                                        {repeatPreview()}
+                                    </p>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
                 {hasDetail && (
