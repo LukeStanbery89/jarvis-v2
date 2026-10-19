@@ -372,3 +372,114 @@ describe("the creation policy", () => {
         expect(h.store.countUnreadNotifications(h.userId)).toBe(1);
     });
 });
+
+describe("recurrence (#90 phase 8d)", () => {
+    /** A daily rule anchored at the fixed clock: 19:05 every day. */
+    const daily = { every: "day", interval: 1, start: NOW.toISOString() };
+
+    /** Tomorrow at the fixed clock — what that rule fires next. */
+    const tomorrowAt1905 = new Date(2026, 0, 2, 19, 5).toISOString();
+
+    /** A message job ten minutes out, optionally repeating. */
+    function createMessage(
+        h: Harness,
+        repeat: unknown,
+        cls: "notification" | "reminder" | "timer" = "reminder",
+    ) {
+        return h.creator.create(h.userId, {
+            label: "Standup",
+            class: cls,
+            payload: { kind: "message", message: "Standup" },
+            runAt: new Date(NOW.getTime() + 10 * 60_000),
+            repeat,
+            at: NOW,
+        });
+    }
+
+    it("stores a rule and derives the job's moment from it", () => {
+        const h = harness();
+        const outcome = createMessage(h, daily);
+
+        expect(outcome.ok).toBe(true);
+        if (!outcome.ok) {
+            return;
+        }
+        expect(outcome.job.repeat).toEqual(daily);
+        // Not the requested moment: a rule *is* the schedule, so the job is due
+        // at its next occurrence — tomorrow at the same clock time.
+        expect(outcome.job.runAt).toBe(tomorrowAt1905);
+    });
+
+    it("refuses a repeating timer, with the alternative to offer", () => {
+        const h = harness();
+        const outcome = createMessage(h, daily, "timer");
+
+        expect(outcome).toMatchObject({ ok: false, code: "invalid-repeat" });
+        if (!outcome.ok) {
+            expect(outcome.reason).toMatch(/a timer is a countdown/);
+        }
+    });
+
+    it("refuses a cadence that would announce too often", () => {
+        const h = harness();
+        const tooFast = createMessage(h, {
+            every: "minute",
+            interval: 5,
+            start: NOW.toISOString(),
+        });
+
+        expect(tooFast).toMatchObject({ ok: false, code: "invalid-repeat" });
+        if (!tooFast.ok) {
+            expect(tooFast.reason).toMatch(/every 5 minutes is too often/);
+        }
+        // The floor itself is allowed, and a calendar frequency is always fine.
+        expect(
+            createMessage(h, {
+                every: "minute",
+                interval: 15,
+                start: NOW.toISOString(),
+            }).ok,
+        ).toBe(true);
+    });
+
+    it("refuses a day that can never exist, in the parser's words", () => {
+        const h = harness();
+        const outcome = createMessage(h, {
+            every: "month",
+            interval: 1,
+            start: NOW.toISOString(),
+            weekOrdinals: ["7mo"],
+        });
+
+        expect(outcome).toMatchObject({ ok: false, code: "invalid-repeat" });
+        if (!outcome.ok) {
+            expect(outcome.reason).toMatch(/ordinal from 1 to 5/);
+        }
+    });
+
+    it("sets, keeps and clears a rule through an edit", () => {
+        const h = harness();
+        const created = createMessage(h, undefined);
+        expect(created.ok).toBe(true);
+        if (!created.ok) {
+            return;
+        }
+        const id = created.job.id;
+
+        // Setting one re-anchors the series at the edit and decides the moment.
+        const set = h.creator.edit(h.userId, id, { repeat: daily });
+        expect(set.ok).toBe(true);
+        expect(set.ok ? set.job.repeat : null).toEqual(daily);
+        expect(set.ok ? set.job.runAt : null).toBe(tomorrowAt1905);
+
+        // An edit that does not mention the rule leaves it alone.
+        const renamed = h.creator.edit(h.userId, id, { label: "Renamed" });
+        expect(renamed.ok ? renamed.job.repeat : null).toEqual(daily);
+
+        // Clearing one leaves the job due where it stands.
+        const stopped = h.creator.edit(h.userId, id, { repeat: null });
+        expect(stopped.ok).toBe(true);
+        expect(stopped.ok ? stopped.job.repeat : "unset").toBeNull();
+        expect(stopped.ok ? stopped.job.runAt : null).toBe(tomorrowAt1905);
+    });
+});

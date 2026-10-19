@@ -30,7 +30,11 @@ import {
     MAX_NOTIFICATION_BODY_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
-import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
+import { nextOccurrence, parseJobRepeat } from "@lukestanbery/jarvis-protocol";
+import type {
+    JobRepeat,
+    NotificationClass,
+} from "@lukestanbery/jarvis-protocol";
 import type {
     AppJob,
     JobLedger,
@@ -73,6 +77,18 @@ export const MAX_DURATION_MINUTES = 1440;
  * seconds long.
  */
 export const MIN_SNOOZE_MINUTES = 0.5;
+
+/**
+ * The shortest gap between two firings a schedule may ask for (#90 phase 8d).
+ *
+ * A `message` job's firing **is** its announcement, so its cadence is a
+ * notification rate: fifteen minutes caps an announcing series at 96 rows a day,
+ * which is already loud. A `tool` or `prompt` job has the same floor until it can
+ * carry a gate that declines an occurrence (phase 8g) — until then, every firing
+ * is a model call or a device write, and the day's budget is the only other thing
+ * between the user and a mistake.
+ */
+export const MIN_REPEAT_MINUTES = 15;
 
 /**
  * The long end of a snooze: a week (#90 phase 7 fix).
@@ -133,8 +149,13 @@ export interface CreateRequest {
     label: string;
     class: NotificationClass;
     payload: JobPayload;
-    /** The moment the job is owed at. */
+    /** The moment the job is owed at — for a **one-shot**. */
     runAt: Date;
+    /**
+     * The recurrence rule, when the job repeats (#90 phase 8d). Untrusted: this
+     * is the door, so it is parsed here whatever the caller already did.
+     */
+    repeat?: unknown;
     /**
      * The instant the request is being made, shared with `runAt`'s own
      * arithmetic so a job cannot be stamped a moment it never had. Defaults to
@@ -151,6 +172,14 @@ export type CreateRefusal =
     | "beyond-horizon"
     | "too-many"
     | "timer-too-long"
+    /**
+     * The rule is not one this server will keep (#90 phase 8d) — malformed, on
+     * a class that cannot repeat, or too frequent. One code for three faults
+     * because the *reason* is what every surface shows and it already says
+     * which: a surface routes on the code only to pick a status, and all three
+     * are the request's own fault.
+     */
+    | "invalid-repeat"
     | "store-failed";
 
 /** A creation attempt: the stored job and its forecast, or why it failed. */
@@ -242,11 +271,23 @@ export interface JobCreator {
         jobClass: NotificationClass,
         runAt: Date,
     ): QuietForecast;
-    /** Edits a pending job's label, message or moment. */
+    /**
+     * Edits a pending job's label, message, moment or schedule (#90 phase 8d).
+     *
+     * `repeat` is the rule to write, `null` to stop repeating, or absent to
+     * leave it: setting or replacing one re-anchors the series at the edit and
+     * decides the moment itself, while clearing one leaves the job due where it
+     * stands.
+     */
     edit(
         userId: number,
         id: string,
-        patch: { label?: string; message?: string; runAt?: Date },
+        patch: {
+            label?: string;
+            message?: string;
+            runAt?: Date;
+            repeat?: unknown | null;
+        },
     ): EditOutcome;
     /** Snoozes a reminder: moves it, or sets it again for the new moment. */
     snooze(userId: number, id: string, minutes: number): SnoozeOutcome;
@@ -330,6 +371,10 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 return `the user already has ${deps.maxPerUser} jobs scheduled, which is the limit — cancel one with cancelJob first.`;
             case "timer-too-long":
                 return `a countdown longer than ${MAX_DURATION_MINUTES} minutes (a day) is a reminder — use remindMe.`;
+            case "invalid-repeat":
+                // The specific fault is the parser's (see `repeatCheck`), which
+                // knows whether it was a weekday, an ordinal or an end.
+                return "that is not a schedule I can keep — check its frequency, days or end.";
             case "store-failed":
                 return "the job could not be stored. Tell the user it was not scheduled.";
         }
@@ -345,9 +390,112 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
      * retention prune evicts them first, so a job accepted here can never be the
      * row the prune eats.
      */
+    /**
+     * The rule a job may carry, or why it may not (#90 phase 8d).
+     *
+     * Two boundaries live here rather than in the parser, because they are
+     * *policy* — what this assistant will schedule — rather than what a rule can
+     * mean:
+     *
+     * - **A timer may not repeat.** A timer pierces quiet hours; a repeating one
+     *   would be a standing breach of them, and "every night at 3am" is never a
+     *   countdown. A reminder is the class for something that comes back.
+     * - **The cadence has a floor** ({@link MIN_REPEAT_MINUTES}), for the reason
+     *   written there.
+     *
+     * The parse is strict, and its reason is what the user reads: "the 7th
+     * Monday" is refused with wording that says which part is impossible.
+     */
+    function repeatCheck(
+        cls: NotificationClass,
+        repeat: unknown,
+    ): { ok: true; rule: JobRepeat | null } | { ok: false; reason: string } {
+        if (repeat === undefined || repeat === null) {
+            return { ok: true, rule: null };
+        }
+        const parsed = parseJobRepeat(repeat);
+        if (!parsed.ok) {
+            return { ok: false, reason: parsed.reason };
+        }
+        if (cls === "timer") {
+            return {
+                ok: false,
+                reason: "a timer is a countdown, not a schedule — for something that comes back, use a reminder.",
+            };
+        }
+        const gap = repeatGapMinutes(parsed.repeat);
+        if (gap < MIN_REPEAT_MINUTES) {
+            return {
+                ok: false,
+                reason: `every ${gap} minute${gap === 1 ? "" : "s"} is too often — the fastest a job may repeat is every ${MIN_REPEAT_MINUTES} minutes.`,
+            };
+        }
+        return { ok: true, rule: parsed.repeat };
+    }
+
+    /**
+     * The gap between two occurrences, in minutes, for the shortest rule that
+     * frequency can express: a `day` or longer is at least a day, so only the
+     * sub-day frequencies can be too fast.
+     */
+    function repeatGapMinutes(repeat: JobRepeat): number {
+        if (repeat.every === "minute") {
+            return repeat.interval;
+        }
+        if (repeat.every === "hour") {
+            return repeat.interval * 60;
+        }
+        return repeat.interval * 1440;
+    }
+
+    /**
+     * The instant a rule's *next* occurrence falls on, or why there is none.
+     *
+     * Used for a job's own moment, and for an edit that changes the rule: the
+     * rule is the schedule, so a repeating job's `runAt` is derived from it
+     * rather than taken from the request — which is what keeps a page's picker
+     * and a model's resolution from being a second authority on when it fires.
+     */
+    function nextRunAt(
+        rule: JobRepeat,
+        at: Date,
+    ): { ok: true; runAt: Date } | { ok: false; reason: string } {
+        const next = nextOccurrence(rule, at);
+        if (next.ok) {
+            return { ok: true, runAt: next.at };
+        }
+        return {
+            ok: false,
+            reason:
+                next.reason === "ended"
+                    ? "that schedule has already ended — give it one that is still ahead."
+                    : "that schedule never comes round — check the day or the month it names.",
+        };
+    }
+
     function create(userId: number, request: CreateRequest): CreateOutcome {
         const at = request.at ?? now();
-        const { label, payload, runAt } = request;
+        const { label, payload } = request;
+        const checked = repeatCheck(request.class, request.repeat);
+        if (!checked.ok) {
+            return {
+                ok: false,
+                code: "invalid-repeat",
+                reason: checked.reason,
+            };
+        }
+        let runAt = request.runAt;
+        if (checked.rule !== null) {
+            const derived = nextRunAt(checked.rule, at);
+            if (!derived.ok) {
+                return {
+                    ok: false,
+                    code: "invalid-repeat",
+                    reason: derived.reason,
+                };
+            }
+            runAt = derived.runAt;
+        }
         const problem =
             labelProblem(label) ??
             (payload.kind === "message"
@@ -386,6 +534,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                           toolArgs: payload.toolArgs,
                       }),
                 runAt: runAt.toISOString(),
+                ...(checked.rule !== null ? { repeat: checked.rule } : {}),
             });
         } catch (err) {
             logger.warn(
@@ -398,7 +547,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
             };
         }
         logger.info(
-            `job ${job.id} scheduled (${job.class}, ${job.kind}): "${job.label}" → ${job.runAt}`,
+            `job ${job.id} scheduled (${job.class}, ${job.kind}${checked.rule !== null ? ", repeating" : ""}): "${job.label}" → ${job.runAt}`,
         );
         return {
             ok: true,
@@ -487,7 +636,12 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     function edit(
         userId: number,
         id: string,
-        patch: { label?: string; message?: string; runAt?: Date },
+        patch: {
+            label?: string;
+            message?: string;
+            runAt?: Date;
+            repeat?: unknown | null;
+        },
     ): EditOutcome {
         const job = deps.ledger.getJob(userId, id);
         if (job === null) {
@@ -511,6 +665,36 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
         }
         const at = now();
         const label = patch.label;
+        // What the job's rule becomes, and — when it changes — the moment that
+        // follows from it. A rule *is* the schedule, so a repeating job's moment
+        // comes from the rule rather than from the request: a page's picker and a
+        // model's resolution must not be a second authority on when it fires.
+        let moment = patch.runAt;
+        let rule: unknown | undefined;
+        if (patch.repeat !== undefined) {
+            const checked = repeatCheck(job.class, patch.repeat);
+            if (!checked.ok) {
+                return {
+                    ok: false,
+                    code: "invalid-repeat",
+                    reason: checked.reason,
+                    job,
+                };
+            }
+            rule = checked.rule;
+            if (checked.rule !== null) {
+                const derived = nextRunAt(checked.rule, at);
+                if (!derived.ok) {
+                    return {
+                        ok: false,
+                        code: "invalid-repeat",
+                        reason: derived.reason,
+                        job,
+                    };
+                }
+                moment = derived.runAt;
+            }
+        }
         if (label !== undefined) {
             const problem = labelProblem(label);
             if (problem !== null) {
@@ -533,8 +717,8 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 };
             }
         }
-        if (patch.runAt !== undefined) {
-            if (patch.runAt.getTime() <= at.getTime()) {
+        if (moment !== undefined) {
+            if (moment.getTime() <= at.getTime()) {
                 return {
                     ok: false,
                     code: "in-the-past",
@@ -542,7 +726,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                     job,
                 };
             }
-            const problem = momentProblem(job.class, patch.runAt, at);
+            const problem = momentProblem(job.class, moment, at);
             if (problem !== null) {
                 return {
                     ok: false,
@@ -555,9 +739,8 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
         const edited = deps.ledger.editJob(userId, id, {
             ...(label !== undefined ? { label } : {}),
             ...(patch.message !== undefined ? { message: patch.message } : {}),
-            ...(patch.runAt !== undefined
-                ? { runAt: patch.runAt.toISOString() }
-                : {}),
+            ...(moment !== undefined ? { runAt: moment.toISOString() } : {}),
+            ...(patch.repeat !== undefined ? { repeat: rule } : {}),
         });
         if (edited === null || edited.state !== "pending") {
             // Lost the race to a claim: the row is being worked on now.

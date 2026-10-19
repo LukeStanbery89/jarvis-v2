@@ -904,10 +904,10 @@ one that cannot honour what it stores.
 | Method   | Path                    | Description                                                                    |
 | -------- | ----------------------- | ------------------------------------------------------------------------------ |
 | `GET`    | `/api/jobs`             | The caller's jobs, newest first (settled ones only with `includeSettled=true`) |
-| `POST`   | `/api/jobs`             | Schedule a `message` job: `{ label, class, message?, runAt }`                  |
+| `POST`   | `/api/jobs`             | Schedule a `message` job: `{ label, class, message?, runAt, repeat? }`         |
 | `GET`    | `/api/jobs/{id}`        | One job plus its run history (`{ job, runs }`)                                 |
-| `PATCH`  | `/api/jobs/{id}`        | Edit `label`, `message` or `runAt` while the job is still `pending`            |
-| `DELETE` | `/api/jobs/{id}`        | Cancel a `pending` job                                                         |
+| `PATCH`  | `/api/jobs/{id}`        | Edit `label`, `message`, `runAt` or `repeat` while the job is still `pending`  |
+| `DELETE` | `/api/jobs/{id}`        | Cancel a `pending` job, or stop a **repeating** one mid-run                    |
 | `POST`   | `/api/jobs/{id}/snooze` | `{ minutes }` — move a pending reminder, or set a settled one again            |
 
 Three things about that surface are worth stating, because each is a decision
@@ -918,6 +918,16 @@ rather than an implementation detail:
   and "reminder" is the user choosing how loudly to be interrupted. The model's
   tools each own their class and expose no such argument, because a model that
   could name one could pierce quiet hours by asking.
+- **A page may set a rule, judged in one place.** `repeat` arrives here as the
+  same `JobRepeat` object the model's tools take, and goes straight to
+  `scheduler/create.ts` — so a page and a model cannot disagree about what a
+  schedule is, or about why one is refused. Two refusals are this server's rather
+  than the rule's: a **timer may not repeat** (a timer pierces quiet hours, and a
+  repeating one would be a standing breach of them), and nothing may repeat
+  faster than **every 15 minutes**, because a firing is an announcement — or a
+  model call. A repeating job's moment comes from its rule, so the request's own
+  `runAt` is ignored when `repeat` is present, and `PATCH`'s `repeat: null` is how
+  a series is stopped (`absent` leaves the schedule alone).
 - **A page-created job is always a `message` job.** Text with nothing to run is
   what a timer or a reminder actually needs. Scheduling a _tool_ or a _prompt_
   stays with the model's tools, where the allowlist and the target tool's own

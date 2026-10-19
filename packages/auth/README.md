@@ -80,7 +80,10 @@ only the surface they call:
   never moves and which would otherwise be the first row age took. `rearmJob` is
   the same move without the run row: a claimed job whose slot passed while nobody
   was looking, which is why it needs the claim-scoped `running` guard rather than
-  `rescheduleJob`'s `pending` one. `countModelRuns` / `recordModelRun` are the
+  `rescheduleJob`'s `pending` one. `editJob` carries the rule too, with the wire's own three states:
+  a rule to write, `null` to stop repeating, `undefined` to leave it — JSON cannot
+  spell `undefined`, so a request's absent field and its explicit `null` already
+  mean exactly those, and no sentinel is needed. `countModelRuns` / `recordModelRun` are the
   scheduler's **daily model-run budget** (below), which is a count this package
   owns because it has to outlive a restart. This is the one ledger with two surfaces
   on purpose: a job belongs to one user, but the scheduler is a _process_

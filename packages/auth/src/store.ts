@@ -908,6 +908,12 @@ export interface JobLedger {
      * write — so a foreign id, a claimed job and a settled one all change
      * nothing.
      *
+     * `repeat` has **three** states rather than two, and they are the wire's
+     * own: a rule to write, `null` to stop repeating, or `undefined` to leave the
+     * stored rule alone. JSON cannot spell `undefined`, so a request body's
+     * absent field and its explicit `null` already mean exactly these — no
+     * sentinel is needed to tell them apart.
+     *
      * @returns The row after the attempt — unchanged when it could not be
      * edited — or `null` when no such job belongs to `userId`.
      */
@@ -2039,7 +2045,9 @@ export class SqliteAppDatabase implements AppDatabase {
             // table's kind CHECK — the caller refuses that before it gets here,
             // and the CHECK is the backstop.
             editJob: db.prepare(
-                "UPDATE jobs SET label = COALESCE(?, label), message = COALESCE(?, message), run_at = COALESCE(?, run_at) WHERE user_id = ? AND id = ? AND state = 'pending'",
+                `UPDATE jobs SET label = COALESCE(?, label), message = COALESCE(?, message), run_at = COALESCE(?, run_at),
+                    repeat = CASE WHEN ? THEN ? ELSE repeat END
+                 WHERE user_id = ? AND id = ? AND state = 'pending'`,
             ),
             insertJobRun: db.prepare(
                 "INSERT INTO job_runs (id, job_id, started_at, state) VALUES (?, ?, ?, 'running')",
@@ -2650,12 +2658,19 @@ export class SqliteAppDatabase implements AppDatabase {
     editJob(
         userId: number,
         id: string,
-        patch: { label?: string; message?: string; runAt?: string },
+        patch: {
+            label?: string;
+            message?: string;
+            runAt?: string;
+            repeat?: unknown | null;
+        },
     ): AppJob | null {
         this.statements.editJob.run(
             patch.label ?? null,
             patch.message ?? null,
             patch.runAt ?? null,
+            patch.repeat === undefined ? 0 : 1,
+            patch.repeat === null ? null : JSON.stringify(patch.repeat),
             userId,
             id,
         );

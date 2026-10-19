@@ -777,9 +777,11 @@ export interface components {
             message?: string;
             /**
              * Format: date-time
-             * @description The instant the job is owed at, in ISO-8601 (the picker's output). Must be in the future, within `JARVIS_JOB_MAX_HORIZON_DAYS`, and — for a `timer` — no more than a day ahead.
+             * @description The instant the job is owed at, in ISO-8601 (the picker's output). Must be in the future, within `JARVIS_JOB_MAX_HORIZON_DAYS`, and — for a `timer` — no more than a day ahead. Ignored when `repeat` is present: a repeating job's moment is its rule's next occurrence.
              */
             runAt: string;
+            /** @description The rule to repeat on (#90 phase 8). A `timer` cannot repeat — it pierces quiet hours, and a repeating one would be a standing breach of them — and no job may repeat faster than every 15 minutes, because a firing is an announcement or a model call. Omit for a one-shot. */
+            repeat?: components["schemas"]["JobRepeat"];
         };
         /** @description Body of `PATCH /api/jobs/{id}`. At least one field is required; `class` and `kind` are absent on purpose, because changing either is a different job rather than an edit. */
         JobUpdateRequest: {
@@ -788,9 +790,11 @@ export interface components {
             message?: string;
             /**
              * Format: date-time
-             * @description A new moment for a job that has not started. Refused in the past, beyond the horizon, and beyond a day for a `timer`.
+             * @description A new moment for a job that has not started. Refused in the past, beyond the horizon, and beyond a day for a `timer`. Ignored when `repeat` is set: a repeating job's moment is its rule's next occurrence.
              */
             runAt?: string;
+            /** @description The rule to repeat on, `null` to stop repeating, or absent to leave the schedule as it is. Setting or replacing a rule re-anchors the series at the edit, so "every Monday at 9" edited on a Tuesday means from the next Monday on. */
+            repeat?: components["schemas"]["JobRepeat"] | null;
         };
         /** @description Body of `POST /api/jobs/{id}/snooze`. */
         JobSnoozeRequest: {
@@ -811,6 +815,34 @@ export interface components {
             until?: string;
             /** @description The quiet window as the user set it (`22:00–07:00`), present when `held`. */
             window?: string;
+        };
+        /** @description A recurrence rule (#90 phase 8). One object rather than an RRULE string, and the same shape the model's tools accept and the page's form edits. `start` is the anchor: its wall clock is the time the series fires at, and the job's own `runAt` is always its next occurrence — which is what lets a snooze or a quiet-hours deferral move one firing without shifting the schedule. */
+        JobRepeat: {
+            /**
+             * @description The unit `interval` counts in.
+             * @enum {string}
+             */
+            every: "minute" | "hour" | "day" | "week" | "month";
+            /** @description How many units between occurrences — "every 3 weeks" is 3. */
+            interval: number;
+            /**
+             * Format: date-time
+             * @description The anchor occurrence. Immutable for the life of a series, and what every later occurrence is computed from.
+             */
+            start: string;
+            /** @description Days of the week, for a `week` rule or as part of a `month` union — "every Monday and the 1st" fires on all of each. */
+            weekdays?: ("su" | "mo" | "tu" | "we" | "th" | "fr" | "sa")[];
+            /** @description Days of the month. A positive day the month does not have is clamped to its last day ("the 31st" fires on the 28th in February); a negative one counts back from the end, so -1 is the last day. */
+            monthDays?: number[];
+            /** @description Ordinal weekdays in a month: `2tu` is the second Tuesday, `-1fr` the last Friday. A month without that occurrence is skipped, and the create response says when the next one is rather than pretending it is due. */
+            weekOrdinals?: string[];
+            /** @description When the series stops. Omitted means "until cancelled"; `after` counts firings, and a skipped occurrence does not consume one. */
+            ends?: {
+                /** Format: date-time */
+                until: string;
+            } | {
+                after: number;
+            };
         };
         /** @description One scheduled job, as the API exposes it. */
         Job: {
@@ -846,6 +878,8 @@ export interface components {
             toolName?: string;
             /** @description The prompt a `prompt` job runs. */
             prompt?: string;
+            /** @description The rule this job repeats on (#90 phase 8), or absent when it runs once. */
+            repeat?: components["schemas"]["JobRepeat"];
         };
         /** @description One attempt at a job — the history a detail view reads. */
         JobRun: {

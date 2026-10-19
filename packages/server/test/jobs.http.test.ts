@@ -534,4 +534,75 @@ describe("jobs routes (#90 phase 5)", () => {
         expect(byId.n1.jobId).toBe(id);
         expect("jobId" in byId.n2).toBe(false);
     });
+
+    /** A daily rule anchored at the fixed clock: 19:05 every day. */
+    const daily = { every: "day", interval: 1, start: NOW.toISOString() };
+
+    it("creates a repeating job and answers with its rule", async () => {
+        const created = await request(buildApp())
+            .post("/api/jobs")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                label: "Standup",
+                class: "reminder",
+                runAt: iso(10),
+                repeat: daily,
+            })
+            .expect(201);
+
+        expect(created.body.job.repeat).toEqual(daily);
+        // The rule decided the moment, not the picker: tomorrow, same clock.
+        expect(created.body.job.runAt).toBe(
+            new Date(2026, 0, 2, 19, 5).toISOString(),
+        );
+    });
+
+    it("refuses a schedule this server will not keep, saying why", async () => {
+        const refused = await request(buildApp())
+            .post("/api/jobs")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                label: "Kettle",
+                class: "timer",
+                runAt: iso(10),
+                repeat: daily,
+            })
+            .expect(400);
+
+        expect(refused.body.error).toMatch(/a timer is a countdown/);
+    });
+
+    it("stops a series through the edit", async () => {
+        const id = await createTimer({ class: "reminder", repeat: daily });
+
+        const stopped = await request(buildApp())
+            .patch(`/api/jobs/${id}`)
+            .set("authorization", `Bearer ${token}`)
+            .send({ repeat: null })
+            .expect(200);
+
+        // Cleared, so the wire says nothing about it at all.
+        expect(stopped.body.job.repeat).toBeUndefined();
+        expect(store.getJob(userId, id)?.repeat).toBeNull();
+    });
+
+    it("cancels a repeating job while it runs, and a one-shot never", async () => {
+        const series = await createTimer({ class: "reminder", repeat: daily });
+        const oneShot = await createTimer();
+        // Mid-run is what a claim leaves behind.
+        store.claimJob(series);
+        store.claimJob(oneShot);
+
+        const stopped = await request(buildApp())
+            .delete(`/api/jobs/${series}`)
+            .set("authorization", `Bearer ${token}`)
+            .expect(200);
+        expect(stopped.body.job.state).toBe("cancelled");
+
+        // A one-shot's result is the whole job, and it is on its way.
+        await request(buildApp())
+            .delete(`/api/jobs/${oneShot}`)
+            .set("authorization", `Bearer ${token}`)
+            .expect(409);
+    });
 });

@@ -29,6 +29,7 @@ import type {
     JobLedger,
 } from "@lukestanbery/jarvis-auth";
 import { MAX_NOTIFICATION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
+import type { JobRepeat } from "@lukestanbery/jarvis-protocol";
 import { authed, requireAuth, requireCsrf } from "../http/middleware";
 import { sessionCookieName } from "../http/cookies";
 import { parseBoolean, parseLimit } from "../http/params";
@@ -136,6 +137,11 @@ export function toJobResponse(job: AppJob): JobResponse {
         ...(job.message !== null ? { message: job.message } : {}),
         ...(job.toolName !== null ? { toolName: job.toolName } : {}),
         ...(job.prompt !== null ? { prompt: job.prompt } : {}),
+        // The stored rule, or absent for a one-shot: it is already the wire
+        // shape (the same object a caller sent), so nothing re-renders it.
+        ...(job.repeat !== null && job.repeat !== undefined
+            ? { repeat: job.repeat as JobRepeat }
+            : {}),
     };
 }
 
@@ -325,10 +331,17 @@ export function createJobRouter(
                 res.status(404).json({ error: "job not found" });
                 return;
             }
-            if (job.state !== "pending") {
+            const stoppingASeries =
+                job.state === "running" &&
+                job.repeat !== null &&
+                job.repeat !== undefined;
+            if (job.state !== "pending" && !stoppingASeries) {
                 // The row was already settled when it was read: cancel is
                 // idempotent at the store, so the honest answer comes from the
                 // state we saw rather than from a successful-looking re-read.
+                // A *repeating* job is the exception (#90 phase 8d): the firing
+                // in flight is already paid for and will report when it ends,
+                // and what the user is stopping is the series.
                 res.status(409).json({
                     error: `the job is ${job.state} — only one that has not started can be cancelled`,
                 });
@@ -464,6 +477,7 @@ function createRequestFrom(body: unknown): {
     class: AppJob["class"];
     payload: { kind: "message"; message: string };
     runAt: Date;
+    repeat?: unknown;
 } {
     const candidate = objectBody(body);
     const jobClass = candidate.class;
@@ -491,6 +505,10 @@ function createRequestFrom(body: unknown): {
             message: message.length > 0 ? message : label,
         },
         runAt: requireInstant(candidate.runAt, "runAt"),
+        // Passed through as it arrived: the *policy* is the door that judges a
+        // rule (#90 phase 8d), so a page and a model are held to one reading of
+        // what a schedule may be, and the refusal text is written once.
+        ...(candidate.repeat !== undefined ? { repeat: candidate.repeat } : {}),
     };
 }
 
@@ -504,6 +522,7 @@ function editPatchFrom(body: unknown): {
     label?: string;
     message?: string;
     runAt?: Date;
+    repeat?: unknown | null;
 } {
     const candidate = objectBody(body);
     if (candidate.class !== undefined || candidate.kind !== undefined) {
@@ -514,7 +533,17 @@ function editPatchFrom(body: unknown): {
             "class and kind cannot be edited — cancel the job and create another",
         );
     }
-    const patch: { label?: string; message?: string; runAt?: Date } = {};
+    const patch: {
+        label?: string;
+        message?: string;
+        runAt?: Date;
+        repeat?: unknown | null;
+    } = {};
+    // `null` is a value here, not an absence: it is how a request stops a
+    // repeating job, and the store reads the difference (#90 phase 8d).
+    if ("repeat" in candidate) {
+        patch.repeat = candidate.repeat ?? null;
+    }
     if (candidate.label !== undefined) {
         patch.label = requireString(candidate.label, "label");
     }
