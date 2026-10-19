@@ -31,7 +31,10 @@ async function passwordLogin(
     const res = await request(app)
         .post("/api/auth/login")
         .send({ username, password, deviceName });
-    expect(res.status).toBe(200);
+    // The body, not just the status: a setup failure that returns no device
+    // token would otherwise surface as `Bearer undefined` on whatever request
+    // followed it (#148).
+    expect(res.status, `${res.status} ${JSON.stringify(res.body)}`).toBe(200);
     return res.body.device.token as string;
 }
 
@@ -47,7 +50,9 @@ function ownerHeader(): Promise<string> {
             .post("/api/bootstrap")
             .set("x-bootstrap-token", FAST.bootstrapToken)
             .send({ username: "luke", password: "hunter2pw" });
-        expect(res.status).toBe(201);
+        expect(res.status, `${res.status} ${JSON.stringify(res.body)}`).toBe(
+            201,
+        );
         return `Bearer ${res.body.device.token}`;
     })();
     return ownerHeaderPromise;
