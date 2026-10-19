@@ -120,7 +120,36 @@ textarea::placeholder {
 /* The bar is a row, the page gets the rest. The chat used to own the viewport
    (`height: 100dvh` here); it now fills the row the bar leaves, so a page taller
    than the screen scrolls inside its own region and the bar stays put. */
+/* --- The particle field (#146 phase A) --- */
+
+/*
+ * The canvas is a child of `.app` and fixed to the viewport, so it survives
+ * every route change. `z-index: -1` is load-bearing: inside `.app`'s stacking
+ * context it paints above the page background and below every in-flow sibling,
+ * which is why the pages need no z-index of their own. A positioned canvas at
+ * z-index 0 would paint *over* unpositioned content instead.
+ *
+ * `width`/`height` are load-bearing too, and not obvious: a `<canvas>` is a
+ * *replaced* element, so `inset: 0` alone does **not** stretch it — `width:
+ * auto` resolves to the element's intrinsic size, i.e. the `width`/`height`
+ * *attributes*. Without an explicit CSS size, writing the backing-store size
+ * resizes the box, which fires the ResizeObserver, which writes a bigger
+ * backing store... an exponential feedback loop that saturates the main thread
+ * and makes the whole app unresponsive.
+ */
+.particle-field {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    z-index: -1;
+    pointer-events: none;
+}
+
 .app {
+    position: relative;
+    z-index: 1;
     display: grid;
     grid-template-rows: auto 1fr;
     height: 100dvh;

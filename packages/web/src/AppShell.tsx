@@ -21,7 +21,9 @@
  * chat *shows* (`useSessions` — the sidebar's server rows), the composer's
  * uploads, and the settings panel's own open/closed state. The chrome is here
  * too: the top bar sits above the view, and the ring renders over it, because
- * both belong to the app rather than to any page in it.
+ * both belong to the app rather than to any page in it. The particle field
+ * (#146) is the third thing in that category — it is fixed behind the view, so
+ * navigating between pages neither restarts it nor unmounts its canvas.
  */
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -46,6 +48,7 @@ import { useLocationSharing } from "./hooks/useLocationSharing";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
+import { ParticleCanvas } from "./particles/ParticleCanvas";
 import { Dashboard } from "./views/app/Dashboard";
 import { NotificationsPage } from "./views/app/NotificationsPage";
 import { RemindersPage, TimersPage } from "./views/app/JobsPages";
@@ -465,6 +468,10 @@ export function AppShell({
 
     return (
         <div className="app">
+            {/* The background belongs to the app, not to a page (#146): it is
+                fixed behind everything and survives every route change, so a
+                navigation does not restart the field. */}
+            <ParticleCanvas />
             <NavBar
                 username={credential.username}
                 unread={notifications.unread}

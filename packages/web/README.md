@@ -14,6 +14,8 @@ images — in the browser.
   source of truth shared with `packages/cli` and the server)
 - REST response types (type-only) from `@lukestanbery/jarvis-contracts`
 - `react-markdown` + `remark-gfm` for reply rendering
+- A hand-rolled canvas particle field (`src/particles/`) — a pure motion model
+  plus one `requestAnimationFrame` loop, with no rendering dependency
 - Tests via Vitest (Node environment; no browser/jsdom dependencies — the
   wire client and stores take injected socket/storage doubles)
 
@@ -66,6 +68,27 @@ the shell, so that tab works). The `/ws` socket survives the swap because
 `src/AppShell.tsx` owns it rather than the view (#90 phase 6b) — which is why a
 turn that is mid-stream keeps landing in the transcript while the user walks to
 another page.
+
+## Background (#146)
+
+The app sits on a slow, blue disc of particles: dense at the centre, sparse at
+the rim, turning once every ~105 s and breathing every ~11 s. It is one
+full-viewport canvas rendered behind `.app` (so a route change never restarts
+it), and it is deliberately cheap — a cached glow sprite stamped once per
+particle with `lighter` compositing, no `shadowBlur`, no per-frame allocation,
+device pixel ratio capped at 1.5, and a frame delta clamped to 50 ms so a
+backgrounded tab resumes instead of teleporting.
+
+The split is the app's usual one: `src/particles/field.ts` is the whole motion
+model — seeded PRNG, rotation, breathe, projection into a `Float32Array` — and
+is unit-tested without a browser; `src/particles/ParticleCanvas.tsx` is the
+loop around it. `step(field, dt, energy)` already takes a 0..1 `energy` that
+widens the breathe; nothing supplies it yet, which is the seam for the
+voice-reactive background (the issue's deferred half: the disc pulsing with the
+answer's audio).
+
+`prefers-reduced-motion: reduce` draws a single static frame; the media query is
+watched, so toggling the OS setting takes effect without a reload.
 
 ## Sign-in and credentials
 
