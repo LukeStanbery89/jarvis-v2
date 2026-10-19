@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 12;
+const LATEST_VERSION = 13;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -1091,6 +1091,67 @@ describe("openAppDatabase", () => {
                 )
                 .get() as { sql: string };
             expect(table.sql).toContain("'snoozed'");
+            check.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("adds the repeat column to a job store that predates it (v13)", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-store-"));
+        const path = join(dir, "jarvis.sqlite");
+        try {
+            // As v12 left it: everything current, but `jobs` has no rule column.
+            openAppDatabase(path).close();
+            const legacy = new Database(path);
+            legacy.exec(`
+                ALTER TABLE jobs DROP COLUMN repeat;
+                PRAGMA user_version = 12;
+            `);
+            legacy.close();
+
+            const upgraded = openAppDatabase(path);
+            const user = upgraded.createUser("luke", "hash", "owner");
+            const rule = {
+                every: "week",
+                interval: 1,
+                start: "2026-10-19T09:00:00.000Z",
+                weekdays: ["mo"],
+            };
+            const withRule = upgraded.createJob(user.id, {
+                id: "j1",
+                label: "Standup",
+                kind: "tool",
+                toolName: "getCurrentTime",
+                runAt: "2026-10-19T09:00:00.000Z",
+                createdAt: "2026-10-18T12:00:00.000Z",
+                repeat: rule,
+            });
+            // The column exists and carries the rule...
+            expect(withRule.repeat).toEqual(rule);
+            // ...and a one-shot reads as no rule rather than as a missing field.
+            expect(
+                upgraded.createJob(user.id, {
+                    id: "j2",
+                    label: "Kettle",
+                    kind: "message",
+                    message: "Kettle",
+                    runAt: "2026-10-19T10:00:00.000Z",
+                    createdAt: "2026-10-18T12:01:00.000Z",
+                }).repeat,
+            ).toBeNull();
+            upgraded.close();
+
+            const check = new Database(path);
+            expect(check.pragma("user_version", { simple: true })).toBe(
+                LATEST_VERSION,
+            );
+            const columns = check.pragma("table_info(jobs)") as {
+                name: string;
+            }[];
+            expect(columns.some((column) => column.name === "repeat")).toBe(
+                true,
+            );
             check.close();
         } finally {
             rmSync(dir, { recursive: true, force: true });

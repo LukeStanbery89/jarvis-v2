@@ -109,6 +109,7 @@ function jobsTable(name: string): string {
     created_at  TEXT NOT NULL,
     settled_at  TEXT,
     last_error  TEXT,
+    repeat      TEXT,
     CHECK (
         (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL AND message IS NULL) OR
         (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL AND message IS NULL) OR
@@ -611,6 +612,19 @@ export interface AppJob {
     settledAt: string | null;
     /** Why the last attempt failed, for a `failed` job. */
     lastError: string | null;
+    /**
+     * The recurrence rule, as parsed JSON (#90 phase 8), or `null` for a
+     * one-shot job.
+     *
+     * Deliberately `unknown` rather than `JobRepeat`: this package owns row
+     * shapes and stays free of the protocol package, so the *rule's* type and
+     * its validator live in `@lukestanbery/jarvis-protocol` and the server
+     * names them. What the store guarantees is that the JSON parsed — and that
+     * a value which would not is handed back as its raw text (see
+     * {@link parseJsonColumn}), so the scheduler can say what it could not read
+     * instead of silently treating the job as a one-shot.
+     */
+    repeat: unknown;
 }
 
 /** One attempt at one job, as the store returns it. */
@@ -639,7 +653,37 @@ export interface CreateJobInput {
     toolArgs?: unknown;
     /** Required for `kind: "message"`: the text the announcement delivers. */
     message?: string | null;
+    /** The recurrence rule (#90 phase 8); omitted for a one-shot job. */
+    repeat?: unknown;
     runAt: string;
+}
+
+/**
+ * One firing's ending, as {@link JobLedger.settleJobRun} records it (#90 phase
+ * 8b).
+ *
+ * A union on the job's state, because the two cases need different things: a
+ * re-arm needs the moment the next occurrence falls on, and a terminal settle
+ * must not be given one.
+ */
+export interface SettleFiringInput {
+    jobId: string;
+    runId: string;
+    /** What the attempt did, and what it produced or why it failed. */
+    run: {
+        state: Exclude<JobRunState, "running">;
+        output?: string;
+        error?: string;
+    };
+    /**
+     * What becomes of the job: `pending` when it repeats and has a next
+     * occurrence (with the moment), or a terminal state when it does not.
+     */
+    job:
+        | { state: "pending"; runAt: string; error?: string }
+        | { state: Exclude<JobState, "pending" | "running">; error?: string };
+    /** When the firing ended. */
+    at: string;
 }
 
 /**
@@ -654,8 +698,8 @@ export interface CreateJobInput {
  *   {@link listJobRuns}): what the REST layer and the pages use. A foreign id
  *   is indistinguishable from a missing one, as everywhere else.
  * - **Scheduler-scoped** ({@link listDueJobs} / {@link claimJob} /
- *   {@link rescheduleJob} / {@link settleJob} / {@link startJobRun} /
- *   {@link finishJobRun}): the
+ *   {@link rescheduleJob} / {@link settleJob} / {@link settleJobRun} /
+ *   {@link startJobRun} / {@link finishJobRun}): the
  *   process acts *for every user*, so it selects due work across accounts and
  *   settles it by the id it claimed. Nothing here is reachable from a request
  *   handler; the scheduler is the only caller.
@@ -746,6 +790,26 @@ export interface JobLedger {
         at: string,
     ): AppJob | null;
     /**
+     * Records a firing's ending: the attempt's row and the job's next state, in
+     * one transaction (#90 phase 8b).
+     *
+     * The pair is one fact — an attempt finished, and the job is either owed
+     * again or settled — so they commit together. A process that died between the
+     * two writes would otherwise leave a job `running` with no open run to
+     * explain it, or, once a job repeats, a series whose successor was never
+     * scheduled. The announcement and the prune stay outside: a better-sqlite3
+     * transaction is synchronous, and the announcement is a network round trip.
+     *
+     * Scheduler-scoped, like {@link settleJob}: the caller holds the claim. The
+     * re-arm is guarded on the row still being `running`, so a job cancelled
+     * mid-run is not brought back to life by the firing that was already in
+     * flight.
+     *
+     * @returns The row after the write — unchanged when the job was cancelled
+     * under the caller — or `null` when the id is gone.
+     */
+    settleJobRun(input: SettleFiringInput): AppJob | null;
+    /**
      * Moves a still-pending job's moment — how a reminder defers itself out of
      * quiet hours (#90 2b).
      *
@@ -757,8 +821,14 @@ export interface JobLedger {
     rescheduleJob(id: string, runAt: string): AppJob | null;
     /**
      * Cancels one of the caller's own jobs (the only user-reachable state
-     * change). Only a `pending` job is cancellable: one already running is
-     * being worked on, and its result is on its way.
+     * change).
+     *
+     * A `pending` job, always. A **repeating** one also while it runs (#90 phase
+     * 8b), because what the user is stopping is the series: the firing in flight
+     * is already paid for and will report when it ends, and the re-arm refuses to
+     * schedule a successor for a row that has stopped being `running`. A one-shot
+     * mid-run is not cancellable — its result is the whole job, and it is on its
+     * way.
      *
      * @returns The row after the attempt — unchanged when it was not
      * cancellable — or `null` when no such job belongs to `userId`.
@@ -805,14 +875,30 @@ export interface JobLedger {
     listJobRuns(jobId: string, options?: { limit?: number }): AppJobRun[];
     /**
      * Trims a user's jobs to the newest `keep`, so a long-lived instance cannot
-     * grow the table without bound. Settled rows are evicted first — a
-     * `pending` job is work still owed, so it is the last thing a prune takes,
-     * though (as with notifications) it is not exempt: a store nobody's jobs
-     * ever settle in would otherwise grow forever.
+     * grow the table without bound.
+     *
+     * A **repeating** job that is still owed is exempt, and that exemption is the
+     * reason this is one statement rather than the two the comment used to
+     * describe: `created_at` is when the user asked and a series' never moves, so
+     * age alone would eventually make a live series the next row the prune took.
+     * Creation caps a user's pending rows below this ceiling, so what is taken is
+     * overwhelmingly settled history.
      *
      * @returns The number of rows deleted.
      */
     pruneJobs(userId: number, keep: number): number;
+    /**
+     * Trims one job's runs to the newest `keep` (#90 phase 8b) — the other half
+     * of retention.
+     *
+     * A job that fires every few minutes writes a run row each time, so the runs
+     * table would grow without bound while the job count stayed small. The
+     * default is comfortably above the detail endpoint's page, so a caller that
+     * does not care still serves whole pages.
+     *
+     * @returns The number of rows deleted.
+     */
+    pruneJobRuns(jobId: string, keep?: number): number;
 }
 
 /**
@@ -941,6 +1027,7 @@ interface JobRow {
     createdAt: string;
     settledAt: string | null;
     lastError: string | null;
+    repeat: string | null;
 }
 
 /** A `job_runs` table row (see {@link mapJobRun}). */
@@ -955,7 +1042,7 @@ interface JobRunRow {
 }
 
 /** The job SELECT list, shared by every read (`mapJob` is the other half). */
-const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError FROM jobs`;
+const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError, repeat FROM jobs`;
 
 /** The run SELECT list (`mapJobRun` is the other half). */
 const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error FROM job_runs`;
@@ -1041,8 +1128,13 @@ function mapNotification(row: NotificationRow): AppNotification {
  * `null`, the way `getPrefs` treats a corrupt `value_json`: a run has to be
  * able to say *why* it could not proceed, and a silent `null` would turn a
  * corrupt row into "this job needs no arguments".
+ *
+ * Shared with the `repeat` column (#90 phase 8b), which is read the same way
+ * and for the same reason: an unreadable rule has to survive as itself, so the
+ * scheduler can tell the user what it could not read rather than presenting a
+ * job that quietly stopped repeating.
  */
-function parseToolArgs(value: string | null): unknown {
+function parseJsonColumn(value: string | null): unknown {
     if (value === null) {
         return null;
     }
@@ -1063,7 +1155,7 @@ function mapJob(row: JobRow): AppJob {
         kind: row.kind,
         prompt: row.prompt,
         toolName: row.toolName,
-        toolArgs: parseToolArgs(row.toolArgs),
+        toolArgs: parseJsonColumn(row.toolArgs),
         message: row.message,
         runAt: row.runAt,
         state: row.state,
@@ -1071,6 +1163,7 @@ function mapJob(row: JobRow): AppJob {
         createdAt: row.createdAt,
         settledAt: row.settledAt,
         lastError: row.lastError,
+        repeat: parseJsonColumn(row.repeat),
     };
 }
 
@@ -1112,6 +1205,15 @@ const DEFAULT_JOB_PAGE = 50;
  * history is the one list here that genuinely grows per job.
  */
 const DEFAULT_JOB_RUN_PAGE = 20;
+
+/**
+ * How many runs of one job the store keeps (#90 phase 8b).
+ *
+ * Comfortably above {@link DEFAULT_JOB_RUN_PAGE}: the page is a view of the
+ * history, so the history has to be bigger than the page for the trim never to
+ * be the reason a detail view looks short.
+ */
+const DEFAULT_JOB_RUN_KEEP = 50;
 
 /**
  * Whether `table` already has a column named `column`.
@@ -1552,6 +1654,21 @@ ${NOTIFICATION_INDEXES}`);
         }
         db.pragma("user_version = 12");
     }
+    if (version < 13) {
+        // v13: the recurrence rule (#90 phase 8b). Additive, so the guard is the
+        // column check every ALTER in this chain uses — a fresh database already
+        // has it through `jobsTable`, and an existing one has never seen it.
+        //
+        // Nothing is repaired here on purpose. The rule is JSON, read defensively
+        // (`parseJsonColumn`): a value that will not parse is reported by the
+        // scheduler as a rule it cannot read, which is a better answer than a
+        // migration silently rewriting a user's schedule — and there is no
+        // constraint to widen, because the shape is validated where it is used.
+        if (!hasColumn(db, "jobs", "repeat")) {
+            db.exec("ALTER TABLE jobs ADD COLUMN repeat TEXT");
+        }
+        db.pragma("user_version = 13");
+    }
 }
 
 export function openAppDatabase(
@@ -1568,6 +1685,8 @@ export function openAppDatabase(
 
 export class SqliteAppDatabase implements AppDatabase {
     private readonly db: Database.Database;
+    /** The run-ending + job-settling pair, compiled once (see the constructor). */
+    private readonly settleFiring: (input: SettleFiringInput) => void;
     private readonly statements: {
         insertUser: Database.Statement;
         selectUserByUsername: Database.Statement;
@@ -1627,14 +1746,44 @@ export class SqliteAppDatabase implements AppDatabase {
         finishJobRun: Database.Statement;
         failOpenJobRuns: Database.Statement;
         selectJobRuns: Database.Statement;
-        pruneSettledJobs: Database.Statement;
         pruneJobs: Database.Statement;
+        pruneJobRuns: Database.Statement;
+        rearmJob: Database.Statement;
     };
 
     constructor(db: Database.Database, options?: AppDatabaseOptions) {
         this.db = db;
         db.pragma("foreign_keys = ON");
         migrate(db, options);
+        // One firing's ending, in one transaction: the run's row and the job's
+        // state are a single fact, and a process that died between them would
+        // leave a job claiming to run a job that is over (or, worse, a series
+        // with no successor). `announce` and the prune stay outside it — a
+        // better-sqlite3 transaction is synchronous, and the announcement is a
+        // network round trip.
+        this.settleFiring = db.transaction((input: SettleFiringInput) => {
+            this.statements.finishJobRun.run(
+                input.run.state,
+                input.run.output ?? null,
+                input.run.error ?? null,
+                input.at,
+                input.runId,
+            );
+            if (input.job.state === "pending") {
+                this.statements.rearmJob.run(
+                    input.job.runAt,
+                    input.job.error ?? null,
+                    input.jobId,
+                );
+                return;
+            }
+            this.statements.settleJob.run(
+                input.job.state,
+                input.job.error ?? null,
+                input.at,
+                input.jobId,
+            );
+        });
         this.statements = {
             insertUser: db.prepare(
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
@@ -1773,7 +1922,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
             insertJob: db.prepare(
-                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at, repeat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
             ),
             selectJob: db.prepare(
                 `${JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -1812,9 +1961,15 @@ export class SqliteAppDatabase implements AppDatabase {
             settleJob: db.prepare(
                 `UPDATE jobs SET state = ?, last_error = ?, settled_at = ? WHERE id = ? AND state NOT IN ${SETTLED_JOB_STATES}`,
             ),
-            // Only a pending job is cancellable, and only its owner's.
+            // A pending job is cancellable, and only its owner's — plus a
+            // *repeating* one that a claim is holding (#90 phase 8b). The firing
+            // in flight is already paid for and will report when it ends; what
+            // the user is stopping is the series. It cannot come back, because
+            // the re-arm below only fires on a row still `running`, and this
+            // leaves it `cancelled`. A one-shot mid-run stays uncancellable: its
+            // result is the whole job.
             cancelJob: db.prepare(
-                "UPDATE jobs SET state = 'cancelled', settled_at = ? WHERE user_id = ? AND id = ? AND state = 'pending'",
+                "UPDATE jobs SET state = 'cancelled', settled_at = ? WHERE user_id = ? AND id = ? AND (state = 'pending' OR (state = 'running' AND repeat IS NOT NULL))",
             ),
             // Snoozing a reminder that has not fired: the owner's pending row
             // only, in one statement — no attempt counted, nothing announced.
@@ -1835,21 +1990,40 @@ export class SqliteAppDatabase implements AppDatabase {
             finishJobRun: db.prepare(
                 "UPDATE job_runs SET state = ?, output = ?, error = ?, finished_at = ? WHERE id = ?",
             ),
+            // A series' next occurrence (#90 phase 8b): the firing is over and
+            // the job is owed again, so `settled_at` is cleared — the row is not
+            // history. Guarded on `running`: a job the user cancelled mid-run is
+            // `cancelled` by the time this runs, so a re-arm cannot resurrect it.
+            rearmJob: db.prepare(
+                "UPDATE jobs SET state = 'pending', run_at = ?, settled_at = NULL, last_error = ? WHERE id = ? AND state = 'running'",
+            ),
             failOpenJobRuns: db.prepare(
                 "UPDATE job_runs SET state = 'failed', error = ?, finished_at = ? WHERE job_id = ? AND state = 'running'",
             ),
             selectJobRuns: db.prepare(
                 `${JOB_RUN_COLUMNS} WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`,
             ),
-            // Two passes for the same reason notifications prune in two: the
-            // ceiling has to hold for the table, and only when settled rows
-            // cannot absorb the cut is a `pending` job — work still owed —
-            // taken with them.
-            pruneSettledJobs: db.prepare(
-                `DELETE FROM jobs WHERE user_id = ? AND state NOT IN ${SETTLED_JOB_STATES} AND id NOT IN (SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)`,
-            ),
+            // Retention, in one statement: the newest `keep` rows survive and
+            // the rest are history. The `rowid` tiebreak matches the read
+            // ordering, so "the newest keep" means the same rows the pages list
+            // when two jobs share a timestamp.
+            //
+            // The exemption is the whole reason this stopped being two passes:
+            // `created_at` is when the user asked, and a *repeating* row's never
+            // moves, so age alone would eventually make a series that is still
+            // owed the next row the prune took. Creation caps a user's pending
+            // rows below this ceiling (`JARVIS_JOB_MAX_PER_USER`), so the rows
+            // taken here are overwhelmingly settled ones — which is what the old
+            // two-pass comment claimed and could not deliver, because its first
+            // pass deleted *unsettled* rows (`state NOT IN` the settled set) and
+            // was therefore a strict subset of its second.
             pruneJobs: db.prepare(
-                "DELETE FROM jobs WHERE user_id = ? AND id NOT IN (SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
+                `DELETE FROM jobs WHERE user_id = ? AND id NOT IN (SELECT id FROM jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?) AND (repeat IS NULL OR state IN ${SETTLED_JOB_STATES})`,
+            ),
+            // Runs are history too, and a gated job firing every five minutes
+            // writes 288 of them a day: the newest survive.
+            pruneJobRuns: db.prepare(
+                `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
         };
     }
@@ -2308,6 +2482,9 @@ export class SqliteAppDatabase implements AppDatabase {
             input.message ?? null,
             input.runAt,
             input.createdAt,
+            input.repeat === undefined || input.repeat === null
+                ? null
+                : JSON.stringify(input.repeat),
         );
         // Just written, so a re-read cannot miss; the assertion documents that
         // rather than papering over a null with a fake row.
@@ -2431,14 +2608,18 @@ export class SqliteAppDatabase implements AppDatabase {
     }
 
     pruneJobs(userId: number, keep: number): number {
-        const limit = Math.max(0, keep);
-        const settled = this.statements.pruneSettledJobs.run(
-            userId,
-            userId,
-            limit,
-        );
-        const excess = this.statements.pruneJobs.run(userId, userId, limit);
-        return settled.changes + excess.changes;
+        return this.statements.pruneJobs.run(userId, userId, Math.max(0, keep))
+            .changes;
+    }
+
+    pruneJobRuns(jobId: string, keep: number = DEFAULT_JOB_RUN_KEEP): number {
+        return this.statements.pruneJobRuns.run(jobId, jobId, Math.max(0, keep))
+            .changes;
+    }
+
+    settleJobRun(input: SettleFiringInput): AppJob | null {
+        this.settleFiring(input);
+        return this.jobById(input.jobId);
     }
 
     /**

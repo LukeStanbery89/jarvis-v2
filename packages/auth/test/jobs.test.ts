@@ -67,6 +67,7 @@ describe("jobs ledger", () => {
             createdAt: "2026-10-15T18:00:00.000Z",
             settledAt: null,
             lastError: null,
+            repeat: null,
         });
         expect(store.getJob(userId, "j1")).toEqual(created);
     });
@@ -588,5 +589,177 @@ describe("jobs ledger", () => {
             error: "interrupted by a restart",
             finishedAt: "2026-10-20T09:05:00.000Z",
         });
+    });
+});
+
+describe("recurrence and retention (#90 phase 8b)", () => {
+    /** A weekly rule, Mondays at 09:00 — the shape the server validates into. */
+    const weekly = {
+        every: "week" as const,
+        interval: 1,
+        start: "2026-10-19T09:00:00.000Z",
+        weekdays: ["mo" as const],
+    };
+
+    /** A job claimed and mid-run, which is where every settle path starts. */
+    function claimed(
+        store: AppDatabase,
+        userId: number,
+        overrides: { repeat?: unknown; id?: string } = {},
+    ) {
+        const created = store.createJob(userId, {
+            ...promptJob({ id: overrides.id }),
+            ...(overrides.repeat !== undefined
+                ? { repeat: overrides.repeat }
+                : {}),
+        });
+        expect(store.claimJob(created.id)).toBe(true);
+        store.startJobRun({
+            id: `run-${created.id}`,
+            jobId: created.id,
+            startedAt: "2026-10-19T09:00:00.000Z",
+        });
+        return created;
+    }
+
+    it("stores a rule and reads it back", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, {
+            ...promptJob(),
+            repeat: weekly,
+        });
+        expect(created.repeat).toEqual(weekly);
+        expect(store.getJob(userId, created.id)?.repeat).toEqual(weekly);
+        // A one-shot says so with `null` rather than a missing field.
+        expect(
+            store.createJob(userId, promptJob({ id: "j2" })).repeat,
+        ).toBeNull();
+    });
+
+    it("keeps the rule through an edit and a move", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, {
+            ...promptJob(),
+            repeat: weekly,
+        });
+        store.editJob(userId, created.id, { label: "Standup (renamed)" });
+        store.moveJob(userId, created.id, "2026-10-19T09:30:00.000Z");
+        // The anchor is immutable, so neither an edit nor a snooze can shift the
+        // series' own clock — which is what makes the next occurrence come back
+        // to 09:00.
+        expect(store.getJob(userId, created.id)?.repeat).toEqual(weekly);
+    });
+
+    it("records a firing and re-arms the series in one write", () => {
+        const { store, userId } = makeStore();
+        const job = claimed(store, userId, { repeat: weekly });
+        const settled = store.settleJobRun({
+            jobId: job.id,
+            runId: `run-${job.id}`,
+            run: { state: "ok", output: "checked" },
+            job: { state: "pending", runAt: "2026-10-26T09:00:00.000Z" },
+            at: "2026-10-19T09:00:05.000Z",
+        });
+        expect(settled).toMatchObject({
+            state: "pending",
+            runAt: "2026-10-26T09:00:00.000Z",
+            // Not history: the row is owed again.
+            settledAt: null,
+            attempts: 1,
+        });
+        expect(store.listJobRuns(job.id)).toMatchObject([
+            { state: "ok", output: "checked" },
+        ]);
+    });
+
+    it("settles a one-shot through the same call", () => {
+        const { store, userId } = makeStore();
+        const job = claimed(store, userId);
+        const settled = store.settleJobRun({
+            jobId: job.id,
+            runId: `run-${job.id}`,
+            run: { state: "ok", output: "done" },
+            job: { state: "done" },
+            at: "2026-10-19T09:00:05.000Z",
+        });
+        expect(settled).toMatchObject({
+            state: "done",
+            settledAt: "2026-10-19T09:00:05.000Z",
+        });
+    });
+
+    it("cannot re-arm a series the user cancelled while it ran", () => {
+        const { store, userId } = makeStore();
+        const job = claimed(store, userId, { repeat: weekly });
+        // A repeating job is cancellable mid-run: what the user stops is the
+        // series, and the firing already in flight still reports.
+        expect(store.cancelJob(userId, job.id)?.state).toBe("cancelled");
+        const after = store.settleJobRun({
+            jobId: job.id,
+            runId: `run-${job.id}`,
+            run: { state: "ok", output: "done" },
+            job: { state: "pending", runAt: "2026-10-26T09:00:00.000Z" },
+            at: "2026-10-19T09:00:05.000Z",
+        });
+        // The re-arm is a no-op on a row that is no longer `running`, so the
+        // cancellation stands and the moment never moved.
+        expect(after).toMatchObject({ state: "cancelled", runAt: job.runAt });
+        expect(store.listJobRuns(job.id)[0]?.state).toBe("ok");
+    });
+
+    it("refuses to cancel a one-shot mid-run", () => {
+        const { store, userId } = makeStore();
+        const job = claimed(store, userId);
+        // Its result is the whole job, and it is on its way.
+        expect(store.cancelJob(userId, job.id)?.state).toBe("running");
+    });
+
+    it("trims a job's runs to the newest", () => {
+        const { store, userId } = makeStore();
+        const created = store.createJob(userId, promptJob());
+        for (let hour = 1; hour <= 5; hour++) {
+            store.startJobRun({
+                id: `r${hour}`,
+                jobId: created.id,
+                startedAt: `2026-10-19T0${hour}:00:00.000Z`,
+            });
+        }
+        expect(store.pruneJobRuns(created.id, 2)).toBe(3);
+        expect(store.listJobRuns(created.id).map((run) => run.id)).toEqual([
+            "r5",
+            "r4",
+        ]);
+    });
+
+    it("spares a live series from the job prune, and prunes a finished one", () => {
+        const { store, userId } = makeStore();
+        // Asked for first, so it is the *oldest* row — the one the old prune
+        // took first, because a series' `created_at` never moves.
+        store.createJob(userId, {
+            ...promptJob({
+                id: "series",
+                createdAt: "2026-10-01T09:00:00.000Z",
+            }),
+            repeat: weekly,
+        });
+        for (const [id, day] of [
+            ["a", "02"],
+            ["b", "03"],
+            ["c", "04"],
+        ] as const) {
+            store.createJob(
+                userId,
+                promptJob({ id, createdAt: `2026-10-${day}T09:00:00.000Z` }),
+            );
+        }
+        // Four rows, keep two: the oldest one-shot goes, the live series stays.
+        expect(store.pruneJobs(userId, 2)).toBe(1);
+        expect(store.getJob(userId, "series")).not.toBeNull();
+        expect(store.getJob(userId, "a")).toBeNull();
+
+        // A series that has ended is history, and prunes like anything else.
+        expect(store.cancelJob(userId, "series")?.state).toBe("cancelled");
+        expect(store.pruneJobs(userId, 2)).toBe(1);
+        expect(store.getJob(userId, "series")).toBeNull();
     });
 });

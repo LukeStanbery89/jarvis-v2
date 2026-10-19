@@ -67,10 +67,17 @@ only the surface they call:
 - `JobLedger` — the scheduler's queue and history (#90) over the `jobs` and
   `job_runs` tables: `createJob` / `getJob` / `listJobs` / `cancelJob` /
   `moveJob` / `editJob` /
-  `listJobRuns` / `pruneJobs`, plus the **scheduler-scoped** half
-  (`listDueJobs` / `claimJob` / `rescheduleJob` / `startJobRun` /
-  `finishJobRun` / `settleJob`)
-  that no request handler may reach. This is the one ledger with two surfaces
+  `listJobRuns` / `pruneJobs` / `pruneJobRuns`, plus the **scheduler-scoped**
+  half (`listDueJobs` / `claimJob` / `rescheduleJob` / `startJobRun` /
+  `finishJobRun` / `settleJob` / `settleJobRun`)
+  that no request handler may reach. `settleJobRun` is the one that records a
+  firing's ending — the run's row and the job's next state (owed again, or
+  settled) — as a single transaction, because the two are one fact; the
+  announcement stays outside it. `cancelJob` accepts a **repeating** job while
+  it runs (the firing in flight still reports; the series must not continue),
+  which is safe because the re-arm only fires on a row that is still `running`
+  — and a live repeating row is exempt from `pruneJobs`, whose `created_at`
+  never moves and which would otherwise be the first row age took. This is the one ledger with two surfaces
   on purpose: a job belongs to one user, but the scheduler is a _process_
   acting for every user at once, so it selects due work across accounts and
   settles it by the id it claimed. `claimJob` is the load-bearing statement —
@@ -169,7 +176,10 @@ router and middleware span every ledger and therefore take the full
   `message`) with the prompt, the tool call, _or_ the message text (a CHECK
   refuses a row whose payload does not match its kind), `run_at`, a `state`
   lifecycle (`pending` → `running` → `done`/`failed`/`cancelled`/`missed`),
-  `attempts`, and `last_error`. Indexed on `(user_id, created_at DESC)` for the
+  `attempts`, `last_error`, and `repeat` (the recurrence rule as JSON, v13 —
+  read defensively: a value that will not parse comes back as its raw text, so
+  the scheduler can report a rule it cannot read rather than pretending the job
+  is a one-shot). Indexed on `(user_id, created_at DESC)` for the
   owner's list and on `(run_at) WHERE state = 'pending'` — a partial index,
   because the scheduler's claim feed only ever scans pending work. The v10
   rebuild is the documented SQLite dance for widening a CHECK (which cannot be
@@ -181,7 +191,10 @@ router and middleware span every ledger and therefore take the full
 - `job_runs` — one row per attempt at a job: `started_at`/`finished_at`, the
   run's `state` (`running`/`ok`/`failed`), the `output` it produced (the reply,
   or a tool's result text) and the `error` it ended with. Cascade-deleted with
-  its job even when the _job_ is pruned. This is the job's observable history;
+  its job even when the _job_ is pruned. The newest runs of each job are kept
+  (`pruneJobRuns`, 50 by default — comfortably above the detail endpoint's
+  page): a job that fires every few minutes writes one per firing, so the job
+  count no longer bounds this table. This is the job's observable history;
   the model's own context lives in the LangGraph checkpoint under a `job:<id>`
   thread that never enters the `sessions` ledger, which is what keeps a job's
   runs out of the chat-thread list.
