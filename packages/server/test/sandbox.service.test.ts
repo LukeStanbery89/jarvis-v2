@@ -8,7 +8,18 @@
  * and a container. Real Docker and real git are covered by the probe, the
  * runner's smoke test and the workspace suite.
  */
-import { describe, expect, it, vi } from "vitest";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    utimesSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { SandboxConfig } from "../src/config";
@@ -43,6 +54,11 @@ const CONFIG: SandboxConfig = {
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
     network: "",
+    logRoot: "/logs/coding",
+    logMaxMb: 10,
+    workspaceRetentionDays: 14,
+    logRetentionDays: 30,
+    keepJobRows: 100,
 };
 
 /** A store with one owner. */
@@ -125,6 +141,22 @@ function notifications(): Pick<NotificationService, "notify"> & {
 /** The fake workspace's surface, including its recording arrays. */
 type FakeWorkspace = ReturnType<typeof fakeWorkspace>;
 
+/** Temp directories the suite removes afterwards. */
+const tempDirs: string[] = [];
+
+/** A temp directory that outlives the test body. */
+function tempDir(prefix: string): string {
+    const dir = mkdtempSync(path.join(tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+}
+
+afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 /** A service whose ids count up, so assertions can name the rows. */
 function makeService(
     overrides: {
@@ -139,18 +171,19 @@ function makeService(
     const workspace = overrides.workspace ?? fakeWorkspace();
     const runner = overrides.runner ?? createFakeSandbox();
     const notify = notifications();
+    const logRoot = overrides.config?.logRoot ?? tempDir("jarvis-logs-");
     let sequence = 0;
     const service = createCodingJobService({
         ledger: store,
         runner,
         workspace,
-        config: { ...CONFIG, ...overrides.config },
+        config: { ...CONFIG, logRoot, ...overrides.config },
         ...(overrides.proxy ? { proxy: overrides.proxy } : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
         newId: () => `job-${++sequence}`,
     });
-    return { store, userId, workspace, runner, notify, service };
+    return { store, userId, workspace, runner, notify, service, logRoot };
 }
 
 describe("starting a coding job", () => {
@@ -367,6 +400,115 @@ describe("starting a coding job", () => {
         );
         // The whole point: the real key is not in the container at all.
         expect(env.JARVIS_JOB_API_KEY).not.toBe("sk-real-provider-key");
+    });
+
+    it("writes the full run to a log file beside the workspaces", async () => {
+        const { service, userId, runner, logRoot } = makeService();
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "do it",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+        const container = started.job.containerId ?? "";
+        runner.emit(container, '{"type":"text","part":{"text":"hello"}}');
+        runner.exit(container, 0);
+        await started.done;
+
+        const log = readFileSync(
+            path.join(logRoot, `${started.job.id}.log`),
+            "utf8",
+        );
+        expect(log).toContain('"hello"');
+    });
+
+    it("sweeps expired workspaces and logs at boot, keeping live ones", async () => {
+        const jobsRoot = tempDir("jarvis-jobs-");
+        const logRoot = tempDir("jarvis-logs-");
+        const { service, store, userId } = makeService({
+            config: {
+                workspaceRoot: jobsRoot,
+                workspaceHostRoot: jobsRoot,
+                logRoot,
+            },
+        });
+
+        const seed = (id: string, kind: "queued" | "old" | "fresh") => {
+            const repo = path.join(jobsRoot, id, "repo");
+            mkdirSync(repo, { recursive: true });
+            store.createCodingJob(userId, {
+                id,
+                repo: "luke/app",
+                branch: "jarvis/test",
+                prompt: "do it",
+                workspacePath: repo,
+                crashPolicy: "prune",
+                model: "lmstudio/qwen3",
+                createdAt: "2026-09-01T00:00:00.000Z",
+            });
+            if (kind === "queued") {
+                return;
+            }
+            store.claimCodingJob(
+                id,
+                `container-${id}`,
+                "2026-09-01T00:00:01.000Z",
+            );
+            store.settleCodingJob(
+                id,
+                "ok",
+                {},
+                kind === "old"
+                    ? "2026-09-02T00:00:00.000Z"
+                    : "2026-10-18T00:00:00.000Z",
+            );
+        };
+        seed("old-job", "old");
+        seed("fresh-job", "fresh");
+        seed("live-job", "queued");
+        mkdirSync(path.join(jobsRoot, "rowless", "repo"), { recursive: true });
+
+        const oldLog = path.join(logRoot, "old.log");
+        const freshLog = path.join(logRoot, "fresh.log");
+        writeFileSync(oldLog, "old\n");
+        writeFileSync(freshLog, "fresh\n");
+        const longAgo = new Date("2026-08-01T00:00:00.000Z");
+        utimesSync(oldLog, longAgo, longAgo);
+
+        await service.recover();
+
+        expect(existsSync(path.join(jobsRoot, "old-job"))).toBe(false);
+        expect(existsSync(path.join(jobsRoot, "rowless"))).toBe(false);
+        expect(existsSync(path.join(jobsRoot, "fresh-job"))).toBe(true);
+        expect(existsSync(path.join(jobsRoot, "live-job"))).toBe(true);
+        expect(existsSync(oldLog)).toBe(false);
+        expect(existsSync(freshLog)).toBe(true);
+    });
+
+    it("prunes settled rows past the keep count on every settle", async () => {
+        const { service, userId, runner, store } = makeService({
+            config: { keepJobRows: 1 },
+        });
+
+        for (const task of ["first", "second"]) {
+            const started = await service.start({
+                userId,
+                repo: "luke/app",
+                task,
+            });
+            if (!started.ok) {
+                throw new Error("fixture refused");
+            }
+            runner.exit(started.job.containerId ?? "", 0);
+            await started.done;
+        }
+
+        const rows = store.listCodingJobs(userId, { includeSettled: true });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.prompt).toBe("second");
     });
 
     it("refuses a remote endpoint with no key, before any clone", async () => {

@@ -505,6 +505,32 @@ export interface SandboxConfig {
      * from the LAN without publishing its port.
      */
     readonly network: string;
+    /**
+     * Where a job's full output is written (`JARVIS_SANDBOX_LOG_ROOT`).
+     *
+     * Beside the workspaces by default (`~/.jarvis/logs/coding`). The file is
+     * written live — a crash still leaves what the container said — while the
+     * row keeps only a bounded tail.
+     */
+    readonly logRoot: string;
+    /** Per-job log cap in MiB (`JARVIS_SANDBOX_LOG_MAX_MB`), default 10. */
+    readonly logMaxMb: number;
+    /**
+     * How long a settled workspace is kept (`JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS`,
+     * default 14) before the boot sweep removes it.
+     *
+     * A successful workspace is the only copy of its branch until #140 pushes
+     * it; the window is the bridge until then, and can shrink to "until the
+     * push" once it is.
+     */
+    readonly workspaceRetentionDays: number;
+    /** How long a job's log file is kept (`JARVIS_SANDBOX_LOG_RETENTION_DAYS`), default 30. */
+    readonly logRetentionDays: number;
+    /**
+     * Settled coding-job rows kept per user (`JARVIS_SANDBOX_KEEP_JOB_ROWS`),
+     * default 100. Older rows are pruned at every settle.
+     */
+    readonly keepJobRows: number;
 }
 
 /** Laptop-safe sandbox defaults: one job, two cores, 4 GiB, 45 minutes. */
@@ -536,6 +562,15 @@ export const DEFAULT_SANDBOX_CONFIG = {
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
     network: "",
+    // Operability (#141 phase 7): the full log lives beside the workspaces,
+    // and nothing is kept forever. A successful workspace is the only copy of
+    // its branch until #140 pushes it; logs outlive clones because a dead log
+    // cannot be re-created.
+    logRoot: "",
+    logMaxMb: 10,
+    workspaceRetentionDays: 14,
+    logRetentionDays: 30,
+    keepJobRows: 100,
 } as const;
 
 /**
@@ -678,6 +713,19 @@ export function defaultAppDbPath(): string {
  */
 export function defaultSandboxWorkspaceRoot(): string {
     return path.join(homedir(), ".jarvis", "jobs");
+}
+
+/**
+ * Default home of a job's full log, beside the workspaces.
+ *
+ * Derived from the workspace root so a deployment that moves its jobs moves
+ * the logs with them (and keeps both on the same volume).
+ *
+ * @param workspaceRoot - The resolved server-side workspace root.
+ * @returns The directory job log files live in.
+ */
+export function defaultSandboxLogRoot(workspaceRoot: string): string {
+    return path.join(path.dirname(workspaceRoot), "logs", "coding");
 }
 
 /** Default hard cap for one agent turn before it is aborted. */
@@ -1366,6 +1414,30 @@ export function getAppConfig(): AppConfig {
                               DEFAULT_SANDBOX_CONFIG.proxyMaxRequestsPerJob,
                           ),
                           network: process.env.JARVIS_SANDBOX_NETWORK ?? "",
+                          logRoot:
+                              process.env.JARVIS_SANDBOX_LOG_ROOT ??
+                              defaultSandboxLogRoot(sandboxWorkspaceRoot),
+                          logMaxMb: numberOr(
+                              "JARVIS_SANDBOX_LOG_MAX_MB",
+                              process.env.JARVIS_SANDBOX_LOG_MAX_MB,
+                              DEFAULT_SANDBOX_CONFIG.logMaxMb,
+                          ),
+                          workspaceRetentionDays: numberOr(
+                              "JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS",
+                              process.env
+                                  .JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS,
+                              DEFAULT_SANDBOX_CONFIG.workspaceRetentionDays,
+                          ),
+                          logRetentionDays: numberOr(
+                              "JARVIS_SANDBOX_LOG_RETENTION_DAYS",
+                              process.env.JARVIS_SANDBOX_LOG_RETENTION_DAYS,
+                              DEFAULT_SANDBOX_CONFIG.logRetentionDays,
+                          ),
+                          keepJobRows: numberOr(
+                              "JARVIS_SANDBOX_KEEP_JOB_ROWS",
+                              process.env.JARVIS_SANDBOX_KEEP_JOB_ROWS,
+                              DEFAULT_SANDBOX_CONFIG.keepJobRows,
+                          ),
                       };
                   })()
                 : undefined,
