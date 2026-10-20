@@ -49,6 +49,7 @@ import { useAppearance } from "./hooks/useAppearance";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
+import { IconRail } from "./views/app/IconRail";
 import { ParticleCanvas } from "./particles/ParticleCanvas";
 import { Dashboard } from "./views/app/Dashboard";
 import { NotificationsPage } from "./views/app/NotificationsPage";
@@ -539,6 +540,10 @@ export function AppShell({
                 locationHint={locationHint}
                 locationSentence={describeLocationState(location.locationState)}
             />
+            {/* The wide-screen rail (#146 phase D): the same destinations as the
+                bar's links, as a column, where the display has the width to
+                spend on one. Hidden by CSS below its breakpoint. */}
+            <IconRail unread={notifications.unread} />
             <div className="app-view">{currentView()}</div>
             {toasts.length > 0 && (
                 <ToastStack

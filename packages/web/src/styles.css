@@ -425,7 +425,101 @@ textarea::placeholder {
     background: var(--primary-border);
 }
 
-@media (max-width: 48rem) {
+/* --- The wide-screen rail (#146 phase D) --- */
+
+/*
+ * A column of destinations for a display wide enough to spend one. It is the
+ * same list the bar carries, so exactly one of the three affordances is ever
+ * visible: the hamburger under 60 rem, the bar's links from 60 rem, and this
+ * from 80 rem — where the bar's links would otherwise sit a long way from the
+ * content they swap. Hidden below that by CSS, not a width probe, so the first
+ * paint and the stylesheet cannot disagree.
+ */
+.rail {
+    display: none;
+}
+
+.rail-link {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 6px;
+    color: var(--primary-dim);
+    text-decoration: none;
+}
+
+.rail-link:hover,
+.rail-link[aria-current="page"] {
+    color: var(--primary);
+    background: var(--primary-wash);
+}
+
+/* The same outward step the bar's Admin link takes. */
+.rail-external {
+    color: var(--primary-faint);
+}
+
+.rail-sep {
+    width: 1.5rem;
+    height: 1px;
+    margin: 0.25rem 0;
+    background: var(--primary-border);
+}
+
+/* The bar's badge, moved onto the corner of an icon. */
+.rail-badge {
+    position: absolute;
+    top: -0.15rem;
+    right: -0.15rem;
+    min-width: 0.95rem;
+    font-size: 0.6rem;
+    line-height: 0.95rem;
+}
+
+@media (min-width: 80rem) {
+    /* Two columns under the bar: the rail, then the page. */
+    .app {
+        grid-template-columns: auto 1fr;
+    }
+
+    .navbar {
+        grid-column: 1 / -1;
+    }
+
+    .rail {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.6rem 0.4rem;
+        background: var(--panel);
+        border-right: 1px solid var(--primary-border);
+    }
+
+    /* The rail carries the destinations here, so the bar's links step aside
+       rather than saying the same thing twice. */
+    .navbar-links {
+        display: none;
+    }
+}
+
+/*
+ * The bar's own breakpoint (#146 phase D): measured, not inherited from the
+ * shell's 48 rem.
+ *
+ * At its widest the bar holds the wordmark (~78px), the four links (~315px plus
+ * an unread badge), Admin past its hairline (~73px), three state chips
+ * (~245px), the account name (~80px) and the gear (36px), with a 1 rem gap
+ * between groups and 0.75 rem of padding — a little over 60 rem. Without a chip
+ * it needs ~45 rem and with only the connection chip ~50 rem, which is exactly
+ * the stretch (50–55 rem) where three chips used to run the links out of room.
+ * Collapsing here rather than at 48 rem is the difference between "the bar is
+ * empty" and "the bar is overflowing".
+ */
+@media (max-width: 60rem) {
     .navbar-links,
     .navbar-user {
         display: none;
@@ -435,15 +529,20 @@ textarea::placeholder {
         display: inline-flex;
     }
 
-    .icon-btn.navbar-threads {
-        display: inline-flex;
-    }
-
     /* The gear gives its place to the menu, which carries Settings itself
-       (#146 phase D). Two classes, for the same reason as the toggle above:
-       `.icon-btn` sets `display: inline-flex` further down the sheet. */
+       (#146 phase D). Two classes, for the same reason as the threads toggle
+       below: `.icon-btn` sets `display: inline-flex` further down the sheet. */
     .icon-btn.navbar-settings {
         display: none;
+    }
+}
+
+/* The thread drawer's control follows the *chat's* breakpoint, not the bar's:
+   above 48 rem the thread list is a real column even while the bar is still
+   collapsed, so the button has nothing to open. */
+@media (max-width: 48rem) {
+    .icon-btn.navbar-threads {
+        display: inline-flex;
     }
 
     /* The wordmark centres between two flanks of different widths — the thread

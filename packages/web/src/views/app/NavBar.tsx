@@ -4,12 +4,14 @@
  * — with the settings gear at the end of it.
  *
  * The wordmark is the way home — it links to the dashboard — so the pages listed
- * here are the four destinations other than it. Under 48rem the links collapse
- * behind a hamburger; the badge is rendered on both the Notifications link and
- * the hamburger, and one of the two is always hidden by the same media query, so
- * the count follows whichever affordance is showing the link. Two nodes and one
- * breakpoint, rather than a JavaScript width probe that would disagree with the
- * CSS on the first paint.
+ * here are the four destinations other than it. Under 60rem the links collapse
+ * behind a hamburger — the bar's own measured breakpoint, not the shell's
+ * 48rem: with three state chips visible it needs just over 60rem (see the
+ * comment on the media query in `styles.css`); the badge is rendered on both the
+ * Notifications link and the hamburger, and one of the two is always hidden by
+ * the same media query, so the count follows whichever affordance is showing
+ * the link. Two nodes and one breakpoint, rather than a JavaScript width probe
+ * that would disagree with the CSS on the first paint.
  *
  * The account name follows the same rule: in the bar's right corner while the
  * links are visible, and at the top of the drawer when they are not. It used to
@@ -58,7 +60,7 @@ const LINKS: { to: AppRoute; label: string }[] = [
  * server's owner check anyway — a non-owner who follows the link meets the
  * portal's own refusal, which is a better answer than a menu that lies.
  */
-const ADMIN_HREF = "/admin";
+export const ADMIN_HREF = "/admin";
 
 /** What the connection chip says while the socket is not `connected`. */
 const STATUS_TEXT: Record<Exclude<ChatStatus, "connected">, string> = {

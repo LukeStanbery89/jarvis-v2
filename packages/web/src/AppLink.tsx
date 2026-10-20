@@ -32,6 +32,8 @@ export interface AppLinkProps {
     current?: boolean;
     /** An accessible name, when the visible text alone does not say enough. */
     label?: string;
+    /** A pointer tooltip, for a link whose visible text is only an icon. */
+    title?: string;
 }
 
 /**
@@ -45,6 +47,7 @@ export function AppLink({
     className,
     current,
     label,
+    title,
 }: AppLinkProps) {
     return (
         <a
@@ -52,6 +55,7 @@ export function AppLink({
             {...(className === undefined ? {} : { className })}
             {...(current === true ? { "aria-current": "page" as const } : {})}
             {...(label === undefined ? {} : { "aria-label": label })}
+            {...(title === undefined ? {} : { title })}
             onClick={(event: MouseEvent<HTMLAnchorElement>) => {
                 if (!interceptsNavigation(event)) {
                     return;
