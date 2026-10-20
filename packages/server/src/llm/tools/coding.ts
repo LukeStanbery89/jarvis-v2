@@ -125,7 +125,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                     const allowed =
                         result.code === "repo-not-allowed" &&
                         deps.repos.length > 0
-                            ? ` Allowed: ${deps.repos.join(", ")}.`
+                            ? ` Allowed: ${deps.repos.join(", ")}. Call again with one of those, or omit \`repo\` when exactly one is allowed.`
                             : "";
                     return `${REFUSAL[result.code]}${allowed}`;
                 }

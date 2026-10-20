@@ -141,6 +141,9 @@ describe("startCodingJob", () => {
         );
         expect(repo.text).toContain("allowlist");
         expect(repo.text).toContain("luke/app, luke/other");
+        // The refusal is a next step, not a question for the user: a small
+        // model reads it as an instruction and retries.
+        expect(repo.text).toContain("Call again with one of those");
 
         const busy = await invoke({
             ok: false,

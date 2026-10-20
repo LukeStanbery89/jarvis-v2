@@ -326,9 +326,12 @@ const CODING_RULE =
     "sandbox with its own clone, and you are notified when it ends. You do " +
     "not wait for it, and nothing is done until the tool returns a job id — " +
     "report that id and say you will tell them when it finishes. If they " +
-    "named a repository, pass it as owner/name; if they did not name one and " +
-    "more than one is allowed, ask which (the tool lists them when it " +
-    "refuses); when exactly one is allowed, omit `repo`. Never start a job " +
+    "named a repository, pass its exact owner/name; if you do not know that " +
+    "form — a nickname like 'the JARVIS repo' is not one — omit `repo` " +
+    "rather than guessing. Never pass an invented or shortened slug. When " +
+    "the tool refuses a repository and exactly one is allowed, call it " +
+    "again with `repo` omitted instead of asking the user to repeat " +
+    "themselves; when several are allowed, ask which. Never start a job " +
     "for something that is not a code change.";
 
 /**
