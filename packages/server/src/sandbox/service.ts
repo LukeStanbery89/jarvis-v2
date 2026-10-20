@@ -49,6 +49,20 @@ import type { PreparedWorkspace, WorkspaceManager } from "./workspace";
 /** How much of a job's output is kept on its row (the tail, not the whole log). */
 const LOG_TAIL_BYTES = 16 * 1024;
 
+/** A settled run's outcome, as the announcement needs it. */
+interface Ending {
+    /** Whether the container exited 0 before the wall clock. */
+    ok: boolean;
+    /** Whether the workspace differs from the clone. */
+    changed: boolean;
+    /** Why it failed, or `null`. */
+    error: string | null;
+    /** What the run left behind, from `collect`. */
+    diffSummary: string;
+    /** The agent's own last words, parsed from its JSON output. */
+    lastMessage: string;
+}
+
 /** Why a job could not be started; each code is a decision a surface routes on. */
 export type CodingJobRefusalCode =
     "task-missing" | "model-missing" | "repo-not-allowed" | "busy";
@@ -112,31 +126,42 @@ export function createCodingJobService(options: {
      * Announces a job's ending. Failure to announce never changes the row — the
      * run record is the durable fact, the notification is the courtesy.
      *
+     * A run that exits 0 without touching a file is **not** a success to boast
+     * about: the agent may have refused the task (a small model asked to change
+     * something it cannot see does), and "finished" alone would read as "done".
+     * The title says "finished with no changes" and the body carries the
+     * agent's own last words, which is the only place its explanation exists.
+     *
      * @param job - The job that ended.
-     * @param ok - Whether it succeeded.
-     * @param detail - What to say: the diff summary, or why it failed.
+     * @param ending - Its outcome and what to say about it.
      */
-    async function announce(
-        job: AppCodingJob,
-        ok: boolean,
-        detail: string,
-    ): Promise<void> {
+    async function announce(job: AppCodingJob, ending: Ending): Promise<void> {
         if (notifications === undefined) {
             return;
         }
+        const title = !ending.ok
+            ? `Coding job failed: ${job.repo}`
+            : ending.changed
+              ? `Coding job finished: ${job.repo}`
+              : `Coding job finished with no changes: ${job.repo}`;
+        const body = !ending.ok
+            ? `${ending.error ?? "the run failed"}${
+                  ending.lastMessage.length > 0
+                      ? `\n\n${ending.lastMessage}`
+                      : ""
+              }`
+            : ending.changed
+              ? ending.diffSummary ||
+                "The run changed files but left no summary."
+              : ending.lastMessage ||
+                "The agent finished without changing any files.";
         try {
             await notifications.notify(job.userId, {
-                kind: ok ? "coding.finished" : "coding.failed",
+                kind: ending.ok ? "coding.finished" : "coding.failed",
                 class: "notification",
                 priority: "normal",
-                title: clamp(
-                    `${ok ? "Coding job finished" : "Coding job failed"}: ${job.repo}`,
-                    MAX_NOTIFICATION_TITLE_LENGTH,
-                ),
-                body: clamp(
-                    detail.length > 0 ? detail : "The run left no summary.",
-                    MAX_NOTIFICATION_BODY_LENGTH,
-                ),
+                title: clamp(title, MAX_NOTIFICATION_TITLE_LENGTH),
+                body: clamp(body, MAX_NOTIFICATION_BODY_LENGTH),
             });
         } catch (err) {
             logger.warn(
@@ -195,15 +220,6 @@ export function createCodingJobService(options: {
                 return;
             }
 
-            const collected = await workspace
-                .collect({ workspacePath: job.workspacePath })
-                .catch((err: unknown) => {
-                    logger.warn(
-                        `coding job ${job.id}: could not collect its artifacts: ${describe(err)}`,
-                    );
-                    return { changed: false, diffSummary: "" };
-                });
-
             const ok = !timedOut && exit.exitCode === 0;
             const error = ok
                 ? null
@@ -212,6 +228,39 @@ export function createCodingJobService(options: {
                         config.wallClockMs / 60_000,
                     )}-minute wall clock`
                   : `the agent exited with code ${exit.exitCode ?? "unknown"}`;
+
+            // A model can edit a file and *say* it committed without calling
+            // git — the first live run did. Committing here makes the claim
+            // true, and gives the branch something to push later. Only on
+            // success: a failed tree is discarded, not curated.
+            if (ok) {
+                const firstLine = job.prompt.split("\n")[0] ?? "coding job";
+                const committed = await workspace
+                    .commit({
+                        workspacePath: job.workspacePath,
+                        message: `JARVIS: ${firstLine.slice(0, 72)}`,
+                    })
+                    .catch((err: unknown) => {
+                        logger.warn(
+                            `coding job ${job.id}: could not commit its workspace: ${describe(err)}`,
+                        );
+                        return false;
+                    });
+                if (committed) {
+                    logger.info(
+                        `coding job ${job.id}: committed the agent's uncommitted changes`,
+                    );
+                }
+            }
+
+            const collected = await workspace
+                .collect({ workspacePath: job.workspacePath })
+                .catch((err: unknown) => {
+                    logger.warn(
+                        `coding job ${job.id}: could not collect its artifacts: ${describe(err)}`,
+                    );
+                    return { changed: false, diffSummary: "" };
+                });
 
             const settled = ledger.settleCodingJob(
                 job.id,
@@ -222,6 +271,23 @@ export function createCodingJobService(options: {
                     error,
                 },
                 nowIso(),
+            );
+
+            // The supervisor used to settle in silence, so a job that ran and
+            // ended looked identical in the log to one whose process died on
+            // the way in. One line per ending is the cost of not wondering.
+            const seconds =
+                job.startedAt === null
+                    ? null
+                    : Math.max(
+                          0,
+                          (now().getTime() - Date.parse(job.startedAt)) / 1000,
+                      );
+            logger.info(
+                `coding job ${job.id} settled ${ok ? "ok" : "failed"}` +
+                    (seconds === null ? "" : ` after ${seconds.toFixed(1)}s`) +
+                    `: changed=${collected.changed}` +
+                    (error === null ? "" : `, error=${error}`),
             );
 
             if (!ok) {
@@ -236,15 +302,13 @@ export function createCodingJobService(options: {
                     });
             }
 
-            await announce(
-                settled ?? job,
+            await announce(settled ?? job, {
                 ok,
-                ok
-                    ? collected.diffSummary
-                    : `${error ?? "the run failed"}\n\n${tail
-                          .text()
-                          .slice(-800)}`,
-            );
+                changed: collected.changed,
+                error,
+                diffSummary: collected.diffSummary,
+                lastMessage: lastAgentMessage(tail.text()),
+            });
         } finally {
             clearTimeout(timer);
             if (job.containerId !== null) {
@@ -380,6 +444,9 @@ export function createCodingJobService(options: {
                     await handle.remove();
                     throw new Error("the job was claimed by another process");
                 }
+                logger.info(
+                    `coding job ${claimed.id} started: repo=${claimed.repo}, branch=${claimed.branch}, container=${handle.containerId}`,
+                );
                 return {
                     ok: true,
                     job: claimed,
@@ -406,6 +473,9 @@ export function createCodingJobService(options: {
                     // Adopt and keep watching. `reconcile` returns as soon as
                     // every row is classified, so the boot is not held open by
                     // a job with an hour left on its clock.
+                    logger.info(
+                        `coding job ${job.id} resumed in container ${handle.containerId}`,
+                    );
                     void supervise(job, handle);
                 },
                 fail: async (job, handle, reason) => {
@@ -436,7 +506,13 @@ export function createCodingJobService(options: {
                         nowIso(),
                     );
                     await workspace.remove(job.workspacePath).catch(() => {});
-                    await announce(job, false, reason);
+                    await announce(job, {
+                        ok: false,
+                        changed: false,
+                        error: reason,
+                        diffSummary: "",
+                        lastMessage: lastAgentMessage(tail.text()),
+                    });
                 },
                 discard: async (jobId) => {
                     // A container with no row: its workspace is still at the
@@ -478,6 +554,45 @@ export function createCodingJobService(options: {
             return cancelled;
         },
     };
+}
+
+/**
+ * The agent's last textual message, recovered from its JSON event stream.
+ *
+ * The container runs `opencode run --format json`, so its output is one JSON
+ * frame per line and the agent's actual words live in `{"type":"text",
+ * "part":{"text": …}}`. That message is often the only explanation a run has:
+ * an agent that refuses a task exits 0 with an empty diff, and "finished" alone
+ * would tell the user nothing. Scans from the end because the last message is
+ * the conclusion; a line the tail cut in half is skipped rather than guessed.
+ *
+ * @param logTail - The job's stored output tail.
+ * @returns The last non-empty text message, or `""` when there is none.
+ */
+export function lastAgentMessage(logTail: string): string {
+    const lines = logTail.split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index]?.trim();
+        if (line === undefined || !line.startsWith("{")) {
+            continue;
+        }
+        try {
+            const frame = JSON.parse(line) as {
+                type?: unknown;
+                part?: { text?: unknown };
+            };
+            if (
+                frame.type === "text" &&
+                typeof frame.part?.text === "string" &&
+                frame.part.text.trim().length > 0
+            ) {
+                return frame.part.text.trim();
+            }
+        } catch {
+            // A truncated frame is not a message.
+        }
+    }
+    return "";
 }
 
 /**

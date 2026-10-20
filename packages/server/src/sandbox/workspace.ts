@@ -71,6 +71,17 @@ export interface WorkspaceManager {
         changed: boolean;
         diffSummary: string;
     }>;
+    /**
+     * Commits anything the agent left uncommitted, so a finished job's branch
+     * always contains the work it produced.
+     *
+     * A model can edit a file and then *say* it committed without calling git;
+     * the first live run did exactly that. The host is the party that can make
+     * the claim true.
+     *
+     * @returns True when it made a commit, false when the tree was clean.
+     */
+    commit(input: { workspacePath: string; message: string }): Promise<boolean>;
     /** Removes one job's workspace (the job directory, not just `repo`). */
     remove(workspacePath: string): Promise<void>;
 }
@@ -281,6 +292,27 @@ export function createWorkspaceManager(options: {
                     .join("\n\n")
                     .slice(0, MAX_DIFF_SUMMARY_CHARS),
             };
+        },
+
+        async commit(input): Promise<boolean> {
+            const { stdout: status } = await git([
+                "-C",
+                input.workspacePath,
+                "status",
+                "--porcelain",
+            ]);
+            if (status.trim().length === 0) {
+                return false;
+            }
+            await git(["-C", input.workspacePath, "add", "-A"]);
+            await git([
+                "-C",
+                input.workspacePath,
+                "commit",
+                "-m",
+                input.message,
+            ]);
+            return true;
         },
 
         async remove(workspacePath: string): Promise<void> {

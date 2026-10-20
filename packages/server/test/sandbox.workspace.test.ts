@@ -183,6 +183,41 @@ describe("workspace lifecycle", () => {
         ).rejects.toThrow(/path segment/);
     });
 
+    it("commits an uncommitted change and leaves a clean tree", async () => {
+        const origin = makeOrigin();
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [origin.url],
+        });
+        const repo = manager.allows(origin.url);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-commit",
+            repo,
+            branch: "jarvis/test",
+        });
+        writeFileSync(path.join(prepared.path, "README.md"), "changed\n");
+
+        expect(
+            await manager.commit({
+                workspacePath: prepared.path,
+                message: "JARVIS: change it",
+            }),
+        ).toBe(true);
+        expect(git(["log", "--oneline", "-1"], prepared.path).trim()).toContain(
+            "JARVIS: change it",
+        );
+        // A second commit with nothing to add is a no-op, not an empty commit.
+        expect(
+            await manager.commit({
+                workspacePath: prepared.path,
+                message: "JARVIS: again",
+            }),
+        ).toBe(false);
+    });
+
     it("never deletes outside its root", async () => {
         const root = tempDir("jarvis-jobs-");
         const outside = tempDir("jarvis-outside-");

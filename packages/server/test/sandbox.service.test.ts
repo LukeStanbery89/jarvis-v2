@@ -14,7 +14,10 @@ import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import type { SandboxConfig } from "../src/config";
 import type { NotificationService } from "../src/notify/service";
 import { createFakeSandbox } from "../src/sandbox/fake";
-import { createCodingJobService } from "../src/sandbox/service";
+import {
+    createCodingJobService,
+    lastAgentMessage,
+} from "../src/sandbox/service";
 import type { RepoSpec, WorkspaceManager } from "../src/sandbox/workspace";
 
 /** A config with every knob decided. */
@@ -45,17 +48,21 @@ function makeStore(): { store: AppDatabase; userId: number } {
 function fakeWorkspace(
     options: {
         allow?: boolean;
+        commit?: boolean;
         collect?: () => { changed: boolean; diffSummary: string };
     } = {},
 ): WorkspaceManager & {
     prepared: Array<{ jobId: string; branch: string }>;
     removed: string[];
+    commits: Array<{ workspacePath: string; message: string }>;
 } {
     const prepared: Array<{ jobId: string; branch: string }> = [];
     const removed: string[] = [];
+    const commits: Array<{ workspacePath: string; message: string }> = [];
     return {
         prepared,
         removed,
+        commits,
         allows(repo: string): RepoSpec | null {
             if (options.allow === false) {
                 return null;
@@ -84,6 +91,10 @@ function fakeWorkspace(
         },
         async remove(workspacePath: string) {
             removed.push(workspacePath);
+        },
+        async commit(input: { workspacePath: string; message: string }) {
+            commits.push(input);
+            return options.commit ?? true;
         },
     };
 }
@@ -188,6 +199,13 @@ describe("starting a coding job", () => {
         // The container is gone; the workspace is kept for the PR step.
         expect(runner.removed).toContain(started.job.containerId);
         expect(workspace.removed).toEqual([]);
+        // A model that says "committed" without calling git is made true.
+        expect(workspace.commits).toEqual([
+            {
+                workspacePath: "/jobs/job-1/repo",
+                message: "JARVIS: Fix the login bug",
+            },
+        ]);
     });
 
     it("records a failed run, removes its workspace and says why", async () => {
@@ -211,6 +229,8 @@ describe("starting a coding job", () => {
         expect(settled?.lastError).toContain("exited with code 1");
         expect(settled?.logTail).toContain("error: tests failed");
         expect(workspace.removed).toEqual(["/jobs/job-1/repo"]);
+        // A failed tree is discarded, not committed.
+        expect(workspace.commits).toEqual([]);
         expect(notify.notify).toHaveBeenCalledWith(
             userId,
             expect.objectContaining({ kind: "coding.failed" }),
@@ -242,6 +262,45 @@ describe("starting a coding job", () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it("says a no-change run made no changes, and repeats the agent's words", async () => {
+        const workspace = fakeWorkspace({
+            collect: () => ({ changed: false, diffSummary: "" }),
+        });
+        const { store, userId, runner, notify, service } = makeService({
+            workspace,
+        });
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Change the primary color",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+
+        runner.emit(
+            started.job.containerId ?? "",
+            JSON.stringify({
+                type: "text",
+                part: { text: "I cannot do that without a file to edit." },
+            }),
+        );
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        // Exit 0 is still `ok` — the run completed — but the announcement must
+        // not read as "done": the agent changed nothing and explained why.
+        expect(store.getCodingJobById("job-1")?.state).toBe("ok");
+        const [, input] = notify.notify.mock.calls[0] as [
+            number,
+            { title: string; body: string },
+        ];
+        expect(input.title).toContain("no changes");
+        expect(input.body).toContain(
+            "I cannot do that without a file to edit.",
+        );
     });
 
     it("refuses a missing task, a missing model, a foreign repo and a full queue", async () => {
@@ -291,6 +350,37 @@ describe("starting a coding job", () => {
         // Only one clone and one container were ever made.
         expect(busy.workspace.prepared).toHaveLength(1);
         expect(busy.runner.started).toHaveLength(1);
+    });
+});
+
+describe("agent messages", () => {
+    it("reads the agent's last text from its JSON stream", () => {
+        const tail = [
+            JSON.stringify({ type: "step_start" }),
+            JSON.stringify({ type: "text", part: { text: "looking…" } }),
+            JSON.stringify({ type: "step_finish" }),
+            JSON.stringify({
+                type: "text",
+                part: { text: "I changed the color." },
+            }),
+            "",
+        ].join("\n");
+
+        expect(lastAgentMessage(tail)).toBe("I changed the color.");
+    });
+
+    it("skips non-text frames, truncated lines and empty messages", () => {
+        const tail = [
+            JSON.stringify({ type: "tool", part: { text: "not a message" } }),
+            '{"type":"text","part":{"text":"cut off',
+            JSON.stringify({ type: "text", part: { text: "   " } }),
+        ].join("\n");
+
+        expect(lastAgentMessage(tail)).toBe("");
+    });
+
+    it("returns nothing for output that is not JSON at all", () => {
+        expect(lastAgentMessage("plain text\nmore text\n")).toBe("");
     });
 });
 
