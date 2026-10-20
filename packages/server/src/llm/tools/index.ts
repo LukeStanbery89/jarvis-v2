@@ -20,6 +20,7 @@ import { createHomeAssistantTool } from "./homeAssistant";
 import { createWikipediaTool } from "./wikipedia";
 import { createNotifyTool } from "./notify";
 import { createJobsTools } from "./jobs";
+import { createCodingTool } from "./coding";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
@@ -28,6 +29,7 @@ import type { HomeAssistantDeps } from "./homeAssistant";
 import type { WikipediaDeps } from "./wikipedia";
 import type { NotifyToolDeps } from "./notify";
 import type { JobsToolDeps } from "./jobs";
+import type { CodingToolDeps } from "./coding";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -64,6 +66,12 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * and with `JARVIS_NOTIFY=off` there is no service to call.
      */
     notifications?: NotifyToolDeps;
+    /**
+     * Coding-sandbox wiring (#141): the supervisor the `startCodingJob` tool
+     * calls. Present only when `JARVIS_SANDBOX=docker` — a tool that promised a
+     * job no runtime can run would be the same broken promise `jobs` avoids.
+     */
+    coding?: CodingToolDeps;
     /**
      * Scheduler wiring (#90 phase 3): the job ledger, the per-user cap, and the
      * scheduling horizon, which the six scheduling tools create within.
@@ -109,6 +117,11 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
         // The only tool whose *result* is an interruption (#139), so it is
         // registered last and reads as an exception among lookups.
         tools.push(createNotifyTool(deps.notifications));
+    }
+    if (deps.coding) {
+        // The only tool that spends minutes of another process's time. It
+        // returns a job id, not work, so the agent is told not to wait.
+        tools.push(createCodingTool(deps.coding));
     }
     if (deps.jobs) {
         // Last, and given a snapshot of everything above: a scheduling tool

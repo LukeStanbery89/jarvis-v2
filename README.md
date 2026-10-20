@@ -72,6 +72,43 @@ and has a `HEALTHCHECK` that polls `/health`. See
 [packages/server/README.md](./packages/server/README.md#docker) for the full
 environment reference, including how to mount the SPA builds.
 
+## Coding sandbox (optional, #141)
+
+Coding jobs run model-directed work — a bug fix, a feature, a failing test —
+inside a disposable container against a disposable clone. The server never lets
+an agent touch the tree it runs from.
+
+It is **off by default** and lives in an overlay, because it needs the Docker
+socket (root-equivalent; owner-only for now) and a host-visible workspace
+directory:
+
+```sh
+docker build -f Dockerfile.job -t jarvis-job:latest .
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+```
+
+Then set at least `JARVIS_SANDBOX_REPOS` (an `owner/name` allowlist) and
+`JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key — the default coding model
+is `big-pickle`, free on OpenCode's Console endpoint). A Go-plan model works
+too: point `JARVIS_SANDBOX_LLM_BASE_URL` at
+`https://opencode.ai/inference/go/openai/v1` and pick a Go id. A local model
+works instead: point
+`JARVIS_SANDBOX_LLM_BASE_URL` at `http://host.docker.internal:1234/v1`,
+set `JARVIS_SANDBOX_MODEL` to the local id, and leave the key empty. Ask JARVIS
+to fix something in one of those repositories, or check the whole path by hand:
+
+```sh
+JARVIS_SANDBOX_MODEL=qwen/qwen3-4b-2507 \
+JARVIS_SANDBOX_LLM_BASE_URL=http://host.docker.internal:1234/v1 \
+  npm run probe:coding-job -w @lukestanbery/jarvis-server
+```
+
+A job's container gets the workspace as its only mount, a read-only root
+filesystem, no capabilities and CPU / memory / process / wall-clock ceilings.
+See [packages/server/README.md](./packages/server/README.md#the-coding-sandbox-141)
+for the full configuration table and the crash policy (`prune` by default,
+`resume` per job).
+
 ## Architecture
 
 The server answers every prompt with a **LangGraph agent** rather than a bare

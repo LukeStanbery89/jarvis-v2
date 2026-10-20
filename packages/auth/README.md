@@ -97,6 +97,30 @@ only the surface they call:
   ownership and "still owed" are one statement rather than a read-then-write
   window. The store owns rows and transitions; the server's scheduler owns the
   _policy_ (what may be scheduled, what a run means, deferral, retention).
+- `CodingJobLedger` — the coding-agent jobs (#141) over `coding_jobs`:
+  `createCodingJob` / `getCodingJob` / `listCodingJobs` / `cancelCodingJob` /
+  `pruneCodingJobs`, plus a **process-scoped** half
+  (`getCodingJobById` / `listRunningCodingJobs` / `claimCodingJob` /
+  `settleCodingJob` / `setCodingJobLogTail`) that no request handler reaches.
+  The shape mirrors `JobLedger`'s two surfaces for the same reason: a job
+  belongs to one user, but the boot reaper finds a container by its
+  `jarvis.job` label — with no owner to scope by — and the supervisor settles a
+  row it claimed.
+  `claimCodingJob` is the same load-bearing transition (`state = 'queued'` in
+  the WHERE clause), and it writes **`container_id` at claim time**, not on
+  success: a row that only named its container once the run ended would be
+  unrecoverable exactly when recovery matters (`resume` needs the id after a
+  crash). `settleCodingJob` is terminal-guarded the same way, so a late
+  duplicate cannot rewrite a finished job's state or its recorded artifacts —
+  except that a still-`queued` row may be settled `failed`, the one ending a
+  job can reach before a container exists (a clone or a start that threw).
+  `crash_policy` is the per-job **prune vs. resume** decision (#141): `prune`
+  (the default) reaps the container and records a failure, `resume` adopts the
+  still-running container. `log_tail` is written when the run ends rather than
+  per line — a SQLite write per log line would cost more than the log is worth.
+  The store owns the rows and the transitions; the server's sandbox service
+  owns the _policy_ (which repos, what a run means, retention, what a crash
+  leaves behind).
 
 The server's `createApp`/`attachChatServer` are the composition roots; the REST
 router and middleware span every ledger and therefore take the full
@@ -221,6 +245,21 @@ router and middleware span every ledger and therefore take the full
   the model's own context lives in the LangGraph checkpoint under a `job:<id>`
   thread that never enters the `sessions` ledger, which is what keeps a job's
   runs out of the chat-thread list.
+- `coding_jobs` — one row per coding-agent job (#141, v17; `model` in v18), deliberately not a
+  `kind` on `jobs`: a scheduled job is a moment the scheduler fires and settles,
+  while a coding job is a workspace, a container and a branch whose lifecycle
+  outlives the process watching it. Columns: `repo` / `branch` / `prompt` (the
+  work), a `state` lifecycle (`queued` → `running` → `ok`/`failed`/`cancelled`),
+  `crash_policy` (`prune` default | `resume`, chosen per job), `model` (the id
+  the run was told to use — recorded rather than inferred, because the config
+  changes between runs), `container_id`
+  (written at claim time — `resume` needs it after a crash), `workspace_path`,
+  `log_tail`, `diff_summary`, `pr_url`, `attempts`, `last_error`, and
+  `created_at`/`started_at`/`finished_at`. Indexed on `(user_id, created_at
+DESC)` for the owner's list and on `(state) WHERE state = 'running'` — the
+  recovery feed, which only ever scans work in flight. `pruneCodingJobs` keeps
+  the newest _settled_ rows, so a run in flight never counts against a user's
+  history budget.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's

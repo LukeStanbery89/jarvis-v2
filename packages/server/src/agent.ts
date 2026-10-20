@@ -306,6 +306,35 @@ const SCHEDULE_RULE =
     "commitment you keep when nobody is watching.";
 
 /**
+ * Coding-job rule (#141), appended only when the tool is registered.
+ *
+ * The rule exists because the tool's absence was read as incapacity: asked to
+ * change code, a small model answered "I cannot edit the repository" without
+ * ever calling `startCodingJob`. The schema alone is not a strong enough cue —
+ * the same lesson the scheduling and notification rules encode for their
+ * tools. Kept behind a flag rather than made unconditional: the Home,
+ * research, and notification rules can be always-on because a model that
+ * cannot see a tool is merely over-cautious, but a rule that names a tool the
+ * process did not register would make the model promise a job that cannot
+ * start.
+ */
+const CODING_RULE =
+    "You can start a coding job. When the user asks for code to be written, " +
+    "a bug fixed, or a feature implemented in a repository they have " +
+    "allowed, call startCodingJob with their task. Do not claim you cannot " +
+    "edit code or reach a repository: the job runs an agent in its own " +
+    "sandbox with its own clone, and you are notified when it ends. You do " +
+    "not wait for it, and nothing is done until the tool returns a job id — " +
+    "report that id and say you will tell them when it finishes. If they " +
+    "named a repository, pass its exact owner/name; if you do not know that " +
+    "form — a nickname like 'the JARVIS repo' is not one — omit `repo` " +
+    "rather than guessing. Never pass an invented or shortened slug. When " +
+    "the tool refuses a repository and exactly one is allowed, call it " +
+    "again with `repo` omitted instead of asking the user to repeat " +
+    "themselves; when several are allowed, ask which. Never start a job " +
+    "for something that is not a code change.";
+
+/**
  * Spoken-word formatting directive appended for voice-mode turns (#83).
  *
  * A voice prompt's effective capabilities are empty, which yields plain
@@ -378,10 +407,20 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${rendering}${spoken}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${codingEnabled ? `\n\n${CODING_RULE}` : ""}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;
+
+/**
+ * Whether this process registered `startCodingJob` (#141).
+ *
+ * The coding rule is the one hygiene paragraph that must not be unconditional:
+ * it names a tool, and describing a tool the process did not register would
+ * make the model promise a job that cannot start. Set once, when the graph is
+ * built — the same deps object that builds the tool list.
+ */
+let codingEnabled = false;
 
 /**
  * The tool instances the graph was built with.
@@ -418,6 +457,7 @@ export function initAgentGraph(deps?: ToolDeps): AgentGraph {
     const saver = new SqliteSaver(new Database(checkpointPath));
     ensurePrivateFile(checkpointPath);
     const tools = createTools(deps);
+    codingEnabled = deps?.coding !== undefined;
     graph = createAgentGraph({
         model: createChatModel(),
         tools,

@@ -378,6 +378,114 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
 };
 
 /**
+ * Coding-sandbox settings (#141).
+ *
+ * Present only when `JARVIS_SANDBOX=docker`: a deployment with no container
+ * runtime configured should not advertise a job surface it cannot honour, the
+ * same posture `JARVIS_SCHEDULER=off` takes for the queue. Every field is a
+ * resource or a policy the operator can tune, and the defaults are deliberately
+ * modest — a coding job on a laptop must not be able to take the machine down.
+ */
+export interface SandboxConfig {
+    /** The job image, built by this repository (`JARVIS_SANDBOX_IMAGE`). */
+    readonly image: string;
+    /** The daemon socket (`JARVIS_SANDBOX_DOCKER_SOCKET`). */
+    readonly socketPath: string;
+    /**
+     * Where workspaces live **as the server sees them**
+     * (`JARVIS_SANDBOX_WORKSPACE_ROOT`).
+     */
+    readonly workspaceRoot: string;
+    /**
+     * The same tree **as the Docker daemon sees it**
+     * (`JARVIS_SANDBOX_WORKSPACE_HOST_ROOT`).
+     *
+     * They differ exactly when the server itself runs in a container: the
+     * daemon resolves a bind source on the host, so passing the server's view
+     * would silently mount an empty directory. Equal by default (dev runs the
+     * server on the host); compose sets the host path.
+     */
+    readonly workspaceHostRoot: string;
+    /** Jobs allowed to run at once (`JARVIS_SANDBOX_MAX_JOBS`), default 1. */
+    readonly maxJobs: number;
+    /** CPU cores per job (`JARVIS_SANDBOX_CPUS`), default 2. */
+    readonly cpus: number;
+    /** Memory ceiling per job in MiB (`JARVIS_SANDBOX_MEMORY_MB`), default 4096. */
+    readonly memoryMb: number;
+    /** Process ceiling per job (`JARVIS_SANDBOX_PIDS`), default 512. */
+    readonly pids: number;
+    /**
+     * Wall-clock ceiling per job (`JARVIS_SANDBOX_WALL_CLOCK_MINUTES`),
+     * default 45 minutes. The supervisor stops the container when it expires.
+     */
+    readonly wallClockMs: number;
+    /**
+     * `owner/name` repositories a job may clone (`JARVIS_SANDBOX_REPOS`).
+     * Empty means none: the allowlist is a whitelist, not a default.
+     */
+    readonly repos: readonly string[];
+    /**
+     * The model id the agent asks for at {@link llmBaseUrl}
+     * (`JARVIS_SANDBOX_MODEL`). Defaults to `big-pickle`, the free stealth
+     * model on OpenCode's Console endpoint; a Go-plan or local endpoint
+     * overrides this and {@link llmBaseUrl} together. Empty refuses to start a
+     * job — a sandbox with no model would spend a clone to discover it has
+     * nothing to think with.
+     */
+    readonly model: string;
+    /**
+     * The OpenAI-compatible endpoint a job's agent talks to
+     * (`JARVIS_SANDBOX_LLM_BASE_URL`).
+     *
+     * Distinct from `LLM_BASE_URL` on purpose: the server may reach its model
+     * at `localhost`, which inside a job container means the container. The
+     * default is OpenCode's Console endpoint (not Go, because the free model
+     * lives there); a deployment running a local model points this at the host
+     * and leaves {@link apiKey} empty.
+     */
+    readonly llmBaseUrl: string;
+    /**
+     * The provider key a job's agent authenticates with
+     * (`JARVIS_SANDBOX_API_KEY`).
+     *
+     * Empty means "no key", which is right for a local endpoint and refused for
+     * a remote one. **Never logged**: the boot line says `apiKey=set|unset`, and
+     * the key travels only in the job's environment. It is visible to the agent
+     * inside the container — a deliberate v1 trade-off recorded on #141 (use an
+     * OpenCode workspace key, never a personal provider key; the server-side
+     * proxy is the target design).
+     */
+    readonly apiKey: string;
+    /**
+     * Extra `/etc/hosts` entries for job containers
+     * (`JARVIS_SANDBOX_EXTRA_HOSTS`; `none` disables). Defaults to the
+     * host-gateway alias the model is reached through.
+     */
+    readonly extraHosts: readonly string[];
+}
+
+/** Laptop-safe sandbox defaults: one job, two cores, 4 GiB, 45 minutes. */
+export const DEFAULT_SANDBOX_CONFIG = {
+    image: "jarvis-job:latest",
+    socketPath: "/var/run/docker.sock",
+    maxJobs: 1,
+    cpus: 2,
+    memoryMb: 4096,
+    pids: 512,
+    wallClockMs: 45 * 60 * 1000,
+    extraHosts: ["host.docker.internal:host-gateway"],
+    // The default coding model is OpenCode's Big Pickle: a free stealth model
+    // served by the Console endpoint (not the Go one). The same workspace key
+    // authenticates both, and the job's own `opencode run` is the client the
+    // free tier admits. A deployment that wants a Go-plan model overrides both
+    // this URL and the model; one that runs locally points both at the host and
+    // leaves the key empty.
+    model: "big-pickle",
+    llmBaseUrl: "https://opencode.ai/inference/openai/v1",
+    apiKey: "",
+} as const;
+
+/**
  * Home Assistant connection settings (#15).
  *
  * Both the URL and the long-lived access token are required, and neither has a
@@ -506,6 +614,17 @@ export function defaultCheckpointPath(): string {
  */
 export function defaultAppDbPath(): string {
     return `${homedir()}/.jarvis/jarvis.sqlite`;
+}
+
+/**
+ * Where a coding job's workspace lives when the caller does not say.
+ *
+ * Under the same private `~/.jarvis` tree as the database and checkpoints, so
+ * one volume in the deployment is still all the durable state. Each job gets a
+ * subdirectory named after its id; the sandbox mounts only that directory.
+ */
+export function defaultSandboxWorkspaceRoot(): string {
+    return path.join(homedir(), ".jarvis", "jobs");
 }
 
 /** Default hard cap for one agent turn before it is aborted. */
@@ -702,6 +821,13 @@ export interface AppConfig {
      * surface (`JARVIS_SCHEDULER=off`), as `notify` does for notifications.
      */
     readonly scheduler?: SchedulerConfig;
+    /**
+     * Coding-sandbox settings (`JARVIS_SANDBOX=docker`); `undefined` means the
+     * deployment has no container runtime configured, so no coding job may
+     * start — the same "do not advertise what cannot be honoured" posture the
+     * scheduler and notification surfaces take with their own switches.
+     */
+    readonly sandbox?: SandboxConfig;
     /**
      * Login/bootstrap throttle settings (`JARVIS_RATE_*`), default LAN values.
      */
@@ -940,6 +1066,39 @@ function numberOr(
 }
 
 /**
+ * Splits a comma-separated environment list, trimming and dropping blanks.
+ *
+ * @param raw - The variable's value, or `undefined` when unset.
+ * @returns The non-empty entries.
+ */
+function parseCsv(raw: string | undefined): string[] {
+    return (raw ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+}
+
+/**
+ * The extra `/etc/hosts` entries a job container gets.
+ *
+ * Unset keeps the default host-gateway alias — a job that cannot reach its
+ * model cannot work — while `none` removes it for an engine that already
+ * provides `host.docker.internal`.
+ *
+ * @param raw - `JARVIS_SANDBOX_EXTRA_HOSTS`, or `undefined` when unset.
+ * @returns The entries to pass through.
+ */
+function parseExtraHosts(raw: string | undefined): string[] {
+    if (raw === undefined) {
+        return [...DEFAULT_SANDBOX_CONFIG.extraHosts];
+    }
+    if (raw.trim().toLowerCase() === "none") {
+        return [];
+    }
+    return parseCsv(raw);
+}
+
+/**
  * Like {@link numberOr} but accepts 0, for knobs where zero is a real setting
  * rather than a missing one (the Home Assistant cache TTL: 0 disables
  * caching, which is how you debug against a live instance without stale
@@ -962,6 +1121,11 @@ function zeroOkOr(
 }
 
 export function getAppConfig(): AppConfig {
+    // One root, two views: a container deployment passes the host path the
+    // daemon resolves bind sources against, which is not the server's path.
+    const sandboxWorkspaceRoot =
+        process.env.JARVIS_SANDBOX_WORKSPACE_ROOT ??
+        defaultSandboxWorkspaceRoot();
     return {
         appDbPath: process.env.JARVIS_DB_PATH ?? defaultAppDbPath(),
         turnTimeoutMs: numberOr(
@@ -1066,6 +1230,67 @@ export function getAppConfig(): AppConfig {
                           DEFAULT_SCHEDULER_CONFIG.modelRunsPerDay,
                       ),
                   },
+        // Coding jobs (#141): enabled by an explicit `docker`. A deployment
+        // with no daemon must not advertise a surface it cannot honour, and the
+        // runner is built from this block only when it is present.
+        sandbox:
+            process.env.JARVIS_SANDBOX === "docker"
+                ? {
+                      image:
+                          process.env.JARVIS_SANDBOX_IMAGE ??
+                          DEFAULT_SANDBOX_CONFIG.image,
+                      socketPath:
+                          process.env.JARVIS_SANDBOX_DOCKER_SOCKET ??
+                          DEFAULT_SANDBOX_CONFIG.socketPath,
+                      workspaceRoot: sandboxWorkspaceRoot,
+                      // Equal to the server's view unless a container
+                      // deployment says otherwise: the daemon resolves bind
+                      // sources on the host, not inside the server.
+                      workspaceHostRoot:
+                          process.env.JARVIS_SANDBOX_WORKSPACE_HOST_ROOT ??
+                          sandboxWorkspaceRoot,
+                      maxJobs: numberOr(
+                          "JARVIS_SANDBOX_MAX_JOBS",
+                          process.env.JARVIS_SANDBOX_MAX_JOBS,
+                          DEFAULT_SANDBOX_CONFIG.maxJobs,
+                      ),
+                      cpus: numberOr(
+                          "JARVIS_SANDBOX_CPUS",
+                          process.env.JARVIS_SANDBOX_CPUS,
+                          DEFAULT_SANDBOX_CONFIG.cpus,
+                      ),
+                      memoryMb: numberOr(
+                          "JARVIS_SANDBOX_MEMORY_MB",
+                          process.env.JARVIS_SANDBOX_MEMORY_MB,
+                          DEFAULT_SANDBOX_CONFIG.memoryMb,
+                      ),
+                      pids: numberOr(
+                          "JARVIS_SANDBOX_PIDS",
+                          process.env.JARVIS_SANDBOX_PIDS,
+                          DEFAULT_SANDBOX_CONFIG.pids,
+                      ),
+                      // Minutes in the environment, milliseconds in the
+                      // config: an operator thinks in minutes, the supervisor
+                      // compares instants.
+                      wallClockMs:
+                          numberOr(
+                              "JARVIS_SANDBOX_WALL_CLOCK_MINUTES",
+                              process.env.JARVIS_SANDBOX_WALL_CLOCK_MINUTES,
+                              DEFAULT_SANDBOX_CONFIG.wallClockMs / 60_000,
+                          ) * 60_000,
+                      repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
+                      model:
+                          process.env.JARVIS_SANDBOX_MODEL ??
+                          DEFAULT_SANDBOX_CONFIG.model,
+                      llmBaseUrl:
+                          process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
+                          DEFAULT_SANDBOX_CONFIG.llmBaseUrl,
+                      apiKey: process.env.JARVIS_SANDBOX_API_KEY ?? "",
+                      extraHosts: parseExtraHosts(
+                          process.env.JARVIS_SANDBOX_EXTRA_HOSTS,
+                      ),
+                  }
+                : undefined,
         attachments:
             process.env.JARVIS_ATTACHMENT_TTL_MINUTES === undefined &&
             process.env.JARVIS_ATTACHMENT_MAX_BYTES === undefined &&

@@ -18,14 +18,15 @@ npm install @lukestanbery/jarvis-server
 
 ## Scripts
 
-| Script                | Description                                                |
-| --------------------- | ---------------------------------------------------------- |
-| `npm run build`       | Compile TypeScript to `dist/`                              |
-| `npm run typecheck`   | Type-check src and tests (no emit)                         |
-| `npm run dev`         | Run the server with watch mode                             |
-| `npm start`           | Run the compiled server                                    |
-| `npm test`            | Run the test suite (Vitest)                                |
-| `npm run tts:harness` | Local TTS harness: synthesize text and play it aloud (#83) |
+| Script                  | Description                                                |
+| ----------------------- | ---------------------------------------------------------- |
+| `npm run build`         | Compile TypeScript to `dist/`                              |
+| `npm run typecheck`     | Type-check src and tests (no emit)                         |
+| `npm run dev`           | Run the server with watch mode                             |
+| `npm start`             | Run the compiled server                                    |
+| `npm test`              | Run the test suite (Vitest)                                |
+| `npm run tts:harness`   | Local TTS harness: synthesize text and play it aloud (#83) |
+| `npm run probe:sandbox` | Probe the Docker assumptions the sandbox (#141) rests on   |
 
 ## Usage
 
@@ -93,6 +94,108 @@ environment:
 A directory is mounted only when it contains `index.html`: a wrong path for the
 app degrades to `Hello World` at `/` and a warning, and one for the portal leaves
 `/admin` an honest 404 — each rather than failing to boot.
+
+#### Probing the sandbox assumptions (#141)
+
+`npm run probe:sandbox` runs three short-lived labelled containers and reports
+whether the things the coding sandbox will depend on actually hold **on this
+machine**: a bind mount written inside a container is visible at the host path
+the server reads (and, as an observation, what the engine does with a mount
+source that exists only inside a container — the trap
+`JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` exists to avoid); a sibling container can
+reach the host LLM, reporting which spelling worked — native
+`host.docker.internal` or `--add-host host-gateway`; and a container left by a
+crashed run is discoverable by label, readable (adopt), removable (prune), and
+absent afterwards, with the server's own container excluded from the managed
+set.
+
+It uses the `docker` CLI rather than the library the runner will use, because
+it probes the environment and not our code. Needs a running daemon (pulls
+`alpine:3` if missing) and is not part of `npm test` or CI; exit `0` means
+every gating assertion held, `1` one failed, `2` the daemon was unusable.
+
+#### The coding sandbox (#141)
+
+Coding jobs are **off by default** and live in an overlay, because they need two
+things the base deployment deliberately does not grant: the Docker socket
+(root-equivalent — an owner-only v1 decision, with #138 owning the real
+capability boundary) and a host-visible workspace directory (a sibling
+container's bind source is resolved on the _host_, not inside the server).
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+```
+
+The job image is built from `Dockerfile.job` at the repository root (agent +
+git + gh + toolchain; the server image stays toolchain-free):
+
+```sh
+docker build -f Dockerfile.job -t jarvis-job:latest .
+```
+
+The same tree has two paths, and they differ exactly when the server runs in a
+container: the server reads `~/.jarvis/jobs`, while the daemon resolves the
+bind source on the host. The overlay sets both from one mount, and
+`JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` is the host side.
+
+The container posture is fixed in `src/sandbox/docker.ts`: the workspace is the
+only mount (read-write), the root filesystem is read-only with tmpfs for
+scratch, capabilities are dropped, `no-new-privileges` is set, and CPU /
+memory / process / wall-clock ceilings apply. A job cannot reach the host's
+home directory, the socket, or any credential it was not handed.
+
+A job clones its allowlisted repository into `~/.jarvis/jobs/<id>/repo` on a
+`jarvis/<slug>-<id>` branch, runs the agent against that directory, records
+what it left behind (`diff --stat`, the commits it added, a bounded log tail)
+and announces one ending. A successful workspace is kept for the pull-request
+step; a failed one is removed. If JARVIS dies mid-job, the boot reaper either
+**prunes** the container (the default: it is stopped, its tail recorded and the
+row settled `failed` with the reason) or **resumes** it (adopt the still-running
+container and keep watching) — a choice stored per job and made when it is
+created.
+
+The default coding model is **OpenCode's `big-pickle`** at
+`https://opencode.ai/inference/openai/v1`, authenticated with
+`JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key). Big Pickle is a free
+stealth model on the Console endpoint, and the job's own `opencode run` is the
+client the free tier admits. A Go-plan model works too — point
+`JARVIS_SANDBOX_LLM_BASE_URL` at `https://opencode.ai/inference/go/openai/v1`
+and `JARVIS_SANDBOX_MODEL` at the Go id. A local model works as well: point the
+URL at the host and the model at the local id, and leave the key empty; no key
+is required for a local endpoint, and a remote one without a key is refused
+before anything is cloned. The key reaches the job container's environment and
+is therefore visible to the agent: use an OpenCode workspace key rather than a
+personal provider key until the server-side proxy (#141) exists.
+
+Ask for one in chat: the `startCodingJob` tool is registered whenever the
+sandbox is on, accepts only an allowlisted repository, and is **owner-only** —
+a sandbox with a clone and network access is the most capable thing JARVIS
+runs, so it is not a `user`-role capability yet. The tool returns a job id
+immediately; the ending arrives as a notification, so the assistant does not
+hold the reply open for it.
+
+`npm run probe:coding-job` is the manual end-to-end check: a throwaway local
+repository, the real image, a real agent and the configured model. It prints
+the settled row, the diff summary and the workspace's git log, and exits
+non-zero unless the job settled `ok`.
+
+| Variable                             | Default                                   | Meaning                                                                     |
+| ------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------------- |
+| `JARVIS_SANDBOX`                     | _(unset)_                                 | `docker` enables the surface; anything else leaves it absent                |
+| `JARVIS_SANDBOX_IMAGE`               | `jarvis-job:latest`                       | the job image, built by this repository                                     |
+| `JARVIS_SANDBOX_DOCKER_SOCKET`       | `/var/run/docker.sock`                    | the daemon's socket                                                         |
+| `JARVIS_SANDBOX_WORKSPACE_ROOT`      | `~/.jarvis/jobs`                          | workspaces **as the server sees them**                                      |
+| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` | the same                                  | workspaces **as the daemon sees them** — set this in a container deployment |
+| `JARVIS_SANDBOX_MAX_JOBS`            | `1`                                       | jobs allowed to run at once                                                 |
+| `JARVIS_SANDBOX_CPUS`                | `2`                                       | cores per job                                                               |
+| `JARVIS_SANDBOX_MEMORY_MB`           | `4096`                                    | memory ceiling per job                                                      |
+| `JARVIS_SANDBOX_PIDS`                | `512`                                     | process ceiling per job                                                     |
+| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`  | `45`                                      | the supervisor stops a job that overruns                                    |
+| `JARVIS_SANDBOX_REPOS`               | _(empty)_                                 | `owner/name` allowlist; empty clones nothing                                |
+| `JARVIS_SANDBOX_MODEL`               | `big-pickle`                              | the model id handed to the agent                                            |
+| `JARVIS_SANDBOX_LLM_BASE_URL`        | `https://opencode.ai/inference/openai/v1` | the OpenAI-compatible endpoint a job container talks to                     |
+| `JARVIS_SANDBOX_API_KEY`             | _(empty)_                                 | the provider key; required for a remote endpoint, never logged              |
+| `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway`       | extra `/etc/hosts` entries; `none` disables                                 |
 
 #### Container environment reference
 

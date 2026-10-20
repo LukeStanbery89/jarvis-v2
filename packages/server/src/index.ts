@@ -41,6 +41,9 @@ import { createNotificationService } from "./notify/service";
 import { createJobCreator } from "./scheduler/create";
 import { createJobRunner } from "./scheduler/runner";
 import { createScheduler } from "./scheduler/loop";
+import { createCodingJobService } from "./sandbox/service";
+import { createDockerSandbox } from "./sandbox/docker";
+import { createWorkspaceManager } from "./sandbox/workspace";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -249,6 +252,40 @@ const notifications =
           })
         : undefined;
 
+// The coding sandbox (#141): present only when a container runtime is
+// configured, because the surface must not promise work it cannot run. Built
+// before the graph so the `startCodingJob` tool can be handed the supervisor;
+// recovery runs below, once the socket layer is up, so an adopted job's
+// announcement has a hub to land in.
+const codingJobs = appConfig.sandbox
+    ? createCodingJobService({
+          ledger: store,
+          runner: createDockerSandbox({
+              socketPath: appConfig.sandbox.socketPath,
+          }),
+          workspace: createWorkspaceManager({
+              root: appConfig.sandbox.workspaceRoot,
+              hostRoot: appConfig.sandbox.workspaceHostRoot,
+              repos: appConfig.sandbox.repos,
+          }),
+          config: appConfig.sandbox,
+          ...(notifications ? { notifications } : {}),
+      })
+    : undefined;
+
+// Say so at boot. The tool's absence is silent otherwise, and "the model
+// refused to touch code" is exactly what a missing registration looks like
+// from the outside — the distinction cost a debugging session once.
+if (appConfig.sandbox && codingJobs) {
+    logger.info(
+        `Coding sandbox active: image=${appConfig.sandbox.image}, repos=${
+            appConfig.sandbox.repos.join(",") || "(none)"
+        }, model=${appConfig.sandbox.model || "(unset)"}, apiKey=${
+            appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"
+        }`,
+    );
+}
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
@@ -268,6 +305,18 @@ initAgentGraph({
                   ledger: store,
                   maxPerUser: appConfig.scheduler.maxPerUser,
                   maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
+              },
+          }
+        : {}),
+    // The owner gate is the store's role, read per call rather than captured:
+    // a demoted account must lose the capability immediately, not at restart.
+    ...(codingJobs
+        ? {
+              coding: {
+                  service: codingJobs,
+                  isOwner: (userId: number) =>
+                      store.getUserById(userId)?.role === "owner",
+                  repos: appConfig.sandbox?.repos ?? [],
               },
           }
         : {}),
@@ -308,6 +357,8 @@ const jobCreator =
           })
         : undefined;
 
+// The coding sandbox (#141): the supervisor is built above, before the graph,
+// so the `startCodingJob` tool can reach it.
 const webApp = createApp(
     store,
     appConfig,
@@ -335,3 +386,8 @@ attachChatServer(server, store, {
 // fail the runs a previous process left in flight, and a job firing in the
 // same tick can then reach a live hub rather than recording into the void.
 void scheduler?.start();
+// Coding jobs are reconciled for the same reason: a `running` row belongs to a
+// process that died, and its container may still be running (adopt) or not
+// (prune). Nothing can start a new job until the tool is wired, so this is the
+// only job-path at boot.
+void codingJobs?.recover();
