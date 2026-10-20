@@ -1252,8 +1252,10 @@ export interface CodingJobLedger {
      *
      * Terminal states are terminal: a settle of an already settled job returns
      * the existing row unchanged, so a late duplicate cannot rewrite history.
-     * A `queued` row (never claimed) is likewise left alone — settling it would
-     * report an attempt that never happened.
+     * A `queued` row — never claimed, so no container ever ran — is left alone
+     * **unless** the state is `failed`: that is the one ending a job can reach
+     * before a container exists (a clone or a start that threw), and refusing
+     * it would leave the row queued forever.
      */
     settleCodingJob(
         id: string,
@@ -2734,9 +2736,11 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             // One statement covers every ending: the terminal guard lives in
             // the WHERE clause, so a late duplicate settles nothing and the
-            // caller re-reads the row it already had.
+            // caller re-reads the row it already had. A `queued` row may only
+            // be settled `failed` — the one ending a job can reach before a
+            // container exists (a clone or a start that threw).
             settleCodingJob: db.prepare(
-                "UPDATE coding_jobs SET state = ?, diff_summary = COALESCE(?, diff_summary), pr_url = COALESCE(?, pr_url), log_tail = COALESCE(?, log_tail), last_error = ?, finished_at = ? WHERE id = ? AND state = 'running'",
+                "UPDATE coding_jobs SET state = ?, diff_summary = COALESCE(?, diff_summary), pr_url = COALESCE(?, pr_url), log_tail = COALESCE(?, log_tail), last_error = ?, finished_at = ? WHERE id = ? AND (state = 'running' OR (state = 'queued' AND ? = 'failed'))",
             ),
             cancelCodingJob: db.prepare(
                 "UPDATE coding_jobs SET state = 'cancelled', finished_at = ? WHERE user_id = ? AND id = ? AND state = 'queued'",
@@ -3468,6 +3472,7 @@ export class SqliteAppDatabase implements AppDatabase {
             result.error ?? null,
             at,
             id,
+            state,
         );
         // Re-read rather than assume: the terminal guard may have refused (an
         // already-settled row, or one never claimed), and the caller needs the

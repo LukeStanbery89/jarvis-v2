@@ -186,19 +186,29 @@ describe("coding-job ledger", () => {
         expect(again?.finishedAt).toBe("2026-10-19T12:30:00.000Z");
     });
 
-    it("does not settle a job that was never claimed", () => {
+    it("does not settle a job that was never claimed, except as failed", () => {
         const { store, ownerId } = makeStore();
-        store.createCodingJob(ownerId, codingJob());
+        store.createCodingJob(ownerId, codingJob({ id: "never" }));
+        store.createCodingJob(ownerId, codingJob({ id: "broken" }));
 
-        const settled = store.settleCodingJob(
-            "c1",
-            "ok",
-            {},
-            "2026-10-19T12:30:00.000Z",
+        // Nothing ran, so nothing can have succeeded.
+        expect(
+            store.settleCodingJob("never", "ok", {}, "2026-10-19T12:30:00.000Z")
+                ?.state,
+        ).toBe("queued");
+
+        // A start that threw is the one ending a queued row can reach, and it
+        // must be recordable — otherwise the row would claim to be waiting
+        // forever.
+        const failed = store.settleCodingJob(
+            "broken",
+            "failed",
+            { error: "the container image is missing" },
+            "2026-10-19T12:31:00.000Z",
         );
-        expect(settled?.state).toBe("queued");
-        expect(settled?.finishedAt).toBeNull();
-        expect(settled?.attempts).toBe(0);
+        expect(failed?.state).toBe("failed");
+        expect(failed?.lastError).toBe("the container image is missing");
+        expect(failed?.attempts).toBe(0);
     });
 
     it("cancels a queued job but not a running or settled one", () => {

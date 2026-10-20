@@ -41,6 +41,9 @@ import { createNotificationService } from "./notify/service";
 import { createJobCreator } from "./scheduler/create";
 import { createJobRunner } from "./scheduler/runner";
 import { createScheduler } from "./scheduler/loop";
+import { createCodingJobService } from "./sandbox/service";
+import { createDockerSandbox } from "./sandbox/docker";
+import { createWorkspaceManager } from "./sandbox/workspace";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
 import { logger } from "./logger";
@@ -308,6 +311,27 @@ const jobCreator =
           })
         : undefined;
 
+// The coding sandbox (#141): present only when a container runtime is
+// configured, because the surface must not promise work it cannot run. The
+// runner is the Docker seam; the workspace manager owns the clones; the service
+// is the supervisor. Recovery runs below, once the socket layer is up, so an
+// adopted job's announcement has a hub to land in.
+const codingJobs = appConfig.sandbox
+    ? createCodingJobService({
+          ledger: store,
+          runner: createDockerSandbox({
+              socketPath: appConfig.sandbox.socketPath,
+          }),
+          workspace: createWorkspaceManager({
+              root: appConfig.sandbox.workspaceRoot,
+              hostRoot: appConfig.sandbox.workspaceHostRoot,
+              repos: appConfig.sandbox.repos,
+          }),
+          config: appConfig.sandbox,
+          ...(notifications ? { notifications } : {}),
+      })
+    : undefined;
+
 const webApp = createApp(
     store,
     appConfig,
@@ -335,3 +359,8 @@ attachChatServer(server, store, {
 // fail the runs a previous process left in flight, and a job firing in the
 // same tick can then reach a live hub rather than recording into the void.
 void scheduler?.start();
+// Coding jobs are reconciled for the same reason: a `running` row belongs to a
+// process that died, and its container may still be running (adopt) or not
+// (prune). Nothing can start a new job until the tool is wired, so this is the
+// only job-path at boot.
+void codingJobs?.recover();

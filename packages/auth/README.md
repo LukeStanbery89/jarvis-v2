@@ -111,8 +111,9 @@ only the surface they call:
   success: a row that only named its container once the run ended would be
   unrecoverable exactly when recovery matters (`resume` needs the id after a
   crash). `settleCodingJob` is terminal-guarded the same way, so a late
-  duplicate cannot rewrite a finished job's state or its recorded artifacts,
-  and a row that was never claimed cannot be settled at all.
+  duplicate cannot rewrite a finished job's state or its recorded artifacts —
+  except that a still-`queued` row may be settled `failed`, the one ending a
+  job can reach before a container exists (a clone or a start that threw).
   `crash_policy` is the per-job **prune vs. resume** decision (#141): `prune`
   (the default) reaps the container and records a failure, `resume` adopts the
   still-running container. `log_tail` is written when the run ends rather than

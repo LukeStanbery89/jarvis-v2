@@ -70,6 +70,15 @@ export interface CodingJobRecoveryHandlers {
         handle: SandboxHandle | null,
         reason: string,
     ): Promise<void>;
+    /**
+     * Called for a container no row owns, before it is removed.
+     *
+     * The container is the only source of the job id, and the workspace lives
+     * at a path derived from that id — so this is the one hook that can clean
+     * up the *directory* of a job whose row is already gone. Optional: a caller
+     * with no workspace to manage ignores it.
+     */
+    discard?(jobId: string, containerId: string): Promise<void>;
 }
 
 /** What one boot-time reconciliation did, for logs and tests. */
@@ -128,6 +137,10 @@ export async function reconcileCodingJobs(options: {
             // only safe act — leaving it running would spend resources for a
             // result nobody will read.
             try {
+                await handlers.discard?.(
+                    container.jobId,
+                    container.containerId,
+                );
                 await runner.remove(container.containerId);
                 summary.removed++;
             } catch (err) {

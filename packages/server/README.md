@@ -132,6 +132,16 @@ scratch, capabilities are dropped, `no-new-privileges` is set, and CPU /
 memory / process / wall-clock ceilings apply. A job cannot reach the host's
 home directory, the socket, or any credential it was not handed.
 
+A job clones its allowlisted repository into `~/.jarvis/jobs/<id>/repo` on a
+`jarvis/<slug>-<id>` branch, runs the agent against that directory, records
+what it left behind (`diff --stat`, the commits it added, a bounded log tail)
+and announces one ending. A successful workspace is kept for the pull-request
+step; a failed one is removed. If JARVIS dies mid-job, the boot reaper either
+**prunes** the container (the default: it is stopped, its tail recorded and the
+row settled `failed` with the reason) or **resumes** it (adopt the still-running
+container and keep watching) — a choice stored per job and made when it is
+created.
+
 | Variable                             | Default                             | Meaning                                                                     |
 | ------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------- |
 | `JARVIS_SANDBOX`                     | _(unset)_                           | `docker` enables the surface; anything else leaves it absent                |
