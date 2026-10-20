@@ -41,6 +41,7 @@
         "@lukestanbery/jarvis-logger": "^0.1.0",
         "@lukestanbery/jarvis-protocol": "^0.1.0",
         "better-sqlite3": "^12.11.1",
+        "dockerode": "^5.0.1",
         "dotenv": "^18.0.3",
         "express": "^5.2.1",
         "express-openapi-validator": "^5.4.0",
@@ -50,6 +51,7 @@
     "devDependencies": {
         "@langchain/langgraph-checkpoint": "^1.1.5",
         "@types/better-sqlite3": "^9.6.0",
+        "@types/dockerode": "^4.0.2",
         "@types/express": "^5.0.6",
         "@types/node": "^26.6.2",
         "@types/supertest": "^7.2.1",
@@ -60,7 +62,7 @@
         "vitest": "^5.0.1"
     },
     "optionalDependencies": {
-        "kokoro-js": "^1.2.1",
-        "@huggingface/transformers": "^3.5.1"
+        "@huggingface/transformers": "^3.5.1",
+        "kokoro-js": "^1.2.1"
     }
 }

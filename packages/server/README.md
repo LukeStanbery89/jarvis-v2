@@ -114,6 +114,40 @@ it probes the environment and not our code. Needs a running daemon (pulls
 `alpine:3` if missing) and is not part of `npm test` or CI; exit `0` means
 every gating assertion held, `1` one failed, `2` the daemon was unusable.
 
+#### The coding sandbox (#141)
+
+Coding jobs are **off by default** and live in an overlay, because they need two
+things the base deployment deliberately does not grant: the Docker socket
+(root-equivalent — an owner-only v1 decision, with #138 owning the real
+capability boundary) and a host-visible workspace directory (a sibling
+container's bind source is resolved on the _host_, not inside the server).
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+```
+
+The container posture is fixed in `src/sandbox/docker.ts`: the workspace is the
+only mount (read-write), the root filesystem is read-only with tmpfs for
+scratch, capabilities are dropped, `no-new-privileges` is set, and CPU /
+memory / process / wall-clock ceilings apply. A job cannot reach the host's
+home directory, the socket, or any credential it was not handed.
+
+| Variable                             | Default                             | Meaning                                                                     |
+| ------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------- |
+| `JARVIS_SANDBOX`                     | _(unset)_                           | `docker` enables the surface; anything else leaves it absent                |
+| `JARVIS_SANDBOX_IMAGE`               | `jarvis-job:latest`                 | the job image, built by this repository                                     |
+| `JARVIS_SANDBOX_DOCKER_SOCKET`       | `/var/run/docker.sock`              | the daemon's socket                                                         |
+| `JARVIS_SANDBOX_WORKSPACE_ROOT`      | `~/.jarvis/jobs`                    | workspaces **as the server sees them**                                      |
+| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` | the same                            | workspaces **as the daemon sees them** — set this in a container deployment |
+| `JARVIS_SANDBOX_MAX_JOBS`            | `1`                                 | jobs allowed to run at once                                                 |
+| `JARVIS_SANDBOX_CPUS`                | `2`                                 | cores per job                                                               |
+| `JARVIS_SANDBOX_MEMORY_MB`           | `4096`                              | memory ceiling per job                                                      |
+| `JARVIS_SANDBOX_PIDS`                | `512`                               | process ceiling per job                                                     |
+| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`  | `45`                                | the supervisor stops a job that overruns                                    |
+| `JARVIS_SANDBOX_REPOS`               | _(empty)_                           | `owner/name` allowlist; empty clones nothing                                |
+| `JARVIS_SANDBOX_MODEL`               | _(empty)_                           | `provider/model` handed to the agent                                        |
+| `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway` | extra `/etc/hosts` entries; `none` disables                                 |
+
 #### Container environment reference
 
 Everything in the configuration table below applies unchanged inside the

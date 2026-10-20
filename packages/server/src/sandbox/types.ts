@@ -75,6 +75,22 @@ export interface SandboxSpec {
     /** Environment handed to the container. No secrets unless the job owns one. */
     env: Readonly<Record<string, string>>;
     limits: SandboxLimits;
+    /**
+     * Writable tmpfs mounts for the read-only root, keyed by container path.
+     *
+     * A container whose root is read-only still needs somewhere to write
+     * scratch files and a home directory; the runner defaults to `/tmp` and
+     * the service adds whatever its image needs (`HOME`).
+     */
+    tmpfs?: Readonly<Record<string, string>>;
+    /**
+     * Extra `/etc/hosts` entries (`host:ip` or `host:host-gateway`).
+     *
+     * Defaults to `host.docker.internal:host-gateway`, because a job container
+     * that cannot reach its model is a job that cannot work; an operator whose
+     * engine already provides that name can pass an empty list.
+     */
+    extraHosts?: readonly string[];
 }
 
 /** One of JARVIS's containers, as a listing sees it. */

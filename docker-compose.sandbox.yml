@@ -1,0 +1,40 @@
+# Coding sandbox (#141) — an overlay, never the default.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
+#
+# The base file deliberately does not grant what a coding job needs. This
+# overlay adds exactly three things:
+#
+#   1. **The Docker socket.** Root-equivalent by definition — a process with it
+#      can do anything the daemon can. It is a deliberate owner-only v1
+#      decision (recorded on #141); the real capability boundary is #138, and
+#      this file is where the cost is visible rather than buried in the base
+#      deployment.
+#   2. **A host-visible workspace directory.** A sibling container's bind
+#      source is resolved on the HOST, not inside the server container, so the
+#      same tree is mounted twice: at `/home/jarvis/.jarvis/jobs` for the
+#      server, and from its host path for the job (via
+#      `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT`). Pointing the job at the server's
+#      path would silently mount an empty directory — the trap the sandbox
+#      probe (`npm run probe:sandbox`) reproduces.
+#   3. **The sandbox switch and its allowlist.** `JARVIS_SANDBOX=docker` is what
+#      makes the surface exist at all; `JARVIS_SANDBOX_REPOS` starts empty, so a
+#      deployment that has not named a repository cannot clone one.
+#
+# The job image itself is built separately (`docker build -f Dockerfile.job -t
+# jarvis-job:latest .`) and is not started by compose: each job is one
+# short-lived container the server creates and reaps.
+services:
+    jarvis:
+        environment:
+            JARVIS_SANDBOX: "docker"
+            JARVIS_SANDBOX_IMAGE: "${JARVIS_SANDBOX_IMAGE:-jarvis-job:latest}"
+            # Absolute host path, because the daemon resolves it. `PWD` is
+            # exported by a normal shell; set JARVIS_SANDBOX_WORKSPACE_HOST_ROOT
+            # explicitly when composing from a context where it is not.
+            JARVIS_SANDBOX_WORKSPACE_HOST_ROOT: "${JARVIS_SANDBOX_WORKSPACE_HOST_ROOT:-${PWD}/.jarvis/jobs}"
+            JARVIS_SANDBOX_REPOS: "${JARVIS_SANDBOX_REPOS:-}"
+            JARVIS_SANDBOX_MODEL: "${JARVIS_SANDBOX_MODEL:-}"
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+            - ./.jarvis/jobs:/home/jarvis/.jarvis/jobs
