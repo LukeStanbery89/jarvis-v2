@@ -41,8 +41,9 @@ const schema = z.object({
     repo: z
         .string()
         .min(1)
+        .optional()
         .describe(
-            "The repository to work in, as `owner/name`. Must be on the server's allowlist.",
+            "The repository to work in, as `owner/name`. Omit it when the user did not name one and exactly one repository is allowed; the tool answers with the allowlist when it cannot choose.",
         ),
     task: z
         .string()
@@ -97,10 +98,24 @@ export function createCodingTool(deps: CodingToolDeps) {
                 return "Coding jobs can only be started by the owner account.";
             }
 
+            // "Change the primary color in the JARVIS repo" names no slug. A
+            // single-entry allowlist is not ambiguity — it is the answer.
+            const repo =
+                input.repo !== undefined && input.repo.trim().length > 0
+                    ? input.repo.trim()
+                    : deps.repos.length === 1
+                      ? deps.repos[0]
+                      : undefined;
+            if (repo === undefined) {
+                return deps.repos.length === 0
+                    ? "No repository is allowed for coding jobs, so there is nowhere to work."
+                    : `Which repository? Allowed: ${deps.repos.join(", ")}.`;
+            }
+
             try {
                 const result = await deps.service.start({
                     userId: gate.userId,
-                    repo: input.repo,
+                    repo,
                     task: input.task,
                     ...(input.crashPolicy !== undefined
                         ? { crashPolicy: input.crashPolicy }
@@ -135,6 +150,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                 "Use only when the user explicitly asks for code to be written, a bug fixed, or a feature implemented — " +
                 "it clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
                 "It does not return the work itself, so do not wait for it in the reply. " +
+                "`repo` may be omitted when the user did not name one and exactly one repository is allowed. " +
                 "Owner-only, one job at a time.",
             schema,
         },

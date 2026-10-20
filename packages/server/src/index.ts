@@ -273,6 +273,17 @@ const codingJobs = appConfig.sandbox
       })
     : undefined;
 
+// Say so at boot. The tool's absence is silent otherwise, and "the model
+// refused to touch code" is exactly what a missing registration looks like
+// from the outside — the distinction cost a debugging session once.
+if (appConfig.sandbox && codingJobs) {
+    logger.info(
+        `Coding sandbox active: image=${appConfig.sandbox.image}, repos=${
+            appConfig.sandbox.repos.join(",") || "(none)"
+        }, model=${appConfig.sandbox.model || "(unset)"}`,
+    );
+}
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),

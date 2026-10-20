@@ -62,6 +62,8 @@ async function invoke(
             task?: string;
             crashPolicy?: "prune" | "resume";
         };
+        /** Leave `repo` out of the call entirely, as a small model may. */
+        omitRepo?: boolean;
     } = {},
 ): Promise<Invocation> {
     const calls: Parameters<CodingJobService["start"]>[0][] = [];
@@ -102,7 +104,7 @@ async function invoke(
     const input = options.input ?? {};
     const text = (await tool.invoke(
         {
-            repo: input.repo ?? "luke/app",
+            ...(options.omitRepo ? {} : { repo: input.repo ?? "luke/app" }),
             task: input.task ?? "Fix the login bug",
             ...(input.crashPolicy ? { crashPolicy: input.crashPolicy } : {}),
         },
@@ -180,6 +182,37 @@ describe("startCodingJob", () => {
                 crashPolicy: "resume",
             },
         ]);
+    });
+
+    it("uses the only allowed repository when the user names none", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { omitRepo: true, repos: ["luke/app"] },
+        );
+
+        expect(text).toContain("job-1");
+        expect(calls[0]?.repo).toBe("luke/app");
+    });
+
+    it("asks which repository when none was named and several are allowed", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { omitRepo: true, repos: ["luke/app", "luke/other"] },
+        );
+
+        expect(text).toContain("Which repository?");
+        expect(text).toContain("luke/app, luke/other");
+        expect(calls).toHaveLength(0);
+    });
+
+    it("says there is nowhere to work when the allowlist is empty", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { omitRepo: true, repos: [] },
+        );
+
+        expect(text).toContain("No repository is allowed");
+        expect(calls).toHaveLength(0);
     });
 
     it("says so when the service throws, without leaking its message", async () => {
