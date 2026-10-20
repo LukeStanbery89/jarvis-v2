@@ -33,6 +33,7 @@ import {
 import type { SandboxConfig } from "../config";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
+import { createCodingLogHub, type CodingLogStream } from "./logHub";
 import { createJobLog, sweepCodingLogs, type JobLog } from "./logs";
 import {
     reconcileCodingJobs,
@@ -110,6 +111,14 @@ export interface CodingJobService {
      * @returns The row after the attempt, or `null` for a foreign or missing id.
      */
     stop(userId: number, jobId: string): Promise<AppCodingJob | null>;
+    /**
+     * Replays the buffered part of a job's log and follows the rest, until it
+     * settles. The file is the durable record; this is the live window.
+     *
+     * @param jobId - The job to follow.
+     * @returns A replay plus a subscription (see {@link CodingLogStream}).
+     */
+    openLogStream(jobId: string): CodingLogStream;
 }
 
 /**
@@ -169,6 +178,7 @@ export function createCodingJobService(options: {
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
     const nowIso = () => now().toISOString();
+    const logHub = createCodingLogHub();
 
     /**
      * Trims the owner's settled rows to the configured keep count.
@@ -328,6 +338,7 @@ export function createCodingJobService(options: {
                 })) {
                     tail.push(line);
                     log.write(line);
+                    logHub.publish(job.id, line);
                 }
             } catch (err) {
                 // A broken log stream must not cost the job its ending: the
@@ -439,6 +450,7 @@ export function createCodingJobService(options: {
             pruneRows(job.userId);
         } finally {
             clearTimeout(timer);
+            logHub.finish(job.id);
             await log.close().catch((err: unknown) => {
                 logger.warn(
                     `coding job ${job.id}: could not close its log: ${describe(err)}`,
@@ -662,11 +674,13 @@ export function createCodingJobService(options: {
                             for await (const line of handle.logs()) {
                                 tail.push(line);
                                 log.write(line);
+                                logHub.publish(job.id, line);
                             }
                         } catch {
                             // A container that cannot be read is still a
                             // container that must be removed.
                         } finally {
+                            logHub.finish(job.id);
                             await log.close().catch(() => {});
                             log = null;
                         }
@@ -730,6 +744,10 @@ export function createCodingJobService(options: {
             }
             await workspace.remove(job.workspacePath).catch(() => {});
             return cancelled;
+        },
+
+        openLogStream(jobId: string): CodingLogStream {
+            return logHub.open(jobId);
         },
     };
 }

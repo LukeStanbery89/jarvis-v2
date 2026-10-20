@@ -17,6 +17,7 @@ import { createCorsMiddleware } from "./http/cors";
 import { createAttachmentRouter } from "./http/attachmentRoutes";
 import { createNotificationRouter } from "./notify/http";
 import { createJobRouter } from "./scheduler/http";
+import { createCodingLogRouter, type CodingLogSource } from "./sandbox/http";
 import type { JobCreator } from "./scheduler/create";
 import type { NotificationService } from "./notify/service";
 import type { AttachmentStore } from "./attachments/store";
@@ -80,6 +81,7 @@ export function createApp(
     inFlight?: InFlightLimiter,
     notifications?: NotificationService,
     jobs?: JobCreator,
+    codingLogs?: CodingLogSource,
 ) {
     const app = express();
 
@@ -158,6 +160,15 @@ export function createApp(
     // leaves no endpoint rather than one that cannot honour what it stores.
     if (jobs) {
         app.use("/api", createJobRouter(store, jobs, appConfig));
+    }
+
+    // Coding jobs (#141): the log stream is the only REST surface for now, and
+    // it exists exactly when the sandbox does — a deployment with no runtime
+    // has no jobs to follow. Streaming responses are exempt from the runtime
+    // contract validation (see `contractValidation.ts`); the spec documents
+    // the shape for clients and the generated types.
+    if (codingLogs && appConfig.sandbox) {
+        app.use("/api", createCodingLogRouter(store, codingLogs, appConfig));
     }
 
     // The local STT model route (#84 P3b): the client-side WASM engine's

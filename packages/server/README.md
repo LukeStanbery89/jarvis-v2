@@ -173,7 +173,10 @@ last 16 KB. Retention runs at boot: settled workspaces older than
 `JARVIS_SANDBOX_LOG_RETENTION_DAYS` (30) are removed, and a directory with no
 row is removed too. Every settle prunes the owner's settled rows to the newest
 `JARVIS_SANDBOX_KEEP_JOB_ROWS` (100). A successful workspace is kept for the
-window because, until #140 pushes the branch, it is the only copy of the work.
+window because, until #140 pushes the branch, it is the only copy of the work. While a job runs,
+`GET /api/coding-jobs/{id}/logs` follows its output as newline-delimited JSON
+(owner-scoped: a foreign id is a 404); after it settles the same route serves
+the file, so a page uses one URL for both halves.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with

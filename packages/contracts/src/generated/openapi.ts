@@ -464,6 +464,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coding-jobs/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Follow one coding job's log
+         * @description The job's output as newline-delimited JSON frames, one frame per line. While the job is queued or running the response replays the buffered part and then follows the container until it settles; a settled job's response is its full log file (empty when the job never started a container). A job that belongs to another account is answered 404, the same as one that does not exist. The body is a stream, so the runtime contract validator does not inspect it; this entry is the shape clients generate against.
+         */
+        get: operations["codingJobLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs": {
         parameters: {
             query?: never;
@@ -2503,6 +2526,47 @@ export interface operations {
             };
             /** @description The notification is already settled. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    codingJobLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job's log, one JSON frame per line. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such coding job for this account. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
