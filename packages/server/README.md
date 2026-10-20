@@ -154,14 +154,18 @@ row settled `failed` with the reason) or **resumes** it (adopt the still-running
 container and keep watching) — a choice stored per job and made when it is
 created.
 
-The default coding model is **OpenCode Go's `deepseek-v4.1-flash`** at
-`https://opencode.ai/inference/go/openai/v1`, authenticated with
-`JARVIS_SANDBOX_API_KEY` (a Go-plan key). A local model works too — point
-`JARVIS_SANDBOX_LLM_BASE_URL` at the host and `JARVIS_SANDBOX_MODEL` at the id,
-and leave the key empty; no key is required for a local endpoint, and a remote
-one without a key is refused before anything is cloned. The key reaches the job
-container's environment and is therefore visible to the agent: use a Go-plan key
-rather than a personal provider key until the server-side proxy (#141) exists.
+The default coding model is **OpenCode's `big-pickle`** at
+`https://opencode.ai/inference/openai/v1`, authenticated with
+`JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key). Big Pickle is a free
+stealth model on the Console endpoint, and the job's own `opencode run` is the
+client the free tier admits. A Go-plan model works too — point
+`JARVIS_SANDBOX_LLM_BASE_URL` at `https://opencode.ai/inference/go/openai/v1`
+and `JARVIS_SANDBOX_MODEL` at the Go id. A local model works as well: point the
+URL at the host and the model at the local id, and leave the key empty; no key
+is required for a local endpoint, and a remote one without a key is refused
+before anything is cloned. The key reaches the job container's environment and
+is therefore visible to the agent: use an OpenCode workspace key rather than a
+personal provider key until the server-side proxy (#141) exists.
 
 Ask for one in chat: the `startCodingJob` tool is registered whenever the
 sandbox is on, accepts only an allowlisted repository, and is **owner-only** —
@@ -175,23 +179,23 @@ repository, the real image, a real agent and the configured model. It prints
 the settled row, the diff summary and the workspace's git log, and exits
 non-zero unless the job settled `ok`.
 
-| Variable                             | Default                                      | Meaning                                                                     |
-| ------------------------------------ | -------------------------------------------- | --------------------------------------------------------------------------- |
-| `JARVIS_SANDBOX`                     | _(unset)_                                    | `docker` enables the surface; anything else leaves it absent                |
-| `JARVIS_SANDBOX_IMAGE`               | `jarvis-job:latest`                          | the job image, built by this repository                                     |
-| `JARVIS_SANDBOX_DOCKER_SOCKET`       | `/var/run/docker.sock`                       | the daemon's socket                                                         |
-| `JARVIS_SANDBOX_WORKSPACE_ROOT`      | `~/.jarvis/jobs`                             | workspaces **as the server sees them**                                      |
-| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` | the same                                     | workspaces **as the daemon sees them** — set this in a container deployment |
-| `JARVIS_SANDBOX_MAX_JOBS`            | `1`                                          | jobs allowed to run at once                                                 |
-| `JARVIS_SANDBOX_CPUS`                | `2`                                          | cores per job                                                               |
-| `JARVIS_SANDBOX_MEMORY_MB`           | `4096`                                       | memory ceiling per job                                                      |
-| `JARVIS_SANDBOX_PIDS`                | `512`                                        | process ceiling per job                                                     |
-| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`  | `45`                                         | the supervisor stops a job that overruns                                    |
-| `JARVIS_SANDBOX_REPOS`               | _(empty)_                                    | `owner/name` allowlist; empty clones nothing                                |
-| `JARVIS_SANDBOX_MODEL`               | `deepseek-v4.1-flash`                        | the model id handed to the agent                                            |
-| `JARVIS_SANDBOX_LLM_BASE_URL`        | `https://opencode.ai/inference/go/openai/v1` | the OpenAI-compatible endpoint a job container talks to                     |
-| `JARVIS_SANDBOX_API_KEY`             | _(empty)_                                    | the provider key; required for a remote endpoint, never logged              |
-| `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway`          | extra `/etc/hosts` entries; `none` disables                                 |
+| Variable                             | Default                                   | Meaning                                                                     |
+| ------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------------- |
+| `JARVIS_SANDBOX`                     | _(unset)_                                 | `docker` enables the surface; anything else leaves it absent                |
+| `JARVIS_SANDBOX_IMAGE`               | `jarvis-job:latest`                       | the job image, built by this repository                                     |
+| `JARVIS_SANDBOX_DOCKER_SOCKET`       | `/var/run/docker.sock`                    | the daemon's socket                                                         |
+| `JARVIS_SANDBOX_WORKSPACE_ROOT`      | `~/.jarvis/jobs`                          | workspaces **as the server sees them**                                      |
+| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` | the same                                  | workspaces **as the daemon sees them** — set this in a container deployment |
+| `JARVIS_SANDBOX_MAX_JOBS`            | `1`                                       | jobs allowed to run at once                                                 |
+| `JARVIS_SANDBOX_CPUS`                | `2`                                       | cores per job                                                               |
+| `JARVIS_SANDBOX_MEMORY_MB`           | `4096`                                    | memory ceiling per job                                                      |
+| `JARVIS_SANDBOX_PIDS`                | `512`                                     | process ceiling per job                                                     |
+| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`  | `45`                                      | the supervisor stops a job that overruns                                    |
+| `JARVIS_SANDBOX_REPOS`               | _(empty)_                                 | `owner/name` allowlist; empty clones nothing                                |
+| `JARVIS_SANDBOX_MODEL`               | `big-pickle`                              | the model id handed to the agent                                            |
+| `JARVIS_SANDBOX_LLM_BASE_URL`        | `https://opencode.ai/inference/openai/v1` | the OpenAI-compatible endpoint a job container talks to                     |
+| `JARVIS_SANDBOX_API_KEY`             | _(empty)_                                 | the provider key; required for a remote endpoint, never logged              |
+| `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway`       | extra `/etc/hosts` entries; `none` disables                                 |
 
 #### Container environment reference
 

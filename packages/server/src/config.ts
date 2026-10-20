@@ -426,10 +426,11 @@ export interface SandboxConfig {
     readonly repos: readonly string[];
     /**
      * The model id the agent asks for at {@link llmBaseUrl}
-     * (`JARVIS_SANDBOX_MODEL`). Defaults to `deepseek-v4.1-flash` on OpenCode
-     * Go; a local endpoint overrides this and {@link llmBaseUrl} together.
-     * Empty refuses to start a job — a sandbox with no model would spend a
-     * clone to discover it has nothing to think with.
+     * (`JARVIS_SANDBOX_MODEL`). Defaults to `big-pickle`, the free stealth
+     * model on OpenCode's Console endpoint; a Go-plan or local endpoint
+     * overrides this and {@link llmBaseUrl} together. Empty refuses to start a
+     * job — a sandbox with no model would spend a clone to discover it has
+     * nothing to think with.
      */
     readonly model: string;
     /**
@@ -438,8 +439,9 @@ export interface SandboxConfig {
      *
      * Distinct from `LLM_BASE_URL` on purpose: the server may reach its model
      * at `localhost`, which inside a job container means the container. The
-     * default is OpenCode Go; a deployment running a local model points this at
-     * the host and leaves {@link apiKey} empty.
+     * default is OpenCode's Console endpoint (not Go, because the free model
+     * lives there); a deployment running a local model points this at the host
+     * and leaves {@link apiKey} empty.
      */
     readonly llmBaseUrl: string;
     /**
@@ -449,9 +451,9 @@ export interface SandboxConfig {
      * Empty means "no key", which is right for a local endpoint and refused for
      * a remote one. **Never logged**: the boot line says `apiKey=set|unset`, and
      * the key travels only in the job's environment. It is visible to the agent
-     * inside the container — a deliberate v1 trade-off recorded on #141 (use a
-     * Go-plan key, never a personal provider key; the server-side proxy is the
-     * target design).
+     * inside the container — a deliberate v1 trade-off recorded on #141 (use an
+     * OpenCode workspace key, never a personal provider key; the server-side
+     * proxy is the target design).
      */
     readonly apiKey: string;
     /**
@@ -472,12 +474,14 @@ export const DEFAULT_SANDBOX_CONFIG = {
     pids: 512,
     wallClockMs: 45 * 60 * 1000,
     extraHosts: ["host.docker.internal:host-gateway"],
-    // The default coding model is OpenCode Go's DeepSeek V4.1 Flash: an
-    // OpenAI-compatible endpoint with an API key, chosen for agentic work the
-    // local chat models are not tuned for. A deployment that would rather run
-    // locally overrides both this URL and the model, and leaves the key empty.
-    model: "deepseek-v4.1-flash",
-    llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
+    // The default coding model is OpenCode's Big Pickle: a free stealth model
+    // served by the Console endpoint (not the Go one). The same workspace key
+    // authenticates both, and the job's own `opencode run` is the client the
+    // free tier admits. A deployment that wants a Go-plan model overrides both
+    // this URL and the model; one that runs locally points both at the host and
+    // leaves the key empty.
+    model: "big-pickle",
+    llmBaseUrl: "https://opencode.ai/inference/openai/v1",
     apiKey: "",
 } as const;
 

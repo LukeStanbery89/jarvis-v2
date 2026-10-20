@@ -70,15 +70,13 @@ const flag = (name) => {
 };
 const keep = args.includes("--keep");
 const model =
-    flag("--model") ??
-    process.env.JARVIS_SANDBOX_MODEL ??
-    "deepseek-v4.1-flash";
+    flag("--model") ?? process.env.JARVIS_SANDBOX_MODEL ?? "big-pickle";
 const task =
     flag("--task") ??
     'Append a line to README.md that says "Hello from the JARVIS coding sandbox." and commit the change with the message "Add sandbox greeting".';
 const llmBaseUrl =
     process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
-    "https://opencode.ai/inference/go/openai/v1";
+    "https://opencode.ai/inference/openai/v1";
 const apiKey = process.env.JARVIS_SANDBOX_API_KEY ?? "";
 const image = process.env.JARVIS_SANDBOX_IMAGE ?? "jarvis-job:latest";
 

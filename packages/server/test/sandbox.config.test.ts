@@ -63,8 +63,8 @@ describe("sandbox config", () => {
             pids: 512,
             wallClockMs: 45 * 60 * 1000,
             repos: [],
-            model: "deepseek-v4.1-flash",
-            llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
+            model: "big-pickle",
+            llmBaseUrl: "https://opencode.ai/inference/openai/v1",
             apiKey: "",
             extraHosts: ["host.docker.internal:host-gateway"],
         });
