@@ -230,6 +230,45 @@ CREATE INDEX IF NOT EXISTS idx_job_runs_job
     ON job_runs (job_id, started_at DESC);
 ${JOB_MODEL_RUNS_TABLE};`;
 
+/**
+ * The coding-agent jobs (#141): one row per job, not a queue entry.
+ *
+ * Deliberately separate from `jobs` rather than another `kind` on it. A
+ * scheduled job is a *moment* the scheduler fires and settles; a coding job is
+ * a workspace, a container and a branch, with a lifecycle that outlives the
+ * process watching it. Folding it into `jobs` would mean widening a CHECK to
+ * add payload columns most jobs never use, and teaching the scheduler to skip
+ * rows whose payload it does not own.
+ *
+ * `crash_policy` is the per-job answer to "the server died mid-run" — `prune`
+ * (the default) or `resume` — chosen when the job is created (#141).
+ * `container_id` is what makes `resume` possible at all: the boot reaper finds
+ * the container by label, the row by id, and adopts one from the other.
+ */
+const CODING_JOBS_SCHEMA = `CREATE TABLE IF NOT EXISTS coding_jobs (
+    id             TEXT PRIMARY KEY,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    repo           TEXT NOT NULL,
+    branch         TEXT NOT NULL,
+    prompt         TEXT NOT NULL,
+    state          TEXT NOT NULL CHECK (state IN ('queued', 'running', 'ok', 'failed', 'cancelled')),
+    crash_policy   TEXT NOT NULL DEFAULT 'prune' CHECK (crash_policy IN ('prune', 'resume')),
+    container_id   TEXT,
+    workspace_path TEXT NOT NULL,
+    log_tail       TEXT NOT NULL DEFAULT '',
+    diff_summary   TEXT,
+    pr_url         TEXT,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    created_at     TEXT NOT NULL,
+    started_at     TEXT,
+    finished_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_coding_jobs_user
+    ON coding_jobs (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_coding_jobs_running
+    ON coding_jobs (state) WHERE state = 'running';`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -268,6 +307,7 @@ CREATE TABLE IF NOT EXISTS prefs (
 ${notificationsTable("notifications")};
 ${NOTIFICATION_INDEXES}
 ${JOBS_SCHEMA}
+${CODING_JOBS_SCHEMA}
 ${WEB_SESSIONS_SCHEMA}
 `;
 
@@ -1037,6 +1077,200 @@ export interface JobLedger {
     pruneJobRuns(jobId: string, keep?: number): number;
 }
 
+/** The coding-job lifecycle (#141). */
+export const CODING_JOB_STATES = [
+    "queued",
+    "running",
+    "ok",
+    "failed",
+    "cancelled",
+] as const;
+
+/** A coding job's state: queued, one attempt running, or one of three endings. */
+export type CodingJobState = (typeof CODING_JOB_STATES)[number];
+
+/**
+ * What happens to a coding job whose server died mid-run (#141).
+ *
+ * A per-job decision, made when the job is created: `prune` reaps the container
+ * and records a failure, `resume` adopts the still-running container. `prune`
+ * is the default because it is always safe; `resume` is opt-in.
+ */
+export const CODING_JOB_CRASH_POLICIES = ["prune", "resume"] as const;
+
+/** The per-job crash policy (see {@link CODING_JOB_CRASH_POLICIES}). */
+export type CodingJobCrashPolicy = (typeof CODING_JOB_CRASH_POLICIES)[number];
+
+/** One coding job, as the store returns it. */
+export interface AppCodingJob {
+    id: string;
+    userId: number;
+    /** `owner/name`; the server validates it against its allowlist. */
+    repo: string;
+    /** The branch the agent works on, created by the host before the run. */
+    branch: string;
+    /** The instruction handed to the agent. */
+    prompt: string;
+    state: CodingJobState;
+    crashPolicy: CodingJobCrashPolicy;
+    /** The container this attempt runs in, once it has been claimed. */
+    containerId: string | null;
+    /** The host directory mounted into the container as its only writable path. */
+    workspacePath: string;
+    /** The bounded tail of the container's output, written when the job settles. */
+    logTail: string;
+    /** The diff summary collected after the run (`git diff --stat`). */
+    diffSummary: string | null;
+    /** The pull request the job opened, when a later step did. */
+    prUrl: string | null;
+    /** How many times it has been claimed; a claim is an attempt. */
+    attempts: number;
+    /** Why the last attempt failed, for a `failed` job. */
+    lastError: string | null;
+    createdAt: string;
+    /** When the attempt was claimed (the container started). */
+    startedAt: string | null;
+    /** When the job reached a terminal state. */
+    finishedAt: string | null;
+}
+
+/** The producer-supplied half of a coding job; identity and times are the store's. */
+export interface CreateCodingJobInput {
+    repo: string;
+    branch: string;
+    prompt: string;
+    workspacePath: string;
+    /** Omitted means `prune` — the column's default, made explicit here. */
+    crashPolicy?: CodingJobCrashPolicy;
+}
+
+/** What a settled coding job records beyond its state. */
+export interface SettleCodingJobInput {
+    /** `git diff --stat` collected from the workspace after the run. */
+    diffSummary?: string | null;
+    /** A pull request opened for the branch, when there is one. */
+    prUrl?: string | null;
+    /** The bounded output tail; omitted leaves the stored one in place. */
+    logTail?: string;
+    /** Why it failed, when it did. */
+    error?: string | null;
+}
+
+/**
+ * Coding-job rows (#141), in the same two-surface shape as {@link JobLedger}.
+ *
+ * - **User-scoped** ({@link getCodingJob} / {@link listCodingJobs} /
+ *   {@link cancelCodingJob} / {@link pruneCodingJobs}): what a page or a tool
+ *   reaching for the caller's own work uses. A foreign id is indistinguishable
+ *   from a missing one.
+ * - **Process-scoped** ({@link getCodingJobById} / {@link listRunningCodingJobs}
+ *   / {@link claimCodingJob} / {@link settleCodingJob} /
+ *   {@link setCodingJobLogTail}): the supervisor acts on an id it claimed, and
+ *   the boot reaper acts on rows found by container label rather than by owner.
+ *
+ * The store owns rows and transitions; the server's sandbox service owns the
+ * policy (which repos, what a run means, retention, what happens to an orphan).
+ */
+export interface CodingJobLedger {
+    /**
+     * Inserts a job in `queued` and returns the stored row.
+     *
+     * A coding job is created only after its workspace exists: the caller
+     * prepares the clone first, so a row never promises a directory that is
+     * not there.
+     */
+    createCodingJob(
+        userId: number,
+        input: CreateCodingJobInput & { id: string; createdAt: string },
+    ): AppCodingJob;
+    /** One job, or `null` when it is missing or another user's. */
+    getCodingJob(userId: number, id: string): AppCodingJob | null;
+    /**
+     * One job by id alone — the reaper's read, because a container's label
+     * carries the job id and no owner.
+     */
+    getCodingJobById(id: string): AppCodingJob | null;
+    /**
+     * A user's jobs, newest-created first. Settled jobs are hidden by default
+     * (they are history); `limit` caps the page.
+     */
+    listCodingJobs(
+        userId: number,
+        options?: { limit?: number; includeSettled?: boolean },
+    ): AppCodingJob[];
+    /**
+     * Every `running` job across users — the recovery feed.
+     *
+     * A claim lives in the claiming process's memory, so at boot every
+     * `running` row belongs to a process that died. What to do about that is
+     * the sandbox service's policy (prune or resume, per the row), which is why
+     * the store only reports them.
+     */
+    listRunningCodingJobs(limit: number): AppCodingJob[];
+    /**
+     * Claims a `queued` job for this process: `queued` → `running`, recording
+     * the container and counting the attempt.
+     *
+     * The state is in the WHERE clause, so a second claim — a duplicate start,
+     * or a process that restarted mid-run — touches no row. The container id is
+     * written here rather than later because it is what `resume` needs after a
+     * crash: a row that named its container only on success would be
+     * unrecoverable exactly when recovery matters.
+     *
+     * @returns The claimed row, or `null` when this caller did not win it.
+     */
+    claimCodingJob(
+        id: string,
+        containerId: string,
+        at: string,
+    ): AppCodingJob | null;
+    /**
+     * Cancels one of the caller's own **queued** jobs.
+     *
+     * A running job is not cancellable through this path: stopping its
+     * container is the supervisor's act, not a row edit, and a row marked
+     * cancelled while the agent kept writing would be a lie. (The service's
+     * stop path arrives with the supervisor.)
+     *
+     * @returns The row after the attempt — unchanged when it could not be
+     * cancelled — or `null` when no such job belongs to `userId`.
+     */
+    cancelCodingJob(
+        userId: number,
+        id: string,
+        at: string,
+    ): AppCodingJob | null;
+    /**
+     * Replaces the stored output tail. Called by the supervisor when the run
+     * ends (and by the reaper's prune path, from the logs it read first) — not
+     * per line, because a SQLite write per log line would cost more than the
+     * log is worth.
+     */
+    setCodingJobLogTail(id: string, tail: string): void;
+    /**
+     * Moves a `running` job to a terminal state, stamping `finished_at`.
+     *
+     * Terminal states are terminal: a settle of an already settled job returns
+     * the existing row unchanged, so a late duplicate cannot rewrite history.
+     * A `queued` row (never claimed) is likewise left alone — settling it would
+     * report an attempt that never happened.
+     */
+    settleCodingJob(
+        id: string,
+        state: Exclude<CodingJobState, "queued" | "running">,
+        result: SettleCodingJobInput,
+        at: string,
+    ): AppCodingJob | null;
+    /**
+     * Trims a user's settled coding jobs to the newest `keep`, so a long-lived
+     * instance cannot grow the table without bound. Queued and running rows are
+     * never pruned.
+     *
+     * @returns The number of rows deleted.
+     */
+    pruneCodingJobs(userId: number, keep: number): number;
+}
+
 /**
  * Session-rows ledger: the WS chat sessions (one per `thread_id`).
  */
@@ -1073,7 +1307,8 @@ export type AppDatabase = UserLedger &
     PrefLedger &
     SessionLedger &
     NotificationLedger &
-    JobLedger & {
+    JobLedger &
+    CodingJobLedger & {
         /** Releases the underlying connection. */
         close(): void;
     };
@@ -1188,6 +1423,33 @@ const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, fi
 
 /** The states a job never returns from — settled, in the ledger's terms. */
 const SETTLED_JOB_STATES = `('done', 'failed', 'cancelled', 'missed')`;
+
+/** A `coding_jobs` row as the SELECTs alias it (see {@link mapCodingJob}). */
+interface CodingJobRow {
+    id: string;
+    userId: number;
+    repo: string;
+    branch: string;
+    prompt: string;
+    state: CodingJobState;
+    crashPolicy: CodingJobCrashPolicy;
+    containerId: string | null;
+    workspacePath: string;
+    logTail: string;
+    diffSummary: string | null;
+    prUrl: string | null;
+    attempts: number;
+    lastError: string | null;
+    createdAt: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+}
+
+/** The coding-job SELECT list (`mapCodingJob` is the other half). */
+const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt FROM coding_jobs`;
+
+/** The states a coding job never returns from. */
+const SETTLED_CODING_JOB_STATES = `('ok', 'failed', 'cancelled')`;
 
 /**
  * Whether a rejected statement is better-sqlite3's UNIQUE-constraint
@@ -1322,6 +1584,29 @@ function mapJobRun(row: JobRunRow): AppJobRun {
     };
 }
 
+/** Maps a `coding_jobs` row onto the ledger's public shape. */
+function mapCodingJob(row: CodingJobRow): AppCodingJob {
+    return {
+        id: row.id,
+        userId: row.userId,
+        repo: row.repo,
+        branch: row.branch,
+        prompt: row.prompt,
+        state: row.state,
+        crashPolicy: row.crashPolicy,
+        containerId: row.containerId,
+        workspacePath: row.workspacePath,
+        logTail: row.logTail,
+        diffSummary: row.diffSummary,
+        prUrl: row.prUrl,
+        attempts: row.attempts,
+        lastError: row.lastError,
+        createdAt: row.createdAt,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+    };
+}
+
 /** The named `(user_id, name)` index the v2 migration creates on legacy stores. */
 const DEVICE_NAME_INDEX = "idx_devices_user_name";
 /**
@@ -1339,6 +1624,15 @@ const DEFAULT_NOTIFICATION_PAGE = 50;
  * account's scheduled work, small enough to render in one go.
  */
 const DEFAULT_JOB_PAGE = 50;
+
+/**
+ * How many coding jobs a list call returns when the caller does not say.
+ *
+ * Smaller than the scheduled-job page: a coding job is a minutes-to-hours
+ * affair, so a page of twenty is already a long history, and each row carries a
+ * log tail the scheduled-job rows do not.
+ */
+const DEFAULT_CODING_JOB_PAGE = 20;
 
 /**
  * How many runs of one job a history call returns.
@@ -2021,6 +2315,14 @@ ${NOTIFICATION_INDEXES}`);
         }
         db.pragma("user_version = 16");
     }
+
+    if (version < 17) {
+        // The coding-job table (#141) is new, not rebuilt: nothing has to be
+        // carried forward, and `CREATE TABLE IF NOT EXISTS` keeps a fresh
+        // database — which already has it from `SCHEMA` — a no-op.
+        db.exec(CODING_JOBS_SCHEMA);
+        db.pragma("user_version = 17");
+    }
 }
 
 export function openAppDatabase(
@@ -2103,6 +2405,17 @@ export class SqliteAppDatabase implements AppDatabase {
         rearmJob: Database.Statement;
         countModelRuns: Database.Statement;
         recordModelRun: Database.Statement;
+        insertCodingJob: Database.Statement;
+        selectCodingJob: Database.Statement;
+        selectCodingJobById: Database.Statement;
+        selectCodingJobs: Database.Statement;
+        selectCodingJobsWithSettled: Database.Statement;
+        selectRunningCodingJobs: Database.Statement;
+        claimCodingJob: Database.Statement;
+        settleCodingJob: Database.Statement;
+        cancelCodingJob: Database.Statement;
+        setCodingJobLogTail: Database.Statement;
+        pruneCodingJobs: Database.Statement;
     };
 
     constructor(db: Database.Database, options?: AppDatabaseOptions) {
@@ -2390,6 +2703,52 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             pruneJobRuns: db.prepare(
                 `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
+            ),
+            insertCodingJob: db.prepare(
+                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+            ),
+            selectCodingJob: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
+            ),
+            selectCodingJobById: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE id = ?`,
+            ),
+            selectCodingJobs: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE user_id = ? AND state NOT IN ${SETTLED_CODING_JOB_STATES} ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            selectCodingJobsWithSettled: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // The recovery feed: a claim is in-memory, so any `running` row at
+            // boot belongs to a process that died. The sandbox service decides
+            // what that means, per the row's own crash policy.
+            selectRunningCodingJobs: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE state = 'running' ORDER BY started_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // The claim *is* the transition, as for a scheduled job: `queued`
+            // in the WHERE clause makes a second claimant touch no row. The
+            // container id lands here, at the start, because `resume` needs it
+            // precisely when the process that wrote it is gone.
+            claimCodingJob: db.prepare(
+                "UPDATE coding_jobs SET state = 'running', container_id = ?, started_at = ?, attempts = attempts + 1 WHERE id = ? AND state = 'queued'",
+            ),
+            // One statement covers every ending: the terminal guard lives in
+            // the WHERE clause, so a late duplicate settles nothing and the
+            // caller re-reads the row it already had.
+            settleCodingJob: db.prepare(
+                "UPDATE coding_jobs SET state = ?, diff_summary = COALESCE(?, diff_summary), pr_url = COALESCE(?, pr_url), log_tail = COALESCE(?, log_tail), last_error = ?, finished_at = ? WHERE id = ? AND state = 'running'",
+            ),
+            cancelCodingJob: db.prepare(
+                "UPDATE coding_jobs SET state = 'cancelled', finished_at = ? WHERE user_id = ? AND id = ? AND state = 'queued'",
+            ),
+            setCodingJobLogTail: db.prepare(
+                "UPDATE coding_jobs SET log_tail = ? WHERE id = ?",
+            ),
+            // The window is over *settled* rows, not all rows: a job in flight
+            // is not history, and counting it against the history budget would
+            // let one long run evict more history than the caller asked to keep.
+            pruneCodingJobs: db.prepare(
+                `DELETE FROM coding_jobs WHERE user_id = ? AND state IN ${SETTLED_CODING_JOB_STATES} AND id NOT IN (SELECT id FROM coding_jobs WHERE user_id = ? AND state IN ${SETTLED_CODING_JOB_STATES} ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
             ),
         };
     }
@@ -3014,6 +3373,114 @@ export class SqliteAppDatabase implements AppDatabase {
     pruneJobRuns(jobId: string, keep: number = DEFAULT_JOB_RUN_KEEP): number {
         return this.statements.pruneJobRuns.run(jobId, jobId, Math.max(0, keep))
             .changes;
+    }
+
+    createCodingJob(
+        userId: number,
+        input: CreateCodingJobInput & { id: string; createdAt: string },
+    ): AppCodingJob {
+        this.statements.insertCodingJob.run(
+            input.id,
+            userId,
+            input.repo,
+            input.branch,
+            input.prompt,
+            // Explicit rather than leaning on the column default, as for a job's
+            // class: the default exists so the column has one home, not so the
+            // write path has a second.
+            input.crashPolicy ?? "prune",
+            input.workspacePath,
+            input.createdAt,
+        );
+        // Just written, so a re-read cannot miss; the assertion documents that
+        // rather than papering over a null with a fake row.
+        const created = this.getCodingJob(userId, input.id);
+        if (created === null) {
+            throw new Error("coding job insert vanished");
+        }
+        return created;
+    }
+
+    getCodingJob(userId: number, id: string): AppCodingJob | null {
+        const row = this.statements.selectCodingJob.get(userId, id) as
+            CodingJobRow | undefined;
+        return row ? mapCodingJob(row) : null;
+    }
+
+    getCodingJobById(id: string): AppCodingJob | null {
+        const row = this.statements.selectCodingJobById.get(id) as
+            CodingJobRow | undefined;
+        return row ? mapCodingJob(row) : null;
+    }
+
+    listCodingJobs(
+        userId: number,
+        options: { limit?: number; includeSettled?: boolean } = {},
+    ): AppCodingJob[] {
+        const limit = Math.max(1, options.limit ?? DEFAULT_CODING_JOB_PAGE);
+        const statement = options.includeSettled
+            ? this.statements.selectCodingJobsWithSettled
+            : this.statements.selectCodingJobs;
+        const rows = statement.all(userId, limit) as CodingJobRow[];
+        return rows.map(mapCodingJob);
+    }
+
+    listRunningCodingJobs(limit: number): AppCodingJob[] {
+        const rows = this.statements.selectRunningCodingJobs.all(
+            Math.max(1, limit),
+        ) as CodingJobRow[];
+        return rows.map(mapCodingJob);
+    }
+
+    claimCodingJob(
+        id: string,
+        containerId: string,
+        at: string,
+    ): AppCodingJob | null {
+        const claimed = this.statements.claimCodingJob.run(containerId, at, id);
+        return claimed.changes === 0 ? null : this.getCodingJobById(id);
+    }
+
+    cancelCodingJob(
+        userId: number,
+        id: string,
+        at: string,
+    ): AppCodingJob | null {
+        this.statements.cancelCodingJob.run(at, userId, id);
+        return this.getCodingJob(userId, id);
+    }
+
+    setCodingJobLogTail(id: string, tail: string): void {
+        this.statements.setCodingJobLogTail.run(tail, id);
+    }
+
+    settleCodingJob(
+        id: string,
+        state: Exclude<CodingJobState, "queued" | "running">,
+        result: SettleCodingJobInput,
+        at: string,
+    ): AppCodingJob | null {
+        this.statements.settleCodingJob.run(
+            state,
+            result.diffSummary ?? null,
+            result.prUrl ?? null,
+            result.logTail ?? null,
+            result.error ?? null,
+            at,
+            id,
+        );
+        // Re-read rather than assume: the terminal guard may have refused (an
+        // already-settled row, or one never claimed), and the caller needs the
+        // row as it actually is.
+        return this.getCodingJobById(id);
+    }
+
+    pruneCodingJobs(userId: number, keep: number): number {
+        return this.statements.pruneCodingJobs.run(
+            userId,
+            userId,
+            Math.max(0, keep),
+        ).changes;
     }
 
     settleJobRun(input: SettleFiringInput): AppJob | null {
