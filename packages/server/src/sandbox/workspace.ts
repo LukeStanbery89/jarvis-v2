@@ -21,6 +21,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFileSync, writeFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { ensurePrivateDir } from "@lukestanbery/jarvis-auth";
@@ -29,6 +30,29 @@ const execFileAsync = promisify(execFile);
 
 /** The largest diff summary stored on a row. */
 const MAX_DIFF_SUMMARY_CHARS = 8_000;
+
+/**
+ * Global git options that keep a workspace from configuring behavior.
+ *
+ * After the agent has run, `.git` is hostile input to *our* git calls: a
+ * `pre-commit` hook, a `core.hooksPath`, a `filter.*.clean`, a
+ * `diff.external`, or `commit.gpgsign` with a `gpg.program` are all ways to
+ * turn a host-side `git` invocation into arbitrary host code. The config
+ * rewrite ({@link sanitizeGitConfig}) removes those definitions, and these
+ * flags are the second layer for anything a config might still carry.
+ */
+const HARDENING_FLAGS = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "tag.gpgsign=false",
+    "-c",
+    "log.showSignature=false",
+] as const;
 
 /** A repository the sandbox may clone. */
 export interface RepoSpec {
@@ -188,15 +212,70 @@ function canonicalRepo(spec: RepoSpec): string {
     }
 }
 
-/** The git runner used in production: no prompt, bounded output. */
+/** The git runner used in production: no prompt, no workspace-defined behavior. */
 const defaultGit: GitRunner = async (args, options = {}) => {
-    const { stdout, stderr } = await execFileAsync("git", [...args], {
-        cwd: options.cwd,
-        maxBuffer: 16 * 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
+    const { stdout, stderr } = await execFileAsync(
+        "git",
+        [...HARDENING_FLAGS, ...args],
+        {
+            cwd: options.cwd,
+            maxBuffer: 16 * 1024 * 1024,
+            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        },
+    );
     return { stdout, stderr };
 };
+
+/**
+ * Rewrites a workspace's `.git/config` to the minimal shape a clone needs.
+ *
+ * The agent inside the container writes to the workspace, `.git` included, and
+ * the host then runs git there to collect and commit. A repository can never
+ * ship hooks, but an agent can *plant* them (or a `core.hooksPath`, a
+ * `filter.*.clean`, a `diff.external`, a `gpg.program` with signing enabled) —
+ * all of which execute on the host. Dropping every key we did not create turns
+ * that back into data: only `core`, the origin URL and its fetch refspec
+ * survive, and the URL is validated to one boring line so a newline cannot
+ * smuggle a second section back in.
+ *
+ * Best-effort by design: a workspace with no `.git/config` (already removed)
+ * has nothing to rewrite, and the caller's git call then fails honestly.
+ *
+ * @param workspacePath - The server-side path of the job's clone.
+ */
+export function sanitizeGitConfig(workspacePath: string): void {
+    const configPath = path.join(workspacePath, ".git", "config");
+    let original: string;
+    try {
+        original = readFileSync(configPath, "utf8");
+    } catch {
+        return;
+    }
+    const url = /^\s*url\s*=\s*(.+)$/m.exec(original)?.[1]?.trim() ?? "";
+    // A clone URL, or nothing. The first line only: `(.+)` cannot cross a
+    // newline, so an injected `[filter]` section is not carried over.
+    const origin = /^(?:[a-z][a-z0-9+.-]*:\/\/\S+|[^\s:]+@[^\s:]+:\S+)$/i.test(
+        url,
+    )
+        ? url
+        : "";
+    const lines = [
+        "[core]",
+        "\trepositoryformatversion = 0",
+        "\tfilemode = true",
+        "\tbare = false",
+        "\tlogallrefupdates = true",
+    ];
+    if (origin.length > 0) {
+        lines.push(
+            '[remote "origin"]',
+            `\turl = ${origin}`,
+            "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+        );
+    }
+    lines.push("");
+    writeFileSync(configPath, lines.join("\n"), { mode: 0o600 });
+}
 
 /**
  * Builds the workspace manager.
@@ -254,6 +333,9 @@ export function createWorkspaceManager(options: {
             changed: boolean;
             diffSummary: string;
         }> {
+            // The tree the agent left is untrusted; strip executable behavior
+            // before any host git reads it (#141 phase 7).
+            sanitizeGitConfig(input.workspacePath);
             const { stdout: status } = await git([
                 "-C",
                 input.workspacePath,
@@ -265,6 +347,11 @@ export function createWorkspaceManager(options: {
                 input.workspacePath,
                 "diff",
                 "--stat",
+                // Neither flag is implied by the config rewrite: a driver
+                // can still be named by `.gitattributes` even with no
+                // definition, and an external diff is a config key.
+                "--no-ext-diff",
+                "--no-textconv",
             ]);
             // Only the commits the run *added*: `origin/HEAD` is where the
             // clone started, so a clean clone reports nothing instead of
@@ -299,6 +386,9 @@ export function createWorkspaceManager(options: {
         },
 
         async commit(input): Promise<boolean> {
+            // Same reason as `collect`: a hook, filter or signing program in
+            // this workspace would run on the host.
+            sanitizeGitConfig(input.workspacePath);
             const { stdout: status } = await git([
                 "-C",
                 input.workspacePath,

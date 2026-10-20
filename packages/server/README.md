@@ -154,6 +154,17 @@ row settled `failed` with the reason) or **resumes** it (adopt the still-running
 container and keep watching) — a choice stored per job and made when it is
 created.
 
+The host-side git calls are a trust boundary too: after the agent has run,
+`.git` is hostile input to _our_ git. `collect` and `commit` rewrite
+`.git/config` to the minimal clone shape (core plus origin, with the URL
+validated to one line) before any host git touches the tree, so a planted
+`pre-commit` hook, `core.hooksPath`, `filter.*.clean`, `diff.external` or
+`gpg.program` cannot execute on the host; every host call also passes
+`-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false` and
+`-c commit.gpgsign=false`, and diffs add `--no-ext-diff --no-textconv`. The
+safety-net commit is authored `JARVIS <jarvis@localhost>`, so a CI host with no
+git identity still commits.
+
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with
 `JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key). Big Pickle is a free
