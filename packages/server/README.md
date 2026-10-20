@@ -126,6 +126,18 @@ container's bind source is resolved on the _host_, not inside the server).
 docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
 ```
 
+The job image is built from `Dockerfile.job` at the repository root (agent +
+git + gh + toolchain; the server image stays toolchain-free):
+
+```sh
+docker build -f Dockerfile.job -t jarvis-job:latest .
+```
+
+The same tree has two paths, and they differ exactly when the server runs in a
+container: the server reads `~/.jarvis/jobs`, while the daemon resolves the
+bind source on the host. The overlay sets both from one mount, and
+`JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` is the host side.
+
 The container posture is fixed in `src/sandbox/docker.ts`: the workspace is the
 only mount (read-write), the root filesystem is read-only with tmpfs for
 scratch, capabilities are dropped, `no-new-privileges` is set, and CPU /
@@ -142,21 +154,22 @@ row settled `failed` with the reason) or **resumes** it (adopt the still-running
 container and keep watching) — a choice stored per job and made when it is
 created.
 
-| Variable                             | Default                             | Meaning                                                                     |
-| ------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------- |
-| `JARVIS_SANDBOX`                     | _(unset)_                           | `docker` enables the surface; anything else leaves it absent                |
-| `JARVIS_SANDBOX_IMAGE`               | `jarvis-job:latest`                 | the job image, built by this repository                                     |
-| `JARVIS_SANDBOX_DOCKER_SOCKET`       | `/var/run/docker.sock`              | the daemon's socket                                                         |
-| `JARVIS_SANDBOX_WORKSPACE_ROOT`      | `~/.jarvis/jobs`                    | workspaces **as the server sees them**                                      |
-| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` | the same                            | workspaces **as the daemon sees them** — set this in a container deployment |
-| `JARVIS_SANDBOX_MAX_JOBS`            | `1`                                 | jobs allowed to run at once                                                 |
-| `JARVIS_SANDBOX_CPUS`                | `2`                                 | cores per job                                                               |
-| `JARVIS_SANDBOX_MEMORY_MB`           | `4096`                              | memory ceiling per job                                                      |
-| `JARVIS_SANDBOX_PIDS`                | `512`                               | process ceiling per job                                                     |
-| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`  | `45`                                | the supervisor stops a job that overruns                                    |
-| `JARVIS_SANDBOX_REPOS`               | _(empty)_                           | `owner/name` allowlist; empty clones nothing                                |
-| `JARVIS_SANDBOX_MODEL`               | _(empty)_                           | `provider/model` handed to the agent                                        |
-| `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway` | extra `/etc/hosts` entries; `none` disables                                 |
+| Variable                             | Default                               | Meaning                                                                     |
+| ------------------------------------ | ------------------------------------- | --------------------------------------------------------------------------- |
+| `JARVIS_SANDBOX`                     | _(unset)_                             | `docker` enables the surface; anything else leaves it absent                |
+| `JARVIS_SANDBOX_IMAGE`               | `jarvis-job:latest`                   | the job image, built by this repository                                     |
+| `JARVIS_SANDBOX_DOCKER_SOCKET`       | `/var/run/docker.sock`                | the daemon's socket                                                         |
+| `JARVIS_SANDBOX_WORKSPACE_ROOT`      | `~/.jarvis/jobs`                      | workspaces **as the server sees them**                                      |
+| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` | the same                              | workspaces **as the daemon sees them** — set this in a container deployment |
+| `JARVIS_SANDBOX_MAX_JOBS`            | `1`                                   | jobs allowed to run at once                                                 |
+| `JARVIS_SANDBOX_CPUS`                | `2`                                   | cores per job                                                               |
+| `JARVIS_SANDBOX_MEMORY_MB`           | `4096`                                | memory ceiling per job                                                      |
+| `JARVIS_SANDBOX_PIDS`                | `512`                                 | process ceiling per job                                                     |
+| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`  | `45`                                  | the supervisor stops a job that overruns                                    |
+| `JARVIS_SANDBOX_REPOS`               | _(empty)_                             | `owner/name` allowlist; empty clones nothing                                |
+| `JARVIS_SANDBOX_MODEL`               | _(empty)_                             | the model id handed to the agent; empty refuses to start a job              |
+| `JARVIS_SANDBOX_LLM_BASE_URL`        | `http://host.docker.internal:1234/v1` | the OpenAI-compatible endpoint a job container talks to                     |
+| `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway`   | extra `/etc/hosts` entries; `none` disables                                 |
 
 #### Container environment reference
 

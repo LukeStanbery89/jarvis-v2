@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+
+# The coding sandbox image (#141).
+#
+# One job is one process tree inside one container built from this file. The
+# server creates it with a read-only root, a tmpfs HOME, no capabilities and the
+# job's workspace as the only mount (see `src/sandbox/docker.ts`); this image is
+# what the work runs *in*.
+#
+# It is deliberately not the server image (`Dockerfile`), which ships no
+# toolchain at all. This one is the opposite: a coding agent needs to read,
+# build and test code, so it carries the language toolchain, git and gh. That is
+# also why it is only ever started by the sandbox, never as a service.
+#
+# The agent is pinned: `opencode-ai` on npm is the v1 line, and the installer is
+# the project's supported way to fetch a release binary. (OpenCode 2 is a
+# different distribution path; when that is pinned and installable without a
+# client upgrade, only the version here changes.)
+#
+# Build (from the repository root):
+#
+#     docker build -f Dockerfile.job -t jarvis-job:latest .
+#
+# Then opt the server into the sandbox:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+
+FROM node:24-bookworm
+
+# git is the job's purpose; gh is the PR step's tool (it stays unauthenticated
+# here — credentials are injected per job, never baked in). ca-certificates and
+# curl are needed to fetch both.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# The agent, pinned by version. Installed as root and copied out of the
+# installer's home so the runtime image carries only the binary.
+ARG OPENCODE_VERSION=1.19.3
+RUN curl -fsSL https://opencode.ai/install \
+        | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
+    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && rm -rf /root/.opencode \
+    && opencode --version
+
+# A job's agent runs unprivileged, with its own home. The runner mounts tmpfs at
+# /home/job, because the root filesystem is read-only at run time.
+RUN groupadd --system --gid 10001 job \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /home/job --create-home job
+
+# Commits need an identity, and the mount may be owned by a different uid when
+# the server runs on the host rather than in a container — hence the one trusted
+# directory rather than `safe.directory '*'`.
+RUN git config --system user.name "JARVIS" \
+    && git config --system user.email "jarvis@localhost" \
+    && git config --system --add safe.directory /workspace
+
+COPY packages/server/sandbox/job-entrypoint.sh /usr/local/bin/job-entrypoint
+RUN chmod 755 /usr/local/bin/job-entrypoint
+
+USER job
+ENV HOME=/home/job \
+    NODE_ENV=production
+
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/job-entrypoint"]

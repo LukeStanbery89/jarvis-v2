@@ -424,8 +424,21 @@ export interface SandboxConfig {
      * Empty means none: the allowlist is a whitelist, not a default.
      */
     readonly repos: readonly string[];
-    /** The `provider/model` handed to the agent (`JARVIS_SANDBOX_MODEL`). */
+    /**
+     * The model id the agent asks for at {@link llmBaseUrl}
+     * (`JARVIS_SANDBOX_MODEL`). Empty means no job may start: a sandbox with
+     * no model would spend a clone to discover it has nothing to think with.
+     */
     readonly model: string;
+    /**
+     * The OpenAI-compatible endpoint a job's agent talks to
+     * (`JARVIS_SANDBOX_LLM_BASE_URL`).
+     *
+     * Distinct from `LLM_BASE_URL` on purpose: the server may reach its model
+     * at `localhost`, which inside a job container means the container. The
+     * default names the host as a container sees it.
+     */
+    readonly llmBaseUrl: string;
     /**
      * Extra `/etc/hosts` entries for job containers
      * (`JARVIS_SANDBOX_EXTRA_HOSTS`; `none` disables). Defaults to the
@@ -444,6 +457,7 @@ export const DEFAULT_SANDBOX_CONFIG = {
     pids: 512,
     wallClockMs: 45 * 60 * 1000,
     extraHosts: ["host.docker.internal:host-gateway"],
+    llmBaseUrl: "http://host.docker.internal:1234/v1",
 } as const;
 
 /**
@@ -1241,6 +1255,9 @@ export function getAppConfig(): AppConfig {
                           ) * 60_000,
                       repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
                       model: process.env.JARVIS_SANDBOX_MODEL ?? "",
+                      llmBaseUrl:
+                          process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
+                          DEFAULT_SANDBOX_CONFIG.llmBaseUrl,
                       extraHosts: parseExtraHosts(
                           process.env.JARVIS_SANDBOX_EXTRA_HOSTS,
                       ),

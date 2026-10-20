@@ -64,6 +64,7 @@ describe("sandbox config", () => {
             wallClockMs: 45 * 60 * 1000,
             repos: [],
             model: "",
+            llmBaseUrl: "http://host.docker.internal:1234/v1",
             extraHosts: ["host.docker.internal:host-gateway"],
         });
         // One default home for the workspace tree, beside the database.
@@ -85,6 +86,7 @@ describe("sandbox config", () => {
         process.env.JARVIS_SANDBOX_WALL_CLOCK_MINUTES = "10";
         process.env.JARVIS_SANDBOX_REPOS = "luke/app, other/repo ";
         process.env.JARVIS_SANDBOX_MODEL = "lmstudio/qwen3";
+        process.env.JARVIS_SANDBOX_LLM_BASE_URL = "http://model.lan:1234/v1";
         process.env.JARVIS_SANDBOX_EXTRA_HOSTS = "db:172.18.0.2";
 
         const sandbox = getAppConfig().sandbox;
@@ -100,6 +102,7 @@ describe("sandbox config", () => {
             wallClockMs: 10 * 60 * 1000,
             repos: ["luke/app", "other/repo"],
             model: "lmstudio/qwen3",
+            llmBaseUrl: "http://model.lan:1234/v1",
             extraHosts: ["db:172.18.0.2"],
         });
     });

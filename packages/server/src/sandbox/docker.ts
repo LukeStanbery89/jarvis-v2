@@ -43,9 +43,9 @@ export const DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock";
 /** Grace before a stop becomes a kill. */
 const STOP_GRACE_SECONDS = 10;
 
-/** The scratch space a read-only root still needs. */
+/** The scratch space a read-only root still needs (sticky world-writable). */
 const DEFAULT_TMPFS: Readonly<Record<string, string>> = {
-    "/tmp": "rw,noexec,nosuid,size=256m",
+    "/tmp": "rw,noexec,nosuid,size=256m,mode=1777",
 };
 
 /**

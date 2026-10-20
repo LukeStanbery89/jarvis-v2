@@ -284,7 +284,12 @@ export function createCodingJobService(options: {
                 JARVIS_JOB_REPO: job.repo,
                 JARVIS_JOB_BRANCH: job.branch,
                 JARVIS_JOB_PROMPT: task,
-                JARVIS_JOB_MODEL: config.model,
+                // The endpoint and the id are separate on purpose: the agent's
+                // provider block is generated at container start from these,
+                // so a deployment changes its model without rebuilding the
+                // image and no repository can supply a provider.
+                JARVIS_JOB_LLM_BASE_URL: config.llmBaseUrl,
+                JARVIS_JOB_MODEL_ID: config.model,
                 HOME: "/home/job",
             },
             limits: {
@@ -293,9 +298,12 @@ export function createCodingJobService(options: {
                 pids: config.pids,
                 wallClockMs: config.wallClockMs,
             },
-            // The job image runs as a non-root user whose home is writable
-            // scratch; the root filesystem stays read-only.
-            tmpfs: { "/home/job": "rw,size=256m" },
+            // The job image runs as uid 10001, so its tmpfs home is mounted
+            // *for that uid* — the image's job user. The root filesystem stays
+            // read-only and the home is private (0700), not shared scratch.
+            tmpfs: {
+                "/home/job": "rw,size=256m,uid=10001,gid=10001,mode=0700",
+            },
             extraHosts: config.extraHosts,
         };
     }

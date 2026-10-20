@@ -30,6 +30,7 @@ const CONFIG: SandboxConfig = {
     wallClockMs: 60_000,
     repos: ["luke/app"],
     model: "lmstudio/qwen3",
+    llmBaseUrl: "http://host.docker.internal:1234/v1",
     extraHosts: [],
 };
 
@@ -167,7 +168,8 @@ describe("starting a coding job", () => {
         });
         expect(runner.started[0]?.env).toMatchObject({
             JARVIS_JOB_PROMPT: "Fix the login bug",
-            JARVIS_JOB_MODEL: "lmstudio/qwen3",
+            JARVIS_JOB_MODEL_ID: "lmstudio/qwen3",
+            JARVIS_JOB_LLM_BASE_URL: "http://host.docker.internal:1234/v1",
             JARVIS_JOB_BRANCH: started.job.branch,
         });
 
