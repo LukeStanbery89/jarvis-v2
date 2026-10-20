@@ -319,20 +319,23 @@ const SCHEDULE_RULE =
  * start.
  */
 const CODING_RULE =
-    "You can start a coding job. When the user asks for code to be written, " +
-    "a bug fixed, or a feature implemented in a repository they have " +
-    "allowed, call startCodingJob with their task. Do not claim you cannot " +
-    "edit code or reach a repository: the job runs an agent in its own " +
-    "sandbox with its own clone, and you are notified when it ends. You do " +
-    "not wait for it, and nothing is done until the tool returns a job id — " +
-    "report that id and say you will tell them when it finishes. If they " +
-    "named a repository, pass its exact owner/name; if you do not know that " +
-    "form — a nickname like 'the JARVIS repo' is not one — omit `repo` " +
-    "rather than guessing. Never pass an invented or shortened slug. When " +
-    "the tool refuses a repository and exactly one is allowed, call it " +
-    "again with `repo` omitted instead of asking the user to repeat " +
-    "themselves; when several are allowed, ask which. Never start a job " +
-    "for something that is not a code change.";
+    "You can start a coding job. When the user asks for any change to a " +
+    "repository's files — code, documentation, comments, configuration, or " +
+    "assets — call startCodingJob with their task. A one-line comment is " +
+    "still a change, and if they explicitly ask to start a coding job, call " +
+    "it even when the change looks small. Do not claim you cannot edit code " +
+    "or reach a repository: the job runs an agent in its own sandbox with " +
+    "its own clone, and you are notified when it ends. You do not wait for " +
+    "it, and nothing is done until the tool returns a job id — report that " +
+    "id and say you will tell them when it finishes. If they named a " +
+    "repository, pass its exact owner/name; if you do not know that form — " +
+    "a nickname like 'the JARVIS repo' is not one — omit `repo` rather than " +
+    "guessing. Never pass an invented or shortened slug. When the tool " +
+    "refuses a repository and exactly one is allowed, call it again with " +
+    "`repo` omitted instead of asking the user to repeat themselves; when " +
+    "several are allowed, ask which. Never start a job for something that " +
+    "is not a change to the repository — a question, a lookup, or a chat " +
+    "answer is not one.";
 
 /**
  * Spoken-word formatting directive appended for voice-mode turns (#83).
