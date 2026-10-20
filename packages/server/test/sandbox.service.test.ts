@@ -163,6 +163,7 @@ describe("starting a coding job", () => {
             state: "running",
             repo: "luke/app",
             crashPolicy: "prune",
+            model: "lmstudio/qwen3",
             attempts: 1,
             workspacePath: "/jobs/job-1/repo",
         });

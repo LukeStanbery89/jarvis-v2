@@ -25,6 +25,7 @@ const JOB: AppCodingJob = {
     prompt: "fix it",
     state: "running",
     crashPolicy: "prune",
+    model: "lmstudio/qwen3",
     containerId: "c-1",
     workspacePath: "/jobs/job-1/repo",
     logTail: "",

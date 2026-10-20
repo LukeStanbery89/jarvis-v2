@@ -245,12 +245,14 @@ router and middleware span every ledger and therefore take the full
   the model's own context lives in the LangGraph checkpoint under a `job:<id>`
   thread that never enters the `sessions` ledger, which is what keeps a job's
   runs out of the chat-thread list.
-- `coding_jobs` — one row per coding-agent job (#141, v17), deliberately not a
+- `coding_jobs` — one row per coding-agent job (#141, v17; `model` in v18), deliberately not a
   `kind` on `jobs`: a scheduled job is a moment the scheduler fires and settles,
   while a coding job is a workspace, a container and a branch whose lifecycle
   outlives the process watching it. Columns: `repo` / `branch` / `prompt` (the
   work), a `state` lifecycle (`queued` → `running` → `ok`/`failed`/`cancelled`),
-  `crash_policy` (`prune` default | `resume`, chosen per job), `container_id`
+  `crash_policy` (`prune` default | `resume`, chosen per job), `model` (the id
+  the run was told to use — recorded rather than inferred, because the config
+  changes between runs), `container_id`
   (written at claim time — `resume` needs it after a crash), `workspace_path`,
   `log_tail`, `diff_summary`, `pr_url`, `attempts`, `last_error`, and
   `created_at`/`started_at`/`finished_at`. Indexed on `(user_id, created_at

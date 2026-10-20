@@ -287,7 +287,11 @@ export function createWorkspaceManager(options: {
                 sections.push(`new commits:\n${log.trim()}`);
             }
             return {
-                changed: status.trim().length > 0,
+                // "Changed" means the branch differs from the clone — a dirty
+                // tree *or* new commits. Checking only `status` mislabeled a
+                // job that committed its work as "no changes" (the live run
+                // that produced `51b41f5`).
+                changed: status.trim().length > 0 || log.trim().length > 0,
                 diffSummary: sections
                     .join("\n\n")
                     .slice(0, MAX_DIFF_SUMMARY_CHARS),

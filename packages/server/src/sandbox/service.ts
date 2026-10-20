@@ -476,6 +476,7 @@ export function createCodingJobService(options: {
                 prompt: task,
                 workspacePath: prepared.path,
                 crashPolicy: input.crashPolicy ?? "prune",
+                model: config.model,
                 createdAt: nowIso(),
             });
 
@@ -491,7 +492,7 @@ export function createCodingJobService(options: {
                     throw new Error("the job was claimed by another process");
                 }
                 logger.info(
-                    `coding job ${claimed.id} started: repo=${claimed.repo}, branch=${claimed.branch}, container=${handle.containerId}`,
+                    `coding job ${claimed.id} started: repo=${claimed.repo}, branch=${claimed.branch}, model=${config.model}, container=${handle.containerId}`,
                 );
                 return {
                     ok: true,

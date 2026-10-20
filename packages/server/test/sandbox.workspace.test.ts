@@ -156,10 +156,12 @@ describe("workspace lifecycle", () => {
         // origin's history.
         git(["add", "."], prepared.path);
         git(["commit", "-q", "-m", "fix the thing"], prepared.path);
+        // A committed change is still a change: the branch differs from the
+        // clone even though the working tree is clean.
         const committed = await manager.collect({
             workspacePath: prepared.path,
         });
-        expect(committed.changed).toBe(false);
+        expect(committed.changed).toBe(true);
         expect(committed.diffSummary).toContain("new commits:");
         expect(committed.diffSummary).toContain("fix the thing");
 

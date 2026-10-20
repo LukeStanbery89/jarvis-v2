@@ -72,6 +72,7 @@ describe("coding-job ledger", () => {
             prompt: "Fix the failing login test.",
             state: "queued",
             crashPolicy: "prune",
+            model: null,
             containerId: null,
             workspacePath: "/home/jarvis/.jarvis/jobs/c1/repo",
             logTail: "",
@@ -92,6 +93,17 @@ describe("coding-job ledger", () => {
             codingJob({ crashPolicy: "resume" }),
         );
         expect(created.crashPolicy).toBe("resume");
+    });
+
+    it("records the model the run will use", () => {
+        const { store, ownerId } = makeStore();
+        const created = store.createCodingJob(ownerId, {
+            ...codingJob(),
+            model: "deepseek-v4.1-flash",
+        });
+        expect(created.model).toBe("deepseek-v4.1-flash");
+        // Older rows have no answer; `null` says so rather than pretending.
+        expect(store.getCodingJobById("c1")?.model).toBe("deepseek-v4.1-flash");
     });
 
     it("scopes the user read to its owner", () => {

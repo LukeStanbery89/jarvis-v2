@@ -255,6 +255,7 @@ const CODING_JOBS_SCHEMA = `CREATE TABLE IF NOT EXISTS coding_jobs (
     crash_policy   TEXT NOT NULL DEFAULT 'prune' CHECK (crash_policy IN ('prune', 'resume')),
     container_id   TEXT,
     workspace_path TEXT NOT NULL,
+    model          TEXT,
     log_tail       TEXT NOT NULL DEFAULT '',
     diff_summary   TEXT,
     pr_url         TEXT,
@@ -1113,6 +1114,15 @@ export interface AppCodingJob {
     prompt: string;
     state: CodingJobState;
     crashPolicy: CodingJobCrashPolicy;
+    /**
+     * The model id the agent was told to use, or `null` for a row written
+     * before the column existed.
+     *
+     * Recorded per job rather than inferred from config at read time: the
+     * config can change between runs, and "which model wrote this diff" is a
+     * question about the run, not about the server's current settings.
+     */
+    model: string | null;
     /** The container this attempt runs in, once it has been claimed. */
     containerId: string | null;
     /** The host directory mounted into the container as its only writable path. */
@@ -1140,6 +1150,8 @@ export interface CreateCodingJobInput {
     branch: string;
     prompt: string;
     workspacePath: string;
+    /** The model the run will use; recorded for later audit. */
+    model?: string;
     /** Omitted means `prune` — the column's default, made explicit here. */
     crashPolicy?: CodingJobCrashPolicy;
 }
@@ -1435,6 +1447,7 @@ interface CodingJobRow {
     prompt: string;
     state: CodingJobState;
     crashPolicy: CodingJobCrashPolicy;
+    model: string | null;
     containerId: string | null;
     workspacePath: string;
     logTail: string;
@@ -1448,7 +1461,7 @@ interface CodingJobRow {
 }
 
 /** The coding-job SELECT list (`mapCodingJob` is the other half). */
-const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt FROM coding_jobs`;
+const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, model, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt FROM coding_jobs`;
 
 /** The states a coding job never returns from. */
 const SETTLED_CODING_JOB_STATES = `('ok', 'failed', 'cancelled')`;
@@ -1596,6 +1609,7 @@ function mapCodingJob(row: CodingJobRow): AppCodingJob {
         prompt: row.prompt,
         state: row.state,
         crashPolicy: row.crashPolicy,
+        model: row.model,
         containerId: row.containerId,
         workspacePath: row.workspacePath,
         logTail: row.logTail,
@@ -2325,6 +2339,17 @@ ${NOTIFICATION_INDEXES}`);
         db.exec(CODING_JOBS_SCHEMA);
         db.pragma("user_version = 17");
     }
+
+    if (version < 18) {
+        // v18: the model a coding job ran with (#141). Additive, because the
+        // question is about a run and existing rows have no answer — `null`
+        // says exactly that. Guarded like the other ALTERs: a fresh database
+        // already has the column from `SCHEMA`.
+        if (!hasColumn(db, "coding_jobs", "model")) {
+            db.exec("ALTER TABLE coding_jobs ADD COLUMN model TEXT");
+        }
+        db.pragma("user_version = 18");
+    }
 }
 
 export function openAppDatabase(
@@ -2707,7 +2732,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
             insertCodingJob: db.prepare(
-                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
             ),
             selectCodingJob: db.prepare(
                 `${CODING_JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -3394,6 +3419,7 @@ export class SqliteAppDatabase implements AppDatabase {
             // write path has a second.
             input.crashPolicy ?? "prune",
             input.workspacePath,
+            input.model ?? null,
             input.createdAt,
         );
         // Just written, so a re-read cannot miss; the assertion documents that
