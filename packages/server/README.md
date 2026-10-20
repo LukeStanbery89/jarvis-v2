@@ -18,14 +18,15 @@ npm install @lukestanbery/jarvis-server
 
 ## Scripts
 
-| Script                | Description                                                |
-| --------------------- | ---------------------------------------------------------- |
-| `npm run build`       | Compile TypeScript to `dist/`                              |
-| `npm run typecheck`   | Type-check src and tests (no emit)                         |
-| `npm run dev`         | Run the server with watch mode                             |
-| `npm start`           | Run the compiled server                                    |
-| `npm test`            | Run the test suite (Vitest)                                |
-| `npm run tts:harness` | Local TTS harness: synthesize text and play it aloud (#83) |
+| Script                  | Description                                                |
+| ----------------------- | ---------------------------------------------------------- |
+| `npm run build`         | Compile TypeScript to `dist/`                              |
+| `npm run typecheck`     | Type-check src and tests (no emit)                         |
+| `npm run dev`           | Run the server with watch mode                             |
+| `npm start`             | Run the compiled server                                    |
+| `npm test`              | Run the test suite (Vitest)                                |
+| `npm run tts:harness`   | Local TTS harness: synthesize text and play it aloud (#83) |
+| `npm run probe:sandbox` | Probe the Docker assumptions the sandbox (#141) rests on   |
 
 ## Usage
 
@@ -93,6 +94,25 @@ environment:
 A directory is mounted only when it contains `index.html`: a wrong path for the
 app degrades to `Hello World` at `/` and a warning, and one for the portal leaves
 `/admin` an honest 404 — each rather than failing to boot.
+
+#### Probing the sandbox assumptions (#141)
+
+`npm run probe:sandbox` runs three short-lived labelled containers and reports
+whether the things the coding sandbox will depend on actually hold **on this
+machine**: a bind mount written inside a container is visible at the host path
+the server reads (and, as an observation, what the engine does with a mount
+source that exists only inside a container — the trap
+`JARVIS_SANDBOX_WORKSPACE_HOST_ROOT` exists to avoid); a sibling container can
+reach the host LLM, reporting which spelling worked — native
+`host.docker.internal` or `--add-host host-gateway`; and a container left by a
+crashed run is discoverable by label, readable (adopt), removable (prune), and
+absent afterwards, with the server's own container excluded from the managed
+set.
+
+It uses the `docker` CLI rather than the library the runner will use, because
+it probes the environment and not our code. Needs a running daemon (pulls
+`alpine:3` if missing) and is not part of `npm test` or CI; exit `0` means
+every gating assertion held, `1` one failed, `2` the daemon was unusable.
 
 #### Container environment reference
 
