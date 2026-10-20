@@ -4,12 +4,14 @@
  * — with the settings gear at the end of it.
  *
  * The wordmark is the way home — it links to the dashboard — so the pages listed
- * here are the four destinations other than it. Under 48rem the links collapse
- * behind a hamburger; the badge is rendered on both the Notifications link and
- * the hamburger, and one of the two is always hidden by the same media query, so
- * the count follows whichever affordance is showing the link. Two nodes and one
- * breakpoint, rather than a JavaScript width probe that would disagree with the
- * CSS on the first paint.
+ * here are the four destinations other than it. Under 60rem the links collapse
+ * behind a hamburger — the bar's own measured breakpoint, not the shell's
+ * 48rem: with three state chips visible it needs just over 60rem (see the
+ * comment on the media query in `styles.css`); the badge is rendered on both the
+ * Notifications link and the hamburger, and one of the two is always hidden by
+ * the same media query, so the count follows whichever affordance is showing
+ * the link. Two nodes and one breakpoint, rather than a JavaScript width probe
+ * that would disagree with the CSS on the first paint.
  *
  * The account name follows the same rule: in the bar's right corner while the
  * links are visible, and at the top of the drawer when they are not. It used to
@@ -26,7 +28,15 @@
  * location share are the app's now and every page is a place they can be live.
  */
 import { useEffect, useRef, useState } from "react";
-import { MapPin, Menu, Mic, Settings as SettingsIcon, X } from "lucide-react";
+import {
+    ExternalLink,
+    MapPin,
+    Menu,
+    MessagesSquare,
+    Mic,
+    Settings as SettingsIcon,
+    X,
+} from "lucide-react";
 import { AppLink } from "../../AppLink";
 import { useRoute } from "../../hooks/useRoute";
 import type { ChatStatus } from "../../ChatClient";
@@ -39,6 +49,18 @@ const LINKS: { to: AppRoute; label: string }[] = [
     { to: "reminders", label: "Reminders" },
     { to: "notifications", label: "Notifications" },
 ];
+
+/**
+ * The admin portal (#146 phase C).
+ *
+ * Not an `AppRoute`: `/admin` is a different SPA with its own router and its own
+ * (cookie) sign-in, so this has to be a real anchor that unloads the app rather
+ * than an `AppLink` that swaps a view. It is listed for every account: the web
+ * app has never fetched the caller's `role`, and the portal is behind the
+ * server's owner check anyway — a non-owner who follows the link meets the
+ * portal's own refusal, which is a better answer than a menu that lies.
+ */
+export const ADMIN_HREF = "/admin";
 
 /** What the connection chip says while the socket is not `connected`. */
 const STATUS_TEXT: Record<Exclude<ChatStatus, "connected">, string> = {
@@ -60,6 +82,10 @@ export interface NavBarProps {
     username: string;
     /** Notifications neither read nor dismissed (the badge). */
     unread: number;
+    /** Whether the chat's narrow-screen thread drawer is showing (#146 D). */
+    threadsOpen: boolean;
+    /** Flips it; the button only exists on the chat route. */
+    onToggleThreads(): void;
     /** The socket's lifecycle, for the connection chip. */
     status: ChatStatus;
     /** Whether the settings panel is showing (the gear's `aria-expanded`). */
@@ -191,6 +217,8 @@ function LocationChip({
 export function NavBar({
     username,
     unread,
+    threadsOpen,
+    onToggleThreads,
     status,
     settingsOpen,
     onOpenSettings,
@@ -260,6 +288,24 @@ export function NavBar({
 
     return (
         <header className="navbar" ref={barRef}>
+            {/* The thread drawer's control (#146 phase D). It lives at the
+                bar's start, where the wordmark is on wide screens — the drawer
+                only exists under 48rem, so the button does too (the stylesheet
+                hides it above that; on the chat route it is always mounted, so
+                the breakpoint stays a CSS fact rather than a width probe). */}
+            {route === "chat" && (
+                <button
+                    type="button"
+                    className="icon-btn navbar-threads"
+                    aria-expanded={threadsOpen}
+                    aria-controls="chat-threads"
+                    aria-label="Threads"
+                    title="Threads"
+                    onClick={onToggleThreads}
+                >
+                    <MessagesSquare size={16} aria-hidden="true" />
+                </button>
+            )}
             <AppLink to="home" className="navbar-brand" label="Dashboard">
                 JARVIS
             </AppLink>
@@ -267,6 +313,18 @@ export function NavBar({
                 {LINKS.map((entry) =>
                     link(entry.to, entry.label, "navbar-link"),
                 )}
+                {/* A hairline, because Admin is a different kind of
+                    destination: everything above it swaps a view, this leaves
+                    the app. */}
+                <span className="navbar-sep" aria-hidden="true" />
+                <a
+                    className="navbar-link navbar-external"
+                    href={ADMIN_HREF}
+                    title="Admin portal — a separate app"
+                >
+                    Admin
+                    <ExternalLink size={11} aria-hidden="true" />
+                </a>
             </nav>
             <span className="navbar-end">
                 <ConnectionChip status={status} />
@@ -283,7 +341,7 @@ export function NavBar({
                 <span className="navbar-user">{username}</span>
                 <button
                     type="button"
-                    className="icon-btn"
+                    className="icon-btn navbar-settings"
                     aria-expanded={settingsOpen}
                     aria-controls="settings-panel"
                     aria-label="Settings"
@@ -321,6 +379,32 @@ export function NavBar({
                             link(entry.to, entry.label, "navbar-drawer-link"),
                         )}
                     </nav>
+                    {/* Settings is the bar's gear on wide screens; at this width
+                        the gear gives its place to the menu (#146 phase D), so
+                        the panel opens from here instead. The menu closes
+                        first, or it would sit behind the dialog. */}
+                    <button
+                        type="button"
+                        className="navbar-drawer-link navbar-drawer-action"
+                        onClick={() => {
+                            setMenuOpen(false);
+                            onOpenSettings();
+                        }}
+                    >
+                        Settings
+                    </button>
+                    {/* Below the line, because Admin is not a page of this app:
+                        it leaves for the portal. Settings stays above it — it
+                        is still part of this app's own chrome. */}
+                    <span className="navbar-drawer-sep" aria-hidden="true" />
+                    <a
+                        className="navbar-drawer-link navbar-external"
+                        href={ADMIN_HREF}
+                        title="Admin portal — a separate app"
+                    >
+                        Admin
+                        <ExternalLink size={11} aria-hidden="true" />
+                    </a>
                 </div>
             )}
         </header>

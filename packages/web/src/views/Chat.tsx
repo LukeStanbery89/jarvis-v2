@@ -38,13 +38,22 @@ import { Composer } from "./chat/Composer";
 export interface ChatProps {
     /** The app-level state, owned by the shell (see `appState.ts`). */
     app: AppState;
+    /**
+     * Whether the narrow-screen thread drawer is showing (#146 phase D).
+     *
+     * The top bar owns the control, so the shell owns the state; this view owns
+     * the drawer it opens and the scrim that closes it.
+     */
+    threadsOpen: boolean;
+    /** Closes the drawer (a pick, the scrim, or Escape in the shell). */
+    onCloseThreads(): void;
 }
 
 /**
  * The signed-in chat surface: sidebar, transcript, and composer, wired to the
  * `/ws` chat socket and the REST session list.
  */
-export function Chat({ app }: ChatProps) {
+export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
     const { credential, onAuthRejected } = app;
     const { cancelTurn } = app.socket;
     // The turn runner is the shell's: a spoken turn takes the identical path
@@ -144,12 +153,32 @@ export function Chat({ app }: ChatProps) {
 
     return (
         <main className="chat">
+            {/* Under 48rem the thread list is a drawer over the conversation
+                (#146 phase D): the overlay scrim is its own element so the
+                press-outside target is a real button rather than a div with a
+                click handler. Both are inert on wide screens, where the list is
+                a column. */}
+            {threadsOpen && (
+                <button
+                    type="button"
+                    className="chat-scrim"
+                    aria-label="Close threads"
+                    onClick={onCloseThreads}
+                />
+            )}
             <Sidebar
                 entries={entries}
                 activeId={activeId}
                 streaming={app.turning}
-                onNewChat={newChat}
-                onOpenThread={openThread}
+                drawerOpen={threadsOpen}
+                onNewChat={() => {
+                    onCloseThreads();
+                    newChat();
+                }}
+                onOpenThread={(id) => {
+                    onCloseThreads();
+                    openThread(id);
+                }}
                 onRemoveThread={(id) => void remove(id)}
             />
             <section className="conversation">

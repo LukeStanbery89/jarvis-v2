@@ -23,6 +23,11 @@ export interface SidebarProps {
     onNewChat(): void;
     /** Opens a conversation. */
     onOpenThread(id: string): void;
+    /**
+     * Whether the narrow-screen drawer is showing (#146 phase D). Ignored on
+     * wide screens, where the list is a column — the stylesheet decides.
+     */
+    drawerOpen?: boolean;
     /** Deletes a conversation. */
     onRemoveThread(id: string): void;
 }
@@ -39,9 +44,13 @@ export function Sidebar({
     onNewChat,
     onOpenThread,
     onRemoveThread,
+    drawerOpen = false,
 }: SidebarProps) {
     return (
-        <aside className="sidebar">
+        <aside
+            id="chat-threads"
+            className={drawerOpen ? "sidebar drawer-open" : "sidebar"}
+        >
             <button
                 type="button"
                 className="new-chat"
@@ -52,40 +61,42 @@ export function Sidebar({
                 New chat
             </button>
             <nav>
-                {entries.map((entry) => (
-                    <div
-                        key={entry.id}
-                        className={
-                            entry.id === activeId
-                                ? "thread-row active"
-                                : "thread-row"
-                        }
-                    >
-                        <button
-                            type="button"
-                            className="thread-open"
-                            disabled={streaming}
-                            onClick={() => onOpenThread(entry.id)}
-                            title={
-                                entry.kind === "voice"
-                                    ? "voice conversation"
-                                    : undefined
+                {entries.map((entry) => {
+                    const current = entry.id === activeId;
+                    return (
+                        <div
+                            key={entry.id}
+                            className={
+                                current ? "thread-row active" : "thread-row"
                             }
                         >
-                            {entry.title}
-                            {entry.kind === "voice" ? " (voice)" : ""}
-                        </button>
-                        <button
-                            type="button"
-                            className="thread-delete icon-btn"
-                            aria-label={`Delete ${entry.title}`}
-                            title={`Delete ${entry.title}`}
-                            onClick={() => onRemoveThread(entry.id)}
-                        >
-                            <Trash2 size={16} />
-                        </button>
-                    </div>
-                ))}
+                            <button
+                                type="button"
+                                className="thread-open"
+                                disabled={streaming}
+                                aria-current={current ? "true" : undefined}
+                                onClick={() => onOpenThread(entry.id)}
+                                title={
+                                    entry.kind === "voice"
+                                        ? "voice conversation"
+                                        : undefined
+                                }
+                            >
+                                {entry.title}
+                                {entry.kind === "voice" ? " (voice)" : ""}
+                            </button>
+                            <button
+                                type="button"
+                                className="thread-delete icon-btn"
+                                aria-label={`Delete ${entry.title}`}
+                                title={`Delete ${entry.title}`}
+                                onClick={() => onRemoveThread(entry.id)}
+                            >
+                                <Trash2 size={16} />
+                            </button>
+                        </div>
+                    );
+                })}
             </nav>
         </aside>
     );

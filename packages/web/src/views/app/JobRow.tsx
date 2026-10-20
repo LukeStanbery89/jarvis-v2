@@ -67,13 +67,23 @@ export function JobRow({
     return (
         <li className={`job-item job-${job.class}`}>
             <div className="job-text">
-                <span className="job-eyebrow">
-                    {job.class === "timer"
-                        ? "Timer"
-                        : job.class === "reminder"
-                          ? "Reminder"
-                          : "Notification"}
-                </span>
+                {/* What and when share the row's top line (#146 phase D): the
+                    moment is a detail *of* the job, and moving it here leaves
+                    the actions row to be nothing but its buttons. */}
+                <div className="job-head">
+                    <span className="job-eyebrow">
+                        {job.class === "timer"
+                            ? "Timer"
+                            : job.class === "reminder"
+                              ? "Reminder"
+                              : "Notification"}
+                    </span>
+                    <span className="job-when">
+                        {job.state === "running"
+                            ? "running now"
+                            : describeRunAt(job.runAt, now)}
+                    </span>
+                </div>
                 <strong>{job.label}</strong>
                 {body !== null && <span> {body}</span>}
                 {repeatText(job) !== null && (
@@ -94,11 +104,6 @@ export function JobRow({
                 <JobRuns token={token} jobId={job.id} attempts={job.attempts} />
             </div>
             <div className="job-actions">
-                <span className="job-when">
-                    {job.state === "running"
-                        ? "running now"
-                        : describeRunAt(job.runAt, now)}
-                </span>
                 {onSnooze !== undefined && (
                     <SnoozeMenu
                         onSnooze={(minutes) => onSnooze(job, minutes)}

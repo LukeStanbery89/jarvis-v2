@@ -21,7 +21,9 @@
  * chat *shows* (`useSessions` — the sidebar's server rows), the composer's
  * uploads, and the settings panel's own open/closed state. The chrome is here
  * too: the top bar sits above the view, and the ring renders over it, because
- * both belong to the app rather than to any page in it.
+ * both belong to the app rather than to any page in it. The particle field
+ * (#146) is the third thing in that category — it is fixed behind the view, so
+ * navigating between pages neither restarts it nor unmounts its canvas.
  */
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -43,9 +45,12 @@ import { useChatClient } from "./hooks/useChatClient";
 import { useJobs } from "./hooks/useJobs";
 import { useVoiceSession, voiceStatusLine } from "./hooks/useVoiceSession";
 import { useLocationSharing } from "./hooks/useLocationSharing";
+import { useAppearance } from "./hooks/useAppearance";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
+import { IconRail } from "./views/app/IconRail";
+import { ParticleCanvas } from "./particles/ParticleCanvas";
 import { Dashboard } from "./views/app/Dashboard";
 import { NotificationsPage } from "./views/app/NotificationsPage";
 import { RemindersPage, TimersPage } from "./views/app/JobsPages";
@@ -88,6 +93,32 @@ export function AppShell({
     onSignedOut,
 }: AppShellProps) {
     const route = useRoute();
+    /**
+     * Whether the chat's narrow-screen thread drawer is showing (#146 phase D).
+     *
+     * The control lives in the top bar, which is the shell's, while the drawer
+     * it opens belongs to the chat view — so the state sits here and both ends
+     * read it. The bar only shows the button on the chat route.
+     */
+    const [threadsOpen, setThreadsOpen] = useState(false);
+    // A navigation leaves the chat, so the drawer must not greet the next visit
+    // open — and Escape closes it, the same courtesy the page menu pays.
+    useEffect(() => {
+        setThreadsOpen(false);
+    }, [route]);
+    useEffect(() => {
+        if (!threadsOpen) {
+            return;
+        }
+        const onKey = (event: KeyboardEvent): void => {
+            if (event.key === "Escape") {
+                setThreadsOpen(false);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [threadsOpen]);
+
     /** Whether a turn is in flight, typed or spoken (the composer's state). */
     const [turning, setTurning] = useState(false);
     /** Whether the settings panel is showing (the bar's gear owns it now). */
@@ -95,6 +126,12 @@ export function AppShell({
 
     const threads = useThreads(credential.username);
     const audio = useAudio();
+    /**
+     * This browser's visual preferences (#146 phase B2): whether the field is
+     * mounted, and whether the panes blur. Per browser rather than per account
+     * — see `appearance.ts` for why.
+     */
+    const appearance = useAppearance();
 
     // The settings panel (#143) renders in a view's chrome, but the preference
     // *read* is the shell's: the notification hook's ring policy is gated by the
@@ -432,7 +469,13 @@ export function AppShell({
             );
         }
         if (route === "chat") {
-            return <Chat app={state} />;
+            return (
+                <Chat
+                    app={state}
+                    threadsOpen={threadsOpen}
+                    onCloseThreads={() => setThreadsOpen(false)}
+                />
+            );
         }
         if (route === "notifications") {
             return (
@@ -464,10 +507,26 @@ export function AppShell({
     }
 
     return (
-        <div className="app">
+        <div
+            className="app"
+            /* The glass switch is a variable override in CSS (#146 phase B2),
+               so turning it off is one attribute rather than a second set of
+               pane rules. */
+            data-glass={appearance.appearance.glass ? "on" : "off"}
+        >
+            {/* The background belongs to the app, not to a page (#146): it is
+                fixed behind everything and survives every route change, so a
+                navigation does not restart the field. Unmounting it when the
+                switch is off also stops the loop, rather than hiding a canvas
+                that keeps drawing. */}
+            {appearance.appearance.particles && (
+                <ParticleCanvas energy={audio.energy} />
+            )}
             <NavBar
                 username={credential.username}
                 unread={notifications.unread}
+                threadsOpen={threadsOpen}
+                onToggleThreads={() => setThreadsOpen((open) => !open)}
                 status={socket.status}
                 settingsOpen={settingsOpen}
                 onOpenSettings={() => setSettingsOpen(true)}
@@ -481,6 +540,10 @@ export function AppShell({
                 locationHint={locationHint}
                 locationSentence={describeLocationState(location.locationState)}
             />
+            {/* The wide-screen rail (#146 phase D): the same destinations as the
+                bar's links, as a column, where the display has the width to
+                spend on one. Hidden by CSS below its breakpoint. */}
+            <IconRail unread={notifications.unread} />
             <div className="app-view">{currentView()}</div>
             {toasts.length > 0 && (
                 <ToastStack
@@ -520,6 +583,14 @@ export function AppShell({
                 locationOn={location.locationOn}
                 locationState={location.locationState}
                 onToggleLocation={location.toggleLocation}
+                particlesOn={appearance.appearance.particles}
+                onToggleParticles={() =>
+                    appearance.setParticles(!appearance.appearance.particles)
+                }
+                glassOn={appearance.appearance.glass}
+                onToggleGlass={() =>
+                    appearance.setGlass(!appearance.appearance.glass)
+                }
                 onSignOut={() => {
                     socket.client?.close();
                     onSignedOut();

@@ -34,6 +34,26 @@ const RING_LOOKAHEAD_MS = 120_000;
 /** How often the queued alarm is topped back up. */
 const RING_TOPUP_MS = 30_000;
 
+/**
+ * The analysis window the particle field reads (#146 phase E), in samples.
+ *
+ * 256 is about 5 ms at the protocol's 24 kHz — one animation frame's worth of
+ * speech, which is the resolution the field moves at. A larger window lags the
+ * syllables; a smaller one is noisy.
+ */
+const ANALYSER_FFT_SIZE = 256;
+
+/**
+ * How far the measured RMS is scaled up before clamping to 0..1.
+ *
+ * A spoken response is mastered well below full scale (a voice peaks around
+ * 0.2, and its RMS through a sentence sits near 0.08), so a raw RMS would
+ * barely move the breathe. Six puts ordinary speech just under the middle of
+ * the range and a shout at the top, which is the point the field's own
+ * `ENERGY_AMPLITUDE` is sized against.
+ */
+const ENERGY_GAIN = 6;
+
 /** Options for {@link AudioPlayer}. */
 export interface AudioPlayerOptions {
     /**
@@ -62,6 +82,18 @@ export class AudioPlayer {
     private ringTones: OscillatorNode[] = [];
     private readonly listeners = new Set<() => void>();
     private speaking = false;
+    /**
+     * The tap speech is routed through (#146 phase E), or `null` where the
+     * context has no analyser (an old context, or a test fake).
+     */
+    private analyser: AnalyserNode | null = null;
+    /**
+     * The window {@link energy} fills, allocated once with the analyser.
+     *
+     * Backed by a plain `ArrayBuffer` because `getFloatTimeDomainData` does
+     * not accept a `SharedArrayBuffer`-backed view.
+     */
+    private samples: Float32Array<ArrayBuffer> | null = null;
     private readonly createContext: () => AudioContext | null;
 
     /**
@@ -100,6 +132,32 @@ export class AudioPlayer {
         return () => {
             this.listeners.delete(listener);
         };
+    }
+
+    /**
+     * The loudness of the response being spoken, 0..1 (#146 phase E).
+     *
+     * The root mean square of the last {@link ANALYSER_FFT_SIZE} samples,
+     * scaled by {@link ENERGY_GAIN} and clamped. Called once per animation
+     * frame by the particle field, so it must allocate nothing: it fills the
+     * window allocated with the analyser. Zero the moment nothing is speaking,
+     * so the disc settles with the last word instead of holding the peak.
+     *
+     * @returns Loudness in [0, 1]; 0 with no context, no tap, or no speech.
+     */
+    energy(): number {
+        const analyser = this.analyser;
+        const samples = this.samples;
+        if (analyser === null || samples === null || !this.speaking) {
+            return 0;
+        }
+        analyser.getFloatTimeDomainData(samples);
+        let sum = 0;
+        for (let index = 0; index < samples.length; index += 1) {
+            sum += samples[index] * samples[index];
+        }
+        const rms = Math.sqrt(sum / samples.length);
+        return Math.min(1, rms * ENERGY_GAIN);
     }
 
     /**
@@ -148,7 +206,10 @@ export class AudioPlayer {
         buffer.copyToChannel(new Float32Array(pcm), 0);
         const source = ctx.createBufferSource();
         source.buffer = buffer;
-        source.connect(ctx.destination);
+        // Through the tap when there is one, so the field can hear the voice
+        // (#146 phase E). The alarm and the wake cue stay direct: the field
+        // answers the assistant, not every sound the app makes.
+        source.connect(this.analyser ?? ctx.destination);
         const start = Math.max(ctx.currentTime, this.nextStart);
         source.start(start);
         this.nextStart = start + buffer.duration;
@@ -307,6 +368,8 @@ export class AudioPlayer {
             void this.ctx.close();
             this.ctx = null;
         }
+        this.analyser = null;
+        this.samples = null;
     }
 
     /**
@@ -317,8 +380,36 @@ export class AudioPlayer {
     private ensureContext(): AudioContext | null {
         if (this.ctx === null) {
             this.ctx = this.createContext();
+            if (this.ctx !== null) {
+                this.analyser = this.createTap(this.ctx);
+            }
         }
         return this.ctx;
+    }
+
+    /**
+     * Builds the analysis tap speech is routed through (#146 phase E), and the
+     * window {@link energy} fills.
+     *
+     * Optional on purpose: `createAnalyser` is a WebAudio standard, but a test
+     * fake need not implement it, and a context without one simply has no tap —
+     * the field stays still and nothing else changes.
+     *
+     * @param ctx - The freshly created context.
+     * @returns The analyser, already connected to the destination, or `null`.
+     */
+    private createTap(ctx: AudioContext): AnalyserNode | null {
+        if (typeof ctx.createAnalyser !== "function") {
+            return null;
+        }
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = ANALYSER_FFT_SIZE;
+        // The field does its own smoothing per frame; the analyser's own would
+        // lag it twice over.
+        analyser.smoothingTimeConstant = 0;
+        analyser.connect(ctx.destination);
+        this.samples = new Float32Array(analyser.fftSize);
+        return analyser;
     }
 
     /**

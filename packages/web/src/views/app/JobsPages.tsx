@@ -82,7 +82,14 @@ function RecentRow({
     return (
         <li className={`job-item job-${job.class} job-settled`}>
             <div className="job-text">
-                <span className="job-eyebrow">{job.state}</span>
+                {/* The state and the moment share the top line, as they do on
+                    an owed row (#146 phase D). */}
+                <div className="job-head">
+                    <span className="job-eyebrow">{job.state}</span>
+                    <span className="job-when">
+                        {describeMoment(job.runAt, now)}
+                    </span>
+                </div>
                 <strong>{job.label}</strong>
                 {job.lastError !== undefined && (
                     <span className="job-error"> {job.lastError}</span>
@@ -101,11 +108,6 @@ function RecentRow({
                     </span>
                 )}
                 <JobRuns token={token} jobId={job.id} attempts={job.attempts} />
-            </div>
-            <div className="job-actions">
-                <span className="job-when">
-                    {describeMoment(job.runAt, now)}
-                </span>
             </div>
         </li>
     );
@@ -217,8 +219,10 @@ function JobsPageFrame({
     onNew(): void;
     children: ReactNode;
 }) {
+    // The head is one pane and each row below is another (#146 phase D): the
+    // page itself is the layout, not the window.
     return (
-        <main className="page">
+        <main className="page page-rows">
             <header className="page-head">
                 <div>
                     <h1>{title}</h1>

@@ -102,9 +102,27 @@ function NotificationRow({
             className={`notification-item notification-${item.priority} notification-${item.class}`}
         >
             <div className="notification-text">
-                <span className="notification-eyebrow">
-                    {describeNotice(item)}
-                </span>
+                {/* What it is and what happened to it share the top line, as
+                    they do on a job row (#146 phase D). */}
+                <div className="notification-head">
+                    <span className="notification-eyebrow">
+                        {describeNotice(item)}
+                    </span>
+                    {/* `delivered` is the one state that means "you have not
+                        seen this", so it is the one that gets the amber NEW
+                        (#90 phase 7d) — keyed off the state rather than the
+                        word, so rewording the label cannot silently drop the
+                        emphasis. */}
+                    <span
+                        className={`notification-state${
+                            item.state === "delivered"
+                                ? " notification-state-new"
+                                : ""
+                        }`}
+                    >
+                        {state}
+                    </span>
+                </div>
                 <strong>{item.title}</strong>
                 {body !== null && <span> {body}</span>}
                 {item.requiresAnswer === true && (
@@ -122,19 +140,6 @@ function NotificationRow({
                 )}
             </div>
             <div className="notification-actions">
-                {/* `delivered` is the one state that means "you have not seen
-                    this", so it is the one that gets the amber NEW (#90 phase
-                    7d) — keyed off the state rather than the word, so rewording
-                    the label cannot silently drop the emphasis. */}
-                <span
-                    className={`notification-state${
-                        item.state === "delivered"
-                            ? " notification-state-new"
-                            : ""
-                    }`}
-                >
-                    {state}
-                </span>
                 {!settled && (
                     <>
                         <button
@@ -246,7 +251,7 @@ export function NotificationsPage({
 
     return (
         <>
-            <main className="page">
+            <main className="page page-rows">
                 <header className="page-head">
                     <div>
                         <h1>Notifications</h1>

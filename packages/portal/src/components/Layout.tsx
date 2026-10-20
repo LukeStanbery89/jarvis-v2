@@ -3,6 +3,10 @@
  *
  * The `<nav>` links drive the hash router; the Users entry is owner-only.
  * `children` is the active management view.
+ *
+ * The wordmark is the one thing here that is not a route: it is an anchor to
+ * `/` (#146), because the app is a different SPA — the portal has no view for
+ * it to swap to.
  */
 import type { ReactNode } from "react";
 import type { ApiUser } from "../types";
@@ -29,7 +33,14 @@ export function Layout({
     return (
         <div className="layout">
             <aside className="sidebar">
-                <div className="brand">J.A.R.V.I.S.</div>
+                {/* The way back (#146): the admin portal is its own SPA at
+                    `/admin`, so this is a real anchor rather than a hash
+                    route — and the wordmark is where everyone reaches for
+                    "home". Same tab: leaving the panel for the app you were
+                    using is a step, not a second window. */}
+                <a className="brand" href="/" title="Back to JARVIS">
+                    J.A.R.V.I.S.
+                </a>
                 <nav>
                     {NAV.filter(
                         (item) => !item.ownerOnly || user.role === "owner",

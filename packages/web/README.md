@@ -14,6 +14,8 @@ images — in the browser.
   source of truth shared with `packages/cli` and the server)
 - REST response types (type-only) from `@lukestanbery/jarvis-contracts`
 - `react-markdown` + `remark-gfm` for reply rendering
+- A hand-rolled canvas particle field (`src/particles/`) — a pure motion model
+  plus one `requestAnimationFrame` loop, with no rendering dependency
 - Tests via Vitest (Node environment; no browser/jsdom dependencies — the
   wire client and stores take injected socket/storage doubles)
 
@@ -62,10 +64,124 @@ portal is a different app at `/admin` and keeps its own hash router.
 In-app links are `AppLink`s over the store in `src/router.ts`: a click swaps the
 view with `history.pushState` instead of reloading the document, so Back and
 Forward behave and a modified click still opens a real tab (every path replays
-the shell, so that tab works). The `/ws` socket survives the swap because
+the shell, so that tab works). The bar's one exception is **Admin** (`/admin`),
+a real anchor after a hairline: the portal is a different SPA with its own
+router and cookie sign-in, so following it unloads this app. It is shown to
+every account — the web app has never fetched `role`, and the portal's own
+owner check is the honest gate. The `/ws` socket survives the swap because
 `src/AppShell.tsx` owns it rather than the view (#90 phase 6b) — which is why a
 turn that is mid-stream keeps landing in the transcript while the user walks to
 another page.
+
+## Background (#146)
+
+The app sits on a slow, blue disc of particles: dense at the centre, sparse at
+the rim, turning once every ~105 s and breathing every ~11 s. It is one
+full-viewport canvas rendered behind `.app` (so a route change never restarts
+it), and it is deliberately cheap — a cached glow sprite stamped once per
+particle with `lighter` compositing, no `shadowBlur`, no per-frame allocation,
+device pixel ratio capped at 1.5, and a frame delta clamped to 50 ms so a
+backgrounded tab resumes instead of teleporting.
+
+The split is the app's usual one: `src/particles/field.ts` is the whole motion
+model — seeded PRNG, rotation, breathe, projection into a `Float32Array` — and
+is unit-tested without a browser; `src/particles/ParticleCanvas.tsx` is the
+loop around it.
+
+`step(field, dt, energy)` takes a 0..1 `energy` that widens the breathe and
+brightens the disc, and phase E feeds it the answer's voice: `AudioPlayer`
+routes the spoken PCM through an `AnalyserNode` (256 samples, ~5 ms at the
+protocol's 24 kHz) and exposes `energy()` as the RMS of that window, scaled ×6
+because a voice sits well below full scale. The alarm and the wake cue stay
+direct-to-destination — the field answers the assistant, not every sound the app
+makes. `ParticleCanvas` reads it through a ref once per frame and smooths it
+over ~170 ms, so the disc breathes with the sentence rather than strobing per
+syllable, and `energy()` returns 0 the moment nothing is speaking, so it settles
+with the last word instead of holding the peak. A context without
+`createAnalyser` simply has no tap and a still field.
+
+`prefers-reduced-motion: reduce` draws a single static frame; the media query is
+watched, so toggling the OS setting takes effect without a reload.
+
+Both appearance effects are switches in the settings panel's **Appearance**
+group (`src/appearance.ts`, `localStorage` key `jarvis.appearance`). They are
+per-browser, not per-account: a busy background on a phone and a quiet one on a
+wall display are facts about the device. Turning the field off **unmounts** the
+canvas, so its loop stops rather than drawing into something invisible; turning
+the glass off sets `data-glass="off"` on `.app`, which flattens the composed
+`--glass-filter` to `none` and darkens the tint. The layout is identical either
+way — the switch is about the surface, not the shape.
+
+## Responsive layout (#146 phase D)
+
+The shell stops growing at 96 rem (`--shell-max`) and centres, so on a wide
+monitor the particle field becomes the margin rather than stretching behind an
+ever-longer row of content. Inside it the list pages (`/timers`, `/reminders`,
+`/notifications`) hold a 64 rem measure — and subtract a 0.75 rem gutter from
+their own width, so the pane floats off the edge rather than touching it at
+exactly the widths a phone sits at — the dashboard holds 48 rem, and the
+transcript centres its turns in a 64 rem reading column **by padding** — a
+narrower scroller would have floated the scrollbar in the middle of the pane.
+
+Under 48 rem the chat is one column and the thread list becomes a drawer over
+the conversation: a scrim closes it, Escape closes it, and a pick closes it on
+the way to the thread. The closed drawer is `visibility: hidden`, not merely
+translated off-screen, so it stays out of the tab order; reduced motion drops
+the slide. The state lives in `AppShell`, not `Chat`, because the control is in
+the top bar — the chat route's first button, where the wordmark sits on wide
+screens — while the drawer is the view's; the shell also closes it on a
+navigation. At that width the wordmark is pinned to the bar's true centre
+(the flanks differ in width, so flex-centring would sit it off-centre).
+
+The **bar** collapses at its own breakpoint, **60 rem**, not the shell's 48:
+with three state chips beside them, the wordmark, four links, Admin, the account
+name and the gear need just over 60 rem, and 50–55 rem was the band where the
+chips ran the links out of room. There the links hand over to the hamburger and
+the gear to a **Settings** item in it, with Admin below a hairline under them —
+the wordmark's centring stays at 48 rem because it belongs to the thread
+toggle, which follows the chat's breakpoint.
+
+The **rail** takes over at **80 rem**: the bar's links step aside for a 2.5 rem
+column of icons on the left — dashboard, chat, timers, reminders, notifications,
+then Admin past a hairline — each carrying an `aria-label` and a `title`, since
+an icon is not a word. Below that the bar keeps the links (from 60 rem) and the
+hamburger carries them (under 60 rem), so exactly one set of destinations is
+visible at every width.
+
+The sign-in gate is the same box: `Login` renders it as `.app.gate` and reads
+this browser's appearance itself, so the field and the glass reach the first
+screen and a switch turned off stays off before anyone signs in. The card is the
+glass pane, centred by its own auto margins — a card taller than a short window
+scrolls instead of losing its title to a centred flex item's overflow.
+
+The same breakpoint raises every phone-reachable control to at least 44 px in
+its short dimension — a floor via `min-height` on labelled buttons, 2.75 rem
+squares on icon buttons — and starts the corner toast stack below the taller
+bar. Job and notification rows also stack at that width: what the row says on
+one line, its controls on the next. The actions never shrink
+(`flex-shrink: 0`), so until they were given their own row the _text_ was what
+gave way, and a four-word reminder title wrapped to one word per line. A job's
+moment now rides opposite its class on the first line (`job-when` moved out of
+`job-actions`), which leaves that second row to be nothing but buttons — and the
+three are given an equal `min-width` floor with their labels centred, so "Edit"
+is not half the width of "Snooze" — or pinned to the left edge of a wider
+button.
+
+**A list page is a stack of panes.** `/timers`, `/reminders` and
+`/notifications` no longer put the whole list on one sheet of glass:
+`.page-rows` drops the page-level pane, and the head (title, count, New) and
+every row below it — jobs, settled rows and notification records alike, plus
+their empty states — become panes of their own, with more air between them. The
+page is the layout, not the window. The notification list's bordered scroll box
+became the gap between its panes, and a record's state moved to its header line
+beside the eyebrow, where a job's moment sits. From 64 rem the rows pair up in
+two columns of half the page each — a row at the measure spends most of its
+width empty — with `minmax(0, 1fr)` tracks so a long title cannot widen its
+column past its share.
+
+That
+block sits last in `styles.css` on purpose: it overrides sizes declared above,
+and a media query carries no specificity of its own.
 
 ## Sign-in and credentials
 
@@ -618,7 +734,8 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/clock.ts` — `clockText` / `formatDate` / `weekdayText` / `describeSpan`: time in the words a person reads, hand-rolled so the tests are exact and shared so a reminder and a job cannot disagree.
 - `src/jobs.ts` — the repeat control's logic (#90 phase 8e): `RepeatDraft` + `repeatDraftToRule` (the form's choices turned into the rule, anchored at the moment the picker holds) + `repeatDraftFromRule` (a stored rule read back into the controls, so opening an edit cannot change it) + `checkRepeatDraft` + `repeatText` (the row's clause, the protocol's words verbatim) + `nextRepeatAt` (the live preview, through the server's own `nextOccurrence`). Beside them, the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM"; `runDuration`: a single attempt's length in ms / seconds / the usual span, since a tool job's run is not measurable in whole minutes).
 - `src/hooks/useJobs.ts` — the caller's jobs: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives. The read asks for settled rows too (`includeSettled`, the server's maximum page — its page is newest-created first, so a settled-only read is not expressible, and retention caps a user's table below the limit), and `jobs.ts`'s `splitJobs` divides it into what is owed and what is history, so a page gets both without a second request. The hook is also where a create or an edit happens (#90 phase 7): `create`/`update` return the server's `{job, quiet}` or its refusal in its own words, for the form that is still open behind the dialog.
-- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and the hamburger drawer under 48rem.
+- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and and the hamburger drawer under 60rem — its own measured breakpoint, where the links and the gear become drawer items.
+- `src/views/app/IconRail.tsx` — the wide-screen navigation rail: the same destinations as a column of icons from 80rem, with the unread badge on its corner and Admin past a hairline. Icon-only, so every item carries an `aria-label` and a `title`.
 - `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which. The gear in the bar opens it from any page (#90 phase 6d).
 - `src/views/app/TimerRing.tsx` — the ring a fired `timer` gets (#90 phase 4): a modal `<dialog>` with **Stop** as its one exit, so it covers anything else in the top layer without a z-index race.
 - `src/views/app/Toast.tsx` — the floating notification **stack** (up to `TOAST_LIMIT` cards, newest first): the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
