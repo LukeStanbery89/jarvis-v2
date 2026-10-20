@@ -154,6 +154,18 @@ row settled `failed` with the reason) or **resumes** it (adopt the still-running
 container and keep watching) — a choice stored per job and made when it is
 created.
 
+Ask for one in chat: the `startCodingJob` tool is registered whenever the
+sandbox is on, accepts only an allowlisted repository, and is **owner-only** —
+a sandbox with a clone and network access is the most capable thing JARVIS
+runs, so it is not a `user`-role capability yet. The tool returns a job id
+immediately; the ending arrives as a notification, so the assistant does not
+hold the reply open for it.
+
+`npm run probe:coding-job` is the manual end-to-end check: a throwaway local
+repository, the real image, a real agent and the configured model. It prints
+the settled row, the diff summary and the workspace's git log, and exits
+non-zero unless the job settled `ok`.
+
 | Variable                             | Default                               | Meaning                                                                     |
 | ------------------------------------ | ------------------------------------- | --------------------------------------------------------------------------- |
 | `JARVIS_SANDBOX`                     | _(unset)_                             | `docker` enables the surface; anything else leaves it absent                |

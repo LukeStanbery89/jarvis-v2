@@ -18,7 +18,8 @@
         "test": "vitest run",
         "prepublishOnly": "npm run build",
         "tts:harness": "tsx scripts/tts-harness.ts",
-        "probe:sandbox": "node scripts/probe-sandbox.mjs"
+        "probe:sandbox": "node scripts/probe-sandbox.mjs",
+        "probe:coding-job": "node scripts/probe-coding-job.mjs"
     },
     "repository": {
         "type": "git",

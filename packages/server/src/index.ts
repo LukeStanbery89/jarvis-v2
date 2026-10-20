@@ -252,6 +252,27 @@ const notifications =
           })
         : undefined;
 
+// The coding sandbox (#141): present only when a container runtime is
+// configured, because the surface must not promise work it cannot run. Built
+// before the graph so the `startCodingJob` tool can be handed the supervisor;
+// recovery runs below, once the socket layer is up, so an adopted job's
+// announcement has a hub to land in.
+const codingJobs = appConfig.sandbox
+    ? createCodingJobService({
+          ledger: store,
+          runner: createDockerSandbox({
+              socketPath: appConfig.sandbox.socketPath,
+          }),
+          workspace: createWorkspaceManager({
+              root: appConfig.sandbox.workspaceRoot,
+              hostRoot: appConfig.sandbox.workspaceHostRoot,
+              repos: appConfig.sandbox.repos,
+          }),
+          config: appConfig.sandbox,
+          ...(notifications ? { notifications } : {}),
+      })
+    : undefined;
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
@@ -271,6 +292,18 @@ initAgentGraph({
                   ledger: store,
                   maxPerUser: appConfig.scheduler.maxPerUser,
                   maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
+              },
+          }
+        : {}),
+    // The owner gate is the store's role, read per call rather than captured:
+    // a demoted account must lose the capability immediately, not at restart.
+    ...(codingJobs
+        ? {
+              coding: {
+                  service: codingJobs,
+                  isOwner: (userId: number) =>
+                      store.getUserById(userId)?.role === "owner",
+                  repos: appConfig.sandbox?.repos ?? [],
               },
           }
         : {}),
@@ -311,27 +344,8 @@ const jobCreator =
           })
         : undefined;
 
-// The coding sandbox (#141): present only when a container runtime is
-// configured, because the surface must not promise work it cannot run. The
-// runner is the Docker seam; the workspace manager owns the clones; the service
-// is the supervisor. Recovery runs below, once the socket layer is up, so an
-// adopted job's announcement has a hub to land in.
-const codingJobs = appConfig.sandbox
-    ? createCodingJobService({
-          ledger: store,
-          runner: createDockerSandbox({
-              socketPath: appConfig.sandbox.socketPath,
-          }),
-          workspace: createWorkspaceManager({
-              root: appConfig.sandbox.workspaceRoot,
-              hostRoot: appConfig.sandbox.workspaceHostRoot,
-              repos: appConfig.sandbox.repos,
-          }),
-          config: appConfig.sandbox,
-          ...(notifications ? { notifications } : {}),
-      })
-    : undefined;
-
+// The coding sandbox (#141): the supervisor is built above, before the graph,
+// so the `startCodingJob` tool can reach it.
 const webApp = createApp(
     store,
     appConfig,
