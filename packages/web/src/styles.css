@@ -603,6 +603,7 @@ textarea::placeholder {
 .thread-row {
     display: flex;
     align-items: stretch;
+    border-radius: 6px;
 }
 
 .thread-open {
@@ -624,9 +625,20 @@ textarea::placeholder {
     background: var(--primary-wash);
 }
 
-.thread-open.active {
-    background: var(--primary);
-    color: #000;
+/* The open conversation (#146 phase D). The class lives on the row — both its
+   halves are the selection — but this used to be styled on `.thread-open`,
+   which nothing ever gave an `active`, so the selected conversation was not
+   highlighted at all. It takes the wash the nav's current page uses, plus a bar
+   at its start, rather than the solid fill the dead rule asked for: the solid
+   accent belongs to the one primary action above it (`New chat`). */
+.thread-row.active {
+    background: var(--primary-wash);
+    box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.thread-row.active .thread-open {
+    color: var(--primary);
+    font-weight: 600;
 }
 
 .thread-delete {
