@@ -472,19 +472,21 @@ export function createWorkspaceManager(options: {
 }
 
 /**
- * Removes workspace directories whose job id is not live.
+ * Removes workspace directories the caller no longer wants.
  *
- * Boot hygiene for the one window the row-based paths cannot cover: a process
- * that died after creating a directory but before writing its row. Best-effort
- * by design — a directory that cannot be read is left alone.
+ * The predicate is the policy: a directory with no row, or a settled job past
+ * its retention, is removed; a queued or running job is kept. Boot hygiene for
+ * the window the row-based paths cannot cover — a process that died after
+ * creating a directory but before writing its row. Best-effort by design: a
+ * directory that cannot be read is left alone.
  *
  * @param root - The server-side workspace root.
- * @param live - Job ids that still own a directory.
+ * @param keep - Whether a job id still owns its directory.
  * @returns The ids that were removed.
  */
 export async function sweepWorkspaces(
     root: string,
-    live: ReadonlySet<string>,
+    keep: (jobId: string) => boolean,
 ): Promise<string[]> {
     let entries: string[];
     try {
@@ -494,7 +496,7 @@ export async function sweepWorkspaces(
     }
     const removed: string[] = [];
     for (const entry of entries) {
-        if (live.has(entry) || !JOB_ID_PATTERN.test(entry)) {
+        if (!JOB_ID_PATTERN.test(entry) || keep(entry)) {
             continue;
         }
         try {

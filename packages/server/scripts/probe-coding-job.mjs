@@ -291,6 +291,11 @@ try {
             proxySecret: "",
             proxyMaxRequestsPerJob: 500,
             network: "",
+            logRoot: path.join(scratch, "logs"),
+            logMaxMb: 10,
+            workspaceRetentionDays: 14,
+            logRetentionDays: 30,
+            keepJobRows: 100,
         },
         proxy: { url: proxyUrl, secret: proxySecret },
         notifications: {

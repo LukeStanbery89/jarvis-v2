@@ -38,6 +38,11 @@ const SANDBOX_VARS = [
     "JARVIS_SANDBOX_PROXY_SECRET",
     "JARVIS_SANDBOX_PROXY_MAX_REQUESTS",
     "JARVIS_SANDBOX_NETWORK",
+    "JARVIS_SANDBOX_LOG_ROOT",
+    "JARVIS_SANDBOX_LOG_MAX_MB",
+    "JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS",
+    "JARVIS_SANDBOX_LOG_RETENTION_DAYS",
+    "JARVIS_SANDBOX_KEEP_JOB_ROWS",
 ];
 
 afterEach(() => {
@@ -81,6 +86,11 @@ describe("sandbox config", () => {
             proxySecret: "",
             proxyMaxRequestsPerJob: 500,
             network: "",
+            logRoot: path.join(homedir(), ".jarvis", "logs", "coding"),
+            logMaxMb: 10,
+            workspaceRetentionDays: 14,
+            logRetentionDays: 30,
+            keepJobRows: 100,
         });
         // One default home for the workspace tree, beside the database.
         expect(defaultSandboxWorkspaceRoot()).toBe(
@@ -110,6 +120,11 @@ describe("sandbox config", () => {
         process.env.JARVIS_SANDBOX_PROXY_SECRET = "s".repeat(32);
         process.env.JARVIS_SANDBOX_PROXY_MAX_REQUESTS = "42";
         process.env.JARVIS_SANDBOX_NETWORK = "jarvis-sandbox";
+        process.env.JARVIS_SANDBOX_LOG_ROOT = "/srv/logs";
+        process.env.JARVIS_SANDBOX_LOG_MAX_MB = "5";
+        process.env.JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS = "7";
+        process.env.JARVIS_SANDBOX_LOG_RETENTION_DAYS = "21";
+        process.env.JARVIS_SANDBOX_KEEP_JOB_ROWS = "50";
 
         const sandbox = getAppConfig().sandbox;
         expect(sandbox).toMatchObject({
@@ -133,6 +148,11 @@ describe("sandbox config", () => {
             proxySecret: "s".repeat(32),
             proxyMaxRequestsPerJob: 42,
             network: "jarvis-sandbox",
+            logRoot: "/srv/logs",
+            logMaxMb: 5,
+            workspaceRetentionDays: 7,
+            logRetentionDays: 21,
+            keepJobRows: 50,
         });
     });
 

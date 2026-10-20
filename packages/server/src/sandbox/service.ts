@@ -33,6 +33,7 @@ import {
 import type { SandboxConfig } from "../config";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
+import { createJobLog, sweepCodingLogs, type JobLog } from "./logs";
 import {
     reconcileCodingJobs,
     type CodingJobRecoveryHandlers,
@@ -45,7 +46,11 @@ import type {
     SandboxSpec,
 } from "./types";
 import { deriveJobToken } from "./proxy";
-import type { PreparedWorkspace, WorkspaceManager } from "./workspace";
+import {
+    sweepWorkspaces,
+    type PreparedWorkspace,
+    type WorkspaceManager,
+} from "./workspace";
 
 /** How much of a job's output is kept on its row (the tail, not the whole log). */
 const LOG_TAIL_BYTES = 16 * 1024;
@@ -166,6 +171,77 @@ export function createCodingJobService(options: {
     const nowIso = () => now().toISOString();
 
     /**
+     * Trims the owner's settled rows to the configured keep count.
+     *
+     * Called after every settle rather than per boot: a row is small but
+     * unbounded growth is still growth, and the settle is the one moment the
+     * table is guaranteed to have changed.
+     *
+     * @param userId - The job's owner.
+     */
+    function pruneRows(userId: number): void {
+        try {
+            const removed = ledger.pruneCodingJobs(userId, config.keepJobRows);
+            if (removed > 0) {
+                logger.info(
+                    `coding retention: pruned ${removed} settled job row(s)`,
+                );
+            }
+        } catch (err) {
+            logger.warn(
+                `coding retention: could not prune settled rows: ${describe(err)}`,
+            );
+        }
+    }
+
+    /**
+     * Boot sweep: removes row-less or expired workspaces and expired logs.
+     *
+     * Retention is by `finished_at` for a workspace (falling back to creation
+     * for a row that never got one) and by file `mtime` for a log, which is
+     * what still works for a job whose row was pruned. A queued or running job
+     * is never touched, and an unreadable timestamp keeps a workspace rather
+     * than guessing.
+     *
+     * @returns What was removed, for one boot line.
+     */
+    async function sweepRetention(): Promise<{
+        workspaces: string[];
+        logs: { removed: number; bytes: number };
+    }> {
+        const nowMs = now().getTime();
+        const workspaces = await sweepWorkspaces(
+            config.workspaceRoot,
+            (jobId) => {
+                const job = ledger.getCodingJobById(jobId);
+                if (job === null) {
+                    return false;
+                }
+                if (job.state === "queued" || job.state === "running") {
+                    return true;
+                }
+                const finished =
+                    job.finishedAt !== null
+                        ? Date.parse(job.finishedAt)
+                        : Date.parse(job.createdAt);
+                if (!Number.isFinite(finished)) {
+                    return true;
+                }
+                return (
+                    nowMs - finished <
+                    config.workspaceRetentionDays * 86_400_000
+                );
+            },
+        );
+        const logs = await sweepCodingLogs({
+            logRoot: config.logRoot,
+            olderThanMs: config.logRetentionDays * 86_400_000,
+            now: now(),
+        });
+        return { workspaces, logs };
+    }
+
+    /**
      * Announces a job's ending. Failure to announce never changes the row — the
      * run record is the durable fact, the notification is the courtesy.
      *
@@ -227,6 +303,13 @@ export function createCodingJobService(options: {
         handle: SandboxHandle,
     ): Promise<void> {
         const tail = createLogTail(LOG_TAIL_BYTES);
+        // The full record, on disk: the container is removed below, so this is
+        // the only post-mortem that outlives it (#141 phase 7).
+        const log: JobLog = createJobLog({
+            logRoot: config.logRoot,
+            jobId: job.id,
+            maxBytes: config.logMaxMb * 1024 * 1024,
+        });
         let timedOut = false;
         const timer = setTimeout(() => {
             timedOut = true;
@@ -244,6 +327,7 @@ export function createCodingJobService(options: {
                     ...(job.startedAt !== null ? { since: job.startedAt } : {}),
                 })) {
                     tail.push(line);
+                    log.write(line);
                 }
             } catch (err) {
                 // A broken log stream must not cost the job its ending: the
@@ -352,8 +436,14 @@ export function createCodingJobService(options: {
                 diffSummary: collected.diffSummary,
                 lastMessage: lastAgentMessage(tail.text()),
             });
+            pruneRows(job.userId);
         } finally {
             clearTimeout(timer);
+            await log.close().catch((err: unknown) => {
+                logger.warn(
+                    `coding job ${job.id}: could not close its log: ${describe(err)}`,
+                );
+            });
             if (job.containerId !== null) {
                 await runner.remove(job.containerId).catch((err: unknown) => {
                     logger.warn(
@@ -534,6 +624,16 @@ export function createCodingJobService(options: {
         },
 
         async recover(): Promise<RecoverySummary> {
+            // Retention first: a boot is the only moment every job is settled
+            // and every container is about to be classified, so it is where
+            // the disk can be given back (#141 phase 7).
+            const swept = await sweepRetention();
+            if (swept.workspaces.length > 0 || swept.logs.removed > 0) {
+                logger.info(
+                    `coding retention: removed ${swept.workspaces.length} workspace(s) and ${swept.logs.removed} log file(s) (${Math.round(swept.logs.bytes / 1024)} KiB)`,
+                );
+            }
+
             const handlers: CodingJobRecoveryHandlers = {
                 resume: async (job, handle) => {
                     // Adopt and keep watching. `reconcile` returns as soon as
@@ -546,18 +646,29 @@ export function createCodingJobService(options: {
                 },
                 fail: async (job, handle, reason) => {
                     const tail = createLogTail(LOG_TAIL_BYTES);
+                    let log: JobLog | null = null;
                     if (handle !== null) {
                         // Stop first: the log stream only ends when the
                         // container does, and a prune is discarding the work
-                        // anyway. The tail is what survives.
+                        // anyway. The tail is what survives — and the file
+                        // keeps the whole thing.
                         await handle.stop().catch(() => {});
+                        log = createJobLog({
+                            logRoot: config.logRoot,
+                            jobId: job.id,
+                            maxBytes: config.logMaxMb * 1024 * 1024,
+                        });
                         try {
                             for await (const line of handle.logs()) {
                                 tail.push(line);
+                                log.write(line);
                             }
                         } catch {
                             // A container that cannot be read is still a
                             // container that must be removed.
+                        } finally {
+                            await log.close().catch(() => {});
+                            log = null;
                         }
                         await handle.remove().catch((err: unknown) => {
                             logger.warn(
@@ -579,6 +690,7 @@ export function createCodingJobService(options: {
                         diffSummary: "",
                         lastMessage: lastAgentMessage(tail.text()),
                     });
+                    pruneRows(job.userId);
                 },
                 discard: async (jobId) => {
                     // A container with no row: its workspace is still at the

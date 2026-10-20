@@ -370,7 +370,7 @@ describe("workspace lifecycle", () => {
         mkdirSync(path.join(root, "live", "repo"), { recursive: true });
         mkdirSync(path.join(root, "orphan", "repo"), { recursive: true });
 
-        const swept = await sweepWorkspaces(root, new Set(["live"]));
+        const swept = await sweepWorkspaces(root, (jobId) => jobId === "live");
 
         expect(swept).toEqual(["orphan"]);
         expect(existsSync(path.join(root, "live"))).toBe(true);
