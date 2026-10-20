@@ -211,6 +211,11 @@ describe("workspace lifecycle", () => {
         expect(git(["log", "--oneline", "-1"], prepared.path).trim()).toContain(
             "JARVIS: change it",
         );
+        // The safety-net commit carries its own identity: a CI host has no
+        // global git user, and an inherited one would misattribute the work.
+        expect(
+            git(["log", "-1", "--format=%an <%ae>"], prepared.path).trim(),
+        ).toBe("JARVIS <jarvis@localhost>");
         // A second commit with nothing to add is a no-op, not an empty commit.
         expect(
             await manager.commit({

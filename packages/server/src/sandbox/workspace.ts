@@ -309,9 +309,18 @@ export function createWorkspaceManager(options: {
                 return false;
             }
             await git(["-C", input.workspacePath, "add", "-A"]);
+            // The safety-net commit must not depend on a host git identity:
+            // CI has none, and an inherited identity would misattribute the
+            // agent's work. Name the committer explicitly. (Hardening these
+            // host-side git calls against a hostile workspace is tracked on
+            // #141.)
             await git([
                 "-C",
                 input.workspacePath,
+                "-c",
+                "user.name=JARVIS",
+                "-c",
+                "user.email=jarvis@localhost",
                 "commit",
                 "-m",
                 input.message,
