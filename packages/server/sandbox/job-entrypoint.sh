@@ -44,13 +44,32 @@ EOF
 
 cd /workspace
 
+# A bounded map of the repository, built from git. The live run that motivated
+# this guessed two file names, read one unrelated file, and concluded the color
+# "is not directly defined in the codebase" — it had no idea what was in the
+# tree. A map costs a few hundred bytes and replaces guessing with reading.
+# `|| true` on the filters: an empty result is a valid map, not a failed job.
+source_dirs="$(git ls-files | awk -F/ 'NF > 1 { print $1 "/" $2 }' | sort -u | head -30 || true)"
+stylesheets="$(git ls-files | grep -Ei '\.(css|scss|sass|less)$' | head -20 || true)"
+
 # Context before the instruction. The first live job showed why: asked to
 # "change the primary color", a small model answered "I cannot … without
 # specific context or files to edit" and exited without reading anything. It
 # was not refusing the sandbox — it did not know it was *in* a clone, which
-# files it could read, or that nobody would answer a question. The preamble
-# says all three, and points at exploration rather than memory.
-context="You are JARVIS's coding agent, working in a git clone of ${JARVIS_JOB_REPO} on branch ${JARVIS_JOB_BRANCH} at /workspace. Explore the repository to find what the task refers to; make the change in the working tree; commit it with a clear message. Nobody can answer questions while you work: if the task is ambiguous, choose the most reasonable interpretation, make the change, and state your assumption in your final message.
+# files it could read, or that nobody would answer a question.
+context="You are JARVIS's coding agent, working in a git clone of ${JARVIS_JOB_REPO} on branch ${JARVIS_JOB_BRANCH} at /workspace.
+
+Repository map (directories that contain tracked files; never guess a path, search for it):
+${source_dirs}
+${stylesheets:+
+Stylesheets in this repository:
+${stylesheets}
+}
+How to work:
+- Search before you read. Use grep or glob with broad patterns and read what they return. Search the concept in several spellings (\`primary\`, \`--primary\`, \`accent\`, \`brand\`, \`color\`), not only the user's exact words.
+- Never conclude that something is absent after one or two guessed filenames. If a search finds nothing, broaden it or list the directory; a failed guess is not evidence.
+- Make the change in the working tree and commit it with a clear message. If a commit is not possible, say so plainly.
+- Nobody can answer questions while you work. If the task is ambiguous, choose the most reasonable interpretation, make the change, and state your assumption in your final message.
 
 Task: ${JARVIS_JOB_PROMPT}"
 
