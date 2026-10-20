@@ -18,6 +18,7 @@ import {
     createCodingJobService,
     lastAgentMessage,
 } from "../src/sandbox/service";
+import { deriveJobToken } from "../src/sandbox/proxy";
 import type { RepoSpec, WorkspaceManager } from "../src/sandbox/workspace";
 
 /** A config with every knob decided. */
@@ -36,6 +37,12 @@ const CONFIG: SandboxConfig = {
     llmBaseUrl: "http://host.docker.internal:1234/v1",
     apiKey: "",
     extraHosts: [],
+    proxyBind: "127.0.0.1",
+    proxyPort: 54322,
+    proxyUrl: "http://host.docker.internal:54322/v1",
+    proxySecret: "",
+    proxyMaxRequestsPerJob: 500,
+    network: "",
 };
 
 /** A store with one owner. */
@@ -122,6 +129,7 @@ type FakeWorkspace = ReturnType<typeof fakeWorkspace>;
 function makeService(
     overrides: {
         config?: Partial<SandboxConfig>;
+        proxy?: { url: string; secret: string };
         workspace?: FakeWorkspace;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
@@ -137,6 +145,7 @@ function makeService(
         runner,
         workspace,
         config: { ...CONFIG, ...overrides.config },
+        ...(overrides.proxy ? { proxy: overrides.proxy } : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
         newId: () => `job-${++sequence}`,
@@ -331,6 +340,33 @@ describe("starting a coding job", () => {
         expect(local.runner.started[0]?.env).not.toHaveProperty(
             "JARVIS_JOB_API_KEY",
         );
+    });
+
+    it("hands a job the broker's token rather than the provider key", async () => {
+        const secret = "broker-secret-that-is-long-enough-1234";
+        const { userId, runner, service } = makeService({
+            config: { apiKey: "sk-real-provider-key" },
+            proxy: { url: "http://host.docker.internal:54322/v1", secret },
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "do it",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+
+        const env = runner.started[0]?.env ?? {};
+        expect(env.JARVIS_JOB_LLM_BASE_URL).toBe(
+            "http://host.docker.internal:54322/v1",
+        );
+        expect(env.JARVIS_JOB_API_KEY).toBe(
+            deriveJobToken(secret, started.job.id),
+        );
+        // The whole point: the real key is not in the container at all.
+        expect(env.JARVIS_JOB_API_KEY).not.toBe("sk-real-provider-key");
     });
 
     it("refuses a remote endpoint with no key, before any clone", async () => {

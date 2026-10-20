@@ -183,6 +183,9 @@ const scratch = mkdtempSync(path.join(tmpdir(), "jarvis-coding-probe-"));
 const workspaceRoot = path.join(scratch, "jobs");
 const dbPath = path.join(scratch, "probe.sqlite");
 
+/** The broker, so the cleanup can close it even after a failure. */
+let proxy = null;
+
 try {
     // 1. The environment: image, daemon and model.
     try {
@@ -220,11 +223,43 @@ try {
     const origin = makeOrigin(scratch);
     const { openAppDatabase } = require("@lukestanbery/jarvis-auth");
     const { createCodingJobService } = fromDist("sandbox/service.js");
+    const { createSandboxProxy, loadProxySecret } =
+        fromDist("sandbox/proxy.js");
     const { createDockerSandbox } = fromDist("sandbox/docker.js");
     const { createWorkspaceManager } = fromDist("sandbox/workspace.js");
 
     const store = openAppDatabase(dbPath);
     const owner = store.createUser("probe-owner", "hash", "owner");
+
+    // The broker, exactly as the server wires it: the container is only ever
+    // given a token derived from its job id, and the real key stays here. The
+    // listener is on loopback with an ephemeral port; a job reaches it through
+    // the host-gateway name, which is how OrbStack and Docker Desktop deliver
+    // a container's request.
+    const proxySecret = loadProxySecret("", path.join(scratch, "proxy.key"));
+    proxy = createSandboxProxy({
+        bind: "127.0.0.1",
+        port: 0,
+        url: "http://host.docker.internal:<ephemeral>/v1",
+        secret: proxySecret,
+        upstreamBaseUrl: llmBaseUrl,
+        model,
+        apiKey,
+        maxRequestsPerJob: 500,
+        isJobActive: (jobId) => {
+            const job = store.getCodingJobById(jobId);
+            return (
+                job !== null &&
+                (job.state === "queued" || job.state === "running")
+            );
+        },
+    });
+    const proxyPort = await proxy.start();
+    const proxyUrl = `http://host.docker.internal:${proxyPort}/v1`;
+    console.log(
+        `broker listening on 127.0.0.1:${proxyPort} (job URL ${proxyUrl})`,
+    );
+
     const service = createCodingJobService({
         ledger: store,
         runner: createDockerSandbox(),
@@ -250,7 +285,14 @@ try {
             llmBaseUrl,
             apiKey,
             extraHosts: ["host.docker.internal:host-gateway"],
+            proxyBind: "127.0.0.1",
+            proxyPort,
+            proxyUrl,
+            proxySecret: "",
+            proxyMaxRequestsPerJob: 500,
+            network: "",
         },
+        proxy: { url: proxyUrl, secret: proxySecret },
         notifications: {
             notify: async (userId, input) => {
                 console.log(
@@ -333,6 +375,7 @@ try {
     );
     process.exitCode = 1;
 } finally {
+    await proxy?.close().catch(() => {});
     if (keep) {
         console.log(`\nkept: ${scratch}`);
     } else {

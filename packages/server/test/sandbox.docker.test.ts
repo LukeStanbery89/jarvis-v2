@@ -175,12 +175,13 @@ describe("docker sandbox request", () => {
         expect(options.HostConfig.Tmpfs).toHaveProperty("/tmp");
     });
 
-    it("honours a custom mount target, tmpfs and host list", () => {
+    it("honours a custom mount target, tmpfs, host list and network", () => {
         const options = buildCreateOptions(
             spec({
                 workspaceTarget: "/repo",
                 tmpfs: { "/home/job": "rw,size=64m" },
                 extraHosts: [],
+                network: "jarvis-sandbox",
             }),
         );
 
@@ -193,6 +194,8 @@ describe("docker sandbox request", () => {
             "/home/job": "rw,size=64m",
         });
         expect(options.HostConfig.ExtraHosts).toEqual([]);
+        // The private network the broker also sits on (#141 phase 7).
+        expect(options.HostConfig.NetworkMode).toBe("jarvis-sandbox");
     });
 });
 

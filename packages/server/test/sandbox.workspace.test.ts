@@ -225,6 +225,134 @@ describe("workspace lifecycle", () => {
         ).toBe(false);
     });
 
+    it("does not run a hook, filter or signing program the agent planted", async () => {
+        const origin = makeOrigin();
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [origin.url],
+        });
+        const repo = manager.allows(origin.url);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-hostile",
+            repo,
+            branch: "jarvis/test",
+        });
+
+        // Everything below executes on the *host* if git is allowed to read
+        // it: a pre-commit hook, a clean filter, and a signing program.
+        const marker = path.join(prepared.path, "pwned");
+        const hooks = path.join(prepared.path, "evil-hooks");
+        mkdirSync(hooks);
+        writeFileSync(
+            path.join(hooks, "pre-commit"),
+            `#!/bin/sh\ntouch '${marker}'\n`,
+            { mode: 0o755 },
+        );
+        const evil = path.join(prepared.path, "evil.sh");
+        writeFileSync(evil, `#!/bin/sh\ntouch '${marker}'\ncat\n`, {
+            mode: 0o755,
+        });
+        const configPath = path.join(prepared.path, ".git", "config");
+        writeFileSync(
+            configPath,
+            `${readFileSync(configPath, "utf8")}[core]\n\thooksPath = ${hooks}\n[filter "evil"]\n\tclean = ${evil}\n[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${evil}\n`,
+        );
+        writeFileSync(
+            path.join(prepared.path, ".gitattributes"),
+            "* filter=evil\n",
+        );
+        writeFileSync(path.join(prepared.path, "README.md"), "changed\n");
+
+        // Whether the add succeeds or refuses the now-undefined filter, the
+        // point is that nothing ran.
+        await manager
+            .commit({
+                workspacePath: prepared.path,
+                message: "JARVIS: change it",
+            })
+            .catch(() => false);
+
+        expect(existsSync(marker)).toBe(false);
+        const rewritten = readFileSync(configPath, "utf8");
+        expect(rewritten).not.toContain("hooksPath");
+        expect(rewritten).not.toContain("clean =");
+        expect(rewritten).not.toContain("gpgsign");
+    });
+
+    it("ignores an external diff driver while collecting", async () => {
+        const origin = makeOrigin();
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [origin.url],
+        });
+        const repo = manager.allows(origin.url);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-diff",
+            repo,
+            branch: "jarvis/test",
+        });
+        writeFileSync(path.join(prepared.path, "README.md"), "changed\n");
+
+        const marker = path.join(prepared.path, "diff-ran");
+        const evil = path.join(prepared.path, "external-diff.sh");
+        writeFileSync(evil, `#!/bin/sh\ntouch '${marker}'\nexit 0\n`, {
+            mode: 0o755,
+        });
+        const configPath = path.join(prepared.path, ".git", "config");
+        writeFileSync(
+            configPath,
+            `${readFileSync(configPath, "utf8")}[diff]\n\texternal = ${evil}\n`,
+        );
+
+        const collected = await manager.collect({
+            workspacePath: prepared.path,
+        });
+
+        expect(collected.changed).toBe(true);
+        expect(existsSync(marker)).toBe(false);
+    });
+
+    it("refuses a .git that is a gitfile rather than a directory", async () => {
+        const origin = makeOrigin();
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [origin.url],
+        });
+        const repo = manager.allows(origin.url);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-gitfile",
+            repo,
+            branch: "jarvis/test",
+        });
+        rmSync(path.join(prepared.path, ".git"), {
+            recursive: true,
+            force: true,
+        });
+        writeFileSync(
+            path.join(prepared.path, ".git"),
+            `gitdir: ${prepared.path}/elsewhere\n`,
+        );
+
+        await expect(
+            manager.commit({
+                workspacePath: prepared.path,
+                message: "JARVIS: change it",
+            }),
+        ).rejects.toThrow(/not a real directory/);
+        await expect(
+            manager.collect({ workspacePath: prepared.path }),
+        ).rejects.toThrow(/not a real directory/);
+    });
+
     it("never deletes outside its root", async () => {
         const root = tempDir("jarvis-jobs-");
         const outside = tempDir("jarvis-outside-");

@@ -12,6 +12,7 @@
 // Must stay the first import: dotenv loads `.env` into `process.env` before
 // `config.ts` reads it. Real environment variables always win over the file.
 import "dotenv/config";
+import path from "node:path";
 import { createApp } from "./app";
 import {
     getAppConfig,
@@ -42,6 +43,11 @@ import { createJobCreator } from "./scheduler/create";
 import { createJobRunner } from "./scheduler/runner";
 import { createScheduler } from "./scheduler/loop";
 import { createCodingJobService } from "./sandbox/service";
+import {
+    createSandboxProxy,
+    loadProxySecret,
+    type SandboxProxy,
+} from "./sandbox/proxy";
 import { createDockerSandbox } from "./sandbox/docker";
 import { createWorkspaceManager } from "./sandbox/workspace";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
@@ -257,21 +263,57 @@ const notifications =
 // before the graph so the `startCodingJob` tool can be handed the supervisor;
 // recovery runs below, once the socket layer is up, so an adopted job's
 // announcement has a hub to land in.
-const codingJobs = appConfig.sandbox
-    ? createCodingJobService({
-          ledger: store,
-          runner: createDockerSandbox({
-              socketPath: appConfig.sandbox.socketPath,
-          }),
-          workspace: createWorkspaceManager({
-              root: appConfig.sandbox.workspaceRoot,
-              hostRoot: appConfig.sandbox.workspaceHostRoot,
-              repos: appConfig.sandbox.repos,
-          }),
-          config: appConfig.sandbox,
-          ...(notifications ? { notifications } : {}),
-      })
-    : undefined;
+//
+// The broker (#141 phase 7) lives here too: it holds the provider key and each
+// job talks to it with a token derived from its own id, so nothing in a
+// container's environment is a credential that outlives the job.
+let sandboxProxy: SandboxProxy | undefined;
+let codingJobs: ReturnType<typeof createCodingJobService> | undefined;
+if (appConfig.sandbox) {
+    const sandbox = appConfig.sandbox;
+    const proxySecret = loadProxySecret(
+        sandbox.proxySecret,
+        path.join(path.dirname(appConfig.appDbPath), "sandbox-proxy.key"),
+    );
+    sandboxProxy = createSandboxProxy({
+        bind: sandbox.proxyBind,
+        port: sandbox.proxyPort,
+        url: sandbox.proxyUrl,
+        secret: proxySecret,
+        upstreamBaseUrl: sandbox.llmBaseUrl,
+        model: sandbox.model,
+        apiKey: sandbox.apiKey,
+        maxRequestsPerJob: sandbox.proxyMaxRequestsPerJob,
+        // Per request, not once: a settle, cancel or prune revokes the token
+        // immediately, even one that leaked out of the container.
+        isJobActive: (jobId) => {
+            const job = store.getCodingJobById(jobId);
+            return (
+                job !== null &&
+                (job.state === "queued" || job.state === "running")
+            );
+        },
+    });
+    // The listener starts at the bottom of this file, chained ahead of coding
+    // recovery: every job now depends on it, and an adopted container's first
+    // model call must find it open. A broker that cannot bind is a sandbox that
+    // cannot run, and exiting is better than a silent "the model refused" on
+    // every job.
+    codingJobs = createCodingJobService({
+        ledger: store,
+        runner: createDockerSandbox({
+            socketPath: sandbox.socketPath,
+        }),
+        workspace: createWorkspaceManager({
+            root: sandbox.workspaceRoot,
+            hostRoot: sandbox.workspaceHostRoot,
+            repos: sandbox.repos,
+        }),
+        config: sandbox,
+        proxy: { url: sandbox.proxyUrl, secret: proxySecret },
+        ...(notifications ? { notifications } : {}),
+    });
+}
 
 // Say so at boot. The tool's absence is silent otherwise, and "the model
 // refused to touch code" is exactly what a missing registration looks like
@@ -280,9 +322,11 @@ if (appConfig.sandbox && codingJobs) {
     logger.info(
         `Coding sandbox active: image=${appConfig.sandbox.image}, repos=${
             appConfig.sandbox.repos.join(",") || "(none)"
-        }, model=${appConfig.sandbox.model || "(unset)"}, apiKey=${
+        }, model=${appConfig.sandbox.model || "(unset)"}, proxy=${
+            appConfig.sandbox.proxyUrl
+        }, apiKey=${
             appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"
-        }`,
+        } (held by the broker)`,
     );
 }
 
@@ -389,5 +433,18 @@ void scheduler?.start();
 // Coding jobs are reconciled for the same reason: a `running` row belongs to a
 // process that died, and its container may still be running (adopt) or not
 // (prune). Nothing can start a new job until the tool is wired, so this is the
-// only job-path at boot.
-void codingJobs?.recover();
+// only job-path at boot — and it waits for the broker's listener, so an adopted
+// container's first model call does not race the bind.
+void (sandboxProxy === undefined
+    ? Promise.resolve()
+    : sandboxProxy
+          .start()
+          .then(() => codingJobs?.recover())
+          .catch((err: unknown) => {
+              logger.error(
+                  `Coding sandbox proxy failed to start: ${
+                      err instanceof Error ? err.message : String(err)
+                  }`,
+              );
+              process.exit(1);
+          }));

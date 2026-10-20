@@ -142,7 +142,7 @@ The container posture is fixed in `src/sandbox/docker.ts`: the workspace is the
 only mount (read-write), the root filesystem is read-only with tmpfs for
 scratch, capabilities are dropped, `no-new-privileges` is set, and CPU /
 memory / process / wall-clock ceilings apply. A job cannot reach the host's
-home directory, the socket, or any credential it was not handed.
+home directory, the socket, or the provider key (see the broker below).
 
 A job clones its allowlisted repository into `~/.jarvis/jobs/<id>/repo` on a
 `jarvis/<slug>-<id>` branch, runs the agent against that directory, records
@@ -154,6 +154,17 @@ row settled `failed` with the reason) or **resumes** it (adopt the still-running
 container and keep watching) — a choice stored per job and made when it is
 created.
 
+The host-side git calls are a trust boundary too: after the agent has run,
+`.git` is hostile input to _our_ git. `collect` and `commit` rewrite
+`.git/config` to the minimal clone shape (core plus origin, with the URL
+validated to one line) before any host git touches the tree, so a planted
+`pre-commit` hook, `core.hooksPath`, `filter.*.clean`, `diff.external` or
+`gpg.program` cannot execute on the host; every host call also passes
+`-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false` and
+`-c commit.gpgsign=false`, and diffs add `--no-ext-diff --no-textconv`. The
+safety-net commit is authored `JARVIS <jarvis@localhost>`, so a CI host with no
+git identity still commits.
+
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with
 `JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key). Big Pickle is a free
@@ -163,9 +174,21 @@ client the free tier admits. A Go-plan model works too — point
 and `JARVIS_SANDBOX_MODEL` at the Go id. A local model works as well: point the
 URL at the host and the model at the local id, and leave the key empty; no key
 is required for a local endpoint, and a remote one without a key is refused
-before anything is cloned. The key reaches the job container's environment and
-is therefore visible to the agent: use an OpenCode workspace key rather than a
-personal provider key until the server-side proxy (#141) exists.
+before anything is cloned.
+
+**The key never enters the container.** `src/sandbox/proxy.ts` is a broker the
+server runs: it keeps `JARVIS_SANDBOX_API_KEY`, and each job is handed
+`jv1.<jobId>.<HMAC(secret, jobId)>` as its provider key plus the broker's URL.
+Every request re-checks the ledger, so a settled, cancelled or pruned job is
+refused immediately even if its token leaked; only `POST /v1/chat/completions`
+and `GET /v1/models`, only the configured model, and only within a per-job
+request cap are forwarded. The HMAC secret persists in
+`~/.jarvis/sandbox-proxy.key` (private, `0600`) unless
+`JARVIS_SANDBOX_PROXY_SECRET` supplies one, so a job that `resume` adopts after
+a restart keeps working. In dev the broker binds loopback — a container's
+request arrives there through `host.docker.internal`, and the LAN cannot reach
+it; the compose overlay instead gives the broker an unpublished port on the
+`jarvis-sandbox` network, which the job containers join.
 
 Ask for one in chat: the `startCodingJob` tool is registered whenever the
 sandbox is on, accepts only an allowlisted repository, and is **owner-only** —
@@ -196,6 +219,12 @@ non-zero unless the job settled `ok`.
 | `JARVIS_SANDBOX_LLM_BASE_URL`        | `https://opencode.ai/inference/openai/v1` | the OpenAI-compatible endpoint a job container talks to                     |
 | `JARVIS_SANDBOX_API_KEY`             | _(empty)_                                 | the provider key; required for a remote endpoint, never logged              |
 | `JARVIS_SANDBOX_EXTRA_HOSTS`         | `host.docker.internal:host-gateway`       | extra `/etc/hosts` entries; `none` disables                                 |
+| `JARVIS_SANDBOX_PROXY_BIND`          | `127.0.0.1`                               | the broker's interface; compose binds `0.0.0.0` on its private network      |
+| `JARVIS_SANDBOX_PROXY_PORT`          | `54322`                                   | the broker's port                                                           |
+| `JARVIS_SANDBOX_PROXY_URL`           | `http://host.docker.internal:54322/v1`    | the broker URL a job is handed (compose: `http://jarvis:54322/v1`)          |
+| `JARVIS_SANDBOX_PROXY_SECRET`        | _(private file)_                          | the HMAC secret; `~/.jarvis/sandbox-proxy.key` when unset                   |
+| `JARVIS_SANDBOX_PROXY_MAX_REQUESTS`  | `500`                                     | requests one job may make through the broker before `429`                   |
+| `JARVIS_SANDBOX_NETWORK`             | _(engine default bridge)_                 | the Docker network job containers join (compose: `jarvis-sandbox`)          |
 
 #### Container environment reference
 
@@ -550,6 +579,22 @@ socket's peer address (`request.socket.remoteAddress`, captured at handshake),
 so behind a reverse proxy it collapses toward one global bucket — the same
 `req.ip` caveat [below](#scope-and-caveats), tracked with
 [#63](https://github.com/LukeStanbery89/jarvis-v2/issues/63).
+
+### Sandbox broker — per-job request quota — `src/sandbox/proxy.ts`
+
+A coding job's agent talks to the credential broker rather than to the
+provider, and the broker counts **accepted requests per job**
+(`JARVIS_SANDBOX_PROXY_MAX_REQUESTS`, default 500). Past the cap it answers
+`429` with `insufficient_quota`. The counter lives in memory and is dropped
+once the job is no longer running, so it is a lifetime budget for one job, not
+a rate.
+
+It is deliberately neither `RateLimiter` (that throttle guards password
+guesses and clears on success) nor `FixedWindowQuota` (a job has no window to
+renew into — the budget is meant to end with the job). The broker also caps a
+request body at 8 MiB and refuses any model other than the configured one,
+which together with the token's job scope is the cost bound the broker exists
+to enforce.
 
 ### Notification delivery budget — `src/notify/service.ts`
 
