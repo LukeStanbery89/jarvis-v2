@@ -44,6 +44,7 @@ import type {
     SandboxRunner,
     SandboxSpec,
 } from "./types";
+import { deriveJobToken } from "./proxy";
 import type { PreparedWorkspace, WorkspaceManager } from "./workspace";
 
 /** How much of a job's output is kept on its row (the tail, not the whole log). */
@@ -144,11 +145,22 @@ export function createCodingJobService(options: {
     runner: SandboxRunner;
     workspace: WorkspaceManager;
     config: SandboxConfig;
+    /**
+     * The credential broker a job talks to instead of the provider (#141
+     * phase 7). When present, the container's base URL is the broker and its
+     * `apiKey` is a token derived from its own job id; the real provider key
+     * never enters the container.
+     *
+     * Absent means the direct shape (a job reaches the provider with
+     * `config.apiKey`), which exists for tests and for a deliberately direct
+     * deployment.
+     */
+    proxy?: { url: string; secret: string };
     notifications?: Pick<NotificationService, "notify">;
     now?: () => Date;
     newId?: () => string;
 }): CodingJobService {
-    const { ledger, runner, workspace, config, notifications } = options;
+    const { ledger, runner, workspace, config, notifications, proxy } = options;
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
     const nowIso = () => now().toISOString();
@@ -379,17 +391,23 @@ export function createCodingJobService(options: {
                 JARVIS_JOB_REPO: job.repo,
                 JARVIS_JOB_BRANCH: job.branch,
                 JARVIS_JOB_PROMPT: task,
-                // The endpoint and the id are separate on purpose: the agent's
-                // provider block is generated at container start from these,
-                // so a deployment changes its model without rebuilding the
-                // image and no repository can supply a provider.
-                JARVIS_JOB_LLM_BASE_URL: config.llmBaseUrl,
+                // The agent talks to the broker, never to the provider: the
+                // key stays in this process and the container holds a token
+                // derived from its own job id (#141 phase 7). Without a broker
+                // (tests, or a deliberately direct deployment) the old shape
+                // applies.
+                JARVIS_JOB_LLM_BASE_URL: proxy?.url ?? config.llmBaseUrl,
                 JARVIS_JOB_MODEL_ID: config.model,
-                // Present only when configured; a local endpoint needs none.
-                // Never logged here — the boot line records set/unset only.
-                ...(config.apiKey.length > 0
-                    ? { JARVIS_JOB_API_KEY: config.apiKey }
-                    : {}),
+                ...(proxy !== undefined
+                    ? {
+                          JARVIS_JOB_API_KEY: deriveJobToken(
+                              proxy.secret,
+                              job.id,
+                          ),
+                      }
+                    : config.apiKey.length > 0
+                      ? { JARVIS_JOB_API_KEY: config.apiKey }
+                      : {}),
                 HOME: "/home/job",
             },
             limits: {
@@ -404,6 +422,7 @@ export function createCodingJobService(options: {
             tmpfs: {
                 "/home/job": "rw,size=256m,uid=10001,gid=10001,mode=0700",
             },
+            ...(config.network.length > 0 ? { network: config.network } : {}),
             extraHosts: config.extraHosts,
         };
     }

@@ -462,6 +462,49 @@ export interface SandboxConfig {
      * host-gateway alias the model is reached through.
      */
     readonly extraHosts: readonly string[];
+    /**
+     * Where the broker listens (`JARVIS_SANDBOX_PROXY_BIND`), default
+     * `127.0.0.1`.
+     *
+     * Loopback is the safe default because OrbStack and Docker Desktop deliver
+     * a container's request to the host's loopback: jobs reach the broker
+     * through `host.docker.internal` while the LAN cannot. A compose deployment
+     * binds `0.0.0.0` on an unpublished port instead, inside the private
+     * network the job containers join.
+     */
+    readonly proxyBind: string;
+    /** The broker's port (`JARVIS_SANDBOX_PROXY_PORT`), default 54322. */
+    readonly proxyPort: number;
+    /**
+     * The URL a job's agent uses (`JARVIS_SANDBOX_PROXY_URL`), default
+     * `http://host.docker.internal:<port>/v1`.
+     *
+     * Dev reaches the broker through the host-gateway name; compose points this
+     * at the server service on the private sandbox network, where the broker's
+     * port is not published at all.
+     */
+    readonly proxyUrl: string;
+    /**
+     * The broker's HMAC secret (`JARVIS_SANDBOX_PROXY_SECRET`).
+     *
+     * Empty means "load the private file beside the database, creating it on
+     * first boot". It must stay stable across restarts: a resumed job's
+     * container carries a token signed with the previous process's secret.
+     */
+    readonly proxySecret: string;
+    /**
+     * Requests one job may make through the broker
+     * (`JARVIS_SANDBOX_PROXY_MAX_REQUESTS`), default 500.
+     */
+    readonly proxyMaxRequestsPerJob: number;
+    /**
+     * The Docker network job containers join (`JARVIS_SANDBOX_NETWORK`).
+     *
+     * Empty uses the engine's default bridge. Compose sets the private network
+     * that also carries the broker, which is what keeps the broker unreachable
+     * from the LAN without publishing its port.
+     */
+    readonly network: string;
 }
 
 /** Laptop-safe sandbox defaults: one job, two cores, 4 GiB, 45 minutes. */
@@ -483,6 +526,16 @@ export const DEFAULT_SANDBOX_CONFIG = {
     model: "big-pickle",
     llmBaseUrl: "https://opencode.ai/inference/openai/v1",
     apiKey: "",
+    // The broker (#141 phase 7): a job gets a derived token, never the key.
+    // Loopback is the dev-safe bind (containers arrive on it through
+    // host.docker.internal); compose overrides all three for its private
+    // network.
+    proxyBind: "127.0.0.1",
+    proxyPort: 54322,
+    proxyUrl: "http://host.docker.internal:54322/v1",
+    proxySecret: "",
+    proxyMaxRequestsPerJob: 500,
+    network: "",
 } as const;
 
 /**
@@ -1235,61 +1288,86 @@ export function getAppConfig(): AppConfig {
         // runner is built from this block only when it is present.
         sandbox:
             process.env.JARVIS_SANDBOX === "docker"
-                ? {
-                      image:
-                          process.env.JARVIS_SANDBOX_IMAGE ??
-                          DEFAULT_SANDBOX_CONFIG.image,
-                      socketPath:
-                          process.env.JARVIS_SANDBOX_DOCKER_SOCKET ??
-                          DEFAULT_SANDBOX_CONFIG.socketPath,
-                      workspaceRoot: sandboxWorkspaceRoot,
-                      // Equal to the server's view unless a container
-                      // deployment says otherwise: the daemon resolves bind
-                      // sources on the host, not inside the server.
-                      workspaceHostRoot:
-                          process.env.JARVIS_SANDBOX_WORKSPACE_HOST_ROOT ??
-                          sandboxWorkspaceRoot,
-                      maxJobs: numberOr(
-                          "JARVIS_SANDBOX_MAX_JOBS",
-                          process.env.JARVIS_SANDBOX_MAX_JOBS,
-                          DEFAULT_SANDBOX_CONFIG.maxJobs,
-                      ),
-                      cpus: numberOr(
-                          "JARVIS_SANDBOX_CPUS",
-                          process.env.JARVIS_SANDBOX_CPUS,
-                          DEFAULT_SANDBOX_CONFIG.cpus,
-                      ),
-                      memoryMb: numberOr(
-                          "JARVIS_SANDBOX_MEMORY_MB",
-                          process.env.JARVIS_SANDBOX_MEMORY_MB,
-                          DEFAULT_SANDBOX_CONFIG.memoryMb,
-                      ),
-                      pids: numberOr(
-                          "JARVIS_SANDBOX_PIDS",
-                          process.env.JARVIS_SANDBOX_PIDS,
-                          DEFAULT_SANDBOX_CONFIG.pids,
-                      ),
-                      // Minutes in the environment, milliseconds in the
-                      // config: an operator thinks in minutes, the supervisor
-                      // compares instants.
-                      wallClockMs:
-                          numberOr(
-                              "JARVIS_SANDBOX_WALL_CLOCK_MINUTES",
-                              process.env.JARVIS_SANDBOX_WALL_CLOCK_MINUTES,
-                              DEFAULT_SANDBOX_CONFIG.wallClockMs / 60_000,
-                          ) * 60_000,
-                      repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
-                      model:
-                          process.env.JARVIS_SANDBOX_MODEL ??
-                          DEFAULT_SANDBOX_CONFIG.model,
-                      llmBaseUrl:
-                          process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
-                          DEFAULT_SANDBOX_CONFIG.llmBaseUrl,
-                      apiKey: process.env.JARVIS_SANDBOX_API_KEY ?? "",
-                      extraHosts: parseExtraHosts(
-                          process.env.JARVIS_SANDBOX_EXTRA_HOSTS,
-                      ),
-                  }
+                ? (() => {
+                      const proxyPort = numberOr(
+                          "JARVIS_SANDBOX_PROXY_PORT",
+                          process.env.JARVIS_SANDBOX_PROXY_PORT,
+                          DEFAULT_SANDBOX_CONFIG.proxyPort,
+                      );
+                      return {
+                          image:
+                              process.env.JARVIS_SANDBOX_IMAGE ??
+                              DEFAULT_SANDBOX_CONFIG.image,
+                          socketPath:
+                              process.env.JARVIS_SANDBOX_DOCKER_SOCKET ??
+                              DEFAULT_SANDBOX_CONFIG.socketPath,
+                          workspaceRoot: sandboxWorkspaceRoot,
+                          // Equal to the server's view unless a container
+                          // deployment says otherwise: the daemon resolves bind
+                          // sources on the host, not inside the server.
+                          workspaceHostRoot:
+                              process.env.JARVIS_SANDBOX_WORKSPACE_HOST_ROOT ??
+                              sandboxWorkspaceRoot,
+                          maxJobs: numberOr(
+                              "JARVIS_SANDBOX_MAX_JOBS",
+                              process.env.JARVIS_SANDBOX_MAX_JOBS,
+                              DEFAULT_SANDBOX_CONFIG.maxJobs,
+                          ),
+                          cpus: numberOr(
+                              "JARVIS_SANDBOX_CPUS",
+                              process.env.JARVIS_SANDBOX_CPUS,
+                              DEFAULT_SANDBOX_CONFIG.cpus,
+                          ),
+                          memoryMb: numberOr(
+                              "JARVIS_SANDBOX_MEMORY_MB",
+                              process.env.JARVIS_SANDBOX_MEMORY_MB,
+                              DEFAULT_SANDBOX_CONFIG.memoryMb,
+                          ),
+                          pids: numberOr(
+                              "JARVIS_SANDBOX_PIDS",
+                              process.env.JARVIS_SANDBOX_PIDS,
+                              DEFAULT_SANDBOX_CONFIG.pids,
+                          ),
+                          // Minutes in the environment, milliseconds in the
+                          // config: an operator thinks in minutes, the supervisor
+                          // compares instants.
+                          wallClockMs:
+                              numberOr(
+                                  "JARVIS_SANDBOX_WALL_CLOCK_MINUTES",
+                                  process.env.JARVIS_SANDBOX_WALL_CLOCK_MINUTES,
+                                  DEFAULT_SANDBOX_CONFIG.wallClockMs / 60_000,
+                              ) * 60_000,
+                          repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
+                          model:
+                              process.env.JARVIS_SANDBOX_MODEL ??
+                              DEFAULT_SANDBOX_CONFIG.model,
+                          llmBaseUrl:
+                              process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
+                              DEFAULT_SANDBOX_CONFIG.llmBaseUrl,
+                          apiKey: process.env.JARVIS_SANDBOX_API_KEY ?? "",
+                          extraHosts: parseExtraHosts(
+                              process.env.JARVIS_SANDBOX_EXTRA_HOSTS,
+                          ),
+                          // The broker a job talks to instead of the provider: the
+                          // key stays in this process. The URL defaults to the
+                          // dev-safe host-gateway spelling and follows the port.
+                          proxyBind:
+                              process.env.JARVIS_SANDBOX_PROXY_BIND ??
+                              DEFAULT_SANDBOX_CONFIG.proxyBind,
+                          proxyPort,
+                          proxyUrl:
+                              process.env.JARVIS_SANDBOX_PROXY_URL ??
+                              `http://host.docker.internal:${proxyPort}/v1`,
+                          proxySecret:
+                              process.env.JARVIS_SANDBOX_PROXY_SECRET ?? "",
+                          proxyMaxRequestsPerJob: numberOr(
+                              "JARVIS_SANDBOX_PROXY_MAX_REQUESTS",
+                              process.env.JARVIS_SANDBOX_PROXY_MAX_REQUESTS,
+                              DEFAULT_SANDBOX_CONFIG.proxyMaxRequestsPerJob,
+                          ),
+                          network: process.env.JARVIS_SANDBOX_NETWORK ?? "",
+                      };
+                  })()
                 : undefined,
         attachments:
             process.env.JARVIS_ATTACHMENT_TTL_MINUTES === undefined &&

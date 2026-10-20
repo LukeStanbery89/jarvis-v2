@@ -29,7 +29,15 @@ const SANDBOX_VARS = [
     "JARVIS_SANDBOX_WALL_CLOCK_MINUTES",
     "JARVIS_SANDBOX_REPOS",
     "JARVIS_SANDBOX_MODEL",
+    "JARVIS_SANDBOX_LLM_BASE_URL",
+    "JARVIS_SANDBOX_API_KEY",
     "JARVIS_SANDBOX_EXTRA_HOSTS",
+    "JARVIS_SANDBOX_PROXY_BIND",
+    "JARVIS_SANDBOX_PROXY_PORT",
+    "JARVIS_SANDBOX_PROXY_URL",
+    "JARVIS_SANDBOX_PROXY_SECRET",
+    "JARVIS_SANDBOX_PROXY_MAX_REQUESTS",
+    "JARVIS_SANDBOX_NETWORK",
 ];
 
 afterEach(() => {
@@ -67,6 +75,12 @@ describe("sandbox config", () => {
             llmBaseUrl: "https://opencode.ai/inference/openai/v1",
             apiKey: "",
             extraHosts: ["host.docker.internal:host-gateway"],
+            proxyBind: "127.0.0.1",
+            proxyPort: 54322,
+            proxyUrl: "http://host.docker.internal:54322/v1",
+            proxySecret: "",
+            proxyMaxRequestsPerJob: 500,
+            network: "",
         });
         // One default home for the workspace tree, beside the database.
         expect(defaultSandboxWorkspaceRoot()).toBe(
@@ -90,6 +104,12 @@ describe("sandbox config", () => {
         process.env.JARVIS_SANDBOX_LLM_BASE_URL = "http://model.lan:1234/v1";
         process.env.JARVIS_SANDBOX_API_KEY = "sk-test";
         process.env.JARVIS_SANDBOX_EXTRA_HOSTS = "db:172.18.0.2";
+        process.env.JARVIS_SANDBOX_PROXY_BIND = "0.0.0.0";
+        process.env.JARVIS_SANDBOX_PROXY_PORT = "6000";
+        process.env.JARVIS_SANDBOX_PROXY_URL = "http://jarvis:6000/v1";
+        process.env.JARVIS_SANDBOX_PROXY_SECRET = "s".repeat(32);
+        process.env.JARVIS_SANDBOX_PROXY_MAX_REQUESTS = "42";
+        process.env.JARVIS_SANDBOX_NETWORK = "jarvis-sandbox";
 
         const sandbox = getAppConfig().sandbox;
         expect(sandbox).toMatchObject({
@@ -107,7 +127,22 @@ describe("sandbox config", () => {
             llmBaseUrl: "http://model.lan:1234/v1",
             apiKey: "sk-test",
             extraHosts: ["db:172.18.0.2"],
+            proxyBind: "0.0.0.0",
+            proxyPort: 6000,
+            proxyUrl: "http://jarvis:6000/v1",
+            proxySecret: "s".repeat(32),
+            proxyMaxRequestsPerJob: 42,
+            network: "jarvis-sandbox",
         });
+    });
+
+    it("derives the broker URL from the port unless it is named", () => {
+        process.env.JARVIS_SANDBOX = "docker";
+        process.env.JARVIS_SANDBOX_PROXY_PORT = "6000";
+
+        expect(getAppConfig().sandbox?.proxyUrl).toBe(
+            "http://host.docker.internal:6000/v1",
+        );
     });
 
     it("lets an operator turn the host alias off", () => {

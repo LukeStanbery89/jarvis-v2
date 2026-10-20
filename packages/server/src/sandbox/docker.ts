@@ -177,7 +177,7 @@ export function buildCreateOptions(spec: SandboxSpec): DockerCreateOptions {
             // The runner removes containers itself, so a crash leaves the
             // evidence the reaper needs (logs) rather than a vanished box.
             AutoRemove: false,
-            NetworkMode: "bridge",
+            NetworkMode: spec.network ?? "bridge",
             ExtraHosts: [...(spec.extraHosts ?? DEFAULT_EXTRA_HOSTS)],
         },
     };

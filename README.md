@@ -94,7 +94,9 @@ too: point `JARVIS_SANDBOX_LLM_BASE_URL` at
 `https://opencode.ai/inference/go/openai/v1` and pick a Go id. A local model
 works instead: point
 `JARVIS_SANDBOX_LLM_BASE_URL` at `http://host.docker.internal:1234/v1`,
-set `JARVIS_SANDBOX_MODEL` to the local id, and leave the key empty. Ask JARVIS
+set `JARVIS_SANDBOX_MODEL` to the local id, and leave the key empty. The key
+stays in the server: each job is handed a token the broker derives from its own
+id. Ask JARVIS
 to fix something in one of those repositories, or check the whole path by hand:
 
 ```sh

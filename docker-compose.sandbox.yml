@@ -3,7 +3,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
 #
 # The base file deliberately does not grant what a coding job needs. This
-# overlay adds exactly three things:
+# overlay adds exactly four things:
 #
 #   1. **The Docker socket.** Root-equivalent by definition — a process with it
 #      can do anything the daemon can. It is a deliberate owner-only v1
@@ -20,6 +20,10 @@
 #   3. **The sandbox switch and its allowlist.** `JARVIS_SANDBOX=docker` is what
 #      makes the surface exist at all; `JARVIS_SANDBOX_REPOS` starts empty, so a
 #      deployment that has not named a repository cannot clone one.
+#   4. **A private network for the credential broker.** The broker holds the
+#      provider key; jobs reach it at `http://jarvis:54322` on `jarvis-sandbox`,
+#      a network with no published ports. Nothing outside it can open a socket
+#      to the broker, and the container never holds the key itself.
 #
 # The job image itself is built separately (`docker build -f Dockerfile.job -t
 # jarvis-job:latest .`) and is not started by compose: each job is one
@@ -35,15 +39,30 @@ services:
             JARVIS_SANDBOX_WORKSPACE_HOST_ROOT: "${JARVIS_SANDBOX_WORKSPACE_HOST_ROOT:-${PWD}/.jarvis/jobs}"
             JARVIS_SANDBOX_REPOS: "${JARVIS_SANDBOX_REPOS:-}"
             JARVIS_SANDBOX_MODEL: "${JARVIS_SANDBOX_MODEL:-big-pickle}"
-            # The OpenCode workspace key (the same key serves the Go plan and
-            # the Console/free endpoint below). It reaches the job container's
-            # environment; use an OpenCode workspace key, never a personal
-            # provider key, until the server-side proxy exists.
+            # The OpenCode workspace key. It stays in the server now: each job
+            # is handed a token the broker derives from its own id (#141
+            # phase 7). Use a workspace key, never a personal provider key.
             JARVIS_SANDBOX_API_KEY: "${JARVIS_SANDBOX_API_KEY:-}"
             # The OpenCode Console API, where Big Pickle is free. Override for
             # the Go endpoint, another provider, or a local model (leave the key
             # empty for a local one).
             JARVIS_SANDBOX_LLM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-https://opencode.ai/inference/openai/v1}"
+            # The broker listens inside this container on a port that is NOT
+            # published: only containers on `jarvis-sandbox` can reach it, and
+            # the job is told to use the service name. That is the network
+            # boundary that keeps the broker off the LAN.
+            JARVIS_SANDBOX_PROXY_BIND: "0.0.0.0"
+            JARVIS_SANDBOX_PROXY_URL: "${JARVIS_SANDBOX_PROXY_URL:-http://jarvis:54322/v1}"
+            JARVIS_SANDBOX_NETWORK: "${JARVIS_SANDBOX_NETWORK:-jarvis-sandbox}"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
             - ./.jarvis/jobs:/home/jarvis/.jarvis/jobs
+        networks:
+            - default
+            # The private plane the broker and every job share. Created (not
+            # published) here; a job container joins it by name.
+            - sandbox
+
+networks:
+    sandbox:
+        name: jarvis-sandbox

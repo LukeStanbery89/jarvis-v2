@@ -91,6 +91,14 @@ export interface SandboxSpec {
      * engine already provides that name can pass an empty list.
      */
     extraHosts?: readonly string[];
+    /**
+     * The Docker network the container joins.
+     *
+     * Absent means the engine's default bridge. Compose sets a private network
+     * shared with the broker, so the job can reach it without the broker's port
+     * being published anywhere.
+     */
+    network?: string;
 }
 
 /** One of JARVIS's containers, as a listing sees it. */
