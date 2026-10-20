@@ -153,8 +153,8 @@ export function createCodingTool(deps: CodingToolDeps) {
             name: "startCodingJob",
             description:
                 "Start a sandboxed coding agent on an allowlisted repository. " +
-                "Use only when the user explicitly asks for code to be written, a bug fixed, or a feature implemented — " +
-                "it clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
+                "Use when the user asks for any change to the repository's files — code, documentation, comments, configuration, or assets — or explicitly asks to start a coding job; a one-line edit still counts. " +
+                "It clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
                 "It does not return the work itself, so do not wait for it in the reply. " +
                 "`repo` may be omitted when the user did not name one and exactly one repository is allowed. " +
                 "Owner-only, one job at a time.",
