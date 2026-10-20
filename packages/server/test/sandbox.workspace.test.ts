@@ -318,6 +318,41 @@ describe("workspace lifecycle", () => {
         expect(existsSync(marker)).toBe(false);
     });
 
+    it("refuses a .git that is a gitfile rather than a directory", async () => {
+        const origin = makeOrigin();
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [origin.url],
+        });
+        const repo = manager.allows(origin.url);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-gitfile",
+            repo,
+            branch: "jarvis/test",
+        });
+        rmSync(path.join(prepared.path, ".git"), {
+            recursive: true,
+            force: true,
+        });
+        writeFileSync(
+            path.join(prepared.path, ".git"),
+            `gitdir: ${prepared.path}/elsewhere\n`,
+        );
+
+        await expect(
+            manager.commit({
+                workspacePath: prepared.path,
+                message: "JARVIS: change it",
+            }),
+        ).rejects.toThrow(/not a real directory/);
+        await expect(
+            manager.collect({ workspacePath: prepared.path }),
+        ).rejects.toThrow(/not a real directory/);
+    });
+
     it("never deletes outside its root", async () => {
         const root = tempDir("jarvis-jobs-");
         const outside = tempDir("jarvis-outside-");

@@ -21,7 +21,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { ensurePrivateDir } from "@lukestanbery/jarvis-auth";
@@ -238,18 +238,48 @@ const defaultGit: GitRunner = async (args, options = {}) => {
  * survive, and the URL is validated to one boring line so a newline cannot
  * smuggle a second section back in.
  *
- * Best-effort by design: a workspace with no `.git/config` (already removed)
- * has nothing to rewrite, and the caller's git call then fails honestly.
+ * It fails closed on a shape it cannot vouch for: a `.git` that is a gitfile or
+ * symlink (host git would read a config this rewrite never saw) and a
+ * `.git/config` that is a symlink or not a regular file both throw. The rewrite
+ * is written beside the file and renamed into place, so it replaces a symlink
+ * rather than following one.
+ *
+ * A workspace with no `.git` has nothing to strip, and the caller's git command
+ * then fails honestly.
  *
  * @param workspacePath - The server-side path of the job's clone.
  */
 export function sanitizeGitConfig(workspacePath: string): void {
-    const configPath = path.join(workspacePath, ".git", "config");
-    let original: string;
+    const gitDir = path.join(workspacePath, ".git");
+    let gitStat;
     try {
-        original = readFileSync(configPath, "utf8");
+        gitStat = lstatSync(gitDir);
     } catch {
+        // No `.git` at all: there is no behavior to strip, and the caller's
+        // git command will fail honestly.
         return;
+    }
+    // A gitfile or symlink here names a directory outside this rewrite; host
+    // git would read *that* config, hooks and filters included. Refuse rather
+    // than guess — a job has no legitimate reason to replace `.git`.
+    if (!gitStat.isDirectory()) {
+        throw new Error("the workspace's .git is not a real directory");
+    }
+    const configPath = path.join(gitDir, "config");
+    let original = "";
+    try {
+        // A symlinked config could point at a host file (read or, worse,
+        // overwritten by the rewrite), and a FIFO would block the read.
+        if (!lstatSync(configPath).isFile()) {
+            throw new Error(
+                "the workspace's .git/config is not a regular file",
+            );
+        }
+        original = readFileSync(configPath, "utf8");
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw err;
+        }
     }
     const url = /^\s*url\s*=\s*(.+)$/m.exec(original)?.[1]?.trim() ?? "";
     // A clone URL, or nothing. The first line only: `(.+)` cannot cross a
@@ -274,7 +304,14 @@ export function sanitizeGitConfig(workspacePath: string): void {
         );
     }
     lines.push("");
-    writeFileSync(configPath, lines.join("\n"), { mode: 0o600 });
+    // Write beside it and rename: a rename replaces a symlink instead of
+    // following it, so this cannot be aimed at a file outside the workspace.
+    const temp = path.join(
+        gitDir,
+        `.config.jarvis-${process.pid}-${Date.now()}`,
+    );
+    writeFileSync(temp, lines.join("\n"), { mode: 0o600, flag: "wx" });
+    renameSync(temp, configPath);
 }
 
 /**
