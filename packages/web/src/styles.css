@@ -19,6 +19,12 @@
     --primary-wash: rgba(0, 221, 255, 0.08);
     --panel: #000000;
     --bg: #000000;
+    /* A control's own fill, lifted off the black page enough to read as a
+       button rather than an outline drawn on nothing — and the same cyan's
+       stronger step while the pointer is on it. The composer's transparent
+       buttons were invisible against `--bg`, which is also `#000`. */
+    --control: rgba(0, 221, 255, 0.1);
+    --control-strong: rgba(0, 221, 255, 0.18);
     --text: var(--primary);
     --error: #ff6b6b;
     --attention: #ffdd00;
@@ -555,8 +561,10 @@ textarea::placeholder {
 }
 
 /* The conversation is deliberately *not* a pane: the field shows through it and
-   the glass belongs to the bubbles (and the composer) instead, so each turn
-   reads as its own window lying on the background. */
+   the glass belongs to the bubbles instead, so each turn reads as its own
+   window lying on the background. The composer is not a pane either — its
+   textarea and buttons carry their own edges — so the transcript is the only
+   glass in the column. */
 .conversation {
     display: flex;
     flex-direction: column;
@@ -649,16 +657,16 @@ textarea::placeholder {
 .composer {
     display: flex;
     gap: 0.5rem;
-    padding: 0.75rem 1rem;
-    /* The conversation is not a pane any more, so the composer is: the one
-       window that stays put while the turns scroll past it. */
-    margin-top: 0.5rem;
-    background: var(--glass);
-    border: 1px solid var(--glass-line);
-    border-radius: var(--pane-radius);
-    box-shadow: var(--pane-shadow);
-    backdrop-filter: var(--glass-filter);
-    -webkit-backdrop-filter: var(--glass-filter);
+    /* Not a pane (#146 phase D): the controls sit on the field the way the
+       bubbles do, so the conversation has one fewer box around it. The
+       textarea carries its own surface and each button its own edge — which is
+       also why the padding shrank: it used to be the pane's inset, not just the
+       row's. */
+    /* No bottom padding: the `.chat` grid's own padding is the only gap
+       between the controls and the viewport, and doubling it was 20px of black
+       under the textarea. */
+    padding: 0.5rem 0.75rem 0;
+    margin-top: 0.25rem;
     flex-wrap: wrap;
 }
 
@@ -673,6 +681,10 @@ textarea::placeholder {
 @media (max-width: 48rem) {
     .chat {
         grid-template-columns: 1fr;
+        /* The composer carries no inline or bottom padding any more, so this is
+           the whole gap between the controls and the edge of the screen: half
+           the pane era's, sideways and down. */
+        padding: 0.75rem 0.5rem 0.5rem;
     }
 
     .sidebar {
@@ -761,7 +773,10 @@ textarea::placeholder {
     color: var(--text);
     border: 1px solid var(--primary-border);
     border-radius: 6px;
-    resize: vertical;
+    /* No drag handle: the box is already as tall as the composer on a phone,
+       and a resize grip on a chat input is a desktop affordance the layout does
+       not need — long drafts scroll inside `max-height` instead. */
+    resize: none;
 }
 
 .composer textarea:focus {
@@ -902,7 +917,7 @@ textarea::placeholder {
     width: 2.6rem;
     padding: 0;
     color: var(--primary);
-    background: transparent;
+    background: var(--control);
     border: 1px solid var(--primary-border);
 }
 
@@ -920,7 +935,7 @@ textarea::placeholder {
     width: 2.6rem;
     padding: 0;
     color: var(--primary);
-    background: transparent;
+    background: var(--control);
     border: 1px solid var(--primary-border);
 }
 
@@ -971,7 +986,7 @@ textarea::placeholder {
     width: 2.6rem;
     padding: 0;
     color: var(--primary);
-    background: transparent;
+    background: var(--control);
     border: 1px solid var(--primary-border);
 }
 
@@ -987,6 +1002,14 @@ textarea::placeholder {
     color: #000;
     background: var(--warning, #d97706);
     border-color: var(--warning, #d97706);
+}
+
+/* The composer's buttons lift one step under the pointer. Active send and the
+   stop square keep their own fills: their colour is the statement. */
+.composer button.mic:hover:not(:disabled):not(.active),
+.composer button.attach:hover:not(:disabled),
+.composer button.send:hover:not(:disabled):not(.active):not(.stop) {
+    background: var(--control-strong);
 }
 
 .chip .chip-remove {
@@ -2015,6 +2038,33 @@ textarea::placeholder {
     border-left-style: dashed;
 }
 
+/*
+ * Two columns of panes on a wide display (#146 phase D).
+ *
+ * A list page is capped at 64 rem, and a row at that width spends most of its
+ * life empty: the class, the moment, the title and three buttons occupy the
+ * first half, and the second is field. From the measure up, the rows pair up —
+ * half the page each — so one glance reads twice as many jobs.
+ *
+ * `minmax(0, 1fr)` rather than `1fr`: a grid track's default minimum is its
+ * content's, so a long title would widen its column past its share and push the
+ * pair off the page. Cards stretch to the taller of the two in a row, which is
+ * what keeps the panes reading as a grid rather than a ragged column.
+ */
+@media (min-width: 64rem) {
+    .page-rows .job-list,
+    .page-rows .notification-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* The empty state is the list's one row: it spans the pair. */
+    .page-rows .job-empty,
+    .page-rows .notification-empty {
+        grid-column: 1 / -1;
+    }
+}
+
 /* The page head, with the page's one action at its far end (#90 phase 7): the
    list is what the page is for, so New is beside the title rather than a bar of
    its own above it. */
@@ -2493,5 +2543,61 @@ textarea::placeholder {
        below it rather than 4px into it. */
     .toast-stack {
         top: 4.25rem;
+    }
+}
+
+/*
+ * The composer at phone widths (#146 phase D).
+ *
+ * The mic and the attachment share a column on the left instead of each taking
+ * a slot in one row, which gives the textarea the height of both buttons —
+ * about 2.3× a line — without taking width from it. Send spans the two rows at
+ * the end, so the three columns read as one control.
+ *
+ * Last in the sheet for a reason the `.icon-btn` rules taught twice: the base
+ * size of `.composer button.mic` and `.attach` is declared further down than
+ * the chat's own 48rem block, and at equal specificity the later rule wins.
+ */
+@media (max-width: 48rem) {
+    .composer {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        grid-template-rows: auto auto;
+        align-items: stretch;
+        /* The `.chat` grid insets this column on every side, so the composer
+           adds none of its own: a line's worth of pane padding on top of it was
+           24 px of black between the control and the screen. Keeps the top,
+           which is the gap to the transcript. */
+        padding: 0.5rem 0 0;
+    }
+
+    /* The chips are a row of their own, above the controls. */
+    .composer .pending-attachments {
+        grid-column: 1 / -1;
+    }
+
+    .composer button.mic {
+        grid-column: 1;
+        grid-row: 1;
+        width: 2.75rem;
+    }
+
+    .composer button.attach {
+        grid-column: 1;
+        grid-row: 2;
+        width: 2.75rem;
+    }
+
+    .composer textarea {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+        /* A floor under the stacked buttons' own height, so the box stays tall
+           even where a button renders shorter than 2.75rem. */
+        min-height: 5.75rem;
+    }
+
+    .composer button.send {
+        grid-column: 3;
+        grid-row: 1 / span 2;
     }
 }

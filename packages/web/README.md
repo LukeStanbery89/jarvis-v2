@@ -161,7 +161,10 @@ every row below it — jobs, settled rows and notification records alike, plus
 their empty states — become panes of their own, with more air between them. The
 page is the layout, not the window. The notification list's bordered scroll box
 became the gap between its panes, and a record's state moved to its header line
-beside the eyebrow, where a job's moment sits.
+beside the eyebrow, where a job's moment sits. From 64 rem the rows pair up in
+two columns of half the page each — a row at the measure spends most of its
+width empty — with `minmax(0, 1fr)` tracks so a long title cannot widen its
+column past its share.
 
 That
 block sits last in `styles.css` on purpose: it overrides sizes declared above,
