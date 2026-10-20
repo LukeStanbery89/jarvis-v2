@@ -26,6 +26,21 @@ set -eu
 
 config_dir="$HOME/.config/opencode"
 mkdir -p "$config_dir"
+
+# The key is embedded in a JSON document, and this script has no JSON escaper.
+# API keys are a restricted alphabet in practice; refuse anything else rather
+# than produce a config that fails in a confusing way deeper in the agent.
+api_field=""
+if [ -n "${JARVIS_JOB_API_KEY:-}" ]; then
+    case "$JARVIS_JOB_API_KEY" in
+        *[!A-Za-z0-9._-]*)
+            echo "JARVIS_JOB_API_KEY contains characters this entrypoint cannot safely embed" >&2
+            exit 1
+            ;;
+    esac
+    api_field=", \"apiKey\": \"${JARVIS_JOB_API_KEY}\""
+fi
+
 cat > "$config_dir/opencode.json" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -33,7 +48,7 @@ cat > "$config_dir/opencode.json" <<EOF
     "jarvis": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "JARVIS model",
-      "options": { "baseURL": "${JARVIS_JOB_LLM_BASE_URL}" },
+      "options": { "baseURL": "${JARVIS_JOB_LLM_BASE_URL}"${api_field} },
       "models": {
         "${JARVIS_JOB_MODEL_ID}": { "name": "${JARVIS_JOB_MODEL_ID}" }
       }
@@ -76,7 +91,11 @@ Task: ${JARVIS_JOB_PROMPT}"
 # The prompt is one argument, quoted: the agent gets the sentence the user
 # wrote, not a shell's reading of it. `--` keeps a prompt that begins with a
 # dash from being parsed as a flag.
+# `--standalone` is v2's "private server": without it the CLI discovers or
+# starts a shared background service on the host, and a job container wants the
+# process it was given to be the whole story — it dies with the container.
 exec opencode run \
+    --standalone \
     --model "jarvis/${JARVIS_JOB_MODEL_ID}" \
     --auto \
     --format json \

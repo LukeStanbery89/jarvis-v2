@@ -65,7 +65,11 @@ interface Ending {
 
 /** Why a job could not be started; each code is a decision a surface routes on. */
 export type CodingJobRefusalCode =
-    "task-missing" | "model-missing" | "repo-not-allowed" | "busy";
+    | "task-missing"
+    | "model-missing"
+    | "key-missing"
+    | "repo-not-allowed"
+    | "busy";
 
 /** The result of asking to start one job. */
 export type StartCodingJobResult =
@@ -100,6 +104,33 @@ export interface CodingJobService {
      * @returns The row after the attempt, or `null` for a foreign or missing id.
      */
     stop(userId: number, jobId: string): Promise<AppCodingJob | null>;
+}
+
+/**
+ * Whether a model endpoint needs no credential because it is on this machine.
+ *
+ * A local LM Studio ignores an `Authorization` header; a remote provider
+ * rejects the request without one. The distinction is the host, not the
+ * scheme: `host.docker.internal` is the host as a container sees it, and the
+ * loopback names cover a server running beside its model.
+ *
+ * @param baseUrl - The configured OpenAI-compatible endpoint.
+ * @returns True when a job may start without an API key.
+ */
+export function isLocalModelEndpoint(baseUrl: string): boolean {
+    try {
+        const host = new URL(baseUrl).hostname.toLowerCase();
+        return (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "::1" ||
+            host === "[::1]" ||
+            host === "host.docker.internal"
+        );
+    } catch {
+        // An unparseable URL is not something to send a key to by default.
+        return false;
+    }
 }
 
 /**
@@ -354,6 +385,11 @@ export function createCodingJobService(options: {
                 // image and no repository can supply a provider.
                 JARVIS_JOB_LLM_BASE_URL: config.llmBaseUrl,
                 JARVIS_JOB_MODEL_ID: config.model,
+                // Present only when configured; a local endpoint needs none.
+                // Never logged here — the boot line records set/unset only.
+                ...(config.apiKey.length > 0
+                    ? { JARVIS_JOB_API_KEY: config.apiKey }
+                    : {}),
                 HOME: "/home/job",
             },
             limits: {
@@ -387,6 +423,16 @@ export function createCodingJobService(options: {
                     ok: false,
                     code: "model-missing",
                     reason: "no coding model is configured (`JARVIS_SANDBOX_MODEL`)",
+                };
+            }
+            if (
+                config.apiKey.trim().length === 0 &&
+                !isLocalModelEndpoint(config.llmBaseUrl)
+            ) {
+                return {
+                    ok: false,
+                    code: "key-missing",
+                    reason: `no API key is configured for ${config.llmBaseUrl} (\`JARVIS_SANDBOX_API_KEY\`)`,
                 };
             }
             const repo = workspace.allows(input.repo);

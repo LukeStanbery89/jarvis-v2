@@ -88,12 +88,16 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
 ```
 
 Then set at least `JARVIS_SANDBOX_REPOS` (an `owner/name` allowlist) and
-`JARVIS_SANDBOX_MODEL` (a model id the endpoint serves); the endpoint defaults
-to `http://host.docker.internal:1234/v1`. Ask JARVIS to fix something in one of
-those repositories, or check the whole path by hand:
+`JARVIS_SANDBOX_API_KEY` (an OpenCode Go key — the default coding model is
+`deepseek-v4.1-flash` on OpenCode Go). A local model works instead: point
+`JARVIS_SANDBOX_LLM_BASE_URL` at `http://host.docker.internal:1234/v1`,
+set `JARVIS_SANDBOX_MODEL` to the local id, and leave the key empty. Ask JARVIS
+to fix something in one of those repositories, or check the whole path by hand:
 
 ```sh
-JARVIS_SANDBOX_MODEL=qwen/qwen3-4b-2507 npm run probe:coding-job -w @lukestanbery/jarvis-server
+JARVIS_SANDBOX_MODEL=qwen/qwen3-4b-2507 \
+JARVIS_SANDBOX_LLM_BASE_URL=http://host.docker.internal:1234/v1 \
+  npm run probe:coding-job -w @lukestanbery/jarvis-server
 ```
 
 A job's container gets the workspace as its only mount, a read-only root

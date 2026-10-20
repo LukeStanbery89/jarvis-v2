@@ -46,13 +46,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# The agent, pinned by version. Installed as root and copied out of the
-# installer's home so the runtime image carries only the binary.
-ARG OPENCODE_VERSION=1.19.3
-RUN curl -fsSL https://opencode.ai/install \
-        | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
-    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
-    && rm -rf /root/.opencode \
+# The agent, pinned by version. The v2 line is distributed as `@opencode/cli`
+# on npm (the v1 `opencode-ai` package and installer stop at 1.19.x), and its
+# postinstall selects the native binary for the platform. npm 12 gates install
+# scripts, so the script is skipped on install and run explicitly.
+ARG OPENCODE_VERSION=2.0.32
+RUN npm install -g --ignore-scripts "@opencode/cli@${OPENCODE_VERSION}" \
+    && node "$(npm root -g)/@opencode/cli/postinstall.mjs" \
+    && npm cache clean --force \
     && opencode --version
 
 # A job's agent runs unprivileged, with its own home. The runner mounts tmpfs at

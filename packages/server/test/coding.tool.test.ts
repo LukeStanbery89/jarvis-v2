@@ -159,6 +159,13 @@ describe("startCodingJob", () => {
         });
         expect(model.text).toContain("without a model");
 
+        const key = await invoke({
+            ok: false,
+            code: "key-missing",
+            reason: "no key",
+        });
+        expect(key.text).toContain("no model API key");
+
         const task = await invoke({
             ok: false,
             code: "task-missing",

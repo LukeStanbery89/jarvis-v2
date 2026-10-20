@@ -69,14 +69,39 @@ const flag = (name) => {
     return index >= 0 ? args[index + 1] : undefined;
 };
 const keep = args.includes("--keep");
-const model = flag("--model") ?? process.env.JARVIS_SANDBOX_MODEL ?? "";
+const model =
+    flag("--model") ??
+    process.env.JARVIS_SANDBOX_MODEL ??
+    "deepseek-v4.1-flash";
 const task =
     flag("--task") ??
     'Append a line to README.md that says "Hello from the JARVIS coding sandbox." and commit the change with the message "Add sandbox greeting".';
 const llmBaseUrl =
     process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
-    "http://host.docker.internal:1234/v1";
+    "https://opencode.ai/inference/go/openai/v1";
+const apiKey = process.env.JARVIS_SANDBOX_API_KEY ?? "";
 const image = process.env.JARVIS_SANDBOX_IMAGE ?? "jarvis-job:latest";
+
+/**
+ * Whether the model endpoint is on this machine (and so needs no key).
+ *
+ * @param baseUrl - The configured endpoint.
+ * @returns True for the loopback and host-gateway names.
+ */
+function isLocalEndpoint(baseUrl) {
+    try {
+        const host = new URL(baseUrl).hostname.toLowerCase();
+        return (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "::1" ||
+            host === "[::1]" ||
+            host === "host.docker.internal"
+        );
+    } catch {
+        return false;
+    }
+}
 
 /**
  * The same endpoint as seen from the machine running the probe.
@@ -169,21 +194,27 @@ try {
             `the job image "${image}" is not built; run \`docker build -f Dockerfile.job -t ${image} .\` from the repository root`,
         );
     }
-    let models;
-    try {
-        const response = await fetch(`${machineUrl(llmBaseUrl)}/models`);
-        models = (await response.json()).data ?? [];
-    } catch {
+    let models = [];
+    if (isLocalEndpoint(llmBaseUrl)) {
+        try {
+            const response = await fetch(`${machineUrl(llmBaseUrl)}/models`);
+            models = (await response.json()).data ?? [];
+        } catch {
+            usage(
+                `no model endpoint at ${machineUrl(llmBaseUrl)} — start it (or set JARVIS_SANDBOX_LLM_BASE_URL)`,
+            );
+        }
+        if (!models.some((entry) => entry.id === model)) {
+            console.error(
+                `note: "${model}" is not in ${machineUrl(llmBaseUrl)}/models (${models
+                    .map((entry) => entry.id)
+                    .slice(0, 5)
+                    .join(", ")}); continuing anyway`,
+            );
+        }
+    } else if (apiKey.length === 0) {
         usage(
-            `no model endpoint at ${machineUrl(llmBaseUrl)} — start it (or set JARVIS_SANDBOX_LLM_BASE_URL)`,
-        );
-    }
-    if (!models.some((entry) => entry.id === model)) {
-        console.error(
-            `note: "${model}" is not in ${llmBaseUrl}/models (${models
-                .map((entry) => entry.id)
-                .slice(0, 5)
-                .join(", ")}); continuing anyway`,
+            `no API key for remote endpoint ${llmBaseUrl} — set JARVIS_SANDBOX_API_KEY`,
         );
     }
 
@@ -219,6 +250,7 @@ try {
             repos: [`file://${origin}`],
             model,
             llmBaseUrl,
+            apiKey,
             extraHosts: ["host.docker.internal:host-gateway"],
         },
         notifications: {

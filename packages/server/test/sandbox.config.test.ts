@@ -63,8 +63,9 @@ describe("sandbox config", () => {
             pids: 512,
             wallClockMs: 45 * 60 * 1000,
             repos: [],
-            model: "",
-            llmBaseUrl: "http://host.docker.internal:1234/v1",
+            model: "deepseek-v4.1-flash",
+            llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
+            apiKey: "",
             extraHosts: ["host.docker.internal:host-gateway"],
         });
         // One default home for the workspace tree, beside the database.
@@ -87,6 +88,7 @@ describe("sandbox config", () => {
         process.env.JARVIS_SANDBOX_REPOS = "luke/app, other/repo ";
         process.env.JARVIS_SANDBOX_MODEL = "lmstudio/qwen3";
         process.env.JARVIS_SANDBOX_LLM_BASE_URL = "http://model.lan:1234/v1";
+        process.env.JARVIS_SANDBOX_API_KEY = "sk-test";
         process.env.JARVIS_SANDBOX_EXTRA_HOSTS = "db:172.18.0.2";
 
         const sandbox = getAppConfig().sandbox;
@@ -103,6 +105,7 @@ describe("sandbox config", () => {
             repos: ["luke/app", "other/repo"],
             model: "lmstudio/qwen3",
             llmBaseUrl: "http://model.lan:1234/v1",
+            apiKey: "sk-test",
             extraHosts: ["db:172.18.0.2"],
         });
     });

@@ -280,7 +280,9 @@ if (appConfig.sandbox && codingJobs) {
     logger.info(
         `Coding sandbox active: image=${appConfig.sandbox.image}, repos=${
             appConfig.sandbox.repos.join(",") || "(none)"
-        }, model=${appConfig.sandbox.model || "(unset)"}`,
+        }, model=${appConfig.sandbox.model || "(unset)"}, apiKey=${
+            appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"
+        }`,
     );
 }
 

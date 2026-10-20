@@ -34,11 +34,15 @@ services:
             # explicitly when composing from a context where it is not.
             JARVIS_SANDBOX_WORKSPACE_HOST_ROOT: "${JARVIS_SANDBOX_WORKSPACE_HOST_ROOT:-${PWD}/.jarvis/jobs}"
             JARVIS_SANDBOX_REPOS: "${JARVIS_SANDBOX_REPOS:-}"
-            JARVIS_SANDBOX_MODEL: "${JARVIS_SANDBOX_MODEL:-}"
-            # The job container talks to the host LLM directly; `localhost`
-            # inside a job is the job. Override when the model lives on a
-            # compose network instead.
-            JARVIS_SANDBOX_LLM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-http://host.docker.internal:1234/v1}"
+            JARVIS_SANDBOX_MODEL: "${JARVIS_SANDBOX_MODEL:-deepseek-v4.1-flash}"
+            # The OpenCode Go key (or any provider key for the endpoint below).
+            # It reaches the job container's environment; use a Go-plan key,
+            # never a personal provider key, until the server-side proxy exists.
+            JARVIS_SANDBOX_API_KEY: "${JARVIS_SANDBOX_API_KEY:-}"
+            # The OpenCode Go API. Override for a local or other
+            # OpenAI-compatible endpoint (and leave the key empty for a local
+            # one).
+            JARVIS_SANDBOX_LLM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-https://opencode.ai/inference/go/openai/v1}"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
             - ./.jarvis/jobs:/home/jarvis/.jarvis/jobs

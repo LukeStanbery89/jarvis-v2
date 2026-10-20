@@ -61,12 +61,18 @@ const schema = z.object({
 
 /** What a refusal reads like, per code. Kept exhaustive by the union. */
 const REFUSAL: Record<
-    "task-missing" | "model-missing" | "repo-not-allowed" | "busy",
+    | "task-missing"
+    | "model-missing"
+    | "key-missing"
+    | "repo-not-allowed"
+    | "busy",
     string
 > = {
     "task-missing": "A coding job needs a task; say what the agent should do.",
     "model-missing":
         "Coding jobs are configured without a model right now, so nothing can start.",
+    "key-missing":
+        "Coding jobs have no model API key configured, so nothing can start.",
     "repo-not-allowed":
         "That repository is not on the coding allowlist, so I did not start a job.",
     busy: "A coding job is already running; only one runs at a time. I can start this one when it finishes.",

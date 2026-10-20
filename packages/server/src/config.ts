@@ -426,8 +426,10 @@ export interface SandboxConfig {
     readonly repos: readonly string[];
     /**
      * The model id the agent asks for at {@link llmBaseUrl}
-     * (`JARVIS_SANDBOX_MODEL`). Empty means no job may start: a sandbox with
-     * no model would spend a clone to discover it has nothing to think with.
+     * (`JARVIS_SANDBOX_MODEL`). Defaults to `deepseek-v4.1-flash` on OpenCode
+     * Go; a local endpoint overrides this and {@link llmBaseUrl} together.
+     * Empty refuses to start a job — a sandbox with no model would spend a
+     * clone to discover it has nothing to think with.
      */
     readonly model: string;
     /**
@@ -436,9 +438,22 @@ export interface SandboxConfig {
      *
      * Distinct from `LLM_BASE_URL` on purpose: the server may reach its model
      * at `localhost`, which inside a job container means the container. The
-     * default names the host as a container sees it.
+     * default is OpenCode Go; a deployment running a local model points this at
+     * the host and leaves {@link apiKey} empty.
      */
     readonly llmBaseUrl: string;
+    /**
+     * The provider key a job's agent authenticates with
+     * (`JARVIS_SANDBOX_API_KEY`).
+     *
+     * Empty means "no key", which is right for a local endpoint and refused for
+     * a remote one. **Never logged**: the boot line says `apiKey=set|unset`, and
+     * the key travels only in the job's environment. It is visible to the agent
+     * inside the container — a deliberate v1 trade-off recorded on #141 (use a
+     * Go-plan key, never a personal provider key; the server-side proxy is the
+     * target design).
+     */
+    readonly apiKey: string;
     /**
      * Extra `/etc/hosts` entries for job containers
      * (`JARVIS_SANDBOX_EXTRA_HOSTS`; `none` disables). Defaults to the
@@ -457,7 +472,13 @@ export const DEFAULT_SANDBOX_CONFIG = {
     pids: 512,
     wallClockMs: 45 * 60 * 1000,
     extraHosts: ["host.docker.internal:host-gateway"],
-    llmBaseUrl: "http://host.docker.internal:1234/v1",
+    // The default coding model is OpenCode Go's DeepSeek V4.1 Flash: an
+    // OpenAI-compatible endpoint with an API key, chosen for agentic work the
+    // local chat models are not tuned for. A deployment that would rather run
+    // locally overrides both this URL and the model, and leaves the key empty.
+    model: "deepseek-v4.1-flash",
+    llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
+    apiKey: "",
 } as const;
 
 /**
@@ -1254,10 +1275,13 @@ export function getAppConfig(): AppConfig {
                               DEFAULT_SANDBOX_CONFIG.wallClockMs / 60_000,
                           ) * 60_000,
                       repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
-                      model: process.env.JARVIS_SANDBOX_MODEL ?? "",
+                      model:
+                          process.env.JARVIS_SANDBOX_MODEL ??
+                          DEFAULT_SANDBOX_CONFIG.model,
                       llmBaseUrl:
                           process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
                           DEFAULT_SANDBOX_CONFIG.llmBaseUrl,
+                      apiKey: process.env.JARVIS_SANDBOX_API_KEY ?? "",
                       extraHosts: parseExtraHosts(
                           process.env.JARVIS_SANDBOX_EXTRA_HOSTS,
                       ),

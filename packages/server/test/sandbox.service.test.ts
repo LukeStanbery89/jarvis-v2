@@ -34,6 +34,7 @@ const CONFIG: SandboxConfig = {
     repos: ["luke/app"],
     model: "lmstudio/qwen3",
     llmBaseUrl: "http://host.docker.internal:1234/v1",
+    apiKey: "",
     extraHosts: [],
 };
 
@@ -301,6 +302,54 @@ describe("starting a coding job", () => {
         expect(input.body).toContain(
             "I cannot do that without a file to edit.",
         );
+    });
+
+    it("passes the provider key to the job, and never needs one locally", async () => {
+        const withKey = makeService({ config: { apiKey: "sk-test" } });
+        const started = await withKey.service.start({
+            userId: withKey.userId,
+            repo: "luke/app",
+            task: "do it",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+        expect(withKey.runner.started[0]?.env).toMatchObject({
+            JARVIS_JOB_API_KEY: "sk-test",
+        });
+
+        // A local endpoint runs without a key (the test config is
+        // host.docker.internal, i.e. local).
+        const local = makeService();
+        const localStarted = await local.service.start({
+            userId: local.userId,
+            repo: "luke/app",
+            task: "do it",
+        });
+        expect(localStarted.ok).toBe(true);
+        expect(local.runner.started[0]?.env).not.toHaveProperty(
+            "JARVIS_JOB_API_KEY",
+        );
+    });
+
+    it("refuses a remote endpoint with no key, before any clone", async () => {
+        const remote = makeService({
+            config: {
+                llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
+                model: "deepseek-v4.1-flash",
+                apiKey: "",
+            },
+        });
+
+        const refused = await remote.service.start({
+            userId: remote.userId,
+            repo: "luke/app",
+            task: "do it",
+        });
+
+        expect(refused).toMatchObject({ ok: false, code: "key-missing" });
+        expect(remote.workspace.prepared).toHaveLength(0);
+        expect(remote.runner.started).toHaveLength(0);
     });
 
     it("refuses a missing task, a missing model, a foreign repo and a full queue", async () => {
