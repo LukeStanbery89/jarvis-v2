@@ -62,6 +62,15 @@ export interface PullRequestSnapshot {
     readonly comments: readonly PullRequestComment[];
     /** True when older comments were left out. */
     readonly commentsTruncated: boolean;
+    /**
+     * True when the conversation could not be read.
+     *
+     * Inline review notes are covered by the Pull requests permission, the
+     * conversation by Issues. An App granted the former but not the latter
+     * should still be able to continue a review; the prompt says the thread is
+     * missing rather than implying the reviewers said nothing.
+     */
+    readonly conversationUnavailable: boolean;
 }
 
 /** What a caller needs from GitHub. */
@@ -325,16 +334,17 @@ export function createGitHubClient(
             }
             // Review notes and conversation are two endpoints with one
             // meaning to the person reading them; a follow-up wants both.
-            const [review, conversation] = await Promise.all([
-                api<unknown[]>(
-                    `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`,
-                    { token: token.token },
-                ),
-                api<unknown[]>(
-                    `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
-                    { token: token.token },
-                ),
-            ]);
+            // The conversation is best-effort: it is governed by the Issues
+            // permission, and an App with only Pull requests access would
+            // otherwise be unable to continue any review at all.
+            const review = await api<unknown[]>(
+                `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`,
+                { token: token.token },
+            );
+            const conversation = await api<unknown[]>(
+                `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
+                { token: token.token },
+            ).catch(() => null);
             const merged = pull.merged === true;
             const state = merged
                 ? "merged"
@@ -356,7 +366,8 @@ export function createGitHubClient(
                 base: pull.base.ref,
                 state,
                 headRepo,
-                ...commentsFrom(review, conversation),
+                ...commentsFrom(review, conversation ?? []),
+                conversationUnavailable: conversation === null,
             };
         },
 

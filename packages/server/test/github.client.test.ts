@@ -308,6 +308,7 @@ describe("reading a pull request", () => {
             state: "open",
             headRepo: "luke/app",
             commentsTruncated: false,
+            conversationUnavailable: false,
         });
         // Review note at 10:05, conversation at 10:06, review note at 10:07.
         expect(pull.comments.map((comment) => comment.body)).toEqual([
@@ -324,6 +325,59 @@ describe("reading a pull request", () => {
         expect(pull.comments[1]?.path).toBeUndefined();
         // `original_line` covers a comment on an outdated diff hunk.
         expect(pull.comments[2]?.line).toBe(50);
+    });
+
+    it("reads the review notes even when the conversation is denied", async () => {
+        // An App with Pull requests but not Issues can read inline notes and
+        // should still be able to continue the review.
+        const fetchImpl = vi.fn(async (url: string) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.includes("/pulls/7/comments")) {
+                return json([
+                    {
+                        user: { login: "reviewer" },
+                        body: "Use a constant.",
+                        path: "src/app.ts",
+                        line: 3,
+                        created_at: "2026-10-20T10:00:00Z",
+                    },
+                ]);
+            }
+            if (url.includes("/issues/7/comments")) {
+                return json(
+                    { message: "Resource not accessible by integration" },
+                    403,
+                );
+            }
+            if (url.endsWith("/repos/luke/app/pulls/7")) {
+                return json({
+                    html_url: "https://github.com/luke/app/pull/7",
+                    title: "A change",
+                    body: "",
+                    state: "open",
+                    merged: false,
+                    head: { ref: "jarvis/x", repo: { full_name: "luke/app" } },
+                    base: { ref: "main" },
+                });
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull.comments.map((comment) => comment.body)).toEqual([
+            "Use a constant.",
+        ]);
+        expect(pull.conversationUnavailable).toBe(true);
     });
 
     it("reports a merged PR and a fork's head repository", async () => {

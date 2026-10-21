@@ -197,7 +197,10 @@ description plus its review comments and conversation (newest last, bounded).
 The run pushes back to the same branch, so the review updates in place and no
 second PR opens; the ending says "Updated pull request". Only a PR in the
 repository itself can be continued — a fork's branch is not on this origin, and
-a closed or merged PR has nothing left to do.
+a closed or merged PR has nothing left to do. The App needs **Pull requests:
+read & write**; reading the conversation (as opposed to inline review notes)
+also needs **Issues: read**, and without it the job still runs with the inline
+notes and its prompt says the conversation could not be read.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with

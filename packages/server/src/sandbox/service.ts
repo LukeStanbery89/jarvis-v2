@@ -1024,6 +1024,12 @@ export function followUpPrompt(
             lines.push("(Only the most recent comments are shown.)", "");
         }
     }
+    if (pull.conversationUnavailable) {
+        lines.push(
+            "(The pull request's conversation could not be read; only inline review notes are shown.)",
+            "",
+        );
+    }
     lines.push(
         "## What this job should do",
         "",

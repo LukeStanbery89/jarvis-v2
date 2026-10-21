@@ -27,6 +27,7 @@ import type { NotificationService } from "../src/notify/service";
 import { createFakeSandbox } from "../src/sandbox/fake";
 import {
     createCodingJobService,
+    followUpPrompt,
     lastAgentMessage,
 } from "../src/sandbox/service";
 import { deriveJobToken } from "../src/sandbox/proxy";
@@ -62,6 +63,28 @@ const CONFIG: SandboxConfig = {
     logRetentionDays: 30,
     keepJobRows: 100,
 };
+
+/** A minimal open pull request, for the prompt's own tests. */
+function pullRequest(
+    overrides: Partial<PullRequestSnapshot> = {},
+): PullRequestSnapshot {
+    return {
+        owner: "luke",
+        repo: "app",
+        number: 7,
+        url: "https://github.com/luke/app/pull/7",
+        title: "A change",
+        body: "",
+        head: "jarvis/a-change-1234",
+        base: "main",
+        state: "open",
+        headRepo: "luke/app",
+        comments: [],
+        commentsTruncated: false,
+        conversationUnavailable: false,
+        ...overrides,
+    };
+}
 
 /** A store with one owner. */
 function makeStore(): { store: AppDatabase; userId: number } {
@@ -308,6 +331,7 @@ describe("starting a coding job", () => {
                 { author: "luke", body: "Also add a test." },
             ],
             commentsTruncated: false,
+            conversationUnavailable: false,
         };
         const pullRequests = vi.fn(async () => pull);
         const publish = vi.fn(async () => ({ prUrl: pull.url }));
@@ -390,6 +414,7 @@ describe("starting a coding job", () => {
             headRepo: "luke/app",
             comments: [],
             commentsTruncated: false,
+            conversationUnavailable: false,
         };
         const request = {
             userId: 1,
@@ -1025,5 +1050,30 @@ describe("recovering coding jobs at boot", () => {
         // The row is gone, but the workspace's path is derivable from the id
         // the container's label carried.
         expect(workspace.removed).toEqual(["/jobs/deleted-job/repo"]);
+    });
+});
+
+describe("follow-up prompts", () => {
+    it("says when the conversation is missing rather than implying silence", () => {
+        const prompt = followUpPrompt(
+            pullRequest({ conversationUnavailable: true }),
+            "Fix the review",
+        );
+
+        expect(prompt).toContain("conversation could not be read");
+        expect(prompt).toContain("Fix the review");
+    });
+
+    it("bounds a long thread and says what was left out", () => {
+        const prompt = followUpPrompt(
+            pullRequest({
+                comments: [{ author: "reviewer", body: "x".repeat(5_000) }],
+                commentsTruncated: true,
+            }),
+            "Fix the review",
+        );
+
+        expect(prompt).toContain("Only the most recent comments are shown.");
+        expect(prompt.length).toBeLessThan(20_000);
     });
 });
