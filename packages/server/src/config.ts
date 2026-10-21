@@ -421,6 +421,15 @@ export interface SandboxConfig {
      */
     readonly wallClockMs: number;
     /**
+     * Ceiling on the workspace's size in MiB
+     * (`JARVIS_SANDBOX_MAX_WORKSPACE_MB`), default 2048; `0` disables it.
+     *
+     * The clone is a bind mount, so Docker cannot quota it. The supervisor
+     * samples `du` while the job runs and stops the container when the tree
+     * crosses this line — a runaway `npm install` must not fill the laptop.
+     */
+    readonly maxWorkspaceMb: number;
+    /**
      * `owner/name` repositories a job may clone (`JARVIS_SANDBOX_REPOS`).
      * Empty means none: the allowlist is a whitelist, not a default.
      */
@@ -543,6 +552,7 @@ export const DEFAULT_SANDBOX_CONFIG = {
     memoryMb: 4096,
     pids: 512,
     wallClockMs: 45 * 60 * 1000,
+    maxWorkspaceMb: 2048,
     extraHosts: ["host.docker.internal:host-gateway"],
     // The default coding model is OpenCode's Big Pickle: a free stealth model
     // served by the Console endpoint (not the Go one). The same workspace key
@@ -1493,6 +1503,11 @@ export function getAppConfig(): AppConfig {
                                   process.env.JARVIS_SANDBOX_WALL_CLOCK_MINUTES,
                                   DEFAULT_SANDBOX_CONFIG.wallClockMs / 60_000,
                               ) * 60_000,
+                          maxWorkspaceMb: numberOr(
+                              "JARVIS_SANDBOX_MAX_WORKSPACE_MB",
+                              process.env.JARVIS_SANDBOX_MAX_WORKSPACE_MB,
+                              DEFAULT_SANDBOX_CONFIG.maxWorkspaceMb,
+                          ),
                           repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
                           model:
                               process.env.JARVIS_SANDBOX_MODEL ??
