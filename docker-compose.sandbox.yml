@@ -3,7 +3,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
 #
 # The base file deliberately does not grant what a coding job needs. This
-# overlay adds exactly five things:
+# overlay adds exactly six things:
 #
 #   1. **The Docker socket.** Root-equivalent by definition — a process with it
 #      can do anything the daemon can. It is a deliberate owner-only v1
@@ -30,6 +30,9 @@
 #      the server image, reads the HMAC secret from the shared data volume, and
 #      asks the server (`/internal/job-state`) whether a job may still spend the
 #      provider key.
+#   6. **The GitHub App, passed through.** Publishing, follow-ups and the
+#      tracker tools need the App's env; without this a deployed container
+#      runs jobs but cannot open or update a pull request.
 #
 # The job image itself is built separately (`docker build -f Dockerfile.job -t
 # jarvis-job:latest .`) and is not started by compose: each job is one
@@ -61,6 +64,22 @@ services:
             JARVIS_SANDBOX_NETWORK: "jarvis-sandbox"
             # The job needs no host alias: its only route is the sidecar.
             JARVIS_SANDBOX_EXTRA_HOSTS: "none"
+            # Publishing and the tracker tools (#140): the same App, passed
+            # through so a deployed container can open and update pull
+            # requests. The inline key accepts `\n` escapes; a key *file*
+            # needs an extra bind mount, so compose takes the inline form.
+            JARVIS_GITHUB_APP_ID: "${JARVIS_GITHUB_APP_ID:-}"
+            JARVIS_GITHUB_APP_PRIVATE_KEY: "${JARVIS_GITHUB_APP_PRIVATE_KEY:-}"
+            JARVIS_GITHUB_INSTALLATION_ID: "${JARVIS_GITHUB_INSTALLATION_ID:-}"
+            JARVIS_GITHUB_API_BASE_URL: "${JARVIS_GITHUB_API_BASE_URL:-}"
+            JARVIS_GITHUB_REPOS: "${JARVIS_GITHUB_REPOS:-}"
+            JARVIS_GITHUB_REVIEWER: "${JARVIS_GITHUB_REVIEWER:-}"
+        # The image runs as uid 10001; the mounted socket is group-owned, so the
+        # server needs that group. 0 is what OrbStack/Docker Desktop present
+        # inside the container; on a Linux engine set JARVIS_DOCKER_SOCKET_GID
+        # to the host socket's GID (`stat -c %g /var/run/docker.sock`).
+        group_add:
+            - "${JARVIS_DOCKER_SOCKET_GID:-0}"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
             - ./.jarvis/jobs:/home/jarvis/.jarvis/jobs
@@ -72,8 +91,12 @@ services:
     proxy:
         image: jarvis-server:latest
         command: ["node", "dist/sandbox/proxyServer.js"]
+        # The server creates the HMAC secret during boot, before it listens;
+        # starting the sidecar first makes it exit once with "no proxy secret".
+        # Wait for the health check so the first start succeeds.
         depends_on:
-            - jarvis
+            jarvis:
+                condition: service_healthy
         restart: unless-stopped
         environment:
             JARVIS_PROXY_UPSTREAM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-https://opencode.ai/inference/openai/v1}"

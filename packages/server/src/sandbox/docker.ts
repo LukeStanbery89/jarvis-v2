@@ -123,6 +123,9 @@ export interface SandboxDockerClient {
         options: DockerCreateOptions,
     ): Promise<SandboxDockerContainer>;
     getContainer(id: string): SandboxDockerContainer;
+    getNetwork(id: string): {
+        inspect(): Promise<{ Internal?: boolean }>;
+    };
     listContainers(options: {
         all: boolean;
         filters: { label: string[] };
@@ -381,6 +384,19 @@ export function createDockerSandbox(
                         ? null
                         : new Date(container.Created * 1000).toISOString(),
             }));
+        },
+        async networkIsInternal(name: string): Promise<boolean> {
+            try {
+                const network = await client.getNetwork(name).inspect();
+                return network.Internal === true;
+            } catch (err) {
+                // A network that does not exist cannot isolate anything; the
+                // service turns that into a refusal that names the setting.
+                if (isNotFound(err)) {
+                    return false;
+                }
+                throw err;
+            }
         },
         async remove(containerId: string): Promise<void> {
             await handleFor(client, client.getContainer(containerId)).remove();

@@ -20,6 +20,7 @@
  * id is in the text instead, so nothing invents a foreign key.
  */
 import { randomUUID } from "node:crypto";
+import { open } from "node:fs/promises";
 import path from "node:path";
 import type {
     AppCodingJob,
@@ -37,7 +38,12 @@ import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
 import { workspaceBytes } from "./disk";
 import { createCodingLogHub, type CodingLogStream } from "./logHub";
-import { createJobLog, sweepCodingLogs, type JobLog } from "./logs";
+import {
+    codingLogPath,
+    createJobLog,
+    sweepCodingLogs,
+    type JobLog,
+} from "./logs";
 import {
     reconcileCodingJobs,
     type CodingJobRecoveryHandlers,
@@ -98,7 +104,8 @@ export type CodingJobRefusalCode =
     | "issue-is-pull-request"
     | "issue-and-pull-request"
     | "reply-without-pull-request"
-    | "broker-unreachable";
+    | "broker-unreachable"
+    | "egress-unsafe";
 
 /** The result of asking to start one job. */
 export type StartCodingJobResult =
@@ -159,6 +166,47 @@ export interface CodingJobService {
      */
     stop(userId: number, jobId: string): Promise<AppCodingJob | null>;
     /**
+     * One of the caller's own jobs, or `null` for a foreign or missing id.
+     *
+     * The status tool reads this; a future REST surface answers from the same
+     * place, so "what happened to my job" has one implementation.
+     *
+     * @param userId - The caller, from the signed-in session.
+     * @param jobId - The id `start` returned.
+     * @returns The row, or `null`.
+     */
+    get(userId: number, jobId: string): AppCodingJob | null;
+    /**
+     * The caller's jobs, newest-created first. Settled rows are hidden unless
+     * `includeSettled` is set.
+     *
+     * @param userId - The caller, from the signed-in session.
+     * @param options - Page size and whether history is included.
+     * @returns The rows the caller may see.
+     */
+    list(
+        userId: number,
+        options?: { limit?: number; includeSettled?: boolean },
+    ): AppCodingJob[];
+    /**
+     * A bounded tail of a job's output, from the row after settle or from the
+     * live log file while it runs.
+     *
+     * A running row's `logTail` is only written at settle, so the status tool
+     * would otherwise have nothing to quote mid-run. The file is the live
+     * record; this reads its last `maxBytes`.
+     *
+     * @param userId - The caller; a foreign id is `null`.
+     * @param jobId - The job to read.
+     * @param maxBytes - How much of the end to return (default 32 KiB).
+     * @returns The tail, or `null` for a foreign or missing id.
+     */
+    output(
+        userId: number,
+        jobId: string,
+        maxBytes?: number,
+    ): Promise<string | null>;
+    /**
      * Replays the buffered part of a job's log and follows the rest, until it
      * settles. The file is the durable record; this is the live window.
      *
@@ -212,9 +260,9 @@ export function createCodingJobService(options: {
      * `apiKey` is a token derived from its own job id; the real provider key
      * never enters the container.
      *
-     * Absent means the direct shape (a job reaches the provider with
-     * `config.apiKey`), which exists for tests and for a deliberately direct
-     * deployment.
+     * Absent means **no broker and no key**: the job is started without
+     * `JARVIS_JOB_API_KEY` rather than being handed the real provider key.
+     * A deployment that needs a model must wire one.
      */
     proxy?: { url: string; secret: string };
     /**
@@ -730,6 +778,8 @@ export function createCodingJobService(options: {
                         ? config.proxyUrl
                         : config.llmBaseUrl),
                 JARVIS_JOB_MODEL_ID: config.model,
+                // The provider key never enters a container: with no broker
+                // the job gets no key at all, rather than the real one (#141).
                 ...(proxy !== undefined
                     ? {
                           JARVIS_JOB_API_KEY: deriveJobToken(
@@ -737,13 +787,7 @@ export function createCodingJobService(options: {
                               job.id,
                           ),
                       }
-                    : config.proxyMode === "sidecar"
-                      ? // No broker wiring means no derived token; never fall
-                        // back to the real key in a container.
-                        {}
-                      : config.apiKey.length > 0
-                        ? { JARVIS_JOB_API_KEY: config.apiKey }
-                        : {}),
+                    : {}),
                 // Research and installs go through the sidecar's forward
                 // proxy; without it the job reaches the broker and nothing
                 // else (the network has no other route).
@@ -833,6 +877,38 @@ export function createCodingJobService(options: {
                     code: "busy",
                     reason: `${config.maxJobs} coding job(s) are already running`,
                 };
+            }
+
+            // A sidecar deployment is only as isolated as its job network. A
+            // missing or routed network would put the job on the bridge, where
+            // "the container has the internet" is true and #141's egress
+            // property is gone. Check before cloning, like the broker probe.
+            if (config.proxyMode === "sidecar") {
+                const network = config.network.trim();
+                if (network.length === 0) {
+                    return {
+                        ok: false,
+                        code: "egress-unsafe",
+                        reason: "sidecar mode needs `JARVIS_SANDBOX_NETWORK`, an internal Docker network",
+                    };
+                }
+                let internal: boolean;
+                try {
+                    internal = await runner.networkIsInternal(network);
+                } catch (err) {
+                    return {
+                        ok: false,
+                        code: "egress-unsafe",
+                        reason: `the job network ${network} could not be inspected: ${describe(err)}`,
+                    };
+                }
+                if (!internal) {
+                    return {
+                        ok: false,
+                        code: "egress-unsafe",
+                        reason: `the job network ${network} is not internal; a job would have a route to the internet`,
+                    };
+                }
             }
 
             // A sidecar has no local listener: if it is not running, the job
@@ -1132,6 +1208,52 @@ export function createCodingJobService(options: {
             }
             await workspace.remove(job.workspacePath).catch(() => {});
             return cancelled;
+        },
+
+        get(userId, jobId) {
+            return ledger.getCodingJob(userId, jobId);
+        },
+
+        list(userId, options) {
+            return ledger.listCodingJobs(userId, options);
+        },
+
+        async output(userId, jobId, maxBytes = 32 * 1024) {
+            const job = ledger.getCodingJob(userId, jobId);
+            if (job === null) {
+                return null;
+            }
+            // A settled row already keeps the end; a running one has not
+            // written it yet, so read the live file even if the row holds a
+            // previous attempt's tail (a resumed job).
+            if (job.state !== "running" && job.logTail.length > 0) {
+                return job.logTail;
+            }
+            if (config.logRoot.trim().length === 0) {
+                return job.logTail;
+            }
+            try {
+                const handle = await open(
+                    codingLogPath(config.logRoot, jobId),
+                    "r",
+                );
+                try {
+                    const { size } = await handle.stat();
+                    const length = Math.min(maxBytes, size);
+                    if (length === 0) {
+                        return "";
+                    }
+                    const buffer = Buffer.alloc(length);
+                    await handle.read(buffer, 0, length, size - length);
+                    return buffer.toString("utf8");
+                } finally {
+                    await handle.close();
+                }
+            } catch {
+                // No file yet (a job between claim and its first line) is an
+                // empty tail, not a failure worth surfacing.
+                return "";
+            }
         },
 
         openLogStream(jobId: string): CodingLogStream {

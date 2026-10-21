@@ -90,7 +90,7 @@ describe("sandbox config", () => {
             proxyProbeUrl: "http://host.docker.internal:54322/v1",
             proxySecret: "",
             proxyMaxRequestsPerJob: 500,
-            proxyMode: "embedded",
+            proxyMode: "sidecar",
             egressProxyUrl: "",
             network: "",
             logRoot: path.join(homedir(), ".jarvis", "logs", "coding"),
@@ -210,12 +210,26 @@ describe("sandbox config", () => {
         expect(sandbox?.proxyProbeUrl).toBe("http://127.0.0.1:54322/v1");
     });
 
-    it("keeps the embedded broker and no egress proxy by default", () => {
+    it("defaults to the sidecar, and no egress proxy", () => {
         process.env.JARVIS_SANDBOX = "docker";
 
         const sandbox = getAppConfig().sandbox;
 
-        expect(sandbox?.proxyMode).toBe("embedded");
+        expect(sandbox?.proxyMode).toBe("sidecar");
         expect(sandbox?.egressProxyUrl).toBe("");
+    });
+
+    it("keeps the embedded broker only when asked", () => {
+        process.env.JARVIS_SANDBOX = "docker";
+        process.env.JARVIS_SANDBOX_PROXY_MODE = "embedded";
+
+        expect(getAppConfig().sandbox?.proxyMode).toBe("embedded");
+    });
+
+    it("treats a misspelled mode as sidecar rather than opening egress", () => {
+        process.env.JARVIS_SANDBOX = "docker";
+        process.env.JARVIS_SANDBOX_PROXY_MODE = "sidecra";
+
+        expect(getAppConfig().sandbox?.proxyMode).toBe("sidecar");
     });
 });

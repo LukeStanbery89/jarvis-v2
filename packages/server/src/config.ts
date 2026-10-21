@@ -520,10 +520,15 @@ export interface SandboxConfig {
     /**
      * Where the credential broker runs (`JARVIS_SANDBOX_PROXY_MODE`).
      *
-     * `embedded` (the default) keeps it in this process, bound to a private
-     * interface. `sidecar` means a separate container on the job's internal
-     * network is the only thing a job can reach — the server then serves the
-     * sidecar's `/internal/job-state` check and must not join that network.
+     * `sidecar` (the default, and the #141 posture) means a separate container
+     * on the job's internal network is the only thing a job can reach — the
+     * server then serves the sidecar's `/internal/job-state` check and must not
+     * join that network.
+     *
+     * `embedded` is the compatibility path: the broker stays in this process
+     * and jobs use the engine's bridge, where they **can reach the internet
+     * directly**. It is opt-in precisely because it gives up the egress
+     * guarantee; the server says so at boot.
      */
     readonly proxyMode: "embedded" | "sidecar";
     /**
@@ -601,7 +606,7 @@ export const DEFAULT_SANDBOX_CONFIG = {
     proxyProbeUrl: "http://host.docker.internal:54322/v1",
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
-    proxyMode: "embedded",
+    proxyMode: "sidecar",
     egressProxyUrl: "",
     network: "",
     // Operability (#141 phase 7): the full log lives beside the workspaces,
@@ -1571,11 +1576,14 @@ export function getAppConfig(): AppConfig {
                               process.env.JARVIS_SANDBOX_PROXY_MAX_REQUESTS,
                               DEFAULT_SANDBOX_CONFIG.proxyMaxRequestsPerJob,
                           ),
+                          // `embedded` is the opt-out; anything else
+                          // (including an unset or misspelled value) gets the
+                          // safe topology. A typo must not open egress.
                           proxyMode:
                               process.env.JARVIS_SANDBOX_PROXY_MODE?.trim().toLowerCase() ===
-                              "sidecar"
-                                  ? "sidecar"
-                                  : "embedded",
+                              "embedded"
+                                  ? "embedded"
+                                  : DEFAULT_SANDBOX_CONFIG.proxyMode,
                           egressProxyUrl:
                               process.env.JARVIS_SANDBOX_EGRESS_PROXY_URL?.trim() ??
                               "",

@@ -141,7 +141,11 @@ export interface FakeSandbox extends SandboxRunner {
  * @returns The runner and its test controls.
  */
 export function createFakeSandbox(
-    options: { containers?: readonly FakeContainerSeed[] } = {},
+    options: {
+        containers?: readonly FakeContainerSeed[];
+        /** What {@link SandboxRunner.networkIsInternal} reports; default true. */
+        networkIsInternal?: boolean;
+    } = {},
 ): FakeSandbox {
     const states = new Map<string, FakeContainerState>();
     const retired = new Set<string>();
@@ -264,6 +268,9 @@ export function createFakeSandbox(
                     running: state.running,
                     startedAt: state.startedAt,
                 }));
+        },
+        async networkIsInternal(): Promise<boolean> {
+            return options.networkIsInternal ?? true;
         },
         async remove(containerId: string): Promise<void> {
             const state = states.get(containerId);

@@ -53,8 +53,10 @@ curl http://localhost:54321/health        # -> {"ok":true}
 
 The image builds only the five packages the server loads at runtime —
 `protocol`, `logger`, `auth`, `contracts`, and `server` — and ships no
-compilers or dev dependencies. It runs as non-root uid `10001` with a
-`HEALTHCHECK` against `/health`. Clients (#29) are separate deployments.
+compilers or dev dependencies. `git` is the one runtime tool it carries: the
+coding sandbox's host-side clone/commit/diff/push calls shell out to it. It runs
+as non-root uid `10001` with a `HEALTHCHECK` against `/health`. Clients (#29)
+are separate deployments.
 
 Four things are worth knowing:
 
@@ -122,14 +124,20 @@ three things the base deployment deliberately does not grant: the Docker socket
 capability boundary), a host-visible workspace directory (a sibling container's
 bind source is resolved on the _host_, not inside the server), and a **broker
 sidecar** on an internal network so a job can reach a model without reaching
-the internet (see "The broker sidecar and egress" below).
+the internet (see "The broker sidecar and egress" below). The image runs as uid
+`10001`, so the overlay also adds the socket's group
+(`JARVIS_DOCKER_SOCKET_GID`, default `0` — what OrbStack and Docker Desktop
+present inside the container; on a Linux engine set it to the host socket's
+GID). Without it the server boots and then exits with `EACCES
+/var/run/docker.sock`.
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
 ```
 
 The job image is built from `Dockerfile.job` at the repository root (agent +
-git + gh + toolchain; the server image stays toolchain-free):
+git + gh + toolchain; the server image stays compiler-free and carries only
+`git` for its own workspace calls):
 
 ```sh
 docker build -f Dockerfile.job -t jarvis-job:latest .
@@ -240,6 +248,14 @@ threads are hidden by default (`includeResolved: true` shows them, marked):
 resolution is GraphQL-only, so an App whose token cannot query it gets the full
 thread and the result says why rather than implying everything is open.
 
+The lifecycle has two more tools: `getCodingJob` reads one job (state, branch,
+pull request, model, diff and a bounded tail of its output) or lists the five
+most recent with the running one first, and `cancelCodingJob` stops a running
+job — the service settles the row `cancelled` **before** removing the container,
+so the supervisor cannot overwrite the user's decision, and a settled job is a
+sentence rather than an error. Both are owner-only and read through the
+service, so a future REST surface cannot answer differently.
+
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with
 `JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key). Big Pickle is a free
@@ -274,14 +290,17 @@ server cannot answer.
 
 Two modes, from `JARVIS_SANDBOX_PROXY_MODE`:
 
-- `embedded` (default) — the broker lives in the server process, bound to
-  loopback in dev; jobs use the engine's bridge and can reach the internet
-  directly. This is the compatibility path.
-- `sidecar` — the server does not listen for jobs at all. Jobs join
-  `JARVIS_SANDBOX_NETWORK` (an internal network), reach
-  `JARVIS_SANDBOX_PROXY_URL` for the model, and may reach
-  `JARVIS_SANDBOX_EGRESS_PROXY_URL` when one is set. The server deliberately
-  stays off that network: a job must not be able to reach its API.
+- `sidecar` (default, and the #141 posture) — the server does not listen for
+  jobs at all. Jobs join `JARVIS_SANDBOX_NETWORK`, which **must be an internal
+  network**; the server asks Docker and refuses to start a job (`egress-unsafe`)
+  when the network is missing or routed. Jobs reach `JARVIS_SANDBOX_PROXY_URL`
+  for the model, and may reach `JARVIS_SANDBOX_EGRESS_PROXY_URL` when one is
+  set. The server deliberately stays off that network: a job must not be able
+  to reach its API.
+- `embedded` — the compatibility path, and now an explicit opt-in. The broker
+  lives in the server process and jobs use the engine's bridge, where they
+  **can reach the internet directly**; the server warns about this at boot. Use
+  it for a local model or a debugging session, not for the isolation guarantee.
 
 #### Egress policy
 
@@ -313,10 +332,11 @@ The script builds the server if `dist` is missing, creates `jarvis-sandbox` as
 an internal network (refusing a network of that name that has a route out),
 starts a stock `node:24` container with this checkout's build and hoisted
 `node_modules` mounted **read-only**, and attaches it to both networks. It is
-the same code the server runs, not an image build. The command **detaches**:
-the container survives the terminal, `docker logs -f jarvis-proxy` follows it,
-and `docker stop jarvis-proxy` stops it. The broker is published on
-`127.0.0.1:54322`; the server runs on the host and cannot resolve
+the same code the server runs, not an image build. The command **detaches**
+with `--restart unless-stopped`: the container survives the terminal, Docker
+brings it back after a daemon or host restart, `docker logs -f jarvis-proxy`
+follows it, and `docker stop jarvis-proxy` stops it for good. The broker is
+published on `127.0.0.1:54322`; the server runs on the host and cannot resolve
 `jarvis-proxy`, so `JARVIS_SANDBOX_PROXY_PROBE_URL` points its preflight at the
 loopback port. The job still uses `jarvis-proxy` from inside the network. (A foreground helper is too easy to
 close by accident; the server now refuses a job when the broker does not
@@ -341,10 +361,20 @@ JARVIS_SANDBOX_EGRESS_POLICY=public   # passed through by the script
 --build` starts a `proxy` service from the server image on `jarvis-sandbox`
 (internal) and `default`; the server joins only `default`. The sidecar reads the
 HMAC secret from the `jarvis-data` volume read-only and reaches the server's
-status endpoint at `http://jarvis:54321`.
+status endpoint at `http://jarvis:54321`. The overlay also passes
+`JARVIS_GITHUB_APP_ID`, `JARVIS_GITHUB_APP_PRIVATE_KEY` (inline, `\n` escapes
+allowed), `JARVIS_GITHUB_INSTALLATION_ID`, `JARVIS_GITHUB_REPOS`,
+`JARVIS_GITHUB_REVIEWER` and `JARVIS_GITHUB_API_BASE_URL`, so a deployed
+container can publish; a PEM **file** needs an extra bind mount, so compose
+takes the inline form. Set them in the root `.env` (compose interpolation), not
+`packages/server/.env`.
 
 #### Failure modes
 
+- **Job network missing or routed** — `startCodingJob` asks Docker whether
+  `JARVIS_SANDBOX_NETWORK` is `Internal: true` and refuses with `egress-unsafe`
+  before cloning. A sidecar pointed at the bridge would give every job the
+  internet, so the check is the guarantee, not a warning.
 - **Sidecar not started** — `startCodingJob` probes the broker at
   `JARVIS_SANDBOX_PROXY_PROBE_URL` before cloning and refuses with
   `broker-unreachable` (`start the sidecar and try again`), so no workspace or
@@ -361,10 +391,11 @@ status endpoint at `http://jarvis:54321`.
 - **Job compromised** — it can reach the sidecar and nothing else on the
   internal network. The forward proxy's allowlist is the only egress.
 
-The embedded path remains the default and is what `npm run probe:coding-job`
-exercises; the sidecar is verified live with `npm run sandbox:proxy` and the
-EGRESS checks below. Egress destination logging is the audit trail: debug for
-allowed, warn for denied with the reason.
+The sidecar is the default posture; `embedded` is the opt-in compatibility
+path, and `npm run probe:coding-job` still exercises the embedded shape. The
+sidecar is verified live with `npm run sandbox:proxy` and the EGRESS checks
+below. Egress destination logging is the audit trail: debug for allowed, warn
+for denied with the reason.
 
 **The key never enters the job container.** `src/sandbox/proxy.ts` is the
 broker: in embedded mode the server runs it, in sidecar mode the sidecar does.
@@ -394,45 +425,45 @@ repository, the real image, a real agent and the configured model. It prints
 the settled row, the diff summary and the workspace's git log, and exits
 non-zero unless the job settled `ok`.
 
-| Variable                                  | Default                                   | Meaning                                                                                      |
-| ----------------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `JARVIS_SANDBOX`                          | _(unset)_                                 | `docker` enables the surface; anything else leaves it absent                                 |
-| `JARVIS_SANDBOX_IMAGE`                    | `jarvis-job:latest`                       | the job image, built by this repository                                                      |
-| `JARVIS_SANDBOX_DOCKER_SOCKET`            | `/var/run/docker.sock`                    | the daemon's socket                                                                          |
-| `JARVIS_SANDBOX_WORKSPACE_ROOT`           | `~/.jarvis/jobs`                          | workspaces **as the server sees them**                                                       |
-| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT`      | the same                                  | workspaces **as the daemon sees them** — set this in a container deployment                  |
-| `JARVIS_SANDBOX_MAX_JOBS`                 | `1`                                       | jobs allowed to run at once                                                                  |
-| `JARVIS_SANDBOX_CPUS`                     | `2`                                       | cores per job                                                                                |
-| `JARVIS_SANDBOX_MEMORY_MB`                | `4096`                                    | memory ceiling per job                                                                       |
-| `JARVIS_SANDBOX_PIDS`                     | `512`                                     | process ceiling per job                                                                      |
-| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`       | `45`                                      | the supervisor stops a job that overruns                                                     |
-| `JARVIS_SANDBOX_MAX_WORKSPACE_MB`         | `2048`                                    | workspace disk ceiling, sampled every 10 s; `0` disables it                                  |
-| `JARVIS_SANDBOX_REPOS`                    | _(empty)_                                 | `owner/name` allowlist; empty clones nothing                                                 |
-| `JARVIS_SANDBOX_MODEL`                    | `big-pickle`                              | the model id handed to the agent                                                             |
-| `JARVIS_SANDBOX_LLM_BASE_URL`             | `https://opencode.ai/inference/openai/v1` | the OpenAI-compatible endpoint a job container talks to                                      |
-| `JARVIS_SANDBOX_API_KEY`                  | _(empty)_                                 | the provider key; required for a remote endpoint, never logged                               |
-| `JARVIS_SANDBOX_EXTRA_HOSTS`              | `host.docker.internal:host-gateway`       | extra `/etc/hosts` entries; `none` disables                                                  |
-| `JARVIS_SANDBOX_PROXY_BIND`               | `127.0.0.1`                               | the broker's interface; compose binds `0.0.0.0` on its private network                       |
-| `JARVIS_SANDBOX_PROXY_PORT`               | `54322`                                   | the broker's port                                                                            |
-| `JARVIS_SANDBOX_PROXY_URL`                | `http://host.docker.internal:54322/v1`    | the broker URL a job is handed (compose: `http://jarvis:54322/v1`)                           |
-| `JARVIS_SANDBOX_PROXY_SECRET`             | _(private file)_                          | the HMAC secret; `~/.jarvis/sandbox-proxy.key` when unset                                    |
-| `JARVIS_SANDBOX_PROXY_MAX_REQUESTS`       | `500`                                     | requests one job may make through the broker before `429`                                    |
-| `JARVIS_SANDBOX_PROXY_MODE`               | `embedded`                                | `embedded` runs the broker in the server; `sidecar` runs it on the job's internal network    |
-| `JARVIS_SANDBOX_PROXY_PROBE_URL`          | the same as `JARVIS_SANDBOX_PROXY_URL`    | where the **server** probes the broker; dev points it at `http://127.0.0.1:54322/v1`         |
-| `JARVIS_SANDBOX_EGRESS_PROXY_URL`         | _(unset)_                                 | forward proxy a sidecar job may research through (`http://proxy:54323`); empty = broker only |
-| `JARVIS_SANDBOX_NETWORK`                  | _(engine default bridge)_                 | the Docker network job containers join (sidecar: the internal `jarvis-sandbox`)              |
-| `JARVIS_SANDBOX_LOG_ROOT`                 | `~/.jarvis/logs/coding`                   | where each job's full output is written (`0600` files)                                       |
-| `JARVIS_SANDBOX_LOG_MAX_MB`               | `10`                                      | per-job log cap; one marker line is written past it                                          |
-| `JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS` | `14`                                      | settled workspaces older than this are swept at boot                                         |
-| `JARVIS_SANDBOX_LOG_RETENTION_DAYS`       | `30`                                      | log files older than this are swept at boot                                                  |
-| `JARVIS_SANDBOX_KEEP_JOB_ROWS`            | `100`                                     | settled rows kept per user; older ones are pruned at settle                                  |
-| `JARVIS_GITHUB_APP_ID`                    | _(unset)_                                 | the GitHub App id; publishing is off without it, the key and an installation                 |
-| `JARVIS_GITHUB_APP_PRIVATE_KEY`           | _(unset)_                                 | the App PEM inline (`\n` escapes allowed)                                                    |
-| `JARVIS_GITHUB_APP_PRIVATE_KEY_PATH`      | _(unset)_                                 | or a file holding the PEM; used only when the inline value is absent                         |
-| `JARVIS_GITHUB_INSTALLATION_ID`           | _(unset)_                                 | the installation that serves the allowlisted repositories                                    |
-| `JARVIS_GITHUB_API_BASE_URL`              | `https://api.github.com`                  | REST host, for a GitHub Enterprise install                                                   |
-| `JARVIS_GITHUB_REPOS`                     | `JARVIS_SANDBOX_REPOS`                    | comma-separated `owner/name` allowlist for the tracker tools; empty leaves them unregistered |
-| `JARVIS_GITHUB_REVIEWER`                  | repository owner                          | login asked to review a published PR (create or follow-up); best-effort                      |
+| Variable                                  | Default                                   | Meaning                                                                                                              |
+| ----------------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `JARVIS_SANDBOX`                          | _(unset)_                                 | `docker` enables the surface; anything else leaves it absent                                                         |
+| `JARVIS_SANDBOX_IMAGE`                    | `jarvis-job:latest`                       | the job image, built by this repository                                                                              |
+| `JARVIS_SANDBOX_DOCKER_SOCKET`            | `/var/run/docker.sock`                    | the daemon's socket                                                                                                  |
+| `JARVIS_SANDBOX_WORKSPACE_ROOT`           | `~/.jarvis/jobs`                          | workspaces **as the server sees them**                                                                               |
+| `JARVIS_SANDBOX_WORKSPACE_HOST_ROOT`      | the same                                  | workspaces **as the daemon sees them** — set this in a container deployment                                          |
+| `JARVIS_SANDBOX_MAX_JOBS`                 | `1`                                       | jobs allowed to run at once                                                                                          |
+| `JARVIS_SANDBOX_CPUS`                     | `2`                                       | cores per job                                                                                                        |
+| `JARVIS_SANDBOX_MEMORY_MB`                | `4096`                                    | memory ceiling per job                                                                                               |
+| `JARVIS_SANDBOX_PIDS`                     | `512`                                     | process ceiling per job                                                                                              |
+| `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`       | `45`                                      | the supervisor stops a job that overruns                                                                             |
+| `JARVIS_SANDBOX_MAX_WORKSPACE_MB`         | `2048`                                    | workspace disk ceiling, sampled every 10 s; `0` disables it                                                          |
+| `JARVIS_SANDBOX_REPOS`                    | _(empty)_                                 | `owner/name` allowlist; empty clones nothing                                                                         |
+| `JARVIS_SANDBOX_MODEL`                    | `big-pickle`                              | the model id handed to the agent                                                                                     |
+| `JARVIS_SANDBOX_LLM_BASE_URL`             | `https://opencode.ai/inference/openai/v1` | the OpenAI-compatible endpoint a job container talks to                                                              |
+| `JARVIS_SANDBOX_API_KEY`                  | _(empty)_                                 | the provider key; required for a remote endpoint, never logged                                                       |
+| `JARVIS_SANDBOX_EXTRA_HOSTS`              | `host.docker.internal:host-gateway`       | extra `/etc/hosts` entries; `none` disables                                                                          |
+| `JARVIS_SANDBOX_PROXY_BIND`               | `127.0.0.1`                               | the broker's interface; compose binds `0.0.0.0` on its private network                                               |
+| `JARVIS_SANDBOX_PROXY_PORT`               | `54322`                                   | the broker's port                                                                                                    |
+| `JARVIS_SANDBOX_PROXY_URL`                | `http://host.docker.internal:54322/v1`    | the broker URL a job is handed (compose: `http://jarvis:54322/v1`)                                                   |
+| `JARVIS_SANDBOX_PROXY_SECRET`             | _(private file)_                          | the HMAC secret; `~/.jarvis/sandbox-proxy.key` when unset                                                            |
+| `JARVIS_SANDBOX_PROXY_MAX_REQUESTS`       | `500`                                     | requests one job may make through the broker before `429`                                                            |
+| `JARVIS_SANDBOX_PROXY_MODE`               | `sidecar`                                 | `sidecar` runs the broker on the job's internal network; `embedded` is the opt-in compatibility path (bridge egress) |
+| `JARVIS_SANDBOX_PROXY_PROBE_URL`          | the same as `JARVIS_SANDBOX_PROXY_URL`    | where the **server** probes the broker; dev points it at `http://127.0.0.1:54322/v1`                                 |
+| `JARVIS_SANDBOX_EGRESS_PROXY_URL`         | _(unset)_                                 | forward proxy a sidecar job may research through (`http://proxy:54323`); empty = broker only                         |
+| `JARVIS_SANDBOX_NETWORK`                  | _(none)_                                  | the Docker network job containers join; **required in sidecar mode**, and must be `Internal: true`                   |
+| `JARVIS_SANDBOX_LOG_ROOT`                 | `~/.jarvis/logs/coding`                   | where each job's full output is written (`0600` files)                                                               |
+| `JARVIS_SANDBOX_LOG_MAX_MB`               | `10`                                      | per-job log cap; one marker line is written past it                                                                  |
+| `JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS` | `14`                                      | settled workspaces older than this are swept at boot                                                                 |
+| `JARVIS_SANDBOX_LOG_RETENTION_DAYS`       | `30`                                      | log files older than this are swept at boot                                                                          |
+| `JARVIS_SANDBOX_KEEP_JOB_ROWS`            | `100`                                     | settled rows kept per user; older ones are pruned at settle                                                          |
+| `JARVIS_GITHUB_APP_ID`                    | _(unset)_                                 | the GitHub App id; publishing is off without it, the key and an installation                                         |
+| `JARVIS_GITHUB_APP_PRIVATE_KEY`           | _(unset)_                                 | the App PEM inline (`\n` escapes allowed)                                                                            |
+| `JARVIS_GITHUB_APP_PRIVATE_KEY_PATH`      | _(unset)_                                 | or a file holding the PEM; used only when the inline value is absent                                                 |
+| `JARVIS_GITHUB_INSTALLATION_ID`           | _(unset)_                                 | the installation that serves the allowlisted repositories                                                            |
+| `JARVIS_GITHUB_API_BASE_URL`              | `https://api.github.com`                  | REST host, for a GitHub Enterprise install                                                                           |
+| `JARVIS_GITHUB_REPOS`                     | `JARVIS_SANDBOX_REPOS`                    | comma-separated `owner/name` allowlist for the tracker tools; empty leaves them unregistered                         |
+| `JARVIS_GITHUB_REVIEWER`                  | repository owner                          | login asked to review a published PR (create or follow-up); best-effort                                              |
 
 #### Sidecar environment (`proxy` service)
 

@@ -160,4 +160,16 @@ export interface SandboxRunner {
     list(): Promise<SandboxContainer[]>;
     /** Removes a container by id, stopping it first if needed. Idempotent. */
     remove(containerId: string): Promise<void>;
+    /**
+     * Whether a network is `--internal` — the property that makes a sidecar
+     * deployment's egress guarantee real.
+     *
+     * The server must ask rather than trust configuration: a sidecar pointed at
+     * a routed network would put every job on the bridge, where "the container
+     * has the internet" is true. A missing network is `false`, not an error.
+     *
+     * @param name - The Docker network name (`JARVIS_SANDBOX_NETWORK`).
+     * @returns True only when the daemon reports `Internal: true`.
+     */
+    networkIsInternal(name: string): Promise<boolean>;
 }

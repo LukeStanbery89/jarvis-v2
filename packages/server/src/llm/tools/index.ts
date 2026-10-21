@@ -20,7 +20,7 @@ import { createHomeAssistantTool } from "./homeAssistant";
 import { createWikipediaTool } from "./wikipedia";
 import { createNotifyTool } from "./notify";
 import { createJobsTools } from "./jobs";
-import { createCodingTool } from "./coding";
+import { createCodingTools } from "./coding";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { AnalyzeImageDeps } from "./analyzeImage";
 import type { WebSearchDeps } from "./webSearch";
@@ -132,9 +132,10 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
         tools.push(...createGitHubTools(deps.github));
     }
     if (deps.coding) {
-        // The only tool that spends minutes of another process's time. It
-        // returns a job id, not work, so the agent is told not to wait.
-        tools.push(createCodingTool(deps.coding));
+        // Start, inspect, stop: the only tools that spend minutes of another
+        // process's time. Start returns a job id, not work, so the agent is
+        // told not to wait; status and stop make the wait interruptible.
+        tools.push(...createCodingTools(deps.coding));
     }
     if (deps.jobs) {
         // Last, and given a snapshot of everything above: a scheduling tool
