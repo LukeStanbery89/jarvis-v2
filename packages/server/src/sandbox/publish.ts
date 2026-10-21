@@ -10,6 +10,9 @@
  * Only `https://github.com/…` is published. The credential is an installation
  * token and the transport is an HTTP header; an `ssh://` or `file://` remote
  * (the probe's scratch origin) is left alone, and the job keeps its workspace.
+ *
+ * A follow-up (`existing`) is the same operation minus the PR: push the branch
+ * the open pull request already has, and let GitHub update that review.
  */
 import type { GitHubClient } from "../github/client";
 import { parseRepoEntry } from "./workspace";
@@ -28,6 +31,14 @@ export interface PublishInput {
     task: string;
     /** `collect`'s summary, so the pull request says what changed. */
     diffSummary: string;
+    /**
+     * The pull request this run continues (#140).
+     *
+     * Present means "push only": the branch already has a PR, so opening a
+     * second one would split the review. The push updates it in place, and the
+     * same URL comes back.
+     */
+    existing?: { url: string };
 }
 
 /** The supervisor's view of publishing. */
@@ -110,6 +121,11 @@ export function createGitHubPublisher(options: {
                     token: token.token,
                 },
             });
+            if (input.existing !== undefined) {
+                // The PR already describes the work; this push is a new
+                // commit on its branch, and GitHub updates the review itself.
+                return { prUrl: input.existing.url };
+            }
             const base = await options.client.defaultBranch(
                 repo.owner,
                 repo.name,

@@ -31,6 +31,7 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
 import type { SandboxConfig } from "../config";
+import type { PullRequestSnapshot } from "../github/client";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
 import { createCodingLogHub, type CodingLogStream } from "./logHub";
@@ -73,6 +74,8 @@ interface Ending {
     prUrl: string | null;
     /** Why publishing failed, when it did — the job is still `ok`. */
     publishError: string | null;
+    /** True when this run continued an existing pull request (#140). */
+    followUp: boolean;
 }
 
 /** Why a job could not be started; each code is a decision a surface routes on. */
@@ -81,7 +84,11 @@ export type CodingJobRefusalCode =
     | "model-missing"
     | "key-missing"
     | "repo-not-allowed"
-    | "busy";
+    | "busy"
+    | "follow-ups-unavailable"
+    | "pull-request-unavailable"
+    | "pull-request-closed"
+    | "pull-request-fork";
 
 /** The result of asking to start one job. */
 export type StartCodingJobResult =
@@ -102,6 +109,14 @@ export interface CodingJobService {
         repo: string;
         task: string;
         crashPolicy?: CodingJobCrashPolicy;
+        /**
+         * Continue this pull request instead of opening a new branch (#140).
+         *
+         * The job checks out the PR's head branch, is handed the PR's
+         * description and review comments, and pushes back to the same branch
+         * — so the review updates rather than splitting in two.
+         */
+        pullRequest?: number;
     }): Promise<StartCodingJobResult>;
     /**
      * Reconciles rows and containers after a restart, then supervises whatever
@@ -183,6 +198,17 @@ export function createCodingJobService(options: {
      * returned.
      */
     publisher?: JobPublisher;
+    /**
+     * Reads an existing pull request for a follow-up job (#140).
+     *
+     * Absent (no GitHub App) means a follow-up is refused rather than started
+     * against a branch the server cannot see.
+     */
+    pullRequests?: (input: {
+        owner: string;
+        repo: string;
+        number: number;
+    }) => Promise<PullRequestSnapshot>;
     notifications?: Pick<NotificationService, "notify">;
     now?: () => Date;
     newId?: () => string;
@@ -195,6 +221,7 @@ export function createCodingJobService(options: {
         notifications,
         proxy,
         publisher,
+        pullRequests,
     } = options;
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
@@ -310,7 +337,9 @@ export function createCodingJobService(options: {
         // rather than leaving the user to wonder whether the work escaped.
         const note =
             ending.prUrl !== null
-                ? `Pull request: ${ending.prUrl}`
+                ? ending.followUp
+                    ? `Updated pull request: ${ending.prUrl}`
+                    : `Pull request: ${ending.prUrl}`
                 : ending.publishError !== null
                   ? `The branch was not pushed: ${ending.publishError}`
                   : "";
@@ -343,6 +372,9 @@ export function createCodingJobService(options: {
         job: AppCodingJob,
         handle: SandboxHandle,
     ): Promise<void> {
+        // A follow-up starts *at* its pull request, so the row already names
+        // it; a new job learns the URL only when it publishes (#140).
+        const followUp = job.prUrl !== null;
         const tail = createLogTail(LOG_TAIL_BYTES);
         // The full record, on disk: the container is removed below, so this is
         // the only post-mortem that outlives it (#141 phase 7).
@@ -446,6 +478,9 @@ export function createCodingJobService(options: {
                         branch: job.branch,
                         task: job.prompt,
                         diffSummary: collected.diffSummary,
+                        ...(job.prUrl !== null
+                            ? { existing: { url: job.prUrl } }
+                            : {}),
                     });
                     prUrl = published?.prUrl ?? null;
                 } catch (err) {
@@ -506,6 +541,7 @@ export function createCodingJobService(options: {
                 lastMessage: lastAgentMessage(tail.text()),
                 prUrl,
                 publishError,
+                followUp,
             });
             pruneRows(job.userId);
             if (prUrl !== null) {
@@ -653,13 +689,69 @@ export function createCodingJobService(options: {
                 };
             }
 
+            // A follow-up is resolved before anything is cloned: the PR says
+            // which branch to check out, what the reviewers asked for, and
+            // whether continuing is even possible (open, same repository).
+            let followUp: PullRequestSnapshot | null = null;
+            if (input.pullRequest !== undefined) {
+                if (pullRequests === undefined) {
+                    return {
+                        ok: false,
+                        code: "follow-ups-unavailable",
+                        reason: "no GitHub App is configured (`JARVIS_GITHUB_*`), so a pull request cannot be read",
+                    };
+                }
+                let snapshot: PullRequestSnapshot;
+                try {
+                    snapshot = await pullRequests({
+                        owner: repo.owner,
+                        repo: repo.name,
+                        number: input.pullRequest,
+                    });
+                } catch (err) {
+                    return {
+                        ok: false,
+                        code: "pull-request-unavailable",
+                        reason: `pull request #${input.pullRequest} could not be read: ${describe(err)}`,
+                    };
+                }
+                if (snapshot.state !== "open") {
+                    return {
+                        ok: false,
+                        code: "pull-request-closed",
+                        reason: `pull request #${snapshot.number} is ${snapshot.state}`,
+                    };
+                }
+                // The push targets this repository's origin. A fork's branch
+                // is not there, so a job would edit a clone it cannot publish.
+                const target = `${repo.owner}/${repo.name}`.toLowerCase();
+                if (
+                    snapshot.headRepo !== null &&
+                    snapshot.headRepo.toLowerCase() !== target
+                ) {
+                    return {
+                        ok: false,
+                        code: "pull-request-fork",
+                        reason: `pull request #${snapshot.number} comes from ${snapshot.headRepo}`,
+                    };
+                }
+                followUp = snapshot;
+            }
+
             const id = newId();
-            const branch = branchFor(task, id);
+            const branch =
+                followUp === null ? branchFor(task, id) : followUp.head;
             const prepared = await workspace.prepare({
                 jobId: id,
                 repo,
                 branch,
+                ...(followUp !== null ? { existing: true } : {}),
             });
+            // The row records what the user asked; the container gets the
+            // pull request's context as well, because an isolated clone has
+            // the branch but not the conversation that shaped it.
+            const prompt =
+                followUp === null ? task : followUpPrompt(followUp, task);
 
             const job = ledger.createCodingJob(input.userId, {
                 id,
@@ -669,11 +761,14 @@ export function createCodingJobService(options: {
                 workspacePath: prepared.path,
                 crashPolicy: input.crashPolicy ?? "prune",
                 model: config.model,
+                ...(followUp !== null ? { prUrl: followUp.url } : {}),
                 createdAt: nowIso(),
             });
 
             try {
-                const handle = await runner.start(specFor(job, prepared, task));
+                const handle = await runner.start(
+                    specFor(job, prepared, prompt),
+                );
                 const claimed = ledger.claimCodingJob(
                     job.id,
                     handle.containerId,
@@ -776,6 +871,7 @@ export function createCodingJobService(options: {
                         lastMessage: lastAgentMessage(tail.text()),
                         prUrl: null,
                         publishError: null,
+                        followUp: job.prUrl !== null,
                     });
                     pruneRows(job.userId);
                 },
@@ -862,6 +958,82 @@ export function lastAgentMessage(logTail: string): string {
         }
     }
     return "";
+}
+
+/** One comment's share of a follow-up prompt. */
+const MAX_COMMENT_CHARS = 1_200;
+
+/** The whole pull-request context; the task itself is short. */
+const MAX_FOLLOW_UP_CONTEXT_CHARS = 12_000;
+
+/** Indents a comment so a multi-line body stays inside its list item. */
+function quote(body: string): string {
+    return body
+        .split("\n")
+        .map((line) => `  ${line}`)
+        .join("\n");
+}
+
+/**
+ * Builds the prompt a follow-up job runs with (#140).
+ *
+ * The container sees a clone of the branch, not the review that asked for the
+ * change; without this the agent would be guessing which comments are still
+ * open. Everything here is something the user could read on GitHub — the
+ * credential and the host never enter it.
+ *
+ * @param pull - The pull request, as read when the job started.
+ * @param task - What the user wants done now.
+ * @returns The prompt, bounded.
+ */
+export function followUpPrompt(
+    pull: PullRequestSnapshot,
+    task: string,
+): string {
+    const lines: string[] = [
+        `This job continues an existing pull request (#${pull.number}): ${pull.title}`,
+        pull.url,
+        `Its branch \`${pull.head}\` is already checked out and targets \`${pull.base}\`.`,
+        "",
+        "## The original request",
+        "",
+        pull.body.trim() || "(the pull request has no description)",
+        "",
+    ];
+    if (pull.comments.length > 0) {
+        lines.push("## Review comments and conversation", "");
+        for (const comment of pull.comments) {
+            const where =
+                comment.path === undefined
+                    ? "conversation"
+                    : `${comment.path}${
+                          comment.line === undefined ? "" : `:${comment.line}`
+                      }`;
+            const body = comment.body.trim();
+            lines.push(
+                `- @${comment.author} on ${where}:`,
+                quote(
+                    body.length > MAX_COMMENT_CHARS
+                        ? `${body.slice(0, MAX_COMMENT_CHARS - 1)}…`
+                        : body,
+                ),
+                "",
+            );
+        }
+        if (pull.commentsTruncated) {
+            lines.push("(Only the most recent comments are shown.)", "");
+        }
+    }
+    lines.push(
+        "## What this job should do",
+        "",
+        task.trim() || "Address the review comments above.",
+        "",
+    );
+    const prompt = lines.join("\n");
+    return prompt.length > MAX_FOLLOW_UP_CONTEXT_CHARS
+        ? `${prompt.slice(0, MAX_FOLLOW_UP_CONTEXT_CHARS - 1)}…`
+        : prompt;
 }
 
 /**

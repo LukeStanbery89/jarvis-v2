@@ -31,12 +31,55 @@ export interface CreatedPullRequest {
     readonly url: string;
 }
 
+/** One review comment or conversation message on a pull request. */
+export interface PullRequestComment {
+    /** The GitHub login, or `ghost` for a deleted account (as GitHub reports it). */
+    readonly author: string;
+    readonly body: string;
+    /** The file a review comment is attached to; absent for conversation. */
+    readonly path?: string;
+    /** The line in that file, when GitHub reports one. */
+    readonly line?: number;
+}
+
+/** A pull request as a follow-up job needs it (#140). */
+export interface PullRequestSnapshot {
+    readonly owner: string;
+    readonly repo: string;
+    readonly number: number;
+    /** The browser URL (`html_url`). */
+    readonly url: string;
+    readonly title: string;
+    readonly body: string;
+    /** The branch the pull request is from — the branch a follow-up works on. */
+    readonly head: string;
+    /** The branch it targets. */
+    readonly base: string;
+    readonly state: "open" | "closed" | "merged";
+    /** `owner/name` of the head branch's repository (the fork, for a fork PR). */
+    readonly headRepo: string | null;
+    /** Newest last, capped — long discussions would not fit a job's prompt. */
+    readonly comments: readonly PullRequestComment[];
+    /** True when older comments were left out. */
+    readonly commentsTruncated: boolean;
+}
+
 /** What a caller needs from GitHub. */
 export interface GitHubClient {
     /** A live installation token, cached until it is nearly expired. */
     installationToken(): Promise<InstallationToken>;
     /** The repository's default branch, which a pull request targets. */
     defaultBranch(owner: string, repo: string): Promise<string>;
+    /**
+     * Reads one pull request with the conversation a follow-up job needs.
+     *
+     * @throws When GitHub answers 404/403 or an unexpected shape.
+     */
+    readPullRequest(
+        owner: string,
+        repo: string,
+        number: number,
+    ): Promise<PullRequestSnapshot>;
     /** Opens a pull request and returns it. */
     createPullRequest(input: {
         owner: string;
@@ -47,6 +90,9 @@ export interface GitHubClient {
         body: string;
     }): Promise<CreatedPullRequest>;
 }
+
+/** How many comments a follow-up's prompt carries: the newest are the point. */
+const MAX_PR_COMMENTS = 40;
 
 /** Refresh a token this long before GitHub expires it. */
 const REFRESH_MARGIN_MS = 5 * 60_000;
@@ -92,6 +138,87 @@ export function signAppJwt(
     signer.update(`${header}.${payload}`);
     const signature = signer.sign(privateKey).toString("base64url");
     return `${header}.${payload}.${signature}`;
+}
+
+/** One raw comment, defensively read. */
+interface RawComment {
+    readonly at: string;
+    readonly comment: PullRequestComment;
+}
+
+/**
+ * Normalizes the two comment endpoints into one newest-last list.
+ *
+ * The list is capped from the **old** end: a long discussion's last few
+ * comments are the ones a follow-up is answering, and a prompt cannot carry a
+ * hundred threads. `commentsTruncated` tells the caller that something was
+ * left out, so the task can say so rather than implying a complete record.
+ *
+ * @param review - `pulls/{n}/comments` (inline notes).
+ * @param conversation - `issues/{n}/comments` (the thread).
+ * @returns The capped comments and the truncation flag.
+ */
+function commentsFrom(
+    review: readonly unknown[],
+    conversation: readonly unknown[],
+): { comments: PullRequestComment[]; commentsTruncated: boolean } {
+    const rows: RawComment[] = [];
+    const collect = (raw: readonly unknown[], inline: boolean): void => {
+        for (const entry of raw) {
+            if (typeof entry !== "object" || entry === null) {
+                continue;
+            }
+            const value = entry as {
+                user?: { login?: unknown };
+                body?: unknown;
+                path?: unknown;
+                line?: unknown;
+                original_line?: unknown;
+                created_at?: unknown;
+            };
+            if (
+                typeof value.body !== "string" ||
+                value.body.trim().length === 0
+            ) {
+                continue;
+            }
+            const author =
+                typeof value.user?.login === "string"
+                    ? value.user.login
+                    : "ghost";
+            const path =
+                inline && typeof value.path === "string"
+                    ? value.path
+                    : undefined;
+            const rawLine = value.line ?? value.original_line;
+            const line =
+                typeof rawLine === "number" && Number.isFinite(rawLine)
+                    ? rawLine
+                    : undefined;
+            rows.push({
+                at:
+                    typeof value.created_at === "string"
+                        ? value.created_at
+                        : "",
+                comment: {
+                    author,
+                    body: value.body,
+                    ...(path !== undefined ? { path } : {}),
+                    ...(line !== undefined ? { line } : {}),
+                },
+            });
+        }
+    };
+    collect(review, true);
+    collect(conversation, false);
+    // `created_at` is ISO-8601, so lexical order is chronological; a missing
+    // timestamp sorts before dated ones rather than displacing them.
+    rows.sort((left, right) => left.at.localeCompare(right.at));
+    const comments = rows.slice(-MAX_PR_COMMENTS).map((row) => row.comment);
+    return {
+        comments,
+        commentsTruncated: rows.length > comments.length,
+    };
 }
 
 /**
@@ -168,6 +295,70 @@ export function createGitHubClient(
 
     return {
         installationToken,
+
+        async readPullRequest(
+            owner: string,
+            repo: string,
+            number: number,
+        ): Promise<PullRequestSnapshot> {
+            const token = await installationToken();
+            const pull = await api<{
+                html_url?: unknown;
+                title?: unknown;
+                body?: unknown;
+                state?: unknown;
+                merged?: unknown;
+                head?: { ref?: unknown; repo?: { full_name?: unknown } | null };
+                base?: { ref?: unknown };
+            }>(`/repos/${owner}/${repo}/pulls/${number}`, {
+                token: token.token,
+            });
+            if (
+                typeof pull.html_url !== "string" ||
+                typeof pull.title !== "string" ||
+                typeof pull.head?.ref !== "string" ||
+                typeof pull.base?.ref !== "string"
+            ) {
+                throw new Error(
+                    `GitHub returned an unexpected pull request shape for #${number}`,
+                );
+            }
+            // Review notes and conversation are two endpoints with one
+            // meaning to the person reading them; a follow-up wants both.
+            const [review, conversation] = await Promise.all([
+                api<unknown[]>(
+                    `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`,
+                    { token: token.token },
+                ),
+                api<unknown[]>(
+                    `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
+                    { token: token.token },
+                ),
+            ]);
+            const merged = pull.merged === true;
+            const state = merged
+                ? "merged"
+                : pull.state === "open"
+                  ? "open"
+                  : "closed";
+            const headRepo =
+                typeof pull.head.repo?.full_name === "string"
+                    ? pull.head.repo.full_name
+                    : null;
+            return {
+                owner,
+                repo,
+                number,
+                url: pull.html_url,
+                title: pull.title,
+                body: typeof pull.body === "string" ? pull.body : "",
+                head: pull.head.ref,
+                base: pull.base.ref,
+                state,
+                headRepo,
+                ...commentsFrom(review, conversation),
+            };
+        },
 
         async defaultBranch(owner: string, repo: string): Promise<string> {
             const token = await installationToken();

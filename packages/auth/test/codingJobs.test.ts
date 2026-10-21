@@ -106,6 +106,26 @@ describe("coding-job ledger", () => {
         expect(store.getCodingJobById("c1")?.model).toBe("deepseek-v4.1-flash");
     });
 
+    it("carries a follow-up's pull request from creation", () => {
+        const { store, ownerId } = makeStore();
+        const created = store.createCodingJob(ownerId, {
+            ...codingJob(),
+            prUrl: "https://github.com/luke/app/pull/165",
+        });
+        expect(created.prUrl).toBe("https://github.com/luke/app/pull/165");
+
+        // Settling without a URL keeps the one the job started with: a
+        // follow-up pushes to that PR and never opens a second.
+        store.claimCodingJob("c1", "container-1", "2026-10-19T12:00:01.000Z");
+        const settled = store.settleCodingJob(
+            "c1",
+            "ok",
+            { diffSummary: "1 file changed" },
+            "2026-10-19T12:01:00.000Z",
+        );
+        expect(settled?.prUrl).toBe("https://github.com/luke/app/pull/165");
+    });
+
     it("scopes the user read to its owner", () => {
         const { store, ownerId, userId } = makeStore();
         store.createCodingJob(ownerId, codingJob());

@@ -307,10 +307,16 @@ if (appConfig.sandbox) {
         repos: sandbox.repos,
     });
     // Publishing is optional and separate from running the job: without a
-    // GitHub App the branch stays local and the workspace is kept (#140).
-    const publisher = appConfig.github
+    // GitHub App the branch stays local and the workspace is kept (#140). One
+    // client serves both halves — publishing a finished branch and reading a
+    // pull request a follow-up continues — so the installation token is
+    // exchanged once and cached.
+    const github = appConfig.github
+        ? createGitHubClient(appConfig.github)
+        : undefined;
+    const publisher = github
         ? createGitHubPublisher({
-              client: createGitHubClient(appConfig.github),
+              client: github,
               push: (input) => workspace.push(input),
           })
         : undefined;
@@ -323,6 +329,16 @@ if (appConfig.sandbox) {
         config: sandbox,
         proxy: { url: sandbox.proxyUrl, secret: proxySecret },
         ...(publisher ? { publisher } : {}),
+        ...(github
+            ? {
+                  pullRequests: (input) =>
+                      github.readPullRequest(
+                          input.owner,
+                          input.repo,
+                          input.number,
+                      ),
+              }
+            : {}),
         ...(notifications ? { notifications } : {}),
     });
 }

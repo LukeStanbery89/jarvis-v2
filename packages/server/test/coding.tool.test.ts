@@ -62,6 +62,7 @@ async function invoke(
             repo?: string;
             task?: string;
             crashPolicy?: "prune" | "resume";
+            pullRequest?: string;
         };
         /** Leave `repo` out of the call entirely, as a small model may. */
         omitRepo?: boolean;
@@ -111,6 +112,7 @@ async function invoke(
             ...(options.omitRepo ? {} : { repo: input.repo ?? "luke/app" }),
             task: input.task ?? "Fix the login bug",
             ...(input.crashPolicy ? { crashPolicy: input.crashPolicy } : {}),
+            ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
         },
         (options.runtime ?? OWNER_RUNTIME) as never,
     )) as string;
@@ -176,6 +178,34 @@ describe("startCodingJob", () => {
             reason: "no task",
         });
         expect(task.text).toContain("needs a task");
+
+        const noGithub = await invoke({
+            ok: false,
+            code: "follow-ups-unavailable",
+            reason: "no app",
+        });
+        expect(noGithub.text).toContain("GitHub is not configured");
+
+        const unreadable = await invoke({
+            ok: false,
+            code: "pull-request-unavailable",
+            reason: "404",
+        });
+        expect(unreadable.text).toContain("could not read that pull request");
+
+        const closed = await invoke({
+            ok: false,
+            code: "pull-request-closed",
+            reason: "merged",
+        });
+        expect(closed.text).toContain("closed or merged");
+
+        const fork = await invoke({
+            ok: false,
+            code: "pull-request-fork",
+            reason: "someone/app",
+        });
+        expect(fork.text).toContain("comes from a fork");
     });
 
     it("starts a job and reports its id and branch without claiming the work", async () => {
@@ -196,6 +226,47 @@ describe("startCodingJob", () => {
                 crashPolicy: "resume",
             },
         ]);
+    });
+
+    it("continues a pull request and says which one", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { input: { pullRequest: "165" } },
+        );
+
+        expect(text).toContain("continuing pull request #165");
+        expect(calls[0]).toMatchObject({
+            userId: 7,
+            repo: "luke/app",
+            task: "Fix the login bug",
+            pullRequest: 165,
+        });
+    });
+
+    it("takes the repository from a pull request URL", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                omitRepo: true,
+                repos: ["other/thing", "luke/app"],
+                input: {
+                    pullRequest: "https://github.com/luke/app/pull/165",
+                },
+            },
+        );
+
+        expect(text).toContain("continuing pull request #165");
+        expect(calls[0]?.repo).toBe("luke/app");
+    });
+
+    it("refuses a reference it cannot read", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { input: { pullRequest: "the review thing" } },
+        );
+
+        expect(text).toContain("could not read that pull request reference");
+        expect(calls).toHaveLength(0);
     });
 
     it("uses the only allowed repository when the user names none", async () => {
