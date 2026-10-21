@@ -74,6 +74,14 @@ describe("GitHub App config", () => {
         }
     });
 
+    it("treats a non-numeric App id as off", () => {
+        process.env.JARVIS_GITHUB_APP_ID = "jarvis-coding-agent";
+        process.env.JARVIS_GITHUB_INSTALLATION_ID = "67890";
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----";
+
+        expect(getGitHubConfig()).toBeNull();
+    });
+
     it("treats an unreadable key path as off rather than failing", () => {
         process.env.JARVIS_GITHUB_APP_ID = "12345";
         process.env.JARVIS_GITHUB_INSTALLATION_ID = "67890";

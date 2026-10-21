@@ -79,7 +79,9 @@ export function signAppJwt(
     // Integer"), even though the App id arrives from the environment as text.
     const issuer = Number(appId);
     if (!Number.isFinite(issuer)) {
-        throw new Error("the GitHub App id must be numeric");
+        throw new Error(
+            "the GitHub App id must be numeric (use the App ID, not its name)",
+        );
     }
     const issuedAt = Math.floor(nowMs / 1000) - 60;
     const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));

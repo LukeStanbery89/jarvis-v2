@@ -917,6 +917,16 @@ export function getGitHubConfig(): GitHubConfig | null {
     ) {
         return null;
     }
+    // The App id is the numeric one on the App's settings page. Its slug and
+    // its client id are different values, and GitHub rejects either as a JWT
+    // issuer — catching it here turns "every job fails to publish" into one
+    // boot warning.
+    if (!/^\d+$/.test(appId)) {
+        logger.warn(
+            "JARVIS_GITHUB_APP_ID is not numeric; GitHub publishing is off (use the App ID from the App's settings page, not its name)",
+        );
+        return null;
+    }
     return {
         appId,
         installationId,
