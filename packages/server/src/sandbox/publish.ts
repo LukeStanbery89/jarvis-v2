@@ -15,6 +15,7 @@
  * the open pull request already has, and let GitHub update that review.
  */
 import type { GitHubClient } from "../github/client";
+import { logger } from "../logger";
 import { parseRepoEntry } from "./workspace";
 
 /** What the supervisor knows when a run has succeeded and changed something. */
@@ -69,6 +70,16 @@ function titleFor(task: string): string {
     }`;
 }
 
+/** The pull number in a GitHub pull request URL, or `null`. */
+function pullNumber(url: string): number | null {
+    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url);
+    if (match === null) {
+        return null;
+    }
+    const number = Number(match[1]);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
 /** The pull request body: what was asked, what changed, and which job. */
 function bodyFor(input: PublishInput): string {
     const body = [
@@ -97,14 +108,49 @@ function bodyFor(input: PublishInput): string {
 export function createGitHubPublisher(options: {
     client: Pick<
         GitHubClient,
-        "installationToken" | "defaultBranch" | "createPullRequest"
+        | "installationToken"
+        | "defaultBranch"
+        | "createPullRequest"
+        | "requestReviewers"
     >;
     push(input: {
         workspacePath: string;
         branch: string;
         auth?: { username: string; token: string };
     }): Promise<void>;
+    /**
+     * The login asked to review a published PR (`JARVIS_GITHUB_REVIEWER`).
+     * Absent means the repository's owner — the human on a personal repo.
+     */
+    reviewer?: string;
 }): JobPublisher {
+    /**
+     * Asks the human to review, once the branch is on the remote.
+     *
+     * Best-effort by design: the push and the PR are the work, and a reviewer
+     * request GitHub refuses (an org owner, a missing collaborator) is a
+     * courtesy that failed, not a job that failed.
+     */
+    async function askForReview(
+        repo: { owner: string; name: string },
+        number: number,
+    ): Promise<void> {
+        const reviewer = options.reviewer ?? repo.owner;
+        try {
+            await options.client.requestReviewers(
+                repo.owner,
+                repo.name,
+                number,
+                [reviewer],
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn(
+                `could not request ${reviewer} as a reviewer for ${repo.owner}/${repo.name}#${number}: ${message}`,
+            );
+        }
+    }
+
     return {
         async publish(input): Promise<{ prUrl: string } | null> {
             const repo = parseRepoEntry(input.repo);
@@ -124,6 +170,11 @@ export function createGitHubPublisher(options: {
             if (input.existing !== undefined) {
                 // The PR already describes the work; this push is a new
                 // commit on its branch, and GitHub updates the review itself.
+                // Re-request the review so the human is told new work landed.
+                const number = pullNumber(input.existing.url);
+                if (number !== null) {
+                    await askForReview(repo, number);
+                }
                 return { prUrl: input.existing.url };
             }
             const base = await options.client.defaultBranch(
@@ -138,6 +189,7 @@ export function createGitHubPublisher(options: {
                 title: titleFor(input.task),
                 body: bodyFor(input),
             });
+            await askForReview(repo, created.number);
             return { prUrl: created.url };
         },
     };

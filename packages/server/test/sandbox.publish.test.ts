@@ -20,7 +20,14 @@ interface PullRequestInput {
 }
 
 /** A publisher over recording fakes. */
-function makePublisher(options: { pushError?: Error; url?: string } = {}) {
+function makePublisher(
+    options: {
+        pushError?: Error;
+        url?: string;
+        reviewer?: string;
+        reviewError?: Error;
+    } = {},
+) {
     const pushes: Array<{
         workspacePath: string;
         branch: string;
@@ -30,6 +37,11 @@ function makePublisher(options: { pushError?: Error; url?: string } = {}) {
         number: 7,
         url: options.url ?? "https://github.com/luke/app/pull/7",
     }));
+    const requestReviewers = vi.fn(async () => {
+        if (options.reviewError) {
+            throw options.reviewError;
+        }
+    });
     const client = {
         installationToken: vi.fn(async () => ({
             token: "ghs_secret",
@@ -37,6 +49,7 @@ function makePublisher(options: { pushError?: Error; url?: string } = {}) {
         })),
         defaultBranch: vi.fn(async () => "main"),
         createPullRequest,
+        requestReviewers,
     };
     const publisher = createGitHubPublisher({
         client,
@@ -46,8 +59,11 @@ function makePublisher(options: { pushError?: Error; url?: string } = {}) {
             }
             pushes.push(input);
         },
+        ...(options.reviewer !== undefined
+            ? { reviewer: options.reviewer }
+            : {}),
     });
-    return { publisher, pushes, client, createPullRequest };
+    return { publisher, pushes, client, createPullRequest, requestReviewers };
 }
 
 const INPUT = {
@@ -61,7 +77,8 @@ const INPUT = {
 
 describe("the GitHub publisher", () => {
     it("pushes with the installation token and opens one pull request", async () => {
-        const { publisher, pushes, createPullRequest } = makePublisher();
+        const { publisher, pushes, createPullRequest, requestReviewers } =
+            makePublisher();
 
         const published = await publisher.publish(INPUT);
 
@@ -89,11 +106,47 @@ describe("the GitHub publisher", () => {
         expect(body).toContain("It happens on Safari.");
         expect(body).toContain("job-1");
         expect(body).toContain("new commits:");
+        // The owner is the human on a personal repository.
+        expect(requestReviewers).toHaveBeenCalledWith("luke", "app", 7, [
+            "luke",
+        ]);
+    });
+
+    it("asks the configured reviewer instead of the owner", async () => {
+        const { publisher, requestReviewers } = makePublisher({
+            reviewer: "luke-human",
+        });
+
+        await publisher.publish(INPUT);
+
+        expect(requestReviewers).toHaveBeenCalledWith("luke", "app", 7, [
+            "luke-human",
+        ]);
+    });
+
+    it("still publishes when the review request fails", async () => {
+        // An org owner cannot be a reviewer; the PR is still the work.
+        const { publisher } = makePublisher({
+            reviewError: new Error(
+                "Reviews may only be requested from collaborators",
+            ),
+        });
+
+        const published = await publisher.publish(INPUT);
+
+        expect(published).toEqual({
+            prUrl: "https://github.com/luke/app/pull/7",
+        });
     });
 
     it("pushes a follow-up to its existing PR instead of opening another", async () => {
-        const { publisher, pushes, createPullRequest, client } =
-            makePublisher();
+        const {
+            publisher,
+            pushes,
+            createPullRequest,
+            client,
+            requestReviewers,
+        } = makePublisher();
 
         const published = await publisher.publish({
             ...INPUT,
@@ -107,6 +160,10 @@ describe("the GitHub publisher", () => {
         // One PR per branch: a second would split the review.
         expect(createPullRequest).not.toHaveBeenCalled();
         expect(client.defaultBranch).not.toHaveBeenCalled();
+        // New commits were pushed to the review; ask for the eyes again.
+        expect(requestReviewers).toHaveBeenCalledWith("luke", "app", 7, [
+            "luke",
+        ]);
     });
 
     it("leaves a non-GitHub remote unpublished", async () => {

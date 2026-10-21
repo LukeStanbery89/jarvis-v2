@@ -19,6 +19,7 @@ const VARS = [
     "JARVIS_GITHUB_API_BASE_URL",
     "JARVIS_GITHUB_REPOS",
     "JARVIS_SANDBOX_REPOS",
+    "JARVIS_GITHUB_REVIEWER",
 ];
 
 afterEach(() => {
@@ -42,7 +43,19 @@ describe("GitHub App config", () => {
             privateKey: "-----BEGIN KEY-----",
             apiBaseUrl: "https://api.github.com",
             repos: [],
+            reviewer: null,
         });
+    });
+
+    it("reads the reviewer login, and leaves it to the owner when unset", () => {
+        process.env.JARVIS_GITHUB_APP_ID = "12345";
+        process.env.JARVIS_GITHUB_INSTALLATION_ID = "67890";
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----";
+
+        expect(getGitHubConfig()?.reviewer).toBeNull();
+
+        process.env.JARVIS_GITHUB_REVIEWER = "luke-human";
+        expect(getGitHubConfig()?.reviewer).toBe("luke-human");
     });
 
     it("takes its repository allowlist from JARVIS_GITHUB_REPOS", () => {

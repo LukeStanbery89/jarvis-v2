@@ -24,6 +24,7 @@ const CONFIG: GitHubConfig = {
     installationId: "67890",
     apiBaseUrl: "https://api.github.test",
     repos: ["luke/app"],
+    reviewer: null,
 };
 
 /** A JSON response. */
@@ -574,5 +575,48 @@ describe("issues", () => {
                 call.url.endsWith("/issues/140/comments"),
         );
         expect(JSON.parse(String(post?.init.body))).toEqual({ body: "On it." });
+    });
+});
+
+describe("review requests", () => {
+    it("posts the logins a review was requested from", async () => {
+        const calls: Array<{ url: string; init: RequestInit }> = [];
+        const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+            calls.push({ url, init });
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            return json({ requested_reviewers: [{ login: "luke" }] });
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        await client.requestReviewers("luke", "app", 7, ["luke"]);
+
+        const post = calls.find((call) =>
+            call.url.includes("/requested_reviewers"),
+        );
+        expect(post?.url).toBe(
+            "https://api.github.test/repos/luke/app/pulls/7/requested_reviewers",
+        );
+        expect(JSON.parse(String(post?.init.body))).toEqual({
+            reviewers: ["luke"],
+        });
+    });
+
+    it("does nothing when no login is given", async () => {
+        const fetchImpl = vi.fn();
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+        });
+
+        await client.requestReviewers("luke", "app", 7, []);
+
+        expect(fetchImpl).not.toHaveBeenCalled();
     });
 });

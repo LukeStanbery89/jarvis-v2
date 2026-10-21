@@ -187,8 +187,12 @@ pushed and gets a pull request on the repository's default branch. The push
 carries a short-lived installation token in the child's environment (never
 `argv`, never the container), the ending's notification names the pull request,
 and the workspace is removed once the branch is pushed: the remote is then the
-copy. Without an App the branch stays local, the notification says why it was
-not pushed, and the workspace lives until retention.
+copy. Every publish — a new pull request or a follow-up push — also asks the
+human to review: `JARVIS_GITHUB_REVIEWER`, defaulting to the repository's owner
+(the person on a personal repo; an org-owned repository needs it set). The
+request is best-effort: a PR that could not ask for a reviewer is still a PR.
+Without an App the branch stays local, the notification says why it was not
+pushed, and the workspace lives until retention.
 
 A **follow-up** continues an open pull request instead of starting a new branch:
 `startCodingJob` takes `pullRequest` (its number or its URL), the job checks out
@@ -286,6 +290,7 @@ non-zero unless the job settled `ok`.
 | `JARVIS_GITHUB_INSTALLATION_ID`           | _(unset)_                                 | the installation that serves the allowlisted repositories                                    |
 | `JARVIS_GITHUB_API_BASE_URL`              | `https://api.github.com`                  | REST host, for a GitHub Enterprise install                                                   |
 | `JARVIS_GITHUB_REPOS`                     | `JARVIS_SANDBOX_REPOS`                    | comma-separated `owner/name` allowlist for the tracker tools; empty leaves them unregistered |
+| `JARVIS_GITHUB_REVIEWER`                  | repository owner                          | login asked to review a published PR (create or follow-up); best-effort                      |
 
 #### Container environment reference
 

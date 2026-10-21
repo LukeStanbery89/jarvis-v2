@@ -133,6 +133,19 @@ export interface GitHubClient {
         input: { title: string; body?: string },
         options?: { signal?: AbortSignal },
     ): Promise<CreatedOnGitHub>;
+    /**
+     * Asks logins to review a pull request.
+     *
+     * Idempotent enough for a re-request after a follow-up: GitHub answers an
+     * already-requested reviewer without error, and the caller treats any
+     * failure as cosmetic — the branch is already pushed.
+     */
+    requestReviewers(
+        owner: string,
+        repo: string,
+        number: number,
+        reviewers: readonly string[],
+    ): Promise<void>;
     /** Comments on an issue or pull request (one endpoint serves both). */
     commentOnIssue(
         owner: string,
@@ -599,6 +612,26 @@ export function createGitHubClient(
                 },
             );
             return createdFrom(created, "issue");
+        },
+
+        async requestReviewers(
+            owner: string,
+            repo: string,
+            number: number,
+            reviewers: readonly string[],
+        ): Promise<void> {
+            if (reviewers.length === 0) {
+                return;
+            }
+            const token = await installationToken();
+            await api<unknown>(
+                `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`,
+                {
+                    method: "POST",
+                    token: token.token,
+                    body: { reviewers: [...reviewers] },
+                },
+            );
         },
 
         async commentOnIssue(

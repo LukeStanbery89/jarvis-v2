@@ -886,6 +886,15 @@ export interface GitHubConfig {
      * it. Empty means the tools are not registered at all.
      */
     readonly repos: readonly string[];
+    /**
+     * The login asked to review a published pull request
+     * (`JARVIS_GITHUB_REVIEWER`).
+     *
+     * `null` means the repository's owner — the human on a personal repo. An
+     * org-owned repository needs this set to a person, because an org cannot
+     * be a reviewer.
+     */
+    readonly reviewer: string | null;
 }
 
 /** Default GitHub REST host. */
@@ -945,6 +954,7 @@ export function getGitHubConfig(): GitHubConfig | null {
         repos: parseCsv(
             process.env.JARVIS_GITHUB_REPOS ?? process.env.JARVIS_SANDBOX_REPOS,
         ),
+        reviewer: process.env.JARVIS_GITHUB_REVIEWER?.trim() || null,
     };
 }
 

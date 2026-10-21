@@ -320,6 +320,9 @@ if (appConfig.sandbox) {
         ? createGitHubPublisher({
               client: githubClient,
               push: (input) => workspace.push(input),
+              ...(appConfig.github?.reviewer
+                  ? { reviewer: appConfig.github.reviewer }
+                  : {}),
           })
         : undefined;
     codingJobs = createCodingJobService({
