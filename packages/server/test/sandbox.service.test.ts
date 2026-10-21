@@ -30,6 +30,7 @@ import {
     lastAgentMessage,
 } from "../src/sandbox/service";
 import { deriveJobToken } from "../src/sandbox/proxy";
+import type { JobPublisher } from "../src/sandbox/publish";
 import type { RepoSpec, WorkspaceManager } from "../src/sandbox/workspace";
 
 /** A config with every knob decided. */
@@ -79,14 +80,25 @@ function fakeWorkspace(
     prepared: Array<{ jobId: string; branch: string }>;
     removed: string[];
     commits: Array<{ workspacePath: string; message: string }>;
+    pushes: Array<{
+        workspacePath: string;
+        branch: string;
+        auth?: { username: string; token: string };
+    }>;
 } {
     const prepared: Array<{ jobId: string; branch: string }> = [];
     const removed: string[] = [];
     const commits: Array<{ workspacePath: string; message: string }> = [];
+    const pushes: Array<{
+        workspacePath: string;
+        branch: string;
+        auth?: { username: string; token: string };
+    }> = [];
     return {
         prepared,
         removed,
         commits,
+        pushes,
         allows(repo: string): RepoSpec | null {
             if (options.allow === false) {
                 return null;
@@ -119,6 +131,9 @@ function fakeWorkspace(
         async commit(input: { workspacePath: string; message: string }) {
             commits.push(input);
             return options.commit ?? true;
+        },
+        async push(input) {
+            pushes.push(input);
         },
     };
 }
@@ -162,6 +177,7 @@ function makeService(
     overrides: {
         config?: Partial<SandboxConfig>;
         proxy?: { url: string; secret: string };
+        publisher?: JobPublisher;
         workspace?: FakeWorkspace;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
@@ -179,6 +195,7 @@ function makeService(
         workspace,
         config: { ...CONFIG, logRoot, ...overrides.config },
         ...(overrides.proxy ? { proxy: overrides.proxy } : {}),
+        ...(overrides.publisher ? { publisher: overrides.publisher } : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
         newId: () => `job-${++sequence}`,
@@ -400,6 +417,83 @@ describe("starting a coding job", () => {
         );
         // The whole point: the real key is not in the container at all.
         expect(env.JARVIS_JOB_API_KEY).not.toBe("sk-real-provider-key");
+    });
+
+    it("publishes a successful branch and drops the clone after the push", async () => {
+        const publish = vi.fn(async () => ({
+            prUrl: "https://github.com/luke/app/pull/9",
+        }));
+        const { service, userId, runner, workspace, store, notify } =
+            makeService({ publisher: { publish } });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix the login bug",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+        const container = started.job.containerId ?? "";
+        runner.emit(container, '{"type":"text","part":{"text":"done"}}');
+        runner.exit(container, 0);
+        await started.done;
+
+        expect(publish).toHaveBeenCalledWith(
+            expect.objectContaining({
+                jobId: started.job.id,
+                repo: "luke/app",
+                branch: started.job.branch,
+                task: "Fix the login bug",
+            }),
+        );
+        expect(store.getCodingJobById(started.job.id)?.prUrl).toBe(
+            "https://github.com/luke/app/pull/9",
+        );
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({
+                body: expect.stringContaining(
+                    "Pull request: https://github.com/luke/app/pull/9",
+                ),
+            }),
+        );
+        // Pushed means disposable: the remote is the copy (#140).
+        expect(workspace.removed).toContain("/jobs/job-1/repo");
+    });
+
+    it("still settles ok when publishing fails, and keeps the workspace", async () => {
+        const publish = vi.fn(async () => {
+            throw new Error("no permission");
+        });
+        const { service, userId, runner, workspace, store, notify } =
+            makeService({ publisher: { publish } });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix the login bug",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+        const container = started.job.containerId ?? "";
+        runner.emit(container, '{"type":"text","part":{"text":"done"}}');
+        runner.exit(container, 0);
+        await started.done;
+
+        const row = store.getCodingJobById(started.job.id);
+        expect(row?.state).toBe("ok");
+        expect(row?.prUrl).toBeNull();
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({
+                body: expect.stringContaining(
+                    "The branch was not pushed: no permission",
+                ),
+            }),
+        );
+        expect(workspace.removed).toEqual([]);
     });
 
     it("writes the full run to a log file beside the workspaces", async () => {

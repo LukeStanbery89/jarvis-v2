@@ -46,6 +46,7 @@ import type {
     SandboxRunner,
     SandboxSpec,
 } from "./types";
+import type { JobPublisher } from "./publish";
 import { deriveJobToken } from "./proxy";
 import {
     sweepWorkspaces,
@@ -68,6 +69,10 @@ interface Ending {
     diffSummary: string;
     /** The agent's own last words, parsed from its JSON output. */
     lastMessage: string;
+    /** The pull request opened for the branch, or `null`. */
+    prUrl: string | null;
+    /** Why publishing failed, when it did — the job is still `ok`. */
+    publishError: string | null;
 }
 
 /** Why a job could not be started; each code is a decision a surface routes on. */
@@ -170,11 +175,27 @@ export function createCodingJobService(options: {
      * deployment.
      */
     proxy?: { url: string; secret: string };
+    /**
+     * Pushes a successful branch and opens a pull request (#140).
+     *
+     * Absent means the branch stays local and the workspace is kept: the
+     * publisher owns the GitHub decision, the supervisor only records what it
+     * returned.
+     */
+    publisher?: JobPublisher;
     notifications?: Pick<NotificationService, "notify">;
     now?: () => Date;
     newId?: () => string;
 }): CodingJobService {
-    const { ledger, runner, workspace, config, notifications, proxy } = options;
+    const {
+        ledger,
+        runner,
+        workspace,
+        config,
+        notifications,
+        proxy,
+        publisher,
+    } = options;
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
     const nowIso = () => now().toISOString();
@@ -273,7 +294,7 @@ export function createCodingJobService(options: {
             : ending.changed
               ? `Coding job finished: ${job.repo}`
               : `Coding job finished with no changes: ${job.repo}`;
-        const body = !ending.ok
+        const base = !ending.ok
             ? `${ending.error ?? "the run failed"}${
                   ending.lastMessage.length > 0
                       ? `\n\n${ending.lastMessage}`
@@ -284,6 +305,16 @@ export function createCodingJobService(options: {
                 "The run changed files but left no summary."
               : ending.lastMessage ||
                 "The agent finished without changing any files.";
+        // A successful change's most useful fact is where it went. The pull
+        // request is the answer when there is one; otherwise say why not,
+        // rather than leaving the user to wonder whether the work escaped.
+        const note =
+            ending.prUrl !== null
+                ? `Pull request: ${ending.prUrl}`
+                : ending.publishError !== null
+                  ? `The branch was not pushed: ${ending.publishError}`
+                  : "";
+        const body = note.length > 0 ? `${base}\n\n${note}` : base;
         try {
             await notifications.notify(job.userId, {
                 kind: ending.ok ? "coding.finished" : "coding.failed",
@@ -400,6 +431,31 @@ export function createCodingJobService(options: {
                     return { changed: false, diffSummary: "" };
                 });
 
+            // Publishing is the last step of a successful run: the branch has
+            // been committed and collected, so a push can carry it and a pull
+            // request can describe it. A GitHub failure does not undo the work
+            // — the job still settles `ok`, and its ending says what happened.
+            let prUrl: string | null = null;
+            let publishError: string | null = null;
+            if (ok && collected.changed && publisher !== undefined) {
+                try {
+                    const published = await publisher.publish({
+                        jobId: job.id,
+                        workspacePath: job.workspacePath,
+                        repo: job.repo,
+                        branch: job.branch,
+                        task: job.prompt,
+                        diffSummary: collected.diffSummary,
+                    });
+                    prUrl = published?.prUrl ?? null;
+                } catch (err) {
+                    publishError = describe(err);
+                    logger.warn(
+                        `coding job ${job.id}: could not publish its branch: ${publishError}`,
+                    );
+                }
+            }
+
             const settled = ledger.settleCodingJob(
                 job.id,
                 ok ? "ok" : "failed",
@@ -407,6 +463,7 @@ export function createCodingJobService(options: {
                     diffSummary: collected.diffSummary,
                     logTail: tail.text(),
                     error,
+                    ...(prUrl !== null ? { prUrl } : {}),
                 },
                 nowIso(),
             );
@@ -425,6 +482,7 @@ export function createCodingJobService(options: {
                 `coding job ${job.id} settled ${ok ? "ok" : "failed"}` +
                     (seconds === null ? "" : ` after ${seconds.toFixed(1)}s`) +
                     `: changed=${collected.changed}` +
+                    (prUrl === null ? "" : `, pr=${prUrl}`) +
                     (error === null ? "" : `, error=${error}`),
             );
 
@@ -446,8 +504,21 @@ export function createCodingJobService(options: {
                 error,
                 diffSummary: collected.diffSummary,
                 lastMessage: lastAgentMessage(tail.text()),
+                prUrl,
+                publishError,
             });
             pruneRows(job.userId);
+            if (prUrl !== null) {
+                // The branch is on the remote now; the clone is a second copy
+                // of something GitHub already has (#140).
+                await workspace
+                    .remove(job.workspacePath)
+                    .catch((err: unknown) => {
+                        logger.warn(
+                            `coding job ${job.id}: could not remove its published workspace: ${describe(err)}`,
+                        );
+                    });
+            }
         } finally {
             clearTimeout(timer);
             logHub.finish(job.id);
@@ -703,6 +774,8 @@ export function createCodingJobService(options: {
                         error: reason,
                         diffSummary: "",
                         lastMessage: lastAgentMessage(tail.text()),
+                        prUrl: null,
+                        publishError: null,
                     });
                     pruneRows(job.userId);
                 },
