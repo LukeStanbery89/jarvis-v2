@@ -69,7 +69,11 @@ export interface RepoSpec {
 /** Runs git; injectable so a test can assert the commands without one. */
 export type GitRunner = (
     args: readonly string[],
-    options?: { cwd?: string },
+    options?: {
+        cwd?: string;
+        /** Extra environment for this call (a credential, never an argv value). */
+        env?: Readonly<Record<string, string>>;
+    },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 /** The server-side and daemon-side names of one prepared clone. */
@@ -106,6 +110,20 @@ export interface WorkspaceManager {
      * @returns True when it made a commit, false when the tree was clean.
      */
     commit(input: { workspacePath: string; message: string }): Promise<boolean>;
+    /**
+     * Pushes the job's branch to its origin.
+     *
+     * The credential is a GitHub installation token delivered through the
+     * child's environment as a git config entry (`http.https://github.com/
+     * .extraheader`), never through argv: a command line is visible to `ps`
+     * and tends to end up in an error message. A non-HTTP remote — the probe's
+     * `file://` — is pushed without one.
+     */
+    push(input: {
+        workspacePath: string;
+        branch: string;
+        auth?: { username: string; token: string };
+    }): Promise<void>;
     /** Removes one job's workspace (the job directory, not just `repo`). */
     remove(workspacePath: string): Promise<void>;
 }
@@ -220,7 +238,11 @@ const defaultGit: GitRunner = async (args, options = {}) => {
         {
             cwd: options.cwd,
             maxBuffer: 16 * 1024 * 1024,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+            env: {
+                ...process.env,
+                ...options.env,
+                GIT_TERMINAL_PROMPT: "0",
+            },
         },
     );
     return { stdout, stderr };
@@ -453,6 +475,29 @@ export function createWorkspaceManager(options: {
                 input.message,
             ]);
             return true;
+        },
+
+        async push(input): Promise<void> {
+            const env: Record<string, string> = {};
+            if (input.auth !== undefined) {
+                const basic = Buffer.from(
+                    `${input.auth.username}:${input.auth.token}`,
+                ).toString("base64");
+                env.GIT_CONFIG_COUNT = "1";
+                env.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
+                env.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${basic}`;
+            }
+            await git(
+                [
+                    "-C",
+                    input.workspacePath,
+                    "push",
+                    "--set-upstream",
+                    "origin",
+                    input.branch,
+                ],
+                { env },
+            );
         },
 
         async remove(workspacePath: string): Promise<void> {

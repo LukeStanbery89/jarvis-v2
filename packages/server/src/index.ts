@@ -48,7 +48,9 @@ import {
     loadProxySecret,
     type SandboxProxy,
 } from "./sandbox/proxy";
+import { createGitHubClient } from "./github/client";
 import { createDockerSandbox } from "./sandbox/docker";
+import { createGitHubPublisher } from "./sandbox/publish";
 import { createWorkspaceManager } from "./sandbox/workspace";
 import { openAppDatabase } from "@lukestanbery/jarvis-auth";
 import { createJarvisServer } from "./listener";
@@ -299,18 +301,28 @@ if (appConfig.sandbox) {
     // model call must find it open. A broker that cannot bind is a sandbox that
     // cannot run, and exiting is better than a silent "the model refused" on
     // every job.
+    const workspace = createWorkspaceManager({
+        root: sandbox.workspaceRoot,
+        hostRoot: sandbox.workspaceHostRoot,
+        repos: sandbox.repos,
+    });
+    // Publishing is optional and separate from running the job: without a
+    // GitHub App the branch stays local and the workspace is kept (#140).
+    const publisher = appConfig.github
+        ? createGitHubPublisher({
+              client: createGitHubClient(appConfig.github),
+              push: (input) => workspace.push(input),
+          })
+        : undefined;
     codingJobs = createCodingJobService({
         ledger: store,
         runner: createDockerSandbox({
             socketPath: sandbox.socketPath,
         }),
-        workspace: createWorkspaceManager({
-            root: sandbox.workspaceRoot,
-            hostRoot: sandbox.workspaceHostRoot,
-            repos: sandbox.repos,
-        }),
+        workspace,
         config: sandbox,
         proxy: { url: sandbox.proxyUrl, secret: proxySecret },
+        ...(publisher ? { publisher } : {}),
         ...(notifications ? { notifications } : {}),
     });
 }
@@ -326,7 +338,7 @@ if (appConfig.sandbox && codingJobs) {
             appConfig.sandbox.proxyUrl
         }, apiKey=${
             appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"
-        } (held by the broker)`,
+        } (held by the broker), github=${appConfig.github ? "on" : "off"}`,
     );
 }
 
