@@ -75,10 +75,16 @@ export function signAppJwt(
     privateKey: string,
     nowMs: number,
 ): string {
+    // GitHub rejects a string issuer ("'Issuer' claim ('iss') must be an
+    // Integer"), even though the App id arrives from the environment as text.
+    const issuer = Number(appId);
+    if (!Number.isFinite(issuer)) {
+        throw new Error("the GitHub App id must be numeric");
+    }
     const issuedAt = Math.floor(nowMs / 1000) - 60;
     const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
     const payload = base64url(
-        JSON.stringify({ iat: issuedAt, exp: issuedAt + 600, iss: appId }),
+        JSON.stringify({ iat: issuedAt, exp: issuedAt + 600, iss: issuer }),
     );
     const signer = createSign("RSA-SHA256");
     signer.update(`${header}.${payload}`);

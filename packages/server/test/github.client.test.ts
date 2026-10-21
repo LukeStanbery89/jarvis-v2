@@ -78,8 +78,10 @@ describe("the App JWT", () => {
 
         const claims = JSON.parse(
             Buffer.from(payload, "base64url").toString("utf8"),
-        ) as { iat: number; exp: number; iss: string };
-        expect(claims.iss).toBe("12345");
+        ) as { iat: number; exp: number; iss: unknown };
+        // GitHub requires an integer issuer: a string is rejected with
+        // "'Issuer' claim ('iss') must be an Integer".
+        expect(claims.iss).toBe(12345);
         expect(claims.exp - claims.iat).toBe(600);
         // GitHub rejects an iat in the future; a minute in the past is safe.
         expect(claims.iat).toBeLessThanOrEqual(Math.floor(now / 1000));
@@ -113,7 +115,7 @@ describe("the installation token", () => {
         const authorization = (init.headers as Record<string, string>)
             .authorization;
         const jwt = jwtPayload(authorization);
-        expect(jwt.payload.iss).toBe("12345");
+        expect(jwt.payload.iss).toBe(12345);
         // The installation token is what the response carried, never the JWT.
         expect(jwt.signature.length).toBeGreaterThan(0);
     });
