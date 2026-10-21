@@ -33,6 +33,10 @@ export interface CreatedPullRequest {
 
 /** One review comment or conversation message on a pull request. */
 export interface PullRequestComment {
+    /** GitHub's database id — the reply target for a review note. */
+    readonly id: number;
+    /** The browser URL (with its `#discussion_r…`/`#issuecomment-…` fragment). */
+    readonly url: string;
     /** The GitHub login, or `ghost` for a deleted account (as GitHub reports it). */
     readonly author: string;
     readonly body: string;
@@ -44,6 +48,8 @@ export interface PullRequestComment {
     readonly createdAt: string;
     /** When it was last edited; GitHub's `since` filters on this. */
     readonly updatedAt: string;
+    /** True when this note's review thread is resolved. */
+    readonly resolved: boolean;
 }
 
 /** A pull request as a follow-up job needs it (#140). */
@@ -66,6 +72,16 @@ export interface PullRequestSnapshot {
     readonly comments: readonly PullRequestComment[];
     /** True when older comments were left out. */
     readonly commentsTruncated: boolean;
+    /** How many resolved review comments were left out. */
+    readonly resolvedHidden: number;
+    /**
+     * True when GitHub would not say which threads are resolved.
+     *
+     * Resolution is GraphQL-only; a deployment whose token cannot use it
+     * still gets the full thread, and the caller says so rather than implying
+     * every comment is still open.
+     */
+    readonly resolutionUnavailable: boolean;
     /** When the read finished — the watermark for a later `since` call. */
     readonly readAt: string;
     /**
@@ -171,7 +187,12 @@ export interface GitHubClient {
         owner: string,
         repo: string,
         number: number,
-        options?: { since?: string; signal?: AbortSignal },
+        options?: {
+            since?: string;
+            /** Include resolved review threads (default: hide them). */
+            includeResolved?: boolean;
+            signal?: AbortSignal;
+        },
     ): Promise<PullRequestSnapshot>;
     /** Opens a pull request and returns it. */
     createPullRequest(input: {
@@ -186,6 +207,38 @@ export interface GitHubClient {
 
 /** How many comments a follow-up's prompt carries: the newest are the point. */
 const MAX_PR_COMMENTS = 40;
+
+/** The review threads and whether each is resolved — GraphQL only. */
+const RESOLVED_THREADS_QUERY = `query ReviewThreads($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved
+          comments(first: 100) {
+            nodes { databaseId }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * GitHub's GraphQL endpoint beside a REST base.
+ *
+ * github.com uses `/graphql`; a GitHub Enterprise install whose REST base is
+ * `/api/v3` uses `/api/graphql`. Anything else takes the simple join.
+ *
+ * @param apiBaseUrl - The configured REST host.
+ * @returns The GraphQL URL.
+ */
+function graphqlUrl(apiBaseUrl: string): string {
+    const base = apiBaseUrl.replace(/\/+$/, "");
+    return base.endsWith("/api/v3")
+        ? `${base.slice(0, -"/api/v3".length)}/api/graphql`
+        : `${base}/graphql`;
+}
 
 /** Refresh a token this long before GitHub expires it. */
 const REFRESH_MARGIN_MS = 5 * 60_000;
@@ -254,6 +307,7 @@ interface RawComment {
 function commentsFrom(
     review: readonly unknown[],
     conversation: readonly unknown[],
+    resolved: ReadonlySet<number> | null,
 ): { comments: PullRequestComment[]; commentsTruncated: boolean } {
     const rows: RawComment[] = [];
     const collect = (raw: readonly unknown[], inline: boolean): void => {
@@ -262,6 +316,8 @@ function commentsFrom(
                 continue;
             }
             const value = entry as {
+                id?: unknown;
+                html_url?: unknown;
                 user?: { login?: unknown };
                 body?: unknown;
                 path?: unknown;
@@ -291,9 +347,15 @@ function commentsFrom(
                     : undefined;
             const createdAt =
                 typeof value.created_at === "string" ? value.created_at : "";
+            const id = typeof value.id === "number" ? value.id : 0;
             rows.push({
                 at: createdAt,
                 comment: {
+                    id,
+                    url:
+                        typeof value.html_url === "string"
+                            ? value.html_url
+                            : "",
                     author,
                     body: value.body,
                     ...(path !== undefined ? { path } : {}),
@@ -303,6 +365,7 @@ function commentsFrom(
                         typeof value.updated_at === "string"
                             ? value.updated_at
                             : createdAt,
+                    resolved: inline && resolved !== null && resolved.has(id),
                 },
             });
         }
@@ -471,6 +534,86 @@ export function createGitHubClient(
         return (await response.json()) as T;
     }
 
+    /**
+     * The ids of review comments in a resolved thread.
+     *
+     * GitHub exposes thread resolution only through GraphQL; REST answers
+     * nothing about it. `null` means "could not tell", which the caller treats
+     * as "show everything" — dropping comments because a lookup failed would
+     * silently lose a review.
+     */
+    const resolvedReviewCommentIds = async (
+        owner: string,
+        repo: string,
+        number: number,
+        options: { signal?: AbortSignal },
+    ): Promise<Set<number> | null> => {
+        const token = await installationToken();
+        const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+        try {
+            const response = await fetchImpl(graphqlUrl(config.apiBaseUrl), {
+                method: "POST",
+                headers: {
+                    authorization: `Bearer ${token.token}`,
+                    "content-type": "application/json",
+                    accept: "application/json",
+                },
+                body: JSON.stringify({
+                    query: RESOLVED_THREADS_QUERY,
+                    variables: { owner, repo, number },
+                }),
+                signal:
+                    options.signal !== undefined
+                        ? AbortSignal.any([timeout, options.signal])
+                        : timeout,
+            });
+            if (!response.ok) {
+                return null;
+            }
+            const payload = (await response.json()) as {
+                data?: {
+                    repository?: {
+                        pullRequest?: {
+                            reviewThreads?: {
+                                nodes?: Array<{
+                                    isResolved?: unknown;
+                                    comments?: {
+                                        nodes?: Array<{
+                                            databaseId?: unknown;
+                                        }>;
+                                    };
+                                }>;
+                            };
+                        } | null;
+                    } | null;
+                };
+                errors?: unknown;
+            };
+            if (payload.errors !== undefined) {
+                return null;
+            }
+            const nodes =
+                payload.data?.repository?.pullRequest?.reviewThreads?.nodes;
+            if (!Array.isArray(nodes)) {
+                return null;
+            }
+            const ids = new Set<number>();
+            for (const thread of nodes) {
+                if (thread?.isResolved !== true) {
+                    continue;
+                }
+                for (const comment of thread.comments?.nodes ?? []) {
+                    if (typeof comment?.databaseId === "number") {
+                        ids.add(comment.databaseId);
+                    }
+                }
+            }
+            return ids;
+        } catch {
+            return null;
+        }
+    };
+
     const installationToken = async (): Promise<InstallationToken> => {
         if (
             cached !== null &&
@@ -494,7 +637,11 @@ export function createGitHubClient(
             owner: string,
             repo: string,
             number: number,
-            options: { since?: string; signal?: AbortSignal } = {},
+            options: {
+                since?: string;
+                includeResolved?: boolean;
+                signal?: AbortSignal;
+            } = {},
         ): Promise<PullRequestSnapshot> {
             const token = await installationToken();
             const pull = await api<{
@@ -545,6 +692,22 @@ export function createGitHubClient(
                     ...(options.signal ? { signal: options.signal } : {}),
                 },
             ).catch(() => null);
+            // Resolution lives on the review thread, which only GraphQL
+            // exposes. A failure degrades to "everything is open" rather than
+            // dropping comments on the floor.
+            const resolved = await resolvedReviewCommentIds(
+                owner,
+                repo,
+                number,
+                options,
+            );
+            const visibleReview =
+                resolved === null || options.includeResolved === true
+                    ? review
+                    : review.filter((entry) => {
+                          const id = (entry as { id?: unknown }).id;
+                          return typeof id !== "number" || !resolved.has(id);
+                      });
             const merged = pull.merged === true;
             const state = merged
                 ? "merged"
@@ -566,7 +729,9 @@ export function createGitHubClient(
                 base: pull.base.ref,
                 state,
                 headRepo,
-                ...commentsFrom(review, conversation ?? []),
+                ...commentsFrom(visibleReview, conversation ?? [], resolved),
+                resolvedHidden: review.length - visibleReview.length,
+                resolutionUnavailable: resolved === null && review.length > 0,
                 conversationUnavailable: conversation === null,
                 // Captured after the responses, so a comment that landed
                 // during the read is both included and older than this.

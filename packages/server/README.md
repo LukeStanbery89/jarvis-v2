@@ -223,7 +223,10 @@ conversation: the issue endpoint's count covers the conversation only, so an
 inline review note would otherwise read as no comment at all. Each read points
 at the other tool when the number is the wrong kind. Both comment feeds accept
 `since`, so `getGitHubPullRequest` can return only what is new: pass the
-previous result's `Read at` and the thread is not re-sent.
+previous result's `Read at` and the thread is not re-sent. Resolved review
+threads are hidden by default (`includeResolved: true` shows them, marked):
+resolution is GraphQL-only, so an App whose token cannot query it gets the full
+thread and the result says why rather than implying everything is open.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with

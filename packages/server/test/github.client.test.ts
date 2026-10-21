@@ -241,6 +241,17 @@ describe("reading a pull request", () => {
                     expires_at: "2026-10-20T13:00:00Z",
                 });
             }
+            if (url.endsWith("/graphql")) {
+                return json({
+                    data: {
+                        repository: {
+                            pullRequest: {
+                                reviewThreads: { nodes: [] },
+                            },
+                        },
+                    },
+                });
+            }
             if (url.includes("/pulls/7/comments")) {
                 return json([
                     {
@@ -337,6 +348,17 @@ describe("reading a pull request", () => {
                 return json({
                     token: "ghs_secret",
                     expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.endsWith("/graphql")) {
+                return json({
+                    data: {
+                        repository: {
+                            pullRequest: {
+                                reviewThreads: { nodes: [] },
+                            },
+                        },
+                    },
                 });
             }
             if (url.includes("/pulls/7/comments")) {
@@ -665,5 +687,144 @@ describe("review requests", () => {
         await client.requestReviewers("luke", "app", 7, []);
 
         expect(fetchImpl).not.toHaveBeenCalled();
+    });
+});
+
+describe("resolved review threads", () => {
+    /** A PR with one resolved note, one open note, and a GraphQL answer. */
+    function clientForResolved(
+        graphql: (init: RequestInit) => Response,
+    ): ReturnType<typeof createGitHubClient> {
+        const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.endsWith("/graphql")) {
+                return graphql(init);
+            }
+            if (url.includes("/pulls/7/comments")) {
+                return json([
+                    {
+                        id: 1,
+                        html_url:
+                            "https://github.com/luke/app/pull/7#discussion_r1",
+                        user: { login: "reviewer" },
+                        body: "Already fixed.",
+                        path: "src/app.ts",
+                        line: 1,
+                        created_at: "2026-10-20T10:00:00Z",
+                    },
+                    {
+                        id: 2,
+                        html_url:
+                            "https://github.com/luke/app/pull/7#discussion_r2",
+                        user: { login: "reviewer" },
+                        body: "Still open.",
+                        path: "src/app.ts",
+                        line: 2,
+                        created_at: "2026-10-20T10:01:00Z",
+                    },
+                ]);
+            }
+            if (url.includes("/issues/7/comments")) {
+                return json([]);
+            }
+            if (url.endsWith("/repos/luke/app/pulls/7")) {
+                return json({
+                    html_url: "https://github.com/luke/app/pull/7",
+                    title: "A change",
+                    body: "",
+                    state: "open",
+                    merged: false,
+                    head: { ref: "jarvis/x", repo: { full_name: "luke/app" } },
+                    base: { ref: "main" },
+                });
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        return createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+    }
+
+    /** A GraphQL body marking thread comment 1 resolved. */
+    function threads(): Response {
+        return json({
+            data: {
+                repository: {
+                    pullRequest: {
+                        reviewThreads: {
+                            nodes: [
+                                {
+                                    isResolved: true,
+                                    comments: { nodes: [{ databaseId: 1 }] },
+                                },
+                                {
+                                    isResolved: false,
+                                    comments: { nodes: [{ databaseId: 2 }] },
+                                },
+                            ],
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    it("hides resolved notes by default and counts them", async () => {
+        const client = clientForResolved(() => threads());
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull.comments.map((comment) => comment.body)).toEqual([
+            "Still open.",
+        ]);
+        expect(pull.resolvedHidden).toBe(1);
+        expect(pull.resolutionUnavailable).toBe(false);
+    });
+
+    it("shows and marks them when asked", async () => {
+        const client = clientForResolved(() => threads());
+
+        const pull = await client.readPullRequest("luke", "app", 7, {
+            includeResolved: true,
+        });
+
+        expect(pull.comments.map((comment) => comment.body)).toEqual([
+            "Already fixed.",
+            "Still open.",
+        ]);
+        expect(pull.comments[0]?.resolved).toBe(true);
+        expect(pull.comments[1]?.resolved).toBe(false);
+        expect(pull.resolvedHidden).toBe(0);
+    });
+
+    it("shows everything when resolution cannot be read", async () => {
+        const client = clientForResolved(() =>
+            json({ message: "Resource not accessible" }, 403),
+        );
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull.comments).toHaveLength(2);
+        expect(pull.resolvedHidden).toBe(0);
+        expect(pull.resolutionUnavailable).toBe(true);
+    });
+
+    it("gives each comment its id and URL for a reply", async () => {
+        const client = clientForResolved(() => threads());
+
+        const pull = await client.readPullRequest("luke", "app", 7, {
+            includeResolved: true,
+        });
+
+        expect(pull.comments[0]).toMatchObject({
+            id: 1,
+            url: "https://github.com/luke/app/pull/7#discussion_r1",
+        });
     });
 });

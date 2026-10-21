@@ -98,6 +98,8 @@ function pullRequest(
         headRepo: "luke/app",
         comments: [],
         commentsTruncated: false,
+        resolvedHidden: 0,
+        resolutionUnavailable: false,
         conversationUnavailable: false,
         readAt: "2026-10-21T00:00:00.000Z",
         ...overrides,
@@ -347,21 +349,29 @@ describe("starting a coding job", () => {
             headRepo: "luke/app",
             comments: [
                 {
+                    id: 101,
+                    url: "https://github.com/luke/app/pull/7#discussion_r101",
                     author: "reviewer",
                     body: "Please move this.",
                     path: "src/app.ts",
                     line: 12,
                     createdAt: "2026-10-20T23:50:00Z",
                     updatedAt: "2026-10-20T23:50:00Z",
+                    resolved: false,
                 },
                 {
+                    id: 102,
+                    url: "https://github.com/luke/app/pull/7#issuecomment-102",
                     author: "luke",
                     body: "Also add a test.",
                     createdAt: "2026-10-20T23:51:00Z",
                     updatedAt: "2026-10-20T23:51:00Z",
+                    resolved: false,
                 },
             ],
             commentsTruncated: false,
+            resolvedHidden: 0,
+            resolutionUnavailable: false,
             conversationUnavailable: false,
             readAt: "2026-10-21T00:00:00.000Z",
         };
@@ -534,6 +544,8 @@ describe("starting a coding job", () => {
             headRepo: "luke/app",
             comments: [],
             commentsTruncated: false,
+            resolvedHidden: 0,
+            resolutionUnavailable: false,
             conversationUnavailable: false,
             readAt: "2026-10-21T00:00:00.000Z",
         };
@@ -1190,10 +1202,13 @@ describe("follow-up prompts", () => {
             pullRequest({
                 comments: [
                     {
+                        id: 103,
+                        url: "https://github.com/luke/app/pull/7#discussion_r103",
                         author: "reviewer",
                         body: "x".repeat(5_000),
                         createdAt: "2026-10-20T23:50:00Z",
                         updatedAt: "2026-10-20T23:50:00Z",
+                        resolved: false,
                     },
                 ],
                 commentsTruncated: true,

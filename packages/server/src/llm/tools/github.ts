@@ -310,9 +310,10 @@ export function renderPullRequest(
                   }`;
         const when =
             comment.createdAt.length > 0 ? ` (${comment.createdAt})` : "";
+        const resolved = comment.resolved ? " [resolved]" : "";
         const body = comment.body.trim();
         lines.push(
-            `- @${comment.author} on ${where}${when}:`,
+            `- @${comment.author}${resolved} on ${where}${when}:`,
             quote(
                 body.length > MAX_COMMENT_CHARS
                     ? `${body.slice(0, MAX_COMMENT_CHARS - 1)}…`
@@ -323,6 +324,18 @@ export function renderPullRequest(
     }
     if (pull.commentsTruncated) {
         lines.push("(Only the most recent comments are shown.)", "");
+    }
+    if (pull.resolutionUnavailable) {
+        lines.push(
+            "(GitHub did not report which review threads are resolved; all comments are shown.)",
+            "",
+        );
+    }
+    if (pull.resolvedHidden > 0) {
+        lines.push(
+            `(${pull.resolvedHidden} resolved review comment(s) hidden; pass includeResolved: true to see them.)`,
+            "",
+        );
     }
     // A small relay model reads the tail of a tool result most closely. Give
     // it the one call that actually changes anything, by name, and the
@@ -454,6 +467,9 @@ export function createGitHubTools(
                                 ...(since.since !== undefined
                                     ? { since: since.since }
                                     : {}),
+                                ...(input.includeResolved === true
+                                    ? { includeResolved: true }
+                                    : {}),
                                 ...signalOf(runtime),
                             },
                         );
@@ -488,6 +504,12 @@ export function createGitHubTools(
                         .optional()
                         .describe(
                             "Only show comments updated after this ISO-8601 instant (`2026-10-20T23:50:00Z`). Omit it for the whole thread; pass the previous result's `Read at` to see only what is new.",
+                        ),
+                    includeResolved: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Show review threads that are already resolved. They are hidden by default, because resolved work is done.",
                         ),
                 }),
             },

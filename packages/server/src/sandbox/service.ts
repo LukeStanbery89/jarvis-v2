@@ -1089,6 +1089,18 @@ export function followUpPrompt(
             lines.push("(Only the most recent comments are shown.)", "");
         }
     }
+    if (pull.resolvedHidden > 0) {
+        lines.push(
+            `(${pull.resolvedHidden} resolved review comment(s) were left out.)`,
+            "",
+        );
+    }
+    if (pull.resolutionUnavailable) {
+        lines.push(
+            "(GitHub did not report which review threads are resolved.)",
+            "",
+        );
+    }
     if (pull.conversationUnavailable) {
         lines.push(
             "(The pull request's conversation could not be read; only inline review notes are shown.)",

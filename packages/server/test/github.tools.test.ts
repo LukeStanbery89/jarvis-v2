@@ -44,6 +44,8 @@ const PULL: PullRequestSnapshot = {
     headRepo: "luke/app",
     comments: [],
     commentsTruncated: false,
+    resolvedHidden: 0,
+    resolutionUnavailable: false,
     conversationUnavailable: false,
     readAt: "2026-10-21T00:00:00.000Z",
 };
@@ -142,10 +144,13 @@ describe("GitHub tracker tools", () => {
                 ...PULL,
                 comments: [
                     {
+                        id: 4_333_015_999,
+                        url: "https://github.com/luke/app/pull/165#discussion_r4333015999",
                         author: "luke",
                         body: "One more thing.",
                         createdAt: "2026-10-21T00:10:00Z",
                         updatedAt: "2026-10-21T00:10:00Z",
+                        resolved: false,
                     },
                 ],
                 readAt: "2026-10-21T00:11:00.000Z",
@@ -209,6 +214,119 @@ describe("GitHub tracker tools", () => {
         expect(client.getIssue).not.toHaveBeenCalled();
     });
 
+    it("hides resolved review threads and says how many", async () => {
+        const { invoke, client } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+            readPullRequest: vi.fn(async () => ({
+                ...PULL,
+                resolvedHidden: 2,
+                comments: [
+                    {
+                        id: 2,
+                        url: "https://github.com/luke/app/pull/165#discussion_r2",
+                        author: "luke",
+                        body: "Still open.",
+                        path: "README.md",
+                        line: 1,
+                        createdAt: "2026-10-20T23:50:00Z",
+                        updatedAt: "2026-10-20T23:50:00Z",
+                        resolved: false,
+                    },
+                ],
+            })),
+        });
+
+        const text = await invoke("getGitHubPullRequest", { number: 165 });
+
+        expect(text).toContain("Still open.");
+        expect(text).toContain("2 resolved review comment(s) hidden");
+        expect(text).toContain("includeResolved: true");
+        // Default is hide: the client is not asked to include them.
+        expect(client.readPullRequest).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            165,
+            expect.not.objectContaining({ includeResolved: true }),
+        );
+    });
+
+    it("shows and marks resolved threads when asked", async () => {
+        const { invoke, client } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+            readPullRequest: vi.fn(async () => ({
+                ...PULL,
+                comments: [
+                    {
+                        id: 1,
+                        url: "https://github.com/luke/app/pull/165#discussion_r1",
+                        author: "luke",
+                        body: "Already fixed.",
+                        path: "README.md",
+                        line: 1,
+                        createdAt: "2026-10-20T23:50:00Z",
+                        updatedAt: "2026-10-20T23:50:00Z",
+                        resolved: true,
+                    },
+                ],
+            })),
+        });
+
+        const text = await invoke("getGitHubPullRequest", {
+            number: 165,
+            includeResolved: true,
+        });
+
+        expect(client.readPullRequest).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            165,
+            expect.objectContaining({ includeResolved: true }),
+        );
+        expect(text).toContain("[resolved]");
+        expect(text).toContain("Already fixed.");
+    });
+
+    it("says when resolution could not be read", async () => {
+        const { invoke } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+            readPullRequest: vi.fn(async () => ({
+                ...PULL,
+                resolutionUnavailable: true,
+                comments: [
+                    {
+                        id: 1,
+                        url: "https://github.com/luke/app/pull/165#discussion_r1",
+                        author: "luke",
+                        body: "A note.",
+                        path: "README.md",
+                        line: 1,
+                        createdAt: "2026-10-20T23:50:00Z",
+                        updatedAt: "2026-10-20T23:50:00Z",
+                        resolved: false,
+                    },
+                ],
+            })),
+        });
+
+        const text = await invoke("getGitHubPullRequest", { number: 165 });
+
+        expect(text).toContain(
+            "did not report which review threads are resolved",
+        );
+    });
+
     it("points an issue read at the PR tool without fetching comments", async () => {
         const { invoke, client } = makeTools({
             getIssue: vi.fn(async () => ({
@@ -256,12 +374,15 @@ describe("GitHub tracker tools", () => {
                 ...PULL,
                 comments: [
                     {
+                        id: 4_333_015_888,
+                        url: "https://github.com/luke/app/pull/165#discussion_r4333015888",
                         author: "luke",
                         body: "Make the comment say Hello, World!",
                         path: "README.md",
                         line: 1,
                         createdAt: "2026-10-20T23:50:00Z",
                         updatedAt: "2026-10-20T23:50:00Z",
+                        resolved: false,
                     },
                 ],
             })),
