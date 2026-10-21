@@ -754,8 +754,13 @@ export function createCodingJobService(options: {
                           HTTPS_PROXY: config.egressProxyUrl,
                           http_proxy: config.egressProxyUrl,
                           https_proxy: config.egressProxyUrl,
-                          NO_PROXY: brokerHost,
-                          no_proxy: brokerHost,
+                          // The agent runs a local server (opencode on
+                          // 127.0.0.1:<port>) and its own client honors the
+                          // proxy env: without loopback here, the job proxies
+                          // its own control plane and the egress layer refuses
+                          // it as private.
+                          NO_PROXY: `${brokerHost},localhost,127.0.0.1,::1`,
+                          no_proxy: `${brokerHost},localhost,127.0.0.1,::1`,
                       }
                     : {}),
                 HOME: "/home/job",

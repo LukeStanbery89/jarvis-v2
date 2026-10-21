@@ -659,8 +659,9 @@ describe("starting a coding job", () => {
             JARVIS_JOB_LLM_BASE_URL: "http://proxy:54322/v1",
             HTTP_PROXY: "http://proxy:54323",
             HTTPS_PROXY: "http://proxy:54323",
-            // The broker is reached directly, not through the forward proxy.
-            NO_PROXY: "proxy",
+            // The broker and the agent's own localhost control plane are
+            // reached directly, not through the forward proxy.
+            NO_PROXY: "proxy,localhost,127.0.0.1,::1",
         });
 
         runner.emit(started.job.containerId ?? "", "ok");
