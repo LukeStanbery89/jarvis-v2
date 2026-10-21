@@ -59,6 +59,10 @@ function fakeClient(
         logStream?: NodeJS.ReadableStream;
         stopError?: unknown;
         removeError?: unknown;
+        /** What `getNetwork(...).inspect()` reports; default true. */
+        networkInternal?: boolean;
+        /** Throw a 404 from the network inspect instead. */
+        networkMissing?: boolean;
     } = {},
 ): FakeClient {
     const created: DockerCreateOptions[] = [];
@@ -133,6 +137,18 @@ function fakeClient(
         }) {
             listQueries.push(query);
             return options.containers ?? [];
+        },
+        getNetwork() {
+            return {
+                async inspect() {
+                    if (options.networkMissing === true) {
+                        throw Object.assign(new Error("no such network"), {
+                            statusCode: 404,
+                        });
+                    }
+                    return { Internal: options.networkInternal ?? true };
+                },
+            };
         },
         modem: {
             demuxStream(stream, stdout, _stderr) {
@@ -319,5 +335,21 @@ describe("docker sandbox runner", () => {
         }).adopt("c-1");
 
         expect(await handle?.wait()).toEqual({ exitCode: 3 });
+    });
+
+    it("reports whether a job network is internal, and treats a missing one as unsafe", async () => {
+        const internal = createDockerSandbox({
+            client: fakeClient({ networkInternal: true }),
+        });
+        const routed = createDockerSandbox({
+            client: fakeClient({ networkInternal: false }),
+        });
+        const missing = createDockerSandbox({
+            client: fakeClient({ networkMissing: true }),
+        });
+
+        expect(await internal.networkIsInternal("jarvis-sandbox")).toBe(true);
+        expect(await routed.networkIsInternal("bridge")).toBe(false);
+        expect(await missing.networkIsInternal("nope")).toBe(false);
     });
 });

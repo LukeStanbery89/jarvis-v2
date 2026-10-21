@@ -19,7 +19,8 @@
 #           absent. `--ignore-scripts` skips that, then better-sqlite3 is rebuilt
 #           explicitly (see below). This stage is also where the native addon
 #           gets compiled, so the runtime never needs a toolchain.
-#   runtime — `node:24-bookworm-slim`, non-root, no compilers.
+#   runtime — `node:24-bookworm-slim`, non-root, no compilers. `git` is the one
+#             extra tool: the sandbox's host-side workspace calls need it.
 #
 # Verified end-to-end before merge: the built image answers `GET /health` with
 # `{"ok":true}` and creates both SQLite files under the mounted volume.
@@ -112,6 +113,15 @@ RUN npm ci --omit=dev --omit=optional --ignore-scripts \
 # Stage 3 — runtime.
 # ---------------------------------------------------------------------------
 FROM node:24-bookworm-slim AS runtime
+
+# `git` is a runtime dependency of the coding sandbox, not a toolchain: the
+# server performs the host-side clone, commit, diff and push itself (so the
+# agent never holds a write credential), and shells out to `git` for all four.
+# Without it a job dies with `spawn git ENOENT` before a container starts. The
+# compilers and language toolchains still stay out of this image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Unprivileged runtime user. `-r` picks the next free system UID/GID so this
 # cannot collide with a host UID baked into a base image.

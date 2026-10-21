@@ -17,6 +17,7 @@
  * the tool stays a pure function of its wiring.
  */
 import { tool, type ToolRuntime } from "@langchain/core/tools";
+import type { AppCodingJob } from "@lukestanbery/jarvis-auth";
 import { z } from "zod";
 import { parseCommentRef } from "../../github/comment";
 import { logger } from "../../logger";
@@ -99,7 +100,8 @@ const REFUSAL: Record<
     | "issue-is-pull-request"
     | "issue-and-pull-request"
     | "reply-without-pull-request"
-    | "broker-unreachable",
+    | "broker-unreachable"
+    | "egress-unsafe",
     string
 > = {
     "task-missing": "A coding job needs a task; say what the agent should do.",
@@ -128,7 +130,34 @@ const REFUSAL: Record<
         "Replying to a comment needs the pull request it belongs to; pass `pullRequest` too.",
     "broker-unreachable":
         "The coding broker is not reachable, so I did not start a job. Start the sidecar (`npm run sandbox:proxy`) and try again.",
+    "egress-unsafe":
+        "The coding job network is not isolated, so I did not start a job. Sidecar mode needs an internal Docker network (`JARVIS_SANDBOX_NETWORK`).",
 };
+
+/** The identity + owner gate every coding tool shares. */
+function requireCodingOwner(
+    deps: CodingToolDeps,
+    runtime: ToolRuntime,
+    logName: string,
+): { ok: true; userId: number } | { ok: false; text: string } {
+    const signed = requireSignedInUser(runtime, {
+        subject: "Coding jobs",
+        logName,
+    });
+    if (!signed.ok) {
+        return { ok: false, text: signed.text };
+    }
+    if (!deps.isOwner(signed.userId)) {
+        logger.warn(
+            `${logName} refused: user ${signed.userId} is not an owner`,
+        );
+        return {
+            ok: false,
+            text: "Coding jobs can only be used by the owner account.",
+        };
+    }
+    return { ok: true, userId: signed.userId };
+}
 
 /** A pull request reference: always a number, plus the repo a URL named. */
 export interface PullRequestRef {
@@ -186,18 +215,9 @@ export function createCodingTool(deps: CodingToolDeps) {
             input: z.infer<typeof schema>,
             runtime: ToolRuntime,
         ): Promise<string> => {
-            const gate = requireSignedInUser(runtime, {
-                subject: "Coding jobs",
-                logName: "startCodingJob",
-            });
+            const gate = requireCodingOwner(deps, runtime, "startCodingJob");
             if (!gate.ok) {
                 return gate.text;
-            }
-            if (!deps.isOwner(gate.userId)) {
-                logger.warn(
-                    `startCodingJob refused: user ${gate.userId} is not an owner`,
-                );
-                return "Coding jobs can only be started by the owner account.";
             }
 
             // A pull request URL names its repository; a bare number does
@@ -284,7 +304,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                     result.job.crashPolicy === "resume"
                         ? "If I restart mid-job it will be resumed."
                         : "If I restart mid-job it will be stopped and reported.",
-                    "I will notify you when it finishes; you can keep talking to me meanwhile.",
+                    "I will notify you when it finishes; you can keep talking to me meanwhile, and ask me for its status or to stop it at any time.",
                 ].join(" ");
             } catch (err) {
                 logger.error(
@@ -303,8 +323,209 @@ export function createCodingTool(deps: CodingToolDeps) {
                 "It clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
                 "It does not return the work itself, so do not wait for it in the reply. " +
                 "`repo` may be omitted when the user did not name one and exactly one repository is allowed. " +
+                "Use getCodingJob for its status and cancelCodingJob to stop it. " +
                 "Owner-only, one job at a time.",
             schema,
         },
     );
+}
+
+/** How much of a job's stored tail a status answer quotes. */
+const STATUS_TAIL_CHARS = 1500;
+
+/** The status tool's input shape. */
+const statusSchema = z.object({
+    jobId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+            "The id `startCodingJob` returned. Omit it to list what is running and what finished recently.",
+        ),
+});
+
+/**
+ * Renders one job as the status answer: state first, then the facts a user
+ * asks for, then a bounded tail of the container's output.
+ *
+ * @param job - The stored row.
+ * @param liveTail - The live log's tail for a running job, or `null` to use
+ *   the row's settled tail.
+ * @returns A multi-line answer for the model to relay.
+ */
+function describeJob(
+    job: AppCodingJob,
+    liveTail: string | null = null,
+): string {
+    const tail = (liveTail ?? job.logTail).trim();
+    const recent =
+        tail.length === 0
+            ? ""
+            : tail.length > STATUS_TAIL_CHARS
+              ? `Recent output (tail):\n…${tail.slice(-STATUS_TAIL_CHARS)}`
+              : `Recent output:\n${tail}`;
+    return [
+        `Coding job ${job.id} is ${job.state}.`,
+        `Repository: ${job.repo}`,
+        `Branch: ${job.branch}`,
+        `Pull request: ${job.prUrl ?? "none"}`,
+        job.model === null ? "" : `Model: ${job.model}`,
+        `Started: ${job.startedAt ?? "not yet"} · finished: ${
+            job.finishedAt ?? "not yet"
+        }`,
+        job.lastError === null ? "" : `Last error: ${job.lastError}`,
+        job.diffSummary === null ? "" : `Diff: ${job.diffSummary}`,
+        recent,
+    ]
+        .filter((line) => line.length > 0)
+        .join("\n");
+}
+
+/**
+ * One line for the list answer.
+ *
+ * @param job - The stored row.
+ * @returns `id — state — repo — branch — pr`.
+ */
+function jobLine(job: AppCodingJob): string {
+    return `${job.id} — ${job.state} — ${job.repo} — ${job.branch}${
+        job.prUrl === null ? "" : ` — ${job.prUrl}`
+    }`;
+}
+
+/**
+ * Builds `getCodingJob`: the status/read half of the lifecycle (#141).
+ *
+ * Without an id it lists the caller's five newest rows, running first, so a
+ * user asking "how is it going?" needs no id; with an id it returns the row's
+ * facts and the tail the supervisor kept. It reads through the service, not
+ * the ledger, so a future REST surface answers from the same place.
+ *
+ * @param deps - The service, the owner gate and the allowlist.
+ * @returns The `getCodingJob` tool.
+ */
+export function createCodingStatusTool(deps: CodingToolDeps) {
+    return tool(
+        async (
+            input: z.infer<typeof statusSchema>,
+            runtime: ToolRuntime,
+        ): Promise<string> => {
+            const gate = requireCodingOwner(deps, runtime, "getCodingJob");
+            if (!gate.ok) {
+                return gate.text;
+            }
+            if (input.jobId !== undefined) {
+                const job = deps.service.get(gate.userId, input.jobId);
+                if (job === null) {
+                    return `No coding job ${input.jobId} belongs to you.`;
+                }
+                // A running row's tail is only written at settle; the log file
+                // is the live record. A settled row already has its tail.
+                const live =
+                    job.state === "running"
+                        ? await deps.service.output(gate.userId, job.id)
+                        : null;
+                return describeJob(job, live);
+            }
+            const jobs = deps.service.list(gate.userId, {
+                limit: 5,
+                includeSettled: true,
+            });
+            if (jobs.length === 0) {
+                return "No coding jobs are running or recently finished.";
+            }
+            // The store orders by creation; a user asking "what is happening"
+            // cares about the live one first.
+            const ordered = [...jobs].sort(
+                (a, b) =>
+                    Number(b.state === "running") -
+                    Number(a.state === "running"),
+            );
+            return [
+                "Coding jobs (running first, then recent):",
+                ...ordered.map((job) => `- ${jobLine(job)}`),
+                "",
+                "Pass a job id for its full status and log tail.",
+            ].join("\n");
+        },
+        {
+            name: "getCodingJob",
+            description:
+                "Check a coding job's state, branch, pull request and recent output, or list what is running and recently finished. " +
+                "Use it when the user asks how a job is going, whether it is done, or what it produced. " +
+                "`jobId` is the id startCodingJob returned; omit it to list. Owner-only.",
+            schema: statusSchema,
+        },
+    );
+}
+
+/** The cancel tool's input shape. */
+const cancelSchema = z.object({
+    jobId: z.string().min(1).describe("The id `startCodingJob` returned."),
+});
+
+/**
+ * Builds `cancelCodingJob`: the interrupt half of the lifecycle (#141).
+ *
+ * The service settles the row `cancelled` before removing the container, so
+ * the supervisor cannot later overwrite the user's decision. A missing or
+ * foreign id is the same answer, and an already-settled job is a sentence
+ * rather than an error.
+ *
+ * @param deps - The service, the owner gate and the allowlist.
+ * @returns The `cancelCodingJob` tool.
+ */
+export function createCodingCancelTool(deps: CodingToolDeps) {
+    return tool(
+        async (
+            input: z.infer<typeof cancelSchema>,
+            runtime: ToolRuntime,
+        ): Promise<string> => {
+            const gate = requireCodingOwner(deps, runtime, "cancelCodingJob");
+            if (!gate.ok) {
+                return gate.text;
+            }
+            try {
+                const job = await deps.service.stop(gate.userId, input.jobId);
+                if (job === null) {
+                    return `No coding job ${input.jobId} belongs to you.`;
+                }
+                return job.state === "cancelled"
+                    ? `Stopped coding job ${job.id}; its container and workspace are gone.`
+                    : `Coding job ${job.id} is ${job.state}; it was not running, so there was nothing to stop.`;
+            } catch (err) {
+                logger.error(
+                    `cancelCodingJob failed: ${
+                        err instanceof Error
+                            ? (err.stack ?? err.message)
+                            : String(err)
+                    }`,
+                );
+                return "I could not stop that coding job; the server log has the reason.";
+            }
+        },
+        {
+            name: "cancelCodingJob",
+            description:
+                "Stop a running coding job and discard its container and workspace. " +
+                "Use it when the user says to stop, cancel, or kill a job. " +
+                "Requires the job id startCodingJob returned. Owner-only.",
+            schema: cancelSchema,
+        },
+    );
+}
+
+/**
+ * All three coding tools, in the order the agent should see them: start, then
+ * inspect, then the destructive one.
+ *
+ * @param deps - The service, the owner gate and the allowlist.
+ * @returns The tools to register.
+ */
+export function createCodingTools(deps: CodingToolDeps) {
+    return [
+        createCodingTool(deps),
+        createCodingStatusTool(deps),
+        createCodingCancelTool(deps),
+    ];
 }

@@ -16,9 +16,11 @@
  *      of that name that has a route out);
  *   3. starts `jarvis-proxy` on the default bridge, then attaches it to the
  *      internal network — two network cards, one container;
- *   4. detaches. The container keeps running when this command (or the
- *      terminal that ran it) goes away; `docker logs -f jarvis-proxy` follows
- *      it, and `docker stop jarvis-proxy` stops it.
+ *   4. detaches with `--restart unless-stopped`. The container keeps running
+ *      when this command (or the terminal that ran it) goes away, and Docker
+ *      brings it back after a daemon or host restart; `docker logs -f
+ *      jarvis-proxy` follows it, and `docker stop jarvis-proxy` stops it for
+ *      good.
  *
  * Detaching is deliberate: a foreground helper is too easy to close by
  * accident, and the failure mode is a job that dies at its first model call
@@ -113,7 +115,8 @@ if (inspect.status !== 0) {
     process.exit(1);
 }
 
-// A previous run may have left the name behind; `--rm` removes stopped ones.
+// A previous run may have left the name behind — stopped containers persist
+// now that the sidecar has a restart policy, so remove it explicitly.
 spawnSync("docker", ["rm", "-f", containerName], { stdio: "ignore" });
 
 execFileSync(
@@ -121,7 +124,10 @@ execFileSync(
     [
         "run",
         "-d",
-        "--rm",
+        // Docker brings the broker back after a daemon/host restart; the
+        // server's preflight still refuses jobs while it is down.
+        "--restart",
+        "unless-stopped",
         "--name",
         containerName,
         // The build on this machine, read-only. The workspace symlinks in
@@ -169,13 +175,11 @@ execFileSync("docker", ["network", "connect", networkName, containerName], {
     stdio: "inherit",
 });
 
-if (fileEnv.JARVIS_SANDBOX_PROXY_MODE !== "sidecar") {
+if (fileEnv.JARVIS_SANDBOX_PROXY_MODE?.trim().toLowerCase() === "embedded") {
     console.warn(
-        "\nNote: packages/server/.env does not set JARVIS_SANDBOX_PROXY_MODE=sidecar.\n" +
-            "The sidecar is running, but the server will keep using its embedded broker until you\n" +
-            "set it (and JARVIS_SANDBOX_PROXY_URL, JARVIS_SANDBOX_PROXY_PROBE_URL,\n" +
-            "JARVIS_SANDBOX_EGRESS_PROXY_URL, JARVIS_SANDBOX_NETWORK,\n" +
-            "JARVIS_SANDBOX_EXTRA_HOSTS=none) and restart.\n",
+        "\nNote: packages/server/.env sets JARVIS_SANDBOX_PROXY_MODE=embedded.\n" +
+            "The sidecar is running, but the server will keep its broker in-process and\n" +
+            "jobs will use the Docker bridge (open egress). Set sidecar and restart.\n",
     );
 }
 if (!fileEnv.JARVIS_SANDBOX_PROXY_PROBE_URL) {
@@ -185,10 +189,19 @@ if (!fileEnv.JARVIS_SANDBOX_PROXY_PROBE_URL) {
             "Add JARVIS_SANDBOX_PROXY_PROBE_URL=http://127.0.0.1:54322/v1 and restart.\n",
     );
 }
+if (fileEnv.JARVIS_SANDBOX_NETWORK?.trim() !== networkName) {
+    console.warn(
+        `\nNote: JARVIS_SANDBOX_NETWORK is not ${networkName}. The script created that\n` +
+            "internal network, and sidecar mode refuses jobs on a missing or routed one.\n" +
+            `Set JARVIS_SANDBOX_NETWORK=${networkName} and restart.\n`,
+    );
+}
 
 console.log(
     `\nSidecar running as ${containerName}.\n` +
         `  logs: docker logs -f ${containerName}\n` +
         `  stop: docker stop ${containerName}\n` +
-        "It stays up when this terminal closes; the server refuses jobs while it is down.",
+        "It stays up when this terminal closes, and Docker restarts it after a daemon\n" +
+        "or host restart; `docker stop` stops it for good. The server refuses jobs\n" +
+        "while it is down.",
 );

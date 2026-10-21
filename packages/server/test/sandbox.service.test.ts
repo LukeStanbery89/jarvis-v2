@@ -640,6 +640,7 @@ describe("starting a coding job", () => {
                 proxyMode: "sidecar",
                 proxyUrl: "http://proxy:54322/v1",
                 egressProxyUrl: "http://proxy:54323",
+                network: "jarvis-sandbox",
             },
             // Production always passes the broker (url + secret) when the
             // sandbox is on: the same wiring derives the token in both modes.
@@ -676,6 +677,7 @@ describe("starting a coding job", () => {
                 proxyMode: "sidecar",
                 proxyUrl: "http://jarvis-proxy:54322/v1",
                 proxyProbeUrl: "http://127.0.0.1:54322/v1",
+                network: "jarvis-sandbox",
             },
             probeBroker: probe,
         });
@@ -694,6 +696,103 @@ describe("starting a coding job", () => {
         expect(probe).toHaveBeenCalledWith("http://127.0.0.1:54322/v1");
         // Nothing was cloned, claimed or started for a doomed run.
         expect(workspace.prepared).toHaveLength(0);
+    });
+
+    it("refuses a sidecar job with no job network", async () => {
+        const probe = vi.fn(async () => true);
+        const { userId, workspace, service } = makeService({
+            config: {
+                proxyMode: "sidecar",
+                proxyUrl: "http://proxy:54322/v1",
+                network: "",
+            },
+            probeBroker: probe,
+        });
+
+        const result = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Install a dependency",
+        });
+
+        expect(result).toMatchObject({ ok: false, code: "egress-unsafe" });
+        expect(workspace.prepared).toHaveLength(0);
+        // The network is checked before the broker probe: a routed network
+        // makes the job unsafe whether or not the sidecar is up.
+        expect(probe).not.toHaveBeenCalled();
+    });
+
+    it("refuses a sidecar job whose network is not internal", async () => {
+        const { userId, workspace, service } = makeService({
+            config: {
+                proxyMode: "sidecar",
+                proxyUrl: "http://proxy:54322/v1",
+                network: "bridge",
+            },
+            runner: createFakeSandbox({ networkIsInternal: false }),
+            probeBroker: async () => true,
+        });
+
+        const result = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Install a dependency",
+        });
+
+        expect(result).toMatchObject({ ok: false, code: "egress-unsafe" });
+        expect(workspace.prepared).toHaveLength(0);
+    });
+
+    it("reads one of the caller's jobs and lists their recent ones", async () => {
+        const { userId, service } = makeService();
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix it",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(service.get(userId, started.job.id)?.id).toBe(started.job.id);
+        expect(service.get(userId + 1, started.job.id)).toBeNull();
+        expect(
+            service.list(userId, { includeSettled: true }).map((job) => job.id),
+        ).toContain(started.job.id);
+
+        await service.stop(userId, started.job.id);
+        await started.done;
+    });
+
+    it("reads a running job's live log when the row has no tail", async () => {
+        const { userId, service, runner, logRoot } = makeService();
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix it",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        const containerId = started.job.containerId ?? "";
+        runner.emit(containerId, "line one");
+        runner.emit(containerId, "line two");
+        // The row's `logTail` is written at settle; the file is live.
+        const file = path.join(logRoot, `${started.job.id}.log`);
+        await vi.waitFor(() => {
+            if (!existsSync(file)) {
+                throw new Error("log not created yet");
+            }
+            expect(readFileSync(file, "utf8")).toContain("line two");
+        });
+
+        expect(await service.output(userId, started.job.id, 64)).toContain(
+            "line two",
+        );
+        expect(await service.output(userId + 1, started.job.id)).toBeNull();
+
+        await service.stop(userId, started.job.id);
+        await started.done;
     });
 
     it("records a failed run, removes its workspace and says why", async () => {
@@ -827,7 +926,7 @@ describe("starting a coding job", () => {
         );
     });
 
-    it("passes the provider key to the job, and never needs one locally", async () => {
+    it("never passes the provider key to the job, and never needs one locally", async () => {
         const withKey = makeService({ config: { apiKey: "sk-test" } });
         const started = await withKey.service.start({
             userId: withKey.userId,
@@ -837,9 +936,11 @@ describe("starting a coding job", () => {
         if (!started.ok) {
             throw new Error("fixture refused");
         }
-        expect(withKey.runner.started[0]?.env).toMatchObject({
-            JARVIS_JOB_API_KEY: "sk-test",
-        });
+        // A configured key is the broker's, not the container's: without a
+        // broker the job gets no key at all (#141).
+        expect(withKey.runner.started[0]?.env).not.toHaveProperty(
+            "JARVIS_JOB_API_KEY",
+        );
 
         // A local endpoint runs without a key (the test config is
         // host.docker.internal, i.e. local).

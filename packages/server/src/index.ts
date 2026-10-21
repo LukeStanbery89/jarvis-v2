@@ -288,6 +288,12 @@ if (appConfig.sandbox) {
     // In sidecar mode the broker runs in its own container on the job's
     // internal network, and this process must not listen for jobs at all.
     if (sandbox.proxyMode === "embedded") {
+        // The compatibility path is not the #141 posture: on the bridge a job
+        // reaches whatever the host can. Say so once, at boot, rather than
+        // letting the deployment look identical to a sidecar one.
+        logger.warn(
+            "coding sandbox: embedded broker mode — jobs use the Docker bridge and can reach the internet directly; set JARVIS_SANDBOX_PROXY_MODE=sidecar for the #141 egress posture",
+        );
         sandboxProxy = createSandboxProxy({
             bind: sandbox.proxyBind,
             port: sandbox.proxyPort,
@@ -307,6 +313,12 @@ if (appConfig.sandbox) {
                 );
             },
         });
+    } else if (sandbox.network.trim().length === 0) {
+        // The service refuses each job, but a boot line is visible before the
+        // first request and names the setting to fix.
+        logger.warn(
+            "coding sandbox: sidecar mode has no JARVIS_SANDBOX_NETWORK; every job will be refused until an internal network is set",
+        );
     }
     // The listener starts at the bottom of this file, chained ahead of coding
     // recovery: every job now depends on it, and an adopted container's first
@@ -368,9 +380,11 @@ if (appConfig.sandbox && codingJobs) {
     logger.info(
         `Coding sandbox active: image=${appConfig.sandbox.image}, repos=${
             appConfig.sandbox.repos.join(",") || "(none)"
-        }, model=${appConfig.sandbox.model || "(unset)"}, proxy=${
-            appConfig.sandbox.proxyUrl
-        }, apiKey=${
+        }, model=${appConfig.sandbox.model || "(unset)"}, mode=${
+            appConfig.sandbox.proxyMode
+        }, network=${
+            appConfig.sandbox.network || "(bridge)"
+        }, proxy=${appConfig.sandbox.proxyUrl}, apiKey=${
             appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"
         } (held by the broker), github=${appConfig.github ? "on" : "off"}`,
     );

@@ -10,7 +10,12 @@
  */
 import { describe, expect, it } from "vitest";
 import type { AppCodingJob } from "@lukestanbery/jarvis-auth";
-import { createCodingTool, type CodingToolDeps } from "../src/llm/tools/coding";
+import {
+    createCodingCancelTool,
+    createCodingStatusTool,
+    createCodingTool,
+    type CodingToolDeps,
+} from "../src/llm/tools/coding";
 import type {
     CodingJobService,
     StartCodingJobResult,
@@ -98,6 +103,15 @@ async function invoke(
             };
         },
         async stop() {
+            return null;
+        },
+        get() {
+            return null;
+        },
+        list() {
+            return [];
+        },
+        async output() {
             return null;
         },
         openLogStream() {
@@ -214,6 +228,13 @@ describe("startCodingJob", () => {
             reason: "someone/app",
         });
         expect(fork.text).toContain("comes from a fork");
+
+        const unsafe = await invoke({
+            ok: false,
+            code: "egress-unsafe",
+            reason: "bridge",
+        });
+        expect(unsafe.text).toContain("not isolated");
 
         const unreadableIssue = await invoke({
             ok: false,
@@ -418,6 +439,171 @@ describe("startCodingJob", () => {
         const { text } = await invoke(new Error("docker is down"));
 
         expect(text).toContain("could not start");
+        expect(text).not.toContain("docker is down");
+    });
+});
+
+/** A service whose read/stop answers the test decides. */
+function serviceWith(
+    overrides: {
+        job?: AppCodingJob | null;
+        jobs?: AppCodingJob[];
+        stop?: (userId: number, jobId: string) => Promise<AppCodingJob | null>;
+        output?: (userId: number, jobId: string) => Promise<string | null>;
+    } = {},
+): CodingJobService {
+    return {
+        async start() {
+            throw new Error("start is not used here");
+        },
+        async recover() {
+            return { adopted: 0, pruned: 0, failed: 0, removed: 0, errors: 0 };
+        },
+        stop: overrides.stop ?? (async () => null),
+        get: () => overrides.job ?? null,
+        list: () => overrides.jobs ?? [],
+        output: overrides.output ?? (async () => null),
+        openLogStream: () => ({ replay: [], subscribe: () => () => {} }),
+    };
+}
+
+/** Invokes the status tool as the owner (or as asked). */
+async function invokeStatus(
+    service: CodingJobService,
+    input: { jobId?: string } = {},
+    options: { runtime?: unknown; owner?: boolean } = {},
+): Promise<string> {
+    const tool = createCodingStatusTool({
+        service,
+        isOwner: (userId) => (options.owner ?? true) && userId === 7,
+        repos: ["luke/app"],
+    });
+    return (await tool.invoke(
+        input,
+        (options.runtime ?? OWNER_RUNTIME) as never,
+    )) as string;
+}
+
+/** Invokes the cancel tool as the owner (or as asked). */
+async function invokeCancel(
+    service: CodingJobService,
+    jobId = JOB.id,
+    options: { runtime?: unknown; owner?: boolean } = {},
+): Promise<string> {
+    const tool = createCodingCancelTool({
+        service,
+        isOwner: (userId) => (options.owner ?? true) && userId === 7,
+        repos: ["luke/app"],
+    });
+    return (await tool.invoke(
+        { jobId },
+        (options.runtime ?? OWNER_RUNTIME) as never,
+    )) as string;
+}
+
+describe("getCodingJob", () => {
+    it("reports the facts and the tail", async () => {
+        const text = await invokeStatus(
+            serviceWith({
+                job: {
+                    ...JOB,
+                    prUrl: "https://github.com/luke/app/pull/9",
+                    logTail: "installing…\nadded 1 package",
+                },
+            }),
+            { jobId: JOB.id },
+        );
+
+        expect(text).toContain(`Coding job ${JOB.id} is running`);
+        expect(text).toContain("luke/app");
+        expect(text).toContain(JOB.branch);
+        expect(text).toContain("https://github.com/luke/app/pull/9");
+        expect(text).toContain("added 1 package");
+    });
+
+    it("quotes the live log while a job is still running", async () => {
+        const text = await invokeStatus(
+            serviceWith({
+                job: JOB,
+                output: async () => "compiling…\nadded 1 package",
+            }),
+            { jobId: JOB.id },
+        );
+
+        expect(text).toContain("added 1 package");
+    });
+
+    it("lists recent jobs with the running one first", async () => {
+        const text = await invokeStatus(
+            serviceWith({
+                jobs: [{ ...JOB, id: "done", state: "ok" }, JOB],
+            }),
+        );
+
+        expect(text.indexOf(JOB.id)).toBeLessThan(text.indexOf("done"));
+        expect(text).toContain("Pass a job id");
+    });
+
+    it("says when there is nothing to report", async () => {
+        expect(await invokeStatus(serviceWith())).toContain(
+            "No coding jobs are running",
+        );
+    });
+
+    it("does not reveal another account's job", async () => {
+        expect(
+            await invokeStatus(serviceWith({ job: null }), { jobId: "nope" }),
+        ).toContain("No coding job nope belongs to you");
+    });
+
+    it("is owner-only and refuses a guest", async () => {
+        expect(
+            await invokeStatus(serviceWith(), {}, { owner: false }),
+        ).toContain("owner account");
+        expect(
+            await invokeStatus(serviceWith(), {}, { runtime: GUEST_RUNTIME }),
+        ).toContain("sign");
+    });
+});
+
+describe("cancelCodingJob", () => {
+    it("stops a running job and names the outcome", async () => {
+        const stop = async () => ({ ...JOB, state: "cancelled" as const });
+        const text = await invokeCancel(serviceWith({ stop }));
+
+        expect(text).toContain("Stopped coding job");
+        expect(text).toContain("container and workspace are gone");
+    });
+
+    it("says there was nothing to stop for a settled job", async () => {
+        const stop = async () => ({ ...JOB, state: "ok" as const });
+        const text = await invokeCancel(serviceWith({ stop }));
+
+        expect(text).toContain("nothing to stop");
+    });
+
+    it("does not reveal another account's job", async () => {
+        const text = await invokeCancel(serviceWith(), "nope");
+
+        expect(text).toContain("No coding job nope belongs to you");
+    });
+
+    it("is owner-only", async () => {
+        expect(
+            await invokeCancel(serviceWith(), JOB.id, { owner: false }),
+        ).toContain("owner account");
+    });
+
+    it("says so when the service throws, without leaking its message", async () => {
+        const text = await invokeCancel(
+            serviceWith({
+                stop: async () => {
+                    throw new Error("docker is down");
+                },
+            }),
+        );
+
+        expect(text).toContain("could not stop");
         expect(text).not.toContain("docker is down");
     });
 });
