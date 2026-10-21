@@ -35,6 +35,7 @@ import type { CommentRef } from "../github/comment";
 import type { IssueSnapshot, PullRequestSnapshot } from "../github/client";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
+import { workspaceBytes } from "./disk";
 import { createCodingLogHub, type CodingLogStream } from "./logHub";
 import { createJobLog, sweepCodingLogs, type JobLog } from "./logs";
 import {
@@ -58,6 +59,9 @@ import {
 
 /** How much of a job's output is kept on its row (the tail, not the whole log). */
 const LOG_TAIL_BYTES = 16 * 1024;
+
+/** How often the supervisor weighs a running job's workspace (#141). */
+const QUOTA_CHECK_MS = 10_000;
 
 /** A settled run's outcome, as the announcement needs it. */
 interface Ending {
@@ -238,6 +242,13 @@ export function createCodingJobService(options: {
         number: number;
     }) => Promise<IssueSnapshot>;
     notifications?: Pick<NotificationService, "notify">;
+    /**
+     * Measures a workspace's bytes. Injected by tests; `du` by default.
+     *
+     * The quota is enforced by sampling, because a bind-mounted clone cannot
+     * carry a Docker storage quota (#141).
+     */
+    workspaceSize?: (workspacePath: string) => Promise<number>;
     now?: () => Date;
     newId?: () => string;
 }): CodingJobService {
@@ -252,6 +263,7 @@ export function createCodingJobService(options: {
         pullRequests,
         issues,
     } = options;
+    const size = options.workspaceSize ?? workspaceBytes;
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
     const nowIso = () => now().toISOString();
@@ -413,16 +425,58 @@ export function createCodingJobService(options: {
             jobId: job.id,
             maxBytes: config.logMaxMb * 1024 * 1024,
         });
-        let timedOut = false;
-        const timer = setTimeout(() => {
-            timedOut = true;
+        // Why the supervisor stopped the container, if it did. One reason wins:
+        // a quota stop and the wall clock cannot both explain the ending.
+        let stopReason: "wall-clock" | "disk" | null = null;
+        const stop = (reason: "wall-clock" | "disk", message: string): void => {
+            if (stopReason !== null) {
+                return;
+            }
+            stopReason = reason;
+            logger.warn(message);
             void handle.stop().catch((err: unknown) => {
                 logger.warn(
-                    `coding job ${job.id}: could not stop an overrunning container: ${describe(err)}`,
+                    `coding job ${job.id}: could not stop its container: ${describe(err)}`,
                 );
             });
+        };
+        const timer = setTimeout(() => {
+            stop(
+                "wall-clock",
+                `coding job ${job.id}: exceeded its ${Math.round(
+                    config.wallClockMs / 60_000,
+                )}-minute wall clock; stopping it`,
+            );
         }, config.wallClockMs);
         timer.unref?.();
+        // A bind mount cannot carry a storage quota, so the workspace is
+        // weighed while the job runs (#141). `0` disables the guard.
+        const quotaTimer =
+            config.maxWorkspaceMb > 0
+                ? setInterval(() => {
+                      if (stopReason !== null) {
+                          return;
+                      }
+                      void size(job.workspacePath)
+                          .then((bytes) => {
+                              const limit = config.maxWorkspaceMb * 1024 * 1024;
+                              if (bytes > limit) {
+                                  stop(
+                                      "disk",
+                                      `coding job ${job.id}: workspace reached ${Math.round(
+                                          bytes / (1024 * 1024),
+                                      )} MiB (limit ${config.maxWorkspaceMb} MiB); stopping it`,
+                                  );
+                              }
+                          })
+                          .catch((err: unknown) => {
+                              logger.warn(
+                                  `coding job ${job.id}: could not measure its workspace: ${describe(err)}`,
+                              );
+                          });
+                  }, QUOTA_CHECK_MS)
+                : null;
+        quotaTimer?.unref?.();
 
         try {
             try {
@@ -451,14 +505,16 @@ export function createCodingJobService(options: {
                 return;
             }
 
-            const ok = !timedOut && exit.exitCode === 0;
+            const ok = stopReason === null && exit.exitCode === 0;
             const error = ok
                 ? null
-                : timedOut
-                  ? `the job exceeded its ${Math.round(
-                        config.wallClockMs / 60_000,
-                    )}-minute wall clock`
-                  : `the agent exited with code ${exit.exitCode ?? "unknown"}`;
+                : stopReason === "disk"
+                  ? `the workspace exceeded its ${config.maxWorkspaceMb} MB disk quota`
+                  : stopReason === "wall-clock"
+                    ? `the job exceeded its ${Math.round(
+                          config.wallClockMs / 60_000,
+                      )}-minute wall clock`
+                    : `the agent exited with code ${exit.exitCode ?? "unknown"}`;
 
             // A model can edit a file and *say* it committed without calling
             // git — the first live run did. Committing here makes the claim
@@ -598,6 +654,9 @@ export function createCodingJobService(options: {
             }
         } finally {
             clearTimeout(timer);
+            if (quotaTimer !== null) {
+                clearInterval(quotaTimer);
+            }
             logHub.finish(job.id);
             await log.close().catch((err: unknown) => {
                 logger.warn(

@@ -46,6 +46,7 @@ const CONFIG: SandboxConfig = {
     memoryMb: 1024,
     pids: 128,
     wallClockMs: 60_000,
+    maxWorkspaceMb: 2048,
     repos: ["luke/app"],
     model: "lmstudio/qwen3",
     llmBaseUrl: "http://host.docker.internal:1234/v1",
@@ -241,6 +242,7 @@ function makeService(
             number: number;
         }) => Promise<IssueSnapshot>;
         workspace?: FakeWorkspace;
+        workspaceSize?: (workspacePath: string) => Promise<number>;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
     } = {},
@@ -262,6 +264,9 @@ function makeService(
             ? { pullRequests: overrides.pullRequests }
             : {}),
         ...(overrides.issues ? { issues: overrides.issues } : {}),
+        ...(overrides.workspaceSize
+            ? { workspaceSize: overrides.workspaceSize }
+            : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
         newId: () => `job-${++sequence}`,
@@ -670,6 +675,42 @@ describe("starting a coding job", () => {
             // The fake's stop ends the container, which is what unblocks the
             // supervisor's log stream.
             expect(runner.removed).toContain(started.job.containerId);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("stops a job whose workspace exceeds its disk quota", async () => {
+        vi.useFakeTimers();
+        try {
+            let bytes = 0;
+            const { store, userId, runner, service, notify } = makeService({
+                config: { maxWorkspaceMb: 1 },
+                workspaceSize: async () => bytes,
+            });
+            const started = await service.start({
+                userId,
+                repo: "luke/app",
+                task: "Generate every asset",
+            });
+            if (!started.ok) {
+                throw new Error("fixture refused");
+            }
+
+            // The tree crosses the limit between two samples.
+            bytes = 2 * 1024 * 1024;
+            await vi.advanceTimersByTimeAsync(10_000);
+            await started.done;
+
+            const settled = store.getCodingJobById("job-1");
+            expect(settled?.state).toBe("failed");
+            expect(settled?.lastError).toContain("disk quota");
+            // The fake's stop ends the container, which unblocks the supervisor.
+            expect(runner.removed).toContain(started.job.containerId);
+            expect(notify.notify).toHaveBeenCalledWith(
+                userId,
+                expect.objectContaining({ kind: "coding.failed" }),
+            );
         } finally {
             vi.useRealTimers();
         }

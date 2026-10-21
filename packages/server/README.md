@@ -144,6 +144,12 @@ scratch, capabilities are dropped, `no-new-privileges` is set, and CPU /
 memory / process / wall-clock ceilings apply. A job cannot reach the host's
 home directory, the socket, or the provider key (see the broker below).
 
+The workspace is a **bind mount**, so Docker cannot apply a storage quota to it:
+the supervisor weighs the tree with `du` every ten seconds and stops the
+container when it crosses `JARVIS_SANDBOX_MAX_WORKSPACE_MB` (2048; `0` disables).
+The job settles `failed` with the measured size — a runaway build must not fill
+the laptop — and the workspace is removed like any failed tree.
+
 A job clones its allowlisted repository into `~/.jarvis/jobs/<id>/repo` on a
 `jarvis/<slug>-<id>` branch, runs the agent against that directory, records
 what it left behind (`diff --stat`, the commits it added, a bounded log tail)
@@ -243,6 +249,21 @@ URL at the host and the model at the local id, and leave the key empty; no key
 is required for a local endpoint, and a remote one without a key is refused
 before anything is cloned.
 
+**Egress is open, for now.** The job joins the engine's bridge and can reach
+whatever the host can; the broker protects the provider key, not the network.
+Two attempts on OrbStack (macOS) ruled out the obvious fixes: an `--internal`
+network leaves the broker unreachable (no host route, no DNS), and a bridge with
+IP masquerading disabled times out for both the broker and the internet, because
+OrbStack proxies `host.docker.internal` through that NAT. On Linux, host
+`DOCKER-USER` rules can allow only the broker's address; on Docker
+Desktop/OrbStack the kernel belongs to a VM the server does not manage. The
+design that works without host-firewall access is a **broker sidecar**: the job
+joins an `--internal` network shared only with a proxy container, which is
+attached to a second network for the provider. The broker already is that
+proxy; it would move out of the server process (keeping the key, which is its
+purpose) and `JARVIS_SANDBOX_PROXY_URL` would point at it. This is the remaining
+egress item on #141.
+
 **The key never enters the container.** `src/sandbox/proxy.ts` is a broker the
 server runs: it keeps `JARVIS_SANDBOX_API_KEY`, and each job is handed
 `jv1.<jobId>.<HMAC(secret, jobId)>` as its provider key plus the broker's URL.
@@ -282,6 +303,7 @@ non-zero unless the job settled `ok`.
 | `JARVIS_SANDBOX_MEMORY_MB`                | `4096`                                    | memory ceiling per job                                                                       |
 | `JARVIS_SANDBOX_PIDS`                     | `512`                                     | process ceiling per job                                                                      |
 | `JARVIS_SANDBOX_WALL_CLOCK_MINUTES`       | `45`                                      | the supervisor stops a job that overruns                                                     |
+| `JARVIS_SANDBOX_MAX_WORKSPACE_MB`         | `2048`                                    | workspace disk ceiling, sampled every 10 s; `0` disables it                                  |
 | `JARVIS_SANDBOX_REPOS`                    | _(empty)_                                 | `owner/name` allowlist; empty clones nothing                                                 |
 | `JARVIS_SANDBOX_MODEL`                    | `big-pickle`                              | the model id handed to the agent                                                             |
 | `JARVIS_SANDBOX_LLM_BASE_URL`             | `https://opencode.ai/inference/openai/v1` | the OpenAI-compatible endpoint a job container talks to                                      |

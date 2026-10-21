@@ -75,6 +75,7 @@ describe("sandbox config", () => {
             memoryMb: 4096,
             pids: 512,
             wallClockMs: 45 * 60 * 1000,
+            maxWorkspaceMb: 2048,
             repos: [],
             model: "big-pickle",
             llmBaseUrl: "https://opencode.ai/inference/openai/v1",
