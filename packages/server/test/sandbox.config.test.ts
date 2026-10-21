@@ -35,6 +35,7 @@ const SANDBOX_VARS = [
     "JARVIS_SANDBOX_PROXY_BIND",
     "JARVIS_SANDBOX_PROXY_PORT",
     "JARVIS_SANDBOX_PROXY_URL",
+    "JARVIS_SANDBOX_PROXY_PROBE_URL",
     "JARVIS_SANDBOX_PROXY_SECRET",
     "JARVIS_SANDBOX_PROXY_MAX_REQUESTS",
     "JARVIS_SANDBOX_PROXY_MODE",
@@ -86,6 +87,7 @@ describe("sandbox config", () => {
             proxyBind: "127.0.0.1",
             proxyPort: 54322,
             proxyUrl: "http://host.docker.internal:54322/v1",
+            proxyProbeUrl: "http://host.docker.internal:54322/v1",
             proxySecret: "",
             proxyMaxRequestsPerJob: 500,
             proxyMode: "embedded",
@@ -193,6 +195,19 @@ describe("sandbox config", () => {
 
         expect(sandbox?.proxyMode).toBe("sidecar");
         expect(sandbox?.egressProxyUrl).toBe("http://proxy:54323");
+    });
+
+    it("reads a separate probe URL for a host-run server", () => {
+        process.env.JARVIS_SANDBOX = "docker";
+        process.env.JARVIS_SANDBOX_PROXY_MODE = "sidecar";
+        process.env.JARVIS_SANDBOX_PROXY_URL = "http://jarvis-proxy:54322/v1";
+        process.env.JARVIS_SANDBOX_PROXY_PROBE_URL =
+            "http://127.0.0.1:54322/v1";
+
+        const sandbox = getAppConfig().sandbox;
+
+        expect(sandbox?.proxyUrl).toBe("http://jarvis-proxy:54322/v1");
+        expect(sandbox?.proxyProbeUrl).toBe("http://127.0.0.1:54322/v1");
     });
 
     it("keeps the embedded broker and no egress proxy by default", () => {

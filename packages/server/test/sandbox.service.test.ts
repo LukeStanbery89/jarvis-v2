@@ -56,6 +56,7 @@ const CONFIG: SandboxConfig = {
     proxyBind: "127.0.0.1",
     proxyPort: 54322,
     proxyUrl: "http://host.docker.internal:54322/v1",
+    proxyProbeUrl: "",
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
     proxyMode: "embedded",
@@ -673,6 +674,7 @@ describe("starting a coding job", () => {
             config: {
                 proxyMode: "sidecar",
                 proxyUrl: "http://jarvis-proxy:54322/v1",
+                proxyProbeUrl: "http://127.0.0.1:54322/v1",
             },
             probeBroker: probe,
         });
@@ -687,7 +689,8 @@ describe("starting a coding job", () => {
             ok: false,
             code: "broker-unreachable",
         });
-        expect(probe).toHaveBeenCalledWith("http://jarvis-proxy:54322/v1");
+        // The server probes the host-reachable URL, not the job's name.
+        expect(probe).toHaveBeenCalledWith("http://127.0.0.1:54322/v1");
         // Nothing was cloned, claimed or started for a doomed run.
         expect(workspace.prepared).toHaveLength(0);
     });

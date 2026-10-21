@@ -835,12 +835,14 @@ export function createCodingJobService(options: {
             // first so the refusal names the fix.
             if (
                 config.proxyMode === "sidecar" &&
-                !(await probeBroker(config.proxyUrl))
+                !(await probeBroker(config.proxyProbeUrl || config.proxyUrl))
             ) {
                 return {
                     ok: false,
                     code: "broker-unreachable",
-                    reason: `the broker sidecar is not reachable at ${config.proxyUrl}`,
+                    reason: `the broker sidecar is not reachable at ${
+                        config.proxyProbeUrl || config.proxyUrl
+                    }`,
                 };
             }
 

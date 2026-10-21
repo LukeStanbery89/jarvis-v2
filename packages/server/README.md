@@ -315,7 +315,10 @@ starts a stock `node:24` container with this checkout's build and hoisted
 `node_modules` mounted **read-only**, and attaches it to both networks. It is
 the same code the server runs, not an image build. The command **detaches**:
 the container survives the terminal, `docker logs -f jarvis-proxy` follows it,
-and `docker stop jarvis-proxy` stops it. (A foreground helper is too easy to
+and `docker stop jarvis-proxy` stops it. The broker is published on
+`127.0.0.1:54322`; the server runs on the host and cannot resolve
+`jarvis-proxy`, so `JARVIS_SANDBOX_PROXY_PROBE_URL` points its preflight at the
+loopback port. The job still uses `jarvis-proxy` from inside the network. (A foreground helper is too easy to
 close by accident; the server now refuses a job when the broker does not
 answer, so a stopped sidecar is a sentence, not a DNS error inside a doomed
 container.)
@@ -325,6 +328,7 @@ container.)
 ```sh
 JARVIS_SANDBOX_PROXY_MODE=sidecar
 JARVIS_SANDBOX_PROXY_URL=http://jarvis-proxy:54322/v1
+JARVIS_SANDBOX_PROXY_PROBE_URL=http://127.0.0.1:54322/v1
 JARVIS_SANDBOX_EGRESS_PROXY_URL=http://jarvis-proxy:54323
 JARVIS_SANDBOX_NETWORK=jarvis-sandbox
 JARVIS_SANDBOX_EXTRA_HOSTS=none
@@ -341,9 +345,13 @@ status endpoint at `http://jarvis:54321`.
 
 #### Failure modes
 
-- **Sidecar not started** — `startCodingJob` probes the broker before cloning
-  and refuses with `broker-unreachable` (`start the sidecar and try again`), so
-  no workspace or container is spent on a doomed run.
+- **Sidecar not started** — `startCodingJob` probes the broker at
+  `JARVIS_SANDBOX_PROXY_PROBE_URL` before cloning and refuses with
+  `broker-unreachable` (`start the sidecar and try again`), so no workspace or
+  container is spent on a doomed run. The probe is from the server's network,
+  not the job's: dev therefore publishes the broker on host loopback and sets
+  the probe URL to `http://127.0.0.1:54322/v1`; compose can use the service
+  name.
 - **Sidecar dies mid-job** — model calls fail; the job ends `failed` with a
   clear broker error instead of hanging.
 - **Server down** — the job-state check fails closed, the job fails, and boot
@@ -410,6 +418,7 @@ non-zero unless the job settled `ok`.
 | `JARVIS_SANDBOX_PROXY_SECRET`             | _(private file)_                          | the HMAC secret; `~/.jarvis/sandbox-proxy.key` when unset                                    |
 | `JARVIS_SANDBOX_PROXY_MAX_REQUESTS`       | `500`                                     | requests one job may make through the broker before `429`                                    |
 | `JARVIS_SANDBOX_PROXY_MODE`               | `embedded`                                | `embedded` runs the broker in the server; `sidecar` runs it on the job's internal network    |
+| `JARVIS_SANDBOX_PROXY_PROBE_URL`          | the same as `JARVIS_SANDBOX_PROXY_URL`    | where the **server** probes the broker; dev points it at `http://127.0.0.1:54322/v1`         |
 | `JARVIS_SANDBOX_EGRESS_PROXY_URL`         | _(unset)_                                 | forward proxy a sidecar job may research through (`http://proxy:54323`); empty = broker only |
 | `JARVIS_SANDBOX_NETWORK`                  | _(engine default bridge)_                 | the Docker network job containers join (sidecar: the internal `jarvis-sandbox`)              |
 | `JARVIS_SANDBOX_LOG_ROOT`                 | `~/.jarvis/logs/coding`                   | where each job's full output is written (`0600` files)                                       |

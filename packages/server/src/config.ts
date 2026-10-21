@@ -495,6 +495,16 @@ export interface SandboxConfig {
      */
     readonly proxyUrl: string;
     /**
+     * Where the **server** probes the broker
+     * (`JARVIS_SANDBOX_PROXY_PROBE_URL`), defaulting to {@link proxyUrl}.
+     *
+     * The job uses `proxyUrl` from inside the job network; the server runs on
+     * the host (dev) and cannot resolve a container name. Dev publishes the
+     * broker on `127.0.0.1:54322` and points this there; compose leaves it at
+     * the service name, which both can resolve.
+     */
+    readonly proxyProbeUrl: string;
+    /**
      * The broker's HMAC secret (`JARVIS_SANDBOX_PROXY_SECRET`).
      *
      * Empty means "load the private file beside the database, creating it on
@@ -588,6 +598,7 @@ export const DEFAULT_SANDBOX_CONFIG = {
     proxyBind: "127.0.0.1",
     proxyPort: 54322,
     proxyUrl: "http://host.docker.internal:54322/v1",
+    proxyProbeUrl: "http://host.docker.internal:54322/v1",
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
     proxyMode: "embedded",
@@ -1548,6 +1559,10 @@ export function getAppConfig(): AppConfig {
                           proxyPort,
                           proxyUrl:
                               process.env.JARVIS_SANDBOX_PROXY_URL ??
+                              `http://host.docker.internal:${proxyPort}/v1`,
+                          proxyProbeUrl:
+                              process.env.JARVIS_SANDBOX_PROXY_PROBE_URL?.trim() ||
+                              process.env.JARVIS_SANDBOX_PROXY_URL ||
                               `http://host.docker.internal:${proxyPort}/v1`,
                           proxySecret:
                               process.env.JARVIS_SANDBOX_PROXY_SECRET ?? "",

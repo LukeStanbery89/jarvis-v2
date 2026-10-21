@@ -29,6 +29,7 @@
  *
  *   JARVIS_SANDBOX_PROXY_MODE=sidecar
  *   JARVIS_SANDBOX_PROXY_URL=http://jarvis-proxy:54322/v1
+ *   JARVIS_SANDBOX_PROXY_PROBE_URL=http://127.0.0.1:54322/v1
  *   JARVIS_SANDBOX_EGRESS_PROXY_URL=http://jarvis-proxy:54323
  *   JARVIS_SANDBOX_NETWORK=jarvis-sandbox
  *   JARVIS_SANDBOX_EXTRA_HOSTS=none
@@ -133,6 +134,11 @@ execFileSync(
         `${path.join(root, "node_modules")}:/app/node_modules:ro`,
         "-v",
         `${secretPath}:/run/secrets/proxy.key:ro`,
+        // The server runs on the host and cannot resolve the container name,
+        // so the broker is published on loopback for its preflight probe. A
+        // job still uses `jarvis-proxy` on the internal network.
+        "-p",
+        "127.0.0.1:54322:54322",
         "-e",
         "JARVIS_PROXY_SECRET_PATH=/run/secrets/proxy.key",
         "-e",
@@ -167,8 +173,16 @@ if (fileEnv.JARVIS_SANDBOX_PROXY_MODE !== "sidecar") {
     console.warn(
         "\nNote: packages/server/.env does not set JARVIS_SANDBOX_PROXY_MODE=sidecar.\n" +
             "The sidecar is running, but the server will keep using its embedded broker until you\n" +
-            "set it (and JARVIS_SANDBOX_PROXY_URL, JARVIS_SANDBOX_EGRESS_PROXY_URL,\n" +
-            "JARVIS_SANDBOX_NETWORK, JARVIS_SANDBOX_EXTRA_HOSTS=none) and restart.\n",
+            "set it (and JARVIS_SANDBOX_PROXY_URL, JARVIS_SANDBOX_PROXY_PROBE_URL,\n" +
+            "JARVIS_SANDBOX_EGRESS_PROXY_URL, JARVIS_SANDBOX_NETWORK,\n" +
+            "JARVIS_SANDBOX_EXTRA_HOSTS=none) and restart.\n",
+    );
+}
+if (!fileEnv.JARVIS_SANDBOX_PROXY_PROBE_URL) {
+    console.warn(
+        "\nNote: JARVIS_SANDBOX_PROXY_PROBE_URL is unset; the server will probe\n" +
+            "JARVIS_SANDBOX_PROXY_URL (a container name it cannot resolve from the host).\n" +
+            "Add JARVIS_SANDBOX_PROXY_PROBE_URL=http://127.0.0.1:54322/v1 and restart.\n",
     );
 }
 
