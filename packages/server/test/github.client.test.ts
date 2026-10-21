@@ -23,6 +23,7 @@ const CONFIG: GitHubConfig = {
     privateKey,
     installationId: "67890",
     apiBaseUrl: "https://api.github.test",
+    repos: ["luke/app"],
 };
 
 /** A JSON response. */
@@ -415,5 +416,163 @@ describe("reading a pull request", () => {
         await expect(client.readPullRequest("luke", "app", 99)).rejects.toThrow(
             "GitHub /repos/luke/app/pulls/99 failed: 404 Not Found",
         );
+    });
+});
+
+describe("issues", () => {
+    /** A client over one router: token, one issue, a list, create, comment. */
+    function clientFor(): {
+        client: ReturnType<typeof createGitHubClient>;
+        calls: Array<{ url: string; init: RequestInit }>;
+    } {
+        const calls: Array<{ url: string; init: RequestInit }> = [];
+        const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+            calls.push({ url, init });
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.includes("/issues?state=open&per_page=20")) {
+                return json([
+                    {
+                        number: 140,
+                        html_url: "https://github.com/luke/app/issues/140",
+                        title: "Work with the GitHub tracker",
+                        body: "Read and comment.",
+                        state: "open",
+                        labels: [{ name: "enhancement" }, "server"],
+                        user: { login: "luke" },
+                        comments: 2,
+                        created_at: "2026-10-19T10:00:00Z",
+                    },
+                    {
+                        // The issues endpoint also returns pull requests; a
+                        // backlog is about issues.
+                        number: 141,
+                        html_url: "https://github.com/luke/app/pull/141",
+                        title: "A pull request",
+                        state: "open",
+                        pull_request: { url: "…" },
+                    },
+                ]);
+            }
+            if (url.endsWith("/issues/140") && init.method !== "POST") {
+                return json({
+                    number: 140,
+                    html_url: "https://github.com/luke/app/issues/140",
+                    title: "Work with the GitHub tracker",
+                    body: "Read and comment.",
+                    state: "open",
+                    labels: [{ name: "enhancement" }, "server"],
+                    user: { login: "luke" },
+                    comments: 2,
+                    created_at: "2026-10-19T10:00:00Z",
+                });
+            }
+            if (
+                url.endsWith("/issues/140/comments") &&
+                init.method === "POST"
+            ) {
+                return json({
+                    id: 987,
+                    html_url:
+                        "https://github.com/luke/app/issues/140#issuecomment-987",
+                });
+            }
+            if (url.endsWith("/issues") && init.method === "POST") {
+                return json({
+                    number: 142,
+                    html_url: "https://github.com/luke/app/issues/142",
+                });
+            }
+            throw new Error(`unexpected url ${url} ${init.method ?? "GET"}`);
+        });
+        return {
+            client: createGitHubClient(CONFIG, {
+                fetch: fetchImpl as unknown as typeof fetch,
+                now: () => Date.parse("2026-10-20T12:00:00Z"),
+            }),
+            calls,
+        };
+    }
+
+    it("reads one issue with labels, author and state", async () => {
+        const { client } = clientFor();
+
+        const issue = await client.getIssue("luke", "app", 140);
+
+        expect(issue).toEqual({
+            number: 140,
+            url: "https://github.com/luke/app/issues/140",
+            title: "Work with the GitHub tracker",
+            body: "Read and comment.",
+            state: "open",
+            labels: ["enhancement", "server"],
+            author: "luke",
+            pullRequest: false,
+            commentCount: 2,
+            createdAt: "2026-10-19T10:00:00Z",
+        });
+    });
+
+    it("lists issues and filters the pull requests out", async () => {
+        const { client, calls } = clientFor();
+
+        const issues = await client.listIssues("luke", "app", {
+            state: "open",
+            limit: 20,
+        });
+
+        expect(issues.map((issue) => issue.number)).toEqual([140]);
+        expect(issues[0]?.labels).toEqual(["enhancement", "server"]);
+        const url = calls.find((call) => call.url.includes("/issues?"))?.url;
+        expect(url).toContain("state=open");
+        expect(url).toContain("per_page=20");
+    });
+
+    it("creates an issue with a JSON body", async () => {
+        const { client, calls } = clientFor();
+
+        const created = await client.createIssue("luke", "app", {
+            title: "A bug",
+            body: "It breaks.",
+        });
+
+        expect(created).toEqual({
+            number: 142,
+            url: "https://github.com/luke/app/issues/142",
+        });
+        const post = calls.find(
+            (call) =>
+                call.init.method === "POST" && call.url.endsWith("/issues"),
+        );
+        expect(JSON.parse(String(post?.init.body))).toEqual({
+            title: "A bug",
+            body: "It breaks.",
+        });
+    });
+
+    it("comments on an issue and returns the comment URL", async () => {
+        const { client, calls } = clientFor();
+
+        const created = await client.commentOnIssue(
+            "luke",
+            "app",
+            140,
+            "On it.",
+        );
+
+        expect(created).toEqual({
+            number: 987,
+            url: "https://github.com/luke/app/issues/140#issuecomment-987",
+        });
+        const post = calls.find(
+            (call) =>
+                call.init.method === "POST" &&
+                call.url.endsWith("/issues/140/comments"),
+        );
+        expect(JSON.parse(String(post?.init.body))).toEqual({ body: "On it." });
     });
 });

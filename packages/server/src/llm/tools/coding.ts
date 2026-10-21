@@ -47,9 +47,17 @@ const schema = z.object({
         ),
     task: z
         .string()
-        .min(1)
+        .optional()
         .describe(
-            "What to do, in the user's own words. The agent sees this sentence and works in a clone of the repository.",
+            "What to do, in the user's own words. The agent sees this sentence and works in a clone of the repository. Omit it when the request is simply to implement the issue named by `issue` or to address the review on `pullRequest`.",
+        ),
+    issue: z.coerce
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+            "Implement this GitHub issue: the job reads it and gives the agent its title, description and URL. Use it for 'implement issue #N' rather than pasting a long body into `task`. Do not also pass `pullRequest`.",
         ),
     // Coerced so a model that passes `165` as a number still reaches the
     // parser instead of failing validation over a type it "knew".
@@ -78,7 +86,10 @@ const REFUSAL: Record<
     | "follow-ups-unavailable"
     | "pull-request-unavailable"
     | "pull-request-closed"
-    | "pull-request-fork",
+    | "pull-request-fork"
+    | "issue-unavailable"
+    | "issue-is-pull-request"
+    | "issue-and-pull-request",
     string
 > = {
     "task-missing": "A coding job needs a task; say what the agent should do.",
@@ -97,6 +108,12 @@ const REFUSAL: Record<
         "That pull request is already closed or merged, so there is nothing to continue.",
     "pull-request-fork":
         "That pull request comes from a fork; coding jobs can only push branches in the repository itself.",
+    "issue-unavailable":
+        "I could not read that issue, so I did not start a job. Check its number and that the repository is allowed.",
+    "issue-is-pull-request":
+        "That number is a pull request, not an issue; ask me to continue the pull request instead.",
+    "issue-and-pull-request":
+        "Pass either an issue or a pull request, not both.",
 };
 
 /** A pull request reference: always a number, plus the repo a URL named. */
@@ -178,6 +195,21 @@ export function createCodingTool(deps: CodingToolDeps) {
             if (input.pullRequest !== undefined && ref === null) {
                 return "I could not read that pull request reference; give me its number or its URL.";
             }
+            if (input.issue !== undefined && ref !== null) {
+                return REFUSAL["issue-and-pull-request"];
+            }
+            // "Implement issue #140" names no task; the issue is the task.
+            // The service composes the prompt from it, so the relay model
+            // never has to copy a long description into an argument.
+            const requested = input.task?.trim() ?? "";
+            const task =
+                requested.length > 0
+                    ? requested
+                    : input.issue !== undefined
+                      ? `Implement issue #${input.issue}.`
+                      : ref !== null
+                        ? "Address the review comments."
+                        : "";
 
             // "Change the primary color in the JARVIS repo" names no slug. A
             // single-entry allowlist is not ambiguity — it is the answer.
@@ -199,11 +231,14 @@ export function createCodingTool(deps: CodingToolDeps) {
                 const result = await deps.service.start({
                     userId: gate.userId,
                     repo,
-                    task: input.task,
+                    task,
                     ...(input.crashPolicy !== undefined
                         ? { crashPolicy: input.crashPolicy }
                         : {}),
                     ...(ref !== null ? { pullRequest: ref.number } : {}),
+                    ...(input.issue !== undefined
+                        ? { issue: input.issue }
+                        : {}),
                 });
                 if (!result.ok) {
                     const allowed =
@@ -217,7 +252,9 @@ export function createCodingTool(deps: CodingToolDeps) {
                     `Started coding job ${result.job.id} in ${result.job.repo} on branch ${result.job.branch}${
                         ref !== null
                             ? ` (continuing pull request #${ref.number})`
-                            : ""
+                            : input.issue !== undefined
+                              ? ` (implementing issue #${input.issue})`
+                              : ""
                     }.`,
                     result.job.crashPolicy === "resume"
                         ? "If I restart mid-job it will be resumed."
@@ -237,6 +274,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                 "Start a sandboxed coding agent on an allowlisted repository. " +
                 "Use when the user asks for any change to the repository's files — code, documentation, comments, configuration, or assets — or explicitly asks to start a coding job; a one-line edit still counts. " +
                 "To continue an open pull request (address its review comments, revise it), pass `pullRequest`; the job works on that PR's branch and pushes back to it. " +
+                "To implement a GitHub issue, pass `issue` with its number; the job reads the issue itself, so do not paste its body into the task. " +
                 "It clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
                 "It does not return the work itself, so do not wait for it in the reply. " +
                 "`repo` may be omitted when the user did not name one and exactly one repository is allowed. " +

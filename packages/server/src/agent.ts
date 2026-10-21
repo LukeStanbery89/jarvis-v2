@@ -318,6 +318,17 @@ const SCHEDULE_RULE =
  * process did not register would make the model promise a job that cannot
  * start.
  */
+const GITHUB_RULE =
+    "You can read and update the project's GitHub tracker. Use " +
+    "getGitHubIssue when the user names an issue or pull request number and " +
+    "you need what it says; listGitHubIssues when they ask what is open or " +
+    "what to work on; createGitHubIssue only when they ask you to file or " +
+    "report an issue; and commentOnGitHub only when they ask you to post a " +
+    "comment there. To implement an issue, pass its number as `issue` to " +
+    "startCodingJob rather than pasting its description into the task. Never " +
+    "invent an issue number or a repository, and never comment on your own " +
+    "initiative.";
+
 const CODING_RULE =
     "You can start a coding job. When the user asks for any change to a " +
     "repository's files — code, documentation, comments, configuration, or " +
@@ -413,7 +424,7 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${codingEnabled ? `\n\n${CODING_RULE}` : ""}${rendering}${spoken}`;
+    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${githubEnabled ? `\n\n${GITHUB_RULE}` : ""}${codingEnabled ? `\n\n${CODING_RULE}` : ""}${rendering}${spoken}`;
 }
 
 let graph: AgentGraph | null = null;
@@ -427,6 +438,7 @@ let graph: AgentGraph | null = null;
  * built — the same deps object that builds the tool list.
  */
 let codingEnabled = false;
+let githubEnabled = false;
 
 /**
  * The tool instances the graph was built with.
@@ -464,6 +476,7 @@ export function initAgentGraph(deps?: ToolDeps): AgentGraph {
     ensurePrivateFile(checkpointPath);
     const tools = createTools(deps);
     codingEnabled = deps?.coding !== undefined;
+    githubEnabled = deps?.github !== undefined;
     graph = createAgentGraph({
         model: createChatModel(),
         tools,

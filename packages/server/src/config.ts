@@ -878,6 +878,14 @@ export interface GitHubConfig {
     readonly installationId: string;
     /** The REST host (`JARVIS_GITHUB_API_BASE_URL`), for a GitHub Enterprise install. */
     readonly apiBaseUrl: string;
+    /**
+     * The repositories the tracker tools may name (`JARVIS_GITHUB_REPOS`).
+     *
+     * Defaults to the coding sandbox's allowlist — the App is installed on
+     * the same repositories, and one list is a fact rather than two copies of
+     * it. Empty means the tools are not registered at all.
+     */
+    readonly repos: readonly string[];
 }
 
 /** Default GitHub REST host. */
@@ -934,6 +942,9 @@ export function getGitHubConfig(): GitHubConfig | null {
         apiBaseUrl:
             process.env.JARVIS_GITHUB_API_BASE_URL?.trim() ||
             DEFAULT_GITHUB_API_BASE_URL,
+        repos: parseCsv(
+            process.env.JARVIS_GITHUB_REPOS ?? process.env.JARVIS_SANDBOX_REPOS,
+        ),
     };
 }
 

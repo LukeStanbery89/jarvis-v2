@@ -30,6 +30,8 @@ import type { WikipediaDeps } from "./wikipedia";
 import type { NotifyToolDeps } from "./notify";
 import type { JobsToolDeps } from "./jobs";
 import type { CodingToolDeps } from "./coding";
+import { createGitHubTools } from "./github";
+import type { GitHubToolDeps } from "./github";
 
 /** Everything the optional tools need; absent deps omit their tools. */
 export interface ToolDeps extends AnalyzeImageDeps {
@@ -72,6 +74,12 @@ export interface ToolDeps extends AnalyzeImageDeps {
      * job no runtime can run would be the same broken promise `jobs` avoids.
      */
     coding?: CodingToolDeps;
+    /**
+     * GitHub tracker wiring (#140): the App-backed client and the repository
+     * allowlist. Present only when the App is configured and at least one
+     * repository is allowed — no App, no tracker tools.
+     */
+    github?: GitHubToolDeps;
     /**
      * Scheduler wiring (#90 phase 3): the job ledger, the per-user cap, and the
      * scheduling horizon, which the six scheduling tools create within.
@@ -117,6 +125,11 @@ export function createTools(deps?: ToolDeps): StructuredToolInterface[] {
         // The only tool whose *result* is an interruption (#139), so it is
         // registered last and reads as an exception among lookups.
         tools.push(createNotifyTool(deps.notifications));
+    }
+    if (deps.github) {
+        // Read an issue, list them, file one, comment. Registered before the
+        // job tool because a read is the cheap half of "implement issue #N".
+        tools.push(...createGitHubTools(deps.github));
     }
     if (deps.coding) {
         // The only tool that spends minutes of another process's time. It

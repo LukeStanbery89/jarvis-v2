@@ -73,10 +73,74 @@ export interface PullRequestSnapshot {
     readonly conversationUnavailable: boolean;
 }
 
+/** One issue, or a pull request (the issues API returns both). */
+export interface IssueSnapshot {
+    readonly number: number;
+    /** The browser URL (`html_url`). */
+    readonly url: string;
+    readonly title: string;
+    /** Empty when the author wrote no description. */
+    readonly body: string;
+    readonly state: "open" | "closed";
+    readonly labels: readonly string[];
+    readonly author: string;
+    /** True when this number is a pull request rather than an issue. */
+    readonly pullRequest: boolean;
+    /** The thread's comment count, as GitHub reports it. */
+    readonly commentCount: number;
+    readonly createdAt: string;
+}
+
+/** A freshly created issue or comment. */
+export interface CreatedOnGitHub {
+    /** The issue or comment number; a comment's number is its id, not a sequence. */
+    readonly number: number;
+    /** The browser URL. */
+    readonly url: string;
+}
+
 /** What a caller needs from GitHub. */
 export interface GitHubClient {
     /** A live installation token, cached until it is nearly expired. */
     installationToken(): Promise<InstallationToken>;
+    /** Reads one issue (or pull request) by number. */
+    getIssue(
+        owner: string,
+        repo: string,
+        number: number,
+        options?: { signal?: AbortSignal },
+    ): Promise<IssueSnapshot>;
+    /**
+     * Lists issues, newest first.
+     *
+     * Pull requests are filtered out: the issues endpoint returns them too,
+     * and a backlog of "what should I work on" is about issues.
+     */
+    listIssues(
+        owner: string,
+        repo: string,
+        input?: {
+            state?: "open" | "closed" | "all";
+            labels?: string;
+            limit?: number;
+        },
+        options?: { signal?: AbortSignal },
+    ): Promise<IssueSnapshot[]>;
+    /** Creates an issue. */
+    createIssue(
+        owner: string,
+        repo: string,
+        input: { title: string; body?: string },
+        options?: { signal?: AbortSignal },
+    ): Promise<CreatedOnGitHub>;
+    /** Comments on an issue or pull request (one endpoint serves both). */
+    commentOnIssue(
+        owner: string,
+        repo: string,
+        number: number,
+        body: string,
+        options?: { signal?: AbortSignal },
+    ): Promise<CreatedOnGitHub>;
     /** The repository's default branch, which a pull request targets. */
     defaultBranch(owner: string, repo: string): Promise<string>;
     /**
@@ -230,6 +294,89 @@ function commentsFrom(
     };
 }
 
+/** One raw issue, defensively read. */
+interface RawIssue {
+    number?: unknown;
+    html_url?: unknown;
+    title?: unknown;
+    body?: unknown;
+    state?: unknown;
+    labels?: unknown;
+    user?: { login?: unknown };
+    comments?: unknown;
+    created_at?: unknown;
+    pull_request?: unknown;
+}
+
+/** GitHub returns labels as objects (`{ name }`); older shapes used strings. */
+function labelsFrom(raw: unknown): string[] {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    const labels: string[] = [];
+    for (const label of raw) {
+        if (typeof label === "string") {
+            labels.push(label);
+        } else if (
+            typeof label === "object" &&
+            label !== null &&
+            typeof (label as { name?: unknown }).name === "string"
+        ) {
+            labels.push((label as { name: string }).name);
+        }
+    }
+    return labels;
+}
+
+/**
+ * Normalizes one issue.
+ *
+ * @param raw - GitHub's object.
+ * @param expected - The number the caller asked for, when it did; the list
+ *   endpoint has no such expectation.
+ * @returns The issue.
+ * @throws When the response is not an issue shape.
+ */
+function issueFrom(raw: RawIssue, expected: number | null): IssueSnapshot {
+    if (
+        typeof raw.number !== "number" ||
+        typeof raw.html_url !== "string" ||
+        typeof raw.title !== "string"
+    ) {
+        throw new Error(
+            `GitHub returned an unexpected issue shape${
+                expected === null ? "" : ` for #${expected}`
+            }`,
+        );
+    }
+    return {
+        number: raw.number,
+        url: raw.html_url,
+        title: raw.title,
+        body: typeof raw.body === "string" ? raw.body : "",
+        state: raw.state === "closed" ? "closed" : "open",
+        labels: labelsFrom(raw.labels),
+        author: typeof raw.user?.login === "string" ? raw.user.login : "ghost",
+        pullRequest: raw.pull_request !== undefined,
+        commentCount:
+            typeof raw.comments === "number" && raw.comments >= 0
+                ? raw.comments
+                : 0,
+        createdAt: typeof raw.created_at === "string" ? raw.created_at : "",
+    };
+}
+
+/** Normalizes a created issue or comment. */
+function createdFrom(
+    raw: { number?: unknown; html_url?: unknown },
+    kind: "issue" | "comment",
+): CreatedOnGitHub {
+    if (typeof raw.number !== "number" || typeof raw.html_url !== "string") {
+        throw new Error(`GitHub created a ${kind} but returned no url`);
+    }
+    return { number: raw.number, url: raw.html_url };
+}
+
 /**
  * Builds the client.
  *
@@ -248,7 +395,12 @@ export function createGitHubClient(
     /** One REST call, with GitHub's message surfaced and the token kept out. */
     async function api<T>(
         path: string,
-        init: { method?: string; token?: string; body?: unknown },
+        init: {
+            method?: string;
+            token?: string;
+            body?: unknown;
+            signal?: AbortSignal;
+        },
     ): Promise<T> {
         const headers: Record<string, string> = {
             accept: "application/vnd.github+json",
@@ -266,7 +418,15 @@ export function createGitHubClient(
             ...(init.body !== undefined
                 ? { body: JSON.stringify(init.body) }
                 : {}),
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            // The caller's turn signal cancels a tool call; the timeout stays
+            // the outer bound for a turn that never cancels (#140).
+            signal:
+                init.signal !== undefined
+                    ? AbortSignal.any([
+                          AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+                          init.signal,
+                      ])
+                    : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
         if (!response.ok) {
             const text = await response.text().catch(() => "");
@@ -369,6 +529,99 @@ export function createGitHubClient(
                 ...commentsFrom(review, conversation ?? []),
                 conversationUnavailable: conversation === null,
             };
+        },
+
+        async getIssue(
+            owner: string,
+            repo: string,
+            number: number,
+            options: { signal?: AbortSignal } = {},
+        ): Promise<IssueSnapshot> {
+            const token = await installationToken();
+            const raw = await api<RawIssue>(
+                `/repos/${owner}/${repo}/issues/${number}`,
+                {
+                    token: token.token,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return issueFrom(raw, number);
+        },
+
+        async listIssues(
+            owner: string,
+            repo: string,
+            input = {},
+            options: { signal?: AbortSignal } = {},
+        ): Promise<IssueSnapshot[]> {
+            const token = await installationToken();
+            const params = new URLSearchParams({
+                state: input.state ?? "open",
+                per_page: String(Math.min(100, Math.max(1, input.limit ?? 20))),
+            });
+            if (input.labels !== undefined && input.labels.length > 0) {
+                params.set("labels", input.labels);
+            }
+            const raw = await api<unknown[]>(
+                `/repos/${owner}/${repo}/issues?${params.toString()}`,
+                {
+                    token: token.token,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return raw
+                .filter((entry): entry is RawIssue => {
+                    if (typeof entry !== "object" || entry === null) {
+                        return false;
+                    }
+                    return (
+                        !("pull_request" in entry) ||
+                        (entry as RawIssue).pull_request === undefined
+                    );
+                })
+                .map((entry) => issueFrom(entry, null));
+        },
+
+        async createIssue(
+            owner: string,
+            repo: string,
+            input: { title: string; body?: string },
+            options: { signal?: AbortSignal } = {},
+        ): Promise<CreatedOnGitHub> {
+            const token = await installationToken();
+            const created = await api<{ number?: unknown; html_url?: unknown }>(
+                `/repos/${owner}/${repo}/issues`,
+                {
+                    method: "POST",
+                    token: token.token,
+                    body: { title: input.title, body: input.body ?? "" },
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return createdFrom(created, "issue");
+        },
+
+        async commentOnIssue(
+            owner: string,
+            repo: string,
+            number: number,
+            body: string,
+            options: { signal?: AbortSignal } = {},
+        ): Promise<CreatedOnGitHub> {
+            const token = await installationToken();
+            const created = await api<{ id?: unknown; html_url?: unknown }>(
+                `/repos/${owner}/${repo}/issues/${number}/comments`,
+                {
+                    method: "POST",
+                    token: token.token,
+                    body: { body },
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return createdFrom(
+                { number: created.id, html_url: created.html_url },
+                "comment",
+            );
         },
 
         async defaultBranch(owner: string, repo: string): Promise<string> {

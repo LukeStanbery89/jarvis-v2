@@ -31,7 +31,7 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
 import type { SandboxConfig } from "../config";
-import type { PullRequestSnapshot } from "../github/client";
+import type { IssueSnapshot, PullRequestSnapshot } from "../github/client";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
 import { createCodingLogHub, type CodingLogStream } from "./logHub";
@@ -88,7 +88,10 @@ export type CodingJobRefusalCode =
     | "follow-ups-unavailable"
     | "pull-request-unavailable"
     | "pull-request-closed"
-    | "pull-request-fork";
+    | "pull-request-fork"
+    | "issue-unavailable"
+    | "issue-is-pull-request"
+    | "issue-and-pull-request";
 
 /** The result of asking to start one job. */
 export type StartCodingJobResult =
@@ -117,6 +120,14 @@ export interface CodingJobService {
          * — so the review updates rather than splitting in two.
          */
         pullRequest?: number;
+        /**
+         * Implement this GitHub issue (#140).
+         *
+         * The issue is read server-side and its title, description and URL are
+         * prepended to the task, so "implement issue #N" is one tool call
+         * instead of a read whose body the relay model would have to paste.
+         */
+        issue?: number;
     }): Promise<StartCodingJobResult>;
     /**
      * Reconciles rows and containers after a restart, then supervises whatever
@@ -209,6 +220,12 @@ export function createCodingJobService(options: {
         repo: string;
         number: number;
     }) => Promise<PullRequestSnapshot>;
+    /** Reads an issue for `start({ issue })` (#140). */
+    issues?: (input: {
+        owner: string;
+        repo: string;
+        number: number;
+    }) => Promise<IssueSnapshot>;
     notifications?: Pick<NotificationService, "notify">;
     now?: () => Date;
     newId?: () => string;
@@ -222,6 +239,7 @@ export function createCodingJobService(options: {
         proxy,
         publisher,
         pullRequests,
+        issues,
     } = options;
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
@@ -689,6 +707,47 @@ export function createCodingJobService(options: {
                 };
             }
 
+            // An issue is read before anything is cloned: its description is
+            // the task, and a number that names a pull request belongs to the
+            // follow-up path instead.
+            let issue: IssueSnapshot | null = null;
+            if (input.issue !== undefined && input.pullRequest !== undefined) {
+                return {
+                    ok: false,
+                    code: "issue-and-pull-request",
+                    reason: "pass an issue or a pull request, not both",
+                };
+            }
+            if (input.issue !== undefined) {
+                if (issues === undefined) {
+                    return {
+                        ok: false,
+                        code: "issue-unavailable",
+                        reason: "no GitHub App is configured (`JARVIS_GITHUB_*`), so an issue cannot be read",
+                    };
+                }
+                try {
+                    issue = await issues({
+                        owner: repo.owner,
+                        repo: repo.name,
+                        number: input.issue,
+                    });
+                } catch (err) {
+                    return {
+                        ok: false,
+                        code: "issue-unavailable",
+                        reason: `issue #${input.issue} could not be read: ${describe(err)}`,
+                    };
+                }
+                if (issue.pullRequest) {
+                    return {
+                        ok: false,
+                        code: "issue-is-pull-request",
+                        reason: `#${issue.number} is a pull request`,
+                    };
+                }
+            }
+
             // A follow-up is resolved before anything is cloned: the PR says
             // which branch to check out, what the reviewers asked for, and
             // whether continuing is even possible (open, same repository).
@@ -751,7 +810,11 @@ export function createCodingJobService(options: {
             // pull request's context as well, because an isolated clone has
             // the branch but not the conversation that shaped it.
             const prompt =
-                followUp === null ? task : followUpPrompt(followUp, task);
+                followUp !== null
+                    ? followUpPrompt(followUp, task)
+                    : issue !== null
+                      ? issuePrompt(issue, task)
+                      : task;
 
             const job = ledger.createCodingJob(input.userId, {
                 id,
@@ -779,7 +842,9 @@ export function createCodingJobService(options: {
                     throw new Error("the job was claimed by another process");
                 }
                 logger.info(
-                    `coding job ${claimed.id} started: repo=${claimed.repo}, branch=${claimed.branch}, model=${config.model}, container=${handle.containerId}`,
+                    `coding job ${claimed.id} started: repo=${claimed.repo}, branch=${claimed.branch}` +
+                        (issue === null ? "" : `, issue=#${issue.number}`) +
+                        `, model=${config.model}, container=${handle.containerId}`,
                 );
                 return {
                     ok: true,
@@ -963,8 +1028,8 @@ export function lastAgentMessage(logTail: string): string {
 /** One comment's share of a follow-up prompt. */
 const MAX_COMMENT_CHARS = 1_200;
 
-/** The whole pull-request context; the task itself is short. */
-const MAX_FOLLOW_UP_CONTEXT_CHARS = 12_000;
+/** The whole reference context (a pull request, an issue); the task is short. */
+const MAX_JOB_CONTEXT_CHARS = 12_000;
 
 /** Indents a comment so a multi-line body stays inside its list item. */
 function quote(body: string): string {
@@ -1037,9 +1102,41 @@ export function followUpPrompt(
         "",
     );
     const prompt = lines.join("\n");
-    return prompt.length > MAX_FOLLOW_UP_CONTEXT_CHARS
-        ? `${prompt.slice(0, MAX_FOLLOW_UP_CONTEXT_CHARS - 1)}…`
+    return prompt.length > MAX_JOB_CONTEXT_CHARS
+        ? `${prompt.slice(0, MAX_JOB_CONTEXT_CHARS - 1)}…`
         : prompt;
+}
+
+/**
+ * Builds the prompt for a job started from an issue (#140).
+ *
+ * The task comes first — it is the instruction — and the issue follows as
+ * reference: title, state, labels, URL and description. Reading it on the host
+ * keeps a long body out of the relay model's context and out of its hands.
+ *
+ * @param issue - The issue, as read when the job started.
+ * @param task - What the user wants done; empty means "implement it".
+ * @returns The prompt, bounded.
+ */
+export function issuePrompt(issue: IssueSnapshot, task: string): string {
+    const body = issue.body.trim();
+    const lines = [
+        task.trim() || `Implement issue #${issue.number}.`,
+        "",
+        `## GitHub issue #${issue.number}: ${issue.title}`,
+        issue.url,
+        `state: ${issue.state}${
+            issue.labels.length > 0
+                ? `; labels: ${issue.labels.join(", ")}`
+                : ""
+        }`,
+        "",
+        body.length > MAX_JOB_CONTEXT_CHARS
+            ? `${body.slice(0, MAX_JOB_CONTEXT_CHARS - 1)}…`
+            : body || "(the issue has no description)",
+        "",
+    ];
+    return lines.join("\n");
 }
 
 /**
