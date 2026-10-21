@@ -369,6 +369,20 @@ if (appConfig.sandbox && codingJobs) {
     );
 }
 
+// GitHub is two surfaces: publishing (the App) and the tracker tools (the App
+// plus a repo allowlist). Saying which is on keeps a silent absence — the
+// model answering "I cannot read issues" — from looking like a bug when it is
+// a missing list.
+if (appConfig.github) {
+    logger.info(
+        `GitHub App configured: publishing=on, tracker=${
+            appConfig.github.repos.length > 0
+                ? `on (${appConfig.github.repos.join(",")})`
+                : "off (JARVIS_GITHUB_REPOS is empty)"
+        }, reviewer=${appConfig.github.reviewer ?? "repository owner"}`,
+    );
+}
+
 initAgentGraph({
     attachments,
     vision: createVisionModel(getLlmConfig()),
