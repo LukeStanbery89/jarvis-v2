@@ -21,6 +21,7 @@
         "graph:hook:uninstall": "graphify hook uninstall",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
+        "sandbox:proxy": "node scripts/sandbox-proxy.mjs",
         "prepare": "husky",
         "test": "npm run test --workspaces --if-present",
         "typecheck": "npm run typecheck --workspaces --if-present",

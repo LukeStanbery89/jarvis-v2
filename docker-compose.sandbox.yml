@@ -3,7 +3,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
 #
 # The base file deliberately does not grant what a coding job needs. This
-# overlay adds exactly four things:
+# overlay adds exactly five things:
 #
 #   1. **The Docker socket.** Root-equivalent by definition — a process with it
 #      can do anything the daemon can. It is a deliberate owner-only v1
@@ -20,10 +20,16 @@
 #   3. **The sandbox switch and its allowlist.** `JARVIS_SANDBOX=docker` is what
 #      makes the surface exist at all; `JARVIS_SANDBOX_REPOS` starts empty, so a
 #      deployment that has not named a repository cannot clone one.
-#   4. **A private network for the credential broker.** The broker holds the
-#      provider key; jobs reach it at `http://jarvis:54322` on `jarvis-sandbox`,
-#      a network with no published ports. Nothing outside it can open a socket
-#      to the broker, and the container never holds the key itself.
+#   4. **A broker sidecar on an internal network.** Jobs join
+#      `jarvis-sandbox`, a network with no route out and no DNS. The only other
+#      container on it is `proxy`, which has a second network card on `default`
+#      — so the sidecar is the job's one door: the credential broker on 54322
+#      and a public-only forward proxy on 54323. The server is deliberately NOT
+#      on that network any more; a job must not be able to reach its API.
+#   5. **The sidecar's own process.** It runs `dist/sandbox/proxyServer.js` from
+#      the server image, reads the HMAC secret from the shared data volume, and
+#      asks the server (`/internal/job-state`) whether a job may still spend the
+#      provider key.
 #
 # The job image itself is built separately (`docker build -f Dockerfile.job -t
 # jarvis-job:latest .`) and is not started by compose: each job is one
@@ -39,30 +45,57 @@ services:
             JARVIS_SANDBOX_WORKSPACE_HOST_ROOT: "${JARVIS_SANDBOX_WORKSPACE_HOST_ROOT:-${PWD}/.jarvis/jobs}"
             JARVIS_SANDBOX_REPOS: "${JARVIS_SANDBOX_REPOS:-}"
             JARVIS_SANDBOX_MODEL: "${JARVIS_SANDBOX_MODEL:-big-pickle}"
-            # The OpenCode workspace key. It stays in the server now: each job
-            # is handed a token the broker derives from its own id (#141
-            # phase 7). Use a workspace key, never a personal provider key.
+            # The OpenCode workspace key. It stays in the server and the
+            # sidecar: each job is handed a token derived from its own id
+            # (#141 phase 7).
             JARVIS_SANDBOX_API_KEY: "${JARVIS_SANDBOX_API_KEY:-}"
             # The OpenCode Console API, where Big Pickle is free. Override for
             # the Go endpoint, another provider, or a local model (leave the key
             # empty for a local one).
             JARVIS_SANDBOX_LLM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-https://opencode.ai/inference/openai/v1}"
-            # The broker listens inside this container on a port that is NOT
-            # published: only containers on `jarvis-sandbox` can reach it, and
-            # the job is told to use the service name. That is the network
-            # boundary that keeps the broker off the LAN.
-            JARVIS_SANDBOX_PROXY_BIND: "0.0.0.0"
-            JARVIS_SANDBOX_PROXY_URL: "${JARVIS_SANDBOX_PROXY_URL:-http://jarvis:54322/v1}"
-            JARVIS_SANDBOX_NETWORK: "${JARVIS_SANDBOX_NETWORK:-jarvis-sandbox}"
+            # The broker is the sidecar on the job network; the forward proxy
+            # is where research and package installs go.
+            JARVIS_SANDBOX_PROXY_MODE: "sidecar"
+            JARVIS_SANDBOX_PROXY_URL: "${JARVIS_SANDBOX_PROXY_URL:-http://proxy:54322/v1}"
+            JARVIS_SANDBOX_EGRESS_PROXY_URL: "${JARVIS_SANDBOX_EGRESS_PROXY_URL:-http://proxy:54323}"
+            JARVIS_SANDBOX_NETWORK: "jarvis-sandbox"
+            # The job needs no host alias: its only route is the sidecar.
+            JARVIS_SANDBOX_EXTRA_HOSTS: "none"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
             - ./.jarvis/jobs:/home/jarvis/.jarvis/jobs
         networks:
             - default
-            # The private plane the broker and every job share. Created (not
-            # published) here; a job container joins it by name.
+
+    # The sidecar: the only container on `jarvis-sandbox` besides the jobs,
+    # and the only one with a route to the provider.
+    proxy:
+        image: jarvis-server:latest
+        command: ["node", "dist/sandbox/proxyServer.js"]
+        depends_on:
+            - jarvis
+        restart: unless-stopped
+        environment:
+            JARVIS_PROXY_UPSTREAM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-https://opencode.ai/inference/openai/v1}"
+            JARVIS_PROXY_MODEL: "${JARVIS_SANDBOX_MODEL:-big-pickle}"
+            JARVIS_PROXY_API_KEY: "${JARVIS_SANDBOX_API_KEY:-}"
+            # The secret the server writes beside the database; the same file
+            # makes a job's derived token verify on both sides.
+            JARVIS_PROXY_SECRET_PATH: "/home/jarvis/.jarvis/sandbox-proxy.key"
+            JARVIS_PROXY_STATUS_URL: "http://jarvis:54321"
+            # `public` lets the job reach docs and registries but not the host,
+            # the LAN, or cloud metadata. Set `allowlist` + HOSTS for stricter.
+            JARVIS_PROXY_EGRESS_POLICY: "${JARVIS_SANDBOX_EGRESS_POLICY:-public}"
+            JARVIS_PROXY_EGRESS_HOSTS: "${JARVIS_SANDBOX_EGRESS_HOSTS:-}"
+        volumes:
+            - jarvis-data:/home/jarvis/.jarvis:ro
+        networks:
+            - default
             - sandbox
 
 networks:
     sandbox:
         name: jarvis-sandbox
+        # No route out of this network: the sidecar is the only way to the
+        # internet, and the only other container a job can reach.
+        internal: true

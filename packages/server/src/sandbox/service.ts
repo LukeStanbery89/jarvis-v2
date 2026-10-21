@@ -688,6 +688,15 @@ export function createCodingJobService(options: {
         prepared: PreparedWorkspace,
         task: string,
     ): SandboxSpec {
+        // The broker's hostname is the one destination the job reaches
+        // directly; every other name goes through the egress proxy when one is
+        // configured, and `NO_PROXY` keeps the two apart (#141).
+        let brokerHost = "proxy";
+        try {
+            brokerHost = new URL(config.proxyUrl).hostname;
+        } catch {
+            // A malformed URL is the config's problem; the job still starts.
+        }
         return {
             jobId: job.id,
             image: config.image,
@@ -705,7 +714,11 @@ export function createCodingJobService(options: {
                 // derived from its own job id (#141 phase 7). Without a broker
                 // (tests, or a deliberately direct deployment) the old shape
                 // applies.
-                JARVIS_JOB_LLM_BASE_URL: proxy?.url ?? config.llmBaseUrl,
+                JARVIS_JOB_LLM_BASE_URL:
+                    proxy?.url ??
+                    (config.proxyMode === "sidecar"
+                        ? config.proxyUrl
+                        : config.llmBaseUrl),
                 JARVIS_JOB_MODEL_ID: config.model,
                 ...(proxy !== undefined
                     ? {
@@ -714,9 +727,27 @@ export function createCodingJobService(options: {
                               job.id,
                           ),
                       }
-                    : config.apiKey.length > 0
-                      ? { JARVIS_JOB_API_KEY: config.apiKey }
-                      : {}),
+                    : config.proxyMode === "sidecar"
+                      ? // No broker wiring means no derived token; never fall
+                        // back to the real key in a container.
+                        {}
+                      : config.apiKey.length > 0
+                        ? { JARVIS_JOB_API_KEY: config.apiKey }
+                        : {}),
+                // Research and installs go through the sidecar's forward
+                // proxy; without it the job reaches the broker and nothing
+                // else (the network has no other route).
+                ...(config.proxyMode === "sidecar" &&
+                config.egressProxyUrl.length > 0
+                    ? {
+                          HTTP_PROXY: config.egressProxyUrl,
+                          HTTPS_PROXY: config.egressProxyUrl,
+                          http_proxy: config.egressProxyUrl,
+                          https_proxy: config.egressProxyUrl,
+                          NO_PROXY: brokerHost,
+                          no_proxy: brokerHost,
+                      }
+                    : {}),
                 HOME: "/home/job",
             },
             limits: {

@@ -116,11 +116,13 @@ every gating assertion held, `1` one failed, `2` the daemon was unusable.
 
 #### The coding sandbox (#141)
 
-Coding jobs are **off by default** and live in an overlay, because they need two
-things the base deployment deliberately does not grant: the Docker socket
+Coding jobs are **off by default** and live in an overlay, because they need
+three things the base deployment deliberately does not grant: the Docker socket
 (root-equivalent — an owner-only v1 decision, with #138 owning the real
-capability boundary) and a host-visible workspace directory (a sibling
-container's bind source is resolved on the _host_, not inside the server).
+capability boundary), a host-visible workspace directory (a sibling container's
+bind source is resolved on the _host_, not inside the server), and a **broker
+sidecar** on an internal network so a job can reach a model without reaching
+the internet (see "The broker sidecar and egress" below).
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
@@ -249,23 +251,108 @@ URL at the host and the model at the local id, and leave the key empty; no key
 is required for a local endpoint, and a remote one without a key is refused
 before anything is cloned.
 
-**Egress is open, for now.** The job joins the engine's bridge and can reach
-whatever the host can; the broker protects the provider key, not the network.
-Two attempts on OrbStack (macOS) ruled out the obvious fixes: an `--internal`
-network leaves the broker unreachable (no host route, no DNS), and a bridge with
-IP masquerading disabled times out for both the broker and the internet, because
-OrbStack proxies `host.docker.internal` through that NAT. On Linux, host
-`DOCKER-USER` rules can allow only the broker's address; on Docker
-Desktop/OrbStack the kernel belongs to a VM the server does not manage. The
-design that works without host-firewall access is a **broker sidecar**: the job
-joins an `--internal` network shared only with a proxy container, which is
-attached to a second network for the provider. The broker already is that
-proxy; it would move out of the server process (keeping the key, which is its
-purpose) and `JARVIS_SANDBOX_PROXY_URL` would point at it. This is the remaining
-egress item on #141.
+### The broker sidecar and egress (#141)
 
-**The key never enters the container.** `src/sandbox/proxy.ts` is a broker the
-server runs: it keeps `JARVIS_SANDBOX_API_KEY`, and each job is handed
+A job runs model-directed code, so "the container has the internet" is the one
+thing the sandbox must not mean. In sidecar mode the job's network is
+**internal**: no route out and no DNS. The only container beside it is the
+**broker sidecar**, which has two network cards — one on the job network, one
+with internet — so it is the job's only door:
+
+```
+        jarvis-sandbox (internal)               default (internet)
+ job ─────────────────────────────▶ proxy ─────────────────────────────▶ provider
+       broker :54322 + forward proxy :54323
+```
+
+The sidecar runs `dist/sandbox/proxyServer.js`: the same broker module as the
+embedded mode, plus a forward proxy. It holds the provider key, reads the same
+`~/.jarvis/sandbox-proxy.key` the server writes, and asks the server
+(`GET /internal/job-state`, presenting the job's own token) whether a job may
+still spend the key — cached for a second, and **failing closed** whenever the
+server cannot answer.
+
+Two modes, from `JARVIS_SANDBOX_PROXY_MODE`:
+
+- `embedded` (default) — the broker lives in the server process, bound to
+  loopback in dev; jobs use the engine's bridge and can reach the internet
+  directly. This is the compatibility path.
+- `sidecar` — the server does not listen for jobs at all. Jobs join
+  `JARVIS_SANDBOX_NETWORK` (an internal network), reach
+  `JARVIS_SANDBOX_PROXY_URL` for the model, and may reach
+  `JARVIS_SANDBOX_EGRESS_PROXY_URL` when one is set. The server deliberately
+  stays off that network: a job must not be able to reach its API.
+
+#### Egress policy
+
+An allowlist cannot cover "any API or library a job might need", so the policy
+is by **destination class**, not by name (`JARVIS_PROXY_EGRESS_POLICY`):
+
+| Policy             | Allows                                                                       | Denies                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `public` (default) | HTTP/HTTPS to **public** addresses — docs, registries, APIs                  | loopback, RFC1918, link-local, cloud metadata, documentation ranges, ports other than 80/443 |
+| `allowlist`        | only `JARVIS_PROXY_EGRESS_HOSTS` (exact, `.suffix`, `*.`), still public-only | everything else                                                                              |
+| `open`             | anything                                                                     | nothing (escape hatch)                                                                       |
+| `none`             | nothing beyond the broker                                                    | all research and install egress                                                              |
+
+The forward proxy resolves names itself (the job has no DNS), checks **every**
+answer, and connects to the address it checked — so a public name that resolves
+to `127.0.0.1` is refused and DNS rebinding does not get around it. Denials are
+logged with the reason; allowed destinations at debug. Jobs get
+`HTTP_PROXY`/`HTTPS_PROXY` (and `NO_PROXY` for the broker) when an egress proxy
+is configured, so `npm`, `pip` and `curl` work; a tool that ignores proxy
+variables simply fails, which is the point.
+
+#### Running it in dev
+
+```sh
+npm run sandbox:proxy
+```
+
+The script builds the server if `dist` is missing, creates `jarvis-sandbox` as
+an internal network (refusing a network of that name that has a route out),
+starts a stock `node:24` container with this checkout's build and hoisted
+`node_modules` mounted **read-only**, and attaches it to both networks. It is
+the same code the server runs, not an image build.
+
+`packages/server/.env` then needs:
+
+```sh
+JARVIS_SANDBOX_PROXY_MODE=sidecar
+JARVIS_SANDBOX_PROXY_URL=http://jarvis-proxy:54322/v1
+JARVIS_SANDBOX_EGRESS_PROXY_URL=http://jarvis-proxy:54323
+JARVIS_SANDBOX_NETWORK=jarvis-sandbox
+JARVIS_SANDBOX_EXTRA_HOSTS=none
+JARVIS_SANDBOX_EGRESS_POLICY=public   # passed through by the script
+```
+
+#### Compose
+
+`docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+--build` starts a `proxy` service from the server image on `jarvis-sandbox`
+(internal) and `default`; the server joins only `default`. The sidecar reads the
+HMAC secret from the `jarvis-data` volume read-only and reaches the server's
+status endpoint at `http://jarvis:54321`.
+
+#### Failure modes
+
+- **Sidecar down** — model calls fail; the job ends `failed` with a clear broker
+  error instead of hanging.
+- **Server down** — the job-state check fails closed, the job fails, and boot
+  recovery settles the row.
+- **Sidecar restarted** — tokens are HMAC-derived from the stable secret, so
+  running jobs continue once it is back.
+- **Job compromised** — it can reach the sidecar and nothing else on the
+  internal network. The forward proxy's allowlist is the only egress.
+
+The embedded path remains the default and is what `npm run probe:coding-job`
+exercises; the sidecar is verified live with `npm run sandbox:proxy` and the
+EGRESS checks below. Egress destination logging is the audit trail: debug for
+allowed, warn for denied with the reason.
+
+**The key never enters the job container.** `src/sandbox/proxy.ts` is the
+broker: in embedded mode the server runs it, in sidecar mode the sidecar does.
+It holds `JARVIS_SANDBOX_API_KEY`, and each job is handed
 `jv1.<jobId>.<HMAC(secret, jobId)>` as its provider key plus the broker's URL.
 Every request re-checks the ledger, so a settled, cancelled or pruned job is
 refused immediately even if its token leaked; only `POST /v1/chat/completions`
@@ -273,10 +360,10 @@ and `GET /v1/models`, only the configured model, and only within a per-job
 request cap are forwarded. The HMAC secret persists in
 `~/.jarvis/sandbox-proxy.key` (private, `0600`) unless
 `JARVIS_SANDBOX_PROXY_SECRET` supplies one, so a job that `resume` adopts after
-a restart keeps working. In dev the broker binds loopback — a container's
-request arrives there through `host.docker.internal`, and the LAN cannot reach
-it; the compose overlay instead gives the broker an unpublished port on the
-`jarvis-sandbox` network, which the job containers join.
+a restart keeps working. In embedded mode the broker binds loopback — a
+container's request arrives there through `host.docker.internal`, and the LAN
+cannot reach it. In sidecar mode it listens only on the internal network, where
+the only other container is the job itself.
 
 Ask for one in chat: the `startCodingJob` tool is registered whenever the
 sandbox is on, accepts only an allowlisted repository, and is **owner-only** —
@@ -314,7 +401,9 @@ non-zero unless the job settled `ok`.
 | `JARVIS_SANDBOX_PROXY_URL`                | `http://host.docker.internal:54322/v1`    | the broker URL a job is handed (compose: `http://jarvis:54322/v1`)                           |
 | `JARVIS_SANDBOX_PROXY_SECRET`             | _(private file)_                          | the HMAC secret; `~/.jarvis/sandbox-proxy.key` when unset                                    |
 | `JARVIS_SANDBOX_PROXY_MAX_REQUESTS`       | `500`                                     | requests one job may make through the broker before `429`                                    |
-| `JARVIS_SANDBOX_NETWORK`                  | _(engine default bridge)_                 | the Docker network job containers join (compose: `jarvis-sandbox`)                           |
+| `JARVIS_SANDBOX_PROXY_MODE`               | `embedded`                                | `embedded` runs the broker in the server; `sidecar` runs it on the job's internal network    |
+| `JARVIS_SANDBOX_EGRESS_PROXY_URL`         | _(unset)_                                 | forward proxy a sidecar job may research through (`http://proxy:54323`); empty = broker only |
+| `JARVIS_SANDBOX_NETWORK`                  | _(engine default bridge)_                 | the Docker network job containers join (sidecar: the internal `jarvis-sandbox`)              |
 | `JARVIS_SANDBOX_LOG_ROOT`                 | `~/.jarvis/logs/coding`                   | where each job's full output is written (`0600` files)                                       |
 | `JARVIS_SANDBOX_LOG_MAX_MB`               | `10`                                      | per-job log cap; one marker line is written past it                                          |
 | `JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS` | `14`                                      | settled workspaces older than this are swept at boot                                         |
@@ -327,6 +416,21 @@ non-zero unless the job settled `ok`.
 | `JARVIS_GITHUB_API_BASE_URL`              | `https://api.github.com`                  | REST host, for a GitHub Enterprise install                                                   |
 | `JARVIS_GITHUB_REPOS`                     | `JARVIS_SANDBOX_REPOS`                    | comma-separated `owner/name` allowlist for the tracker tools; empty leaves them unregistered |
 | `JARVIS_GITHUB_REVIEWER`                  | repository owner                          | login asked to review a published PR (create or follow-up); best-effort                      |
+
+#### Sidecar environment (`proxy` service)
+
+| Variable                         | Default                             | Meaning                                                         |
+| -------------------------------- | ----------------------------------- | --------------------------------------------------------------- |
+| `JARVIS_PROXY_PORT`              | `54322`                             | the broker's port on the internal network                       |
+| `JARVIS_PROXY_EGRESS_PORT`       | `54323`                             | the forward proxy's port                                        |
+| `JARVIS_PROXY_EGRESS_POLICY`     | `public`                            | `public`, `allowlist`, `open`, or `none`                        |
+| `JARVIS_PROXY_EGRESS_HOSTS`      | _(empty)_                           | comma-separated hosts when the policy is `allowlist`            |
+| `JARVIS_PROXY_UPSTREAM_BASE_URL` | the sandbox's model endpoint        | the real OpenAI-compatible provider                             |
+| `JARVIS_PROXY_MODEL`             | `big-pickle`                        | the one model the broker forwards                               |
+| `JARVIS_PROXY_API_KEY`           | _(empty)_                           | the provider key; it lives here, never in a job                 |
+| `JARVIS_PROXY_SECRET` / `_PATH`  | `~/.jarvis/sandbox-proxy.key`       | the HMAC secret shared with the server                          |
+| `JARVIS_PROXY_STATUS_URL`        | `http://host.docker.internal:54321` | where the job-state check goes (compose: `http://jarvis:54321`) |
+| `JARVIS_PROXY_MAX_REQUESTS`      | `500`                               | per-job request cap                                             |
 
 #### Container environment reference
 

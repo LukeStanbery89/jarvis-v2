@@ -57,6 +57,8 @@ const CONFIG: SandboxConfig = {
     proxyUrl: "http://host.docker.internal:54322/v1",
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
+    proxyMode: "embedded",
+    egressProxyUrl: "",
     network: "",
     logRoot: "/logs/coding",
     logMaxMb: 10,
@@ -315,6 +317,8 @@ describe("starting a coding job", () => {
             JARVIS_JOB_LLM_BASE_URL: "http://host.docker.internal:1234/v1",
             JARVIS_JOB_BRANCH: started.job.branch,
         });
+        // Embedded mode: the job reaches the broker and nothing else.
+        expect(runner.started[0]?.env).not.toHaveProperty("HTTP_PROXY");
 
         runner.emit(started.job.containerId ?? "", "working…");
         runner.exit(started.job.containerId ?? "", 0);
@@ -622,6 +626,39 @@ describe("starting a coding job", () => {
             await failing.service.start({ ...request, userId: failing.userId }),
         ).toMatchObject({ ok: false, code: "pull-request-unavailable" });
         expect(failing.workspace.prepared).toHaveLength(0);
+    });
+
+    it("gives a sidecar job the egress proxy and keeps the broker direct", async () => {
+        const { userId, runner, service } = makeService({
+            config: {
+                proxyMode: "sidecar",
+                proxyUrl: "http://proxy:54322/v1",
+                egressProxyUrl: "http://proxy:54323",
+            },
+            // Production always passes the broker (url + secret) when the
+            // sandbox is on: the same wiring derives the token in both modes.
+            proxy: { url: "http://proxy:54322/v1", secret: "s".repeat(32) },
+        });
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Install the dependencies and run the tests",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(runner.started[0]?.env).toMatchObject({
+            JARVIS_JOB_LLM_BASE_URL: "http://proxy:54322/v1",
+            HTTP_PROXY: "http://proxy:54323",
+            HTTPS_PROXY: "http://proxy:54323",
+            // The broker is reached directly, not through the forward proxy.
+            NO_PROXY: "proxy",
+        });
+
+        runner.emit(started.job.containerId ?? "", "ok");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
     });
 
     it("records a failed run, removes its workspace and says why", async () => {

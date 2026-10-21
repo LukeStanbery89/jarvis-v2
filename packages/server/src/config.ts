@@ -508,6 +508,24 @@ export interface SandboxConfig {
      */
     readonly proxyMaxRequestsPerJob: number;
     /**
+     * Where the credential broker runs (`JARVIS_SANDBOX_PROXY_MODE`).
+     *
+     * `embedded` (the default) keeps it in this process, bound to a private
+     * interface. `sidecar` means a separate container on the job's internal
+     * network is the only thing a job can reach — the server then serves the
+     * sidecar's `/internal/job-state` check and must not join that network.
+     */
+    readonly proxyMode: "embedded" | "sidecar";
+    /**
+     * The forward proxy a job may research through
+     * (`JARVIS_SANDBOX_EGRESS_PROXY_URL`), e.g. `http://proxy:54323`.
+     *
+     * Empty means the job can reach only the broker: no package installs, no
+     * docs lookups. Set only in `sidecar` mode, where the sidecar's policy
+     * decides what the proxy will actually allow.
+     */
+    readonly egressProxyUrl: string;
+    /**
      * The Docker network job containers join (`JARVIS_SANDBOX_NETWORK`).
      *
      * Empty uses the engine's default bridge. Compose sets the private network
@@ -572,6 +590,8 @@ export const DEFAULT_SANDBOX_CONFIG = {
     proxyUrl: "http://host.docker.internal:54322/v1",
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
+    proxyMode: "embedded",
+    egressProxyUrl: "",
     network: "",
     // Operability (#141 phase 7): the full log lives beside the workspaces,
     // and nothing is kept forever. A successful workspace is the only copy of
@@ -1536,6 +1556,14 @@ export function getAppConfig(): AppConfig {
                               process.env.JARVIS_SANDBOX_PROXY_MAX_REQUESTS,
                               DEFAULT_SANDBOX_CONFIG.proxyMaxRequestsPerJob,
                           ),
+                          proxyMode:
+                              process.env.JARVIS_SANDBOX_PROXY_MODE?.trim().toLowerCase() ===
+                              "sidecar"
+                                  ? "sidecar"
+                                  : "embedded",
+                          egressProxyUrl:
+                              process.env.JARVIS_SANDBOX_EGRESS_PROXY_URL?.trim() ??
+                              "",
                           network: process.env.JARVIS_SANDBOX_NETWORK ?? "",
                           logRoot:
                               process.env.JARVIS_SANDBOX_LOG_ROOT ??

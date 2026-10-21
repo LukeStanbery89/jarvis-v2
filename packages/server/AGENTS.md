@@ -148,11 +148,25 @@ redirect app (port `PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`) upgrades requests. `
 - `src/config.ts` — `AppConfig` / `getAppConfig` (environment parsing, `JARVIS_*` / `LLM_*`); `RateLimitConfig` + `DEFAULT_RATE_LIMIT_CONFIG` live here (not `http/`) — `getAppConfig`'s `numberOr` fallbacks reuse the constant's fields, so the defaults have one home (#107 P4); `apiContractVerify` (`JARVIS_API_CONTRACT=verify`) toggles REST response verification; `corsOrigins` (`JARVIS_CORS_ORIGINS`, normalized via `normalizeOrigin`) and `trustProxyCidrs` (`JARVIS_TRUST_PROXY_CIDRS`) hold the cross-origin posture; `defaultWebDir`.
 - `src/logger.ts` — shared `@lukestanbery/jarvis-logger` instance (tag `server`).
 - `src/listener.ts` — `createJarvisServer`: HTTP(S) server construction, in-node TLS / cert reads, half-set-TLS guard, bind + `listen`, and the cleartext redirect listener (`PORT + 1`, `JARVIS_HTTP_REDIRECT_PORT`).
-- `src/app.ts` — `createApp(store, appConfig)`: Express app + JSON error handler, `/health`, mounts `/api`, the
+- `src/app.ts` — `createApp(store, appConfig, …)`: Express app + JSON error handler, `/health`, mounts `/api`, the
+  `GET /internal/job-state` check in sidecar mode (the sidecar has no database and presents the job's token), the
   portal static serving + SPA fallback capped with a strict CSP (only when `portalDir` holds `index.html`), and
   (when `webDir` holds `index.html`) the app mount at `/` with a widened CSP + an SPA fallback that skips `/admin`;
   `createHttpsRedirectApp`. Sets `app.set("trust proxy", …)` from `trustProxyCidrs` and mounts
   `createCorsMiddleware` **before** `express.json()` and the contract validator — both orderings are load-bearing.
+- `src/sandbox/` — the coding sandbox (#141). `proxy.ts` is the credential
+  broker (derived per-job tokens, model/route allowlist, per-job cap);
+  `proxyServer.ts` is the **sidecar entrypoint**, which runs the broker plus
+  `egress.ts` (a public-only forward proxy: destination-class policy, CONNECT
+  and plain HTTP, DNS resolved and pinned by the proxy) and asks the server
+  `GET /internal/job-state` whether a job is still alive (cached one second,
+  failing closed). `service.ts` supervises a job (workspace clone, container,
+  log, settle, publish), `workspace.ts` owns the host-side git, `docker.ts` the
+  runner, `disk.ts` the workspace quota, `publish.ts` the PR/reply step,
+  `logs.ts`/`logHub.ts`/`http.ts` the run record and its stream, and
+  `recovery.ts` the boot matrix. In `sidecar` mode the job network is internal
+  and the server is deliberately not on it; the sidecar is the only container
+  beside the job.
 - `src/http/middleware.ts` — `requireAuth` (Bearer device token, then session-cookie fallback → `req.jarv`),
   `requireOwner`, and `requireCsrf` (timing-safe `x-csrf-token` check for cookie-authenticated state-changing calls);
   `AuthedRequest` derives from the auth `AuthContext` union (`guest | authed | session`) so `authed(req).jarv` is
