@@ -206,8 +206,9 @@ read & write**; reading the conversation (as opposed to inline review notes)
 also needs **Issues: read**, and without it the job still runs with the inline
 notes and its prompt says the conversation could not be read.
 
-The same App backs four **tracker tools** — `getGitHubIssue`,
-`listGitHubIssues`, `createGitHubIssue`, `commentOnGitHub` — registered whenever
+The same App backs five **tracker tools** — `getGitHubIssue`,
+`getGitHubPullRequest`, `listGitHubIssues`, `createGitHubIssue`,
+`commentOnGitHub` — registered whenever
 the App is configured and `JARVIS_GITHUB_REPOS` (default:
 `JARVIS_SANDBOX_REPOS`) is non-empty. They are owner-only like the job tool,
 every call names an allowlisted repository (or falls back to the single one),
@@ -216,10 +217,11 @@ App must have **Issues: read & write** to read or write them. Creating a
 repository is deliberately not exposed. `startCodingJob` also takes `issue`: it
 reads the issue on the host and prepends its title, state, labels, URL and
 description to the task, so "implement issue #N" is one call instead of a body
-the relay model would have to paste. `getGitHubIssue` on a pull request also
-renders its review comments and conversation: the issue endpoint's count covers
-the conversation only, so an inline review note would otherwise read as no
-comment at all.
+the relay model would have to paste. `getGitHubIssue` reads issues and
+`getGitHubPullRequest` reads pull requests, including their review comments and
+conversation: the issue endpoint's count covers the conversation only, so an
+inline review note would otherwise read as no comment at all. Each read points
+at the other tool when the number is the wrong kind.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with

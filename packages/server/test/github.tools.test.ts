@@ -130,6 +130,32 @@ describe("GitHub tracker tools", () => {
         expect(text).toContain("https://github.com/luke/app/issues/140");
     });
 
+    it("points an issue read at the PR tool without fetching comments", async () => {
+        const { invoke, client } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+        });
+
+        const text = await invoke("getGitHubIssue", { number: 165 });
+
+        expect(text).toContain("is a pull request, not an issue");
+        expect(text).toContain("getGitHubPullRequest");
+        expect(client.readPullRequest).not.toHaveBeenCalled();
+    });
+
+    it("points a pull request read at the issue tool for an issue", async () => {
+        const { invoke, client } = makeTools();
+
+        const text = await invoke("getGitHubPullRequest", { number: 140 });
+
+        expect(text).toContain("is an issue, not a pull request");
+        expect(text).toContain("getGitHubIssue");
+        expect(client.readPullRequest).not.toHaveBeenCalled();
+    });
+
     it("says when a number is a pull request, and points at the job tool", async () => {
         const text = renderIssue({ ...ISSUE, pullRequest: true });
 
@@ -160,7 +186,7 @@ describe("GitHub tracker tools", () => {
             })),
         });
 
-        const text = await invoke("getGitHubIssue", { number: 165 });
+        const text = await invoke("getGitHubPullRequest", { number: 165 });
 
         expect(client.readPullRequest).toHaveBeenCalledWith(
             "luke",
@@ -171,6 +197,9 @@ describe("GitHub tracker tools", () => {
         expect(text).toContain("Make the comment say Hello, World!");
         expect(text).toContain("README.md:1");
         expect(text).not.toContain("0 comment(s)");
+        // The tail names the call that actually changes the branch.
+        expect(text).toContain("startCodingJob");
+        expect(text).toContain("pullRequest: 165");
     });
 
     it("still shows the pull request when its comments cannot be read", async () => {
@@ -187,7 +216,7 @@ describe("GitHub tracker tools", () => {
             }),
         });
 
-        const text = await invoke("getGitHubIssue", { number: 165 });
+        const text = await invoke("getGitHubPullRequest", { number: 165 });
 
         expect(text).toContain("Work with the GitHub tracker");
         expect(text).toContain("Review comments could not be read");

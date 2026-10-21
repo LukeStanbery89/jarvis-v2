@@ -284,6 +284,11 @@ export function renderPullRequest(
     if (pull.commentsTruncated) {
         lines.push("(Only the most recent comments are shown.)", "");
     }
+    // A small relay model reads the tail of a tool result most closely. Give
+    // it the one call that actually changes anything, by name.
+    lines.push(
+        `To address these comments, call startCodingJob with \`pullRequest: ${issue.number}\`.`,
+    );
     return lines.join("\n");
 }
 
@@ -312,7 +317,7 @@ export function renderIssues(
 }
 
 /**
- * Builds the four GitHub tools.
+ * Builds the five GitHub tools.
  *
  * @param deps - The client, the allowlist and the owner gate.
  * @returns The tools, in registration order.
@@ -344,12 +349,56 @@ export function createGitHubTools(
                         input.number,
                         signalOf(runtime),
                     );
-                    if (!issue.pullRequest) {
-                        return renderIssue(issue);
+                    // The tools are split by GitHub's own nouns: an issue and
+                    // a pull request are different pages with different data,
+                    // and one tool that answered for both was chosen by the
+                    // model for the wrong one.
+                    if (issue.pullRequest) {
+                        return `#${issue.number} is a pull request, not an issue.\n${issue.url}\nRead it with getGitHubPullRequest.`;
                     }
-                    // A review lives on the pulls endpoints, not in the issue
-                    // object: without this read, "address my comment" gets
-                    // answered with the issue's (conversation-only) count.
+                    return renderIssue(issue);
+                } catch (err) {
+                    return failure(err);
+                }
+            },
+            {
+                name: "getGitHubIssue",
+                description:
+                    "Read one GitHub issue by number — title, state, labels, description and URL. " +
+                    "Use it when the user names an issue, for example to implement or summarise it. " +
+                    "For a pull request, use getGitHubPullRequest.",
+                schema: z.object({
+                    repo: repoField,
+                    number: numberField,
+                }),
+            },
+        ),
+        tool(
+            async (input, runtime: ToolRuntime) => {
+                const gate = requireSignedInUser(runtime, {
+                    subject: "GitHub",
+                    logName: "getGitHubPullRequest",
+                });
+                if (!gate.ok) {
+                    return gate.text;
+                }
+                if (!deps.isOwner(gate.userId)) {
+                    return OWNER_ONLY;
+                }
+                const resolved = resolveRepo(input.repo, deps.repos);
+                if (!resolved.ok) {
+                    return resolved.text;
+                }
+                try {
+                    const issue = await deps.client.getIssue(
+                        resolved.repo.owner,
+                        resolved.repo.name,
+                        input.number,
+                        signalOf(runtime),
+                    );
+                    if (!issue.pullRequest) {
+                        return `#${issue.number} is an issue, not a pull request.\n${issue.url}\nRead it with getGitHubIssue.`;
+                    }
                     try {
                         const pull = await deps.client.readPullRequest(
                             resolved.repo.owner,
@@ -359,6 +408,9 @@ export function createGitHubTools(
                         );
                         return renderPullRequest(issue, pull);
                     } catch (err) {
+                        // A thread GitHub will not hand over still leaves the
+                        // PR itself worth showing; say what is missing rather
+                        // than answering "no comments".
                         const message =
                             err instanceof Error ? err.message : String(err);
                         logger.warn(
@@ -371,11 +423,11 @@ export function createGitHubTools(
                 }
             },
             {
-                name: "getGitHubIssue",
+                name: "getGitHubPullRequest",
                 description:
-                    "Read one GitHub issue or pull request by number — title, state, labels, description and URL, plus a pull request's review comments and conversation. " +
-                    "Use it when the user names an issue, for example to implement or summarise it. " +
-                    "To act on a pull request's review, use startCodingJob with `pullRequest` instead.",
+                    "Read one GitHub pull request by number — title, branch, base, state, labels, description, URL, and its review comments and conversation. " +
+                    "This only reads; it changes nothing. " +
+                    "Use it when the user names a PR or refers to its review, then call startCodingJob with `pullRequest` to address the comments.",
                 schema: z.object({
                     repo: repoField,
                     number: numberField,

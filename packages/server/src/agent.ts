@@ -320,9 +320,9 @@ const SCHEDULE_RULE =
  */
 const GITHUB_RULE =
     "You can read and update the project's GitHub tracker. Use " +
-    "getGitHubIssue when the user names an issue or pull request number or " +
-    "link and you need what it says — it also shows a pull request's review " +
-    "comments; read a GitHub link with it, never webSearch. Use " +
+    "getGitHubIssue for an issue and getGitHubPullRequest for a pull request " +
+    "(it shows the review comments); read a GitHub link with the matching " +
+    "tool, never webSearch. Use " +
     "listGitHubIssues when they ask what is open or what to work on; " +
     "createGitHubIssue only when they ask you to file or report an issue; " +
     "and commentOnGitHub only when they ask you to post a comment there. To " +
