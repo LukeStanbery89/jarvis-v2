@@ -91,6 +91,24 @@ describe("the GitHub publisher", () => {
         expect(body).toContain("new commits:");
     });
 
+    it("pushes a follow-up to its existing PR instead of opening another", async () => {
+        const { publisher, pushes, createPullRequest, client } =
+            makePublisher();
+
+        const published = await publisher.publish({
+            ...INPUT,
+            existing: { url: "https://github.com/luke/app/pull/7" },
+        });
+
+        expect(published).toEqual({
+            prUrl: "https://github.com/luke/app/pull/7",
+        });
+        expect(pushes).toHaveLength(1);
+        // One PR per branch: a second would split the review.
+        expect(createPullRequest).not.toHaveBeenCalled();
+        expect(client.defaultBranch).not.toHaveBeenCalled();
+    });
+
     it("leaves a non-GitHub remote unpublished", async () => {
         const { publisher, pushes, createPullRequest } = makePublisher();
 

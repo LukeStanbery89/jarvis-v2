@@ -450,6 +450,118 @@ describe("workspace lifecycle", () => {
         expect(sha).toMatch(/^[0-9a-f]{40}$/);
     });
 
+    it("checks out an existing branch for a follow-up and records its base", async () => {
+        const calls: Array<{ args: readonly string[] }> = [];
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: ["luke/app"],
+            git: async (args) => {
+                calls.push({ args });
+                return {
+                    stdout: args.includes("rev-parse")
+                        ? `${"a".repeat(40)}\n`
+                        : "",
+                    stderr: "",
+                };
+            },
+        });
+        const repo = manager.allows("luke/app");
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+
+        const prepared = await manager.prepare({
+            jobId: "job-follow",
+            repo,
+            branch: "jarvis/existing-pr",
+            existing: true,
+        });
+
+        // The PR's tip, not a new branch off the default one.
+        expect(calls.find((call) => call.args.includes("fetch"))?.args).toEqual(
+            [
+                "-C",
+                prepared.path,
+                "fetch",
+                "--no-tags",
+                "origin",
+                "jarvis/existing-pr",
+            ],
+        );
+        expect(
+            calls.find((call) => call.args.includes("checkout"))?.args,
+        ).toEqual([
+            "-C",
+            prepared.path,
+            "checkout",
+            "-B",
+            "jarvis/existing-pr",
+            "FETCH_HEAD",
+        ]);
+        // Beside the clone, so it never becomes part of the job's own diff.
+        expect(
+            readFileSync(
+                path.join(path.dirname(prepared.path), "base"),
+                "utf8",
+            ),
+        ).toBe(`${"a".repeat(40)}\n`);
+    });
+
+    it("reports only a follow-up's own work, not the PR's earlier commits", async () => {
+        const parent = tempDir("jarvis-follow-");
+        const bare = path.join(parent, "origin.git");
+        git(["init", "--bare", "-b", "main", bare], parent);
+        const seed = path.join(parent, "seed");
+        git(["clone", bare, seed], parent);
+        writeFileSync(path.join(seed, "README.md"), "# Seed\n");
+        git(["add", "."], seed);
+        git(["commit", "-q", "-m", "init"], seed);
+        git(["push", "-q", "origin", "main"], seed);
+        // The branch an open pull request already has.
+        git(["checkout", "-b", "jarvis/existing-pr"], seed);
+        writeFileSync(path.join(seed, "README.md"), "# PR work\n");
+        git(["add", "."], seed);
+        git(["commit", "-q", "-m", "pr work"], seed);
+        git(["push", "-q", "origin", "jarvis/existing-pr"], seed);
+
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [`file://${bare}`],
+        });
+        const repo = manager.allows(`file://${bare}`);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-follow-real",
+            repo,
+            branch: "jarvis/existing-pr",
+            existing: true,
+        });
+        expect(
+            readFileSync(path.join(prepared.path, "README.md"), "utf8"),
+        ).toBe("# PR work\n");
+
+        // The branch already carried a commit; this run has done nothing.
+        const clean = await manager.collect({
+            workspacePath: prepared.path,
+        });
+        expect(clean.changed).toBe(false);
+        expect(clean.diffSummary).toBe("");
+
+        writeFileSync(
+            path.join(prepared.path, "README.md"),
+            "# PR work\n\nA review fix.\n",
+        );
+        const changed = await manager.collect({
+            workspacePath: prepared.path,
+        });
+        expect(changed.changed).toBe(true);
+        expect(changed.diffSummary).toContain("README.md");
+        // The PR's earlier commit belongs to the review, not to this run.
+        expect(changed.diffSummary).not.toContain("pr work");
+    });
+
     it("never deletes outside its root", async () => {
         const root = tempDir("jarvis-jobs-");
         const outside = tempDir("jarvis-outside-");

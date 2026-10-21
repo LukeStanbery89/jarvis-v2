@@ -223,3 +223,197 @@ describe("repository and pull request calls", () => {
         await expect(failure).rejects.not.toThrow(/ghs_secret/);
     });
 });
+
+describe("reading a pull request", () => {
+    /** A client whose fetch answers the PR, its two comment feeds, and a token. */
+    function clientFor(pull: Record<string, unknown>): {
+        client: ReturnType<typeof createGitHubClient>;
+        urls: string[];
+    } {
+        const urls: string[] = [];
+        const fetchImpl = vi.fn(async (url: string) => {
+            urls.push(url);
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.includes("/pulls/7/comments")) {
+                return json([
+                    {
+                        user: { login: "reviewer" },
+                        body: "This line is wrong.",
+                        path: "src/app.ts",
+                        line: 42,
+                        created_at: "2026-10-20T10:05:00Z",
+                    },
+                    {
+                        user: { login: "second" },
+                        body: "Also add a test.",
+                        path: "src/app.ts",
+                        original_line: 50,
+                        created_at: "2026-10-20T10:07:00Z",
+                    },
+                ]);
+            }
+            if (url.includes("/issues/7/comments")) {
+                return json([
+                    {
+                        user: { login: "luke" },
+                        body: "Please address these.",
+                        created_at: "2026-10-20T10:06:00Z",
+                    },
+                ]);
+            }
+            if (url.endsWith("/repos/luke/app/pulls/7")) {
+                return json(pull);
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        return {
+            client: createGitHubClient(CONFIG, {
+                fetch: fetchImpl as unknown as typeof fetch,
+                now: () => Date.parse("2026-10-20T12:00:00Z"),
+            }),
+            urls,
+        };
+    }
+
+    it("reads the PR, its branch and both comment feeds oldest first", async () => {
+        const { client } = clientFor({
+            html_url: "https://github.com/luke/app/pull/7",
+            title: "Add a greeting",
+            body: "The body",
+            state: "open",
+            merged: false,
+            head: {
+                ref: "jarvis/add-a-greeting",
+                repo: { full_name: "luke/app" },
+            },
+            base: { ref: "main" },
+        });
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull).toMatchObject({
+            owner: "luke",
+            repo: "app",
+            number: 7,
+            url: "https://github.com/luke/app/pull/7",
+            title: "Add a greeting",
+            body: "The body",
+            head: "jarvis/add-a-greeting",
+            base: "main",
+            state: "open",
+            headRepo: "luke/app",
+            commentsTruncated: false,
+            conversationUnavailable: false,
+        });
+        // Review note at 10:05, conversation at 10:06, review note at 10:07.
+        expect(pull.comments.map((comment) => comment.body)).toEqual([
+            "This line is wrong.",
+            "Please address these.",
+            "Also add a test.",
+        ]);
+        expect(pull.comments[0]).toMatchObject({
+            author: "reviewer",
+            path: "src/app.ts",
+            line: 42,
+        });
+        // A conversation message has no file.
+        expect(pull.comments[1]?.path).toBeUndefined();
+        // `original_line` covers a comment on an outdated diff hunk.
+        expect(pull.comments[2]?.line).toBe(50);
+    });
+
+    it("reads the review notes even when the conversation is denied", async () => {
+        // An App with Pull requests but not Issues can read inline notes and
+        // should still be able to continue the review.
+        const fetchImpl = vi.fn(async (url: string) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.includes("/pulls/7/comments")) {
+                return json([
+                    {
+                        user: { login: "reviewer" },
+                        body: "Use a constant.",
+                        path: "src/app.ts",
+                        line: 3,
+                        created_at: "2026-10-20T10:00:00Z",
+                    },
+                ]);
+            }
+            if (url.includes("/issues/7/comments")) {
+                return json(
+                    { message: "Resource not accessible by integration" },
+                    403,
+                );
+            }
+            if (url.endsWith("/repos/luke/app/pulls/7")) {
+                return json({
+                    html_url: "https://github.com/luke/app/pull/7",
+                    title: "A change",
+                    body: "",
+                    state: "open",
+                    merged: false,
+                    head: { ref: "jarvis/x", repo: { full_name: "luke/app" } },
+                    base: { ref: "main" },
+                });
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull.comments.map((comment) => comment.body)).toEqual([
+            "Use a constant.",
+        ]);
+        expect(pull.conversationUnavailable).toBe(true);
+    });
+
+    it("reports a merged PR and a fork's head repository", async () => {
+        const { client } = clientFor({
+            html_url: "https://github.com/luke/app/pull/7",
+            title: "From a fork",
+            body: "",
+            state: "closed",
+            merged: true,
+            head: { ref: "topic", repo: { full_name: "someone/app" } },
+            base: { ref: "main" },
+        });
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull.state).toBe("merged");
+        expect(pull.headRepo).toBe("someone/app");
+    });
+
+    it("surfaces GitHub's message when the PR cannot be read", async () => {
+        const fetchImpl = vi.fn(async (url: string) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            return json({ message: "Not Found" }, 404);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        await expect(client.readPullRequest("luke", "app", 99)).rejects.toThrow(
+            "GitHub /repos/luke/app/pulls/99 failed: 404 Not Found",
+        );
+    });
+});

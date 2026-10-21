@@ -172,8 +172,9 @@ last 16 KB. Retention runs at boot: settled workspaces older than
 `JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS` (14) and log files older than
 `JARVIS_SANDBOX_LOG_RETENTION_DAYS` (30) are removed, and a directory with no
 row is removed too. Every settle prunes the owner's settled rows to the newest
-`JARVIS_SANDBOX_KEEP_JOB_ROWS` (100). A successful workspace is kept for the
-window because, until #140 pushes the branch, it is the only copy of the work. While a job runs,
+`JARVIS_SANDBOX_KEEP_JOB_ROWS` (100). A successful workspace is kept until its
+branch is pushed (or, without an App, for the retention window): until then it
+is the only copy of the work. While a job runs,
 `GET /api/coding-jobs/{id}/logs` follows its output as newline-delimited JSON
 (owner-scoped: a foreign id is a 404); after it settles the same route serves
 the file, so a page uses one URL for both halves.
@@ -188,6 +189,18 @@ carries a short-lived installation token in the child's environment (never
 and the workspace is removed once the branch is pushed: the remote is then the
 copy. Without an App the branch stays local, the notification says why it was
 not pushed, and the workspace lives until retention.
+
+A **follow-up** continues an open pull request instead of starting a new branch:
+`startCodingJob` takes `pullRequest` (its number or its URL), the job checks out
+that PR's head branch from the remote, and its prompt carries the PR's
+description plus its review comments and conversation (newest last, bounded).
+The run pushes back to the same branch, so the review updates in place and no
+second PR opens; the ending says "Updated pull request". Only a PR in the
+repository itself can be continued — a fork's branch is not on this origin, and
+a closed or merged PR has nothing left to do. The App needs **Pull requests:
+read & write**; reading the conversation (as opposed to inline review notes)
+also needs **Issues: read**, and without it the job still runs with the inline
+notes and its prompt says the conversation could not be read.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with
@@ -217,9 +230,10 @@ it; the compose overlay instead gives the broker an unpublished port on the
 Ask for one in chat: the `startCodingJob` tool is registered whenever the
 sandbox is on, accepts only an allowlisted repository, and is **owner-only** —
 a sandbox with a clone and network access is the most capable thing JARVIS
-runs, so it is not a `user`-role capability yet. The tool returns a job id
+runs, so it is not a `user`-role capability yet. It returns a job id
 immediately; the ending arrives as a notification, so the assistant does not
-hold the reply open for it.
+hold the reply open for it. A follow-up is the same tool with `pullRequest`
+set — it works on that PR's branch and pushes back to it.
 
 `npm run probe:coding-job` is the manual end-to-end check: a throwaway local
 repository, the real image, a real agent and the configured model. It prints
