@@ -1,3 +1,5 @@
+<!-- Top-level overview of the JARVIS v2 monorepo: packages, setup, and operations. -->
+
 # jarvis-v2
 
 AI-powered assistant monorepo.
