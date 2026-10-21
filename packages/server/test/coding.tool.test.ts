@@ -63,9 +63,13 @@ async function invoke(
             task?: string;
             crashPolicy?: "prune" | "resume";
             pullRequest?: string;
+            issue?: number;
+            replyTo?: string;
         };
         /** Leave `repo` out of the call entirely, as a small model may. */
         omitRepo?: boolean;
+        /** Leave `task` out, so a reference alone must supply the intent. */
+        omitTask?: boolean;
     } = {},
 ): Promise<Invocation> {
     const calls: Parameters<CodingJobService["start"]>[0][] = [];
@@ -110,9 +114,13 @@ async function invoke(
     const text = (await tool.invoke(
         {
             ...(options.omitRepo ? {} : { repo: input.repo ?? "luke/app" }),
-            task: input.task ?? "Fix the login bug",
+            ...(options.omitTask
+                ? {}
+                : { task: input.task ?? "Fix the login bug" }),
             ...(input.crashPolicy ? { crashPolicy: input.crashPolicy } : {}),
             ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
+            ...(input.issue !== undefined ? { issue: input.issue } : {}),
+            ...(input.replyTo !== undefined ? { replyTo: input.replyTo } : {}),
         },
         (options.runtime ?? OWNER_RUNTIME) as never,
     )) as string;
@@ -206,6 +214,34 @@ describe("startCodingJob", () => {
             reason: "someone/app",
         });
         expect(fork.text).toContain("comes from a fork");
+
+        const unreadableIssue = await invoke({
+            ok: false,
+            code: "issue-unavailable",
+            reason: "404",
+        });
+        expect(unreadableIssue.text).toContain("could not read that issue");
+
+        const isPr = await invoke({
+            ok: false,
+            code: "issue-is-pull-request",
+            reason: "PR",
+        });
+        expect(isPr.text).toContain("is a pull request, not an issue");
+
+        const both = await invoke({
+            ok: false,
+            code: "issue-and-pull-request",
+            reason: "both",
+        });
+        expect(both.text).toContain("either an issue or a pull request");
+
+        const replyOnly = await invoke({
+            ok: false,
+            code: "reply-without-pull-request",
+            reason: "no PR",
+        });
+        expect(replyOnly.text).toContain("needs the pull request");
     });
 
     it("starts a job and reports its id and branch without claiming the work", async () => {
@@ -257,6 +293,77 @@ describe("startCodingJob", () => {
 
         expect(text).toContain("continuing pull request #165");
         expect(calls[0]?.repo).toBe("luke/app");
+    });
+
+    it("implements an issue by number with no task to relay", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { input: { issue: 140 }, omitTask: true },
+        );
+
+        expect(text).toContain("implementing issue #140");
+        expect(calls[0]).toMatchObject({
+            userId: 7,
+            repo: "luke/app",
+            task: "Implement issue #140.",
+            issue: 140,
+        });
+    });
+
+    it("passes a comment URL to the job so it can reply", async () => {
+        const { calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                input: {
+                    pullRequest:
+                        "https://github.com/luke/app/pull/165#discussion_r4333015888",
+                    replyTo:
+                        "https://github.com/luke/app/pull/165#discussion_r4333015888",
+                },
+            },
+        );
+
+        expect(calls[0]?.replyTo).toEqual({
+            kind: "review",
+            id: 4_333_015_888,
+            url: "https://github.com/luke/app/pull/165#discussion_r4333015888",
+        });
+    });
+
+    it("refuses a reply target it cannot read, or one with no PR", async () => {
+        const bad = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                input: {
+                    pullRequest: "165",
+                    replyTo: "the comment about the thing",
+                },
+            },
+        );
+        expect(bad.text).toContain("could not read that comment link");
+        expect(bad.calls).toHaveLength(0);
+
+        const noPr = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                input: {
+                    replyTo:
+                        "https://github.com/luke/app/pull/165#discussion_r1",
+                },
+            },
+        );
+        expect(noPr.text).toContain("needs the pull request");
+        expect(noPr.calls).toHaveLength(0);
+    });
+
+    it("refuses an issue and a pull request at once", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { input: { issue: 140, pullRequest: "165" } },
+        );
+
+        expect(text).toContain("either an issue or a pull request");
+        expect(calls).toHaveLength(0);
     });
 
     it("refuses a reference it cannot read", async () => {

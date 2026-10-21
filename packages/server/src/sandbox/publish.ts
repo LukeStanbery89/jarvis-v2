@@ -14,7 +14,10 @@
  * A follow-up (`existing`) is the same operation minus the PR: push the branch
  * the open pull request already has, and let GitHub update that review.
  */
+import type { CommentRef } from "../github/comment";
+import { quotedReply } from "../github/comment";
 import type { GitHubClient } from "../github/client";
+import { logger } from "../logger";
 import { parseRepoEntry } from "./workspace";
 
 /** What the supervisor knows when a run has succeeded and changed something. */
@@ -39,6 +42,14 @@ export interface PublishInput {
      * same URL comes back.
      */
     existing?: { url: string };
+    /**
+     * The comment this job answers (#140).
+     *
+     * Posted after the push: an inline review note gets a threaded reply, a
+     * conversation comment gets a quoted one. Best-effort — the branch is the
+     * work, and a failed reply must not fail the job.
+     */
+    reply?: { comment: CommentRef; body: string };
 }
 
 /** The supervisor's view of publishing. */
@@ -59,6 +70,9 @@ const MAX_TITLE_CHARS = 120;
 /** GitHub's body limit is 65536; the diff summary is already bounded. */
 const MAX_BODY_CHARS = 60_000;
 
+/** A reply is a summary, not a second report. */
+const MAX_REPLY_CHARS = 4_000;
+
 /** The pull request title: the task's first line, prefixed. */
 function titleFor(task: string): string {
     const firstLine = task.split("\n")[0]?.trim() ?? "";
@@ -67,6 +81,16 @@ function titleFor(task: string): string {
     return `JARVIS: ${
         subject.length > room ? `${subject.slice(0, room - 1)}…` : subject
     }`;
+}
+
+/** The pull number in a GitHub pull request URL, or `null`. */
+function pullNumber(url: string): number | null {
+    const match = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url);
+    if (match === null) {
+        return null;
+    }
+    const number = Number(match[1]);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
 /** The pull request body: what was asked, what changed, and which job. */
@@ -97,14 +121,104 @@ function bodyFor(input: PublishInput): string {
 export function createGitHubPublisher(options: {
     client: Pick<
         GitHubClient,
-        "installationToken" | "defaultBranch" | "createPullRequest"
+        | "installationToken"
+        | "defaultBranch"
+        | "createPullRequest"
+        | "requestReviewers"
+        | "getIssueComment"
+        | "replyToReviewComment"
+        | "commentOnIssue"
     >;
     push(input: {
         workspacePath: string;
         branch: string;
         auth?: { username: string; token: string };
     }): Promise<void>;
+    /**
+     * The login asked to review a published PR (`JARVIS_GITHUB_REVIEWER`).
+     * Absent means the repository's owner — the human on a personal repo.
+     */
+    reviewer?: string;
 }): JobPublisher {
+    /**
+     * Posts the job's summary as a reply to the comment it answers.
+     *
+     * Inline notes have a thread, so the reply lands under the note itself; a
+     * conversation comment has none, so the original is quoted above the reply
+     * to keep it attached. A failure is logged: the push already happened.
+     *
+     * @param repo - The repository.
+     * @param number - The pull request number.
+     * @param reply - The comment and the job's message, when there is one.
+     */
+    async function postReply(
+        repo: { owner: string; name: string },
+        number: number,
+        reply: { comment: CommentRef; body: string } | undefined,
+    ): Promise<void> {
+        if (reply === undefined) {
+            return;
+        }
+        const body =
+            reply.body.trim().slice(0, MAX_REPLY_CHARS) ||
+            "Addressed in the latest commit.";
+        try {
+            if (reply.comment.kind === "review") {
+                await options.client.replyToReviewComment(
+                    repo.owner,
+                    repo.name,
+                    number,
+                    reply.comment.id,
+                    body,
+                );
+                return;
+            }
+            const original = await options.client.getIssueComment(
+                repo.owner,
+                repo.name,
+                reply.comment.id,
+            );
+            await options.client.commentOnIssue(
+                repo.owner,
+                repo.name,
+                number,
+                quotedReply(original.body, body),
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn(
+                `could not reply to ${reply.comment.kind} comment ${reply.comment.id} on ${repo.owner}/${repo.name}#${number}: ${message}`,
+            );
+        }
+    }
+
+    /**
+     * Asks the human to review, once the branch is on the remote.
+     *
+     * Best-effort by design: the push and the PR are the work, and a reviewer
+     * request GitHub refuses (an org owner, a missing collaborator) is a
+     * courtesy that failed, not a job that failed.
+     */
+    async function askForReview(
+        repo: { owner: string; name: string },
+        number: number,
+    ): Promise<void> {
+        const reviewer = options.reviewer ?? repo.owner;
+        try {
+            await options.client.requestReviewers(
+                repo.owner,
+                repo.name,
+                number,
+                [reviewer],
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn(
+                `could not request ${reviewer} as a reviewer for ${repo.owner}/${repo.name}#${number}: ${message}`,
+            );
+        }
+    }
+
     return {
         async publish(input): Promise<{ prUrl: string } | null> {
             const repo = parseRepoEntry(input.repo);
@@ -124,6 +238,12 @@ export function createGitHubPublisher(options: {
             if (input.existing !== undefined) {
                 // The PR already describes the work; this push is a new
                 // commit on its branch, and GitHub updates the review itself.
+                // Re-request the review so the human is told new work landed.
+                const number = pullNumber(input.existing.url);
+                if (number !== null) {
+                    await askForReview(repo, number);
+                    await postReply(repo, number, input.reply);
+                }
                 return { prUrl: input.existing.url };
             }
             const base = await options.client.defaultBranch(
@@ -138,6 +258,8 @@ export function createGitHubPublisher(options: {
                 title: titleFor(input.task),
                 body: bodyFor(input),
             });
+            await askForReview(repo, created.number);
+            await postReply(repo, created.number, input.reply);
             return { prUrl: created.url };
         },
     };

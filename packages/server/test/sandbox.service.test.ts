@@ -31,7 +31,7 @@ import {
     lastAgentMessage,
 } from "../src/sandbox/service";
 import { deriveJobToken } from "../src/sandbox/proxy";
-import type { PullRequestSnapshot } from "../src/github/client";
+import type { IssueSnapshot, PullRequestSnapshot } from "../src/github/client";
 import type { JobPublisher } from "../src/sandbox/publish";
 import type { RepoSpec, WorkspaceManager } from "../src/sandbox/workspace";
 
@@ -64,6 +64,23 @@ const CONFIG: SandboxConfig = {
     keepJobRows: 100,
 };
 
+/** A minimal open issue. */
+function issueSnapshot(overrides: Partial<IssueSnapshot> = {}): IssueSnapshot {
+    return {
+        number: 140,
+        url: "https://github.com/luke/app/issues/140",
+        title: "Work with the tracker",
+        body: "Read and comment on issues.",
+        state: "open",
+        labels: ["enhancement"],
+        author: "luke",
+        pullRequest: false,
+        commentCount: 2,
+        createdAt: "2026-10-19T10:00:00.000Z",
+        ...overrides,
+    };
+}
+
 /** A minimal open pull request, for the prompt's own tests. */
 function pullRequest(
     overrides: Partial<PullRequestSnapshot> = {},
@@ -81,7 +98,10 @@ function pullRequest(
         headRepo: "luke/app",
         comments: [],
         commentsTruncated: false,
+        resolvedHidden: 0,
+        resolutionUnavailable: false,
         conversationUnavailable: false,
+        readAt: "2026-10-21T00:00:00.000Z",
         ...overrides,
     };
 }
@@ -215,6 +235,11 @@ function makeService(
             repo: string;
             number: number;
         }) => Promise<PullRequestSnapshot>;
+        issues?: (input: {
+            owner: string;
+            repo: string;
+            number: number;
+        }) => Promise<IssueSnapshot>;
         workspace?: FakeWorkspace;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
@@ -236,6 +261,7 @@ function makeService(
         ...(overrides.pullRequests
             ? { pullRequests: overrides.pullRequests }
             : {}),
+        ...(overrides.issues ? { issues: overrides.issues } : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
         newId: () => `job-${++sequence}`,
@@ -323,15 +349,31 @@ describe("starting a coding job", () => {
             headRepo: "luke/app",
             comments: [
                 {
+                    id: 101,
+                    url: "https://github.com/luke/app/pull/7#discussion_r101",
                     author: "reviewer",
                     body: "Please move this.",
                     path: "src/app.ts",
                     line: 12,
+                    createdAt: "2026-10-20T23:50:00Z",
+                    updatedAt: "2026-10-20T23:50:00Z",
+                    resolved: false,
                 },
-                { author: "luke", body: "Also add a test." },
+                {
+                    id: 102,
+                    url: "https://github.com/luke/app/pull/7#issuecomment-102",
+                    author: "luke",
+                    body: "Also add a test.",
+                    createdAt: "2026-10-20T23:51:00Z",
+                    updatedAt: "2026-10-20T23:51:00Z",
+                    resolved: false,
+                },
             ],
             commentsTruncated: false,
+            resolvedHidden: 0,
+            resolutionUnavailable: false,
             conversationUnavailable: false,
+            readAt: "2026-10-21T00:00:00.000Z",
         };
         const pullRequests = vi.fn(async () => pull);
         const publish = vi.fn(async () => ({ prUrl: pull.url }));
@@ -343,6 +385,7 @@ describe("starting a coding job", () => {
             repo: "luke/app",
             task: "Address the review comments",
             pullRequest: 165,
+            replyTo: { kind: "review", id: 433, url: null },
         });
         if (!started.ok) {
             throw new Error(`refused: ${started.reason}`);
@@ -373,8 +416,12 @@ describe("starting a coding job", () => {
         expect(prompt).toContain("Also add a test.");
         expect(prompt).toContain("## What this job should do");
         expect(prompt).toContain("Address the review comments");
+        expect(prompt).toContain("posted as a reply");
 
-        runner.emit(started.job.containerId ?? "", "fixed it");
+        runner.emit(
+            started.job.containerId ?? "",
+            '{"type":"text","part":{"text":"Removed the second comment."}}',
+        );
         runner.exit(started.job.containerId ?? "", 0);
         await started.done;
 
@@ -383,6 +430,10 @@ describe("starting a coding job", () => {
             expect.objectContaining({
                 branch: "jarvis/add-a-greeting-1234",
                 existing: { url: pull.url },
+                reply: {
+                    comment: { kind: "review", id: 433, url: null },
+                    body: "Removed the second comment.",
+                },
             }),
         );
         const row = store.getCodingJobById(started.job.id);
@@ -400,6 +451,94 @@ describe("starting a coding job", () => {
         expect(workspace.removed).toContain("/jobs/job-1/repo");
     });
 
+    it("implements an issue by reading it and composing the prompt", async () => {
+        const issues = vi.fn(async () => issueSnapshot());
+        const { store, userId, workspace, runner, service } = makeService({
+            issues,
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Implement issue #140.",
+            issue: 140,
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(issues).toHaveBeenCalledWith({
+            owner: "luke",
+            repo: "app",
+            number: 140,
+        });
+        // A new branch: an issue is not an existing review.
+        expect(started.job.branch).toMatch(/^jarvis\/implement-issue-140-/);
+        expect(workspace.prepared[0]?.existing).toBeUndefined();
+        expect(started.job.prUrl).toBeNull();
+        expect(started.job.prompt).toBe("Implement issue #140.");
+
+        const prompt = runner.started[0]?.env.JARVIS_JOB_PROMPT ?? "";
+        expect(prompt).toContain("Implement issue #140.");
+        expect(prompt).toContain("## GitHub issue #140: Work with the tracker");
+        expect(prompt).toContain("labels: enhancement");
+        expect(prompt).toContain("Read and comment on issues.");
+        expect(prompt).toContain("https://github.com/luke/app/issues/140");
+
+        runner.emit(started.job.containerId ?? "", "done");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+        expect(store.getCodingJobById(started.job.id)?.state).toBe("ok");
+    });
+
+    it("refuses an issue it cannot read, or one that is a pull request", async () => {
+        const request = {
+            repo: "luke/app",
+            task: "Implement it.",
+            issue: 140,
+        };
+
+        const noGithub = makeService();
+        expect(
+            await noGithub.service.start({
+                ...request,
+                userId: noGithub.userId,
+            }),
+        ).toMatchObject({ ok: false, code: "issue-unavailable" });
+        expect(noGithub.workspace.prepared).toHaveLength(0);
+
+        const failing = makeService({
+            issues: async () => {
+                throw new Error("404 Not Found");
+            },
+        });
+        expect(
+            await failing.service.start({
+                ...request,
+                userId: failing.userId,
+            }),
+        ).toMatchObject({ ok: false, code: "issue-unavailable" });
+        expect(failing.workspace.prepared).toHaveLength(0);
+
+        const pull = makeService({
+            issues: async () => issueSnapshot({ pullRequest: true }),
+        });
+        expect(
+            await pull.service.start({ ...request, userId: pull.userId }),
+        ).toMatchObject({ ok: false, code: "issue-is-pull-request" });
+        expect(pull.workspace.prepared).toHaveLength(0);
+
+        const both = makeService({ issues: async () => issueSnapshot() });
+        expect(
+            await both.service.start({
+                ...request,
+                userId: both.userId,
+                pullRequest: 165,
+            }),
+        ).toMatchObject({ ok: false, code: "issue-and-pull-request" });
+        expect(both.workspace.prepared).toHaveLength(0);
+    });
+
     it("refuses a follow-up it cannot honour, without cloning anything", async () => {
         const open: PullRequestSnapshot = {
             owner: "luke",
@@ -414,7 +553,10 @@ describe("starting a coding job", () => {
             headRepo: "luke/app",
             comments: [],
             commentsTruncated: false,
+            resolvedHidden: 0,
+            resolutionUnavailable: false,
             conversationUnavailable: false,
+            readAt: "2026-10-21T00:00:00.000Z",
         };
         const request = {
             userId: 1,
@@ -452,6 +594,18 @@ describe("starting a coding job", () => {
             await fork.service.start({ ...request, userId: fork.userId }),
         ).toMatchObject({ ok: false, code: "pull-request-fork" });
         expect(fork.workspace.prepared).toHaveLength(0);
+
+        // A reply target without the PR it belongs to is nothing to reply in.
+        const replyOnly = makeService({ pullRequests: async () => open });
+        expect(
+            await replyOnly.service.start({
+                ...request,
+                userId: replyOnly.userId,
+                pullRequest: undefined,
+                replyTo: { kind: "review", id: 433, url: null },
+            }),
+        ).toMatchObject({ ok: false, code: "reply-without-pull-request" });
+        expect(replyOnly.workspace.prepared).toHaveLength(0);
 
         // GitHub could not answer.
         const failing = makeService({
@@ -1067,7 +1221,17 @@ describe("follow-up prompts", () => {
     it("bounds a long thread and says what was left out", () => {
         const prompt = followUpPrompt(
             pullRequest({
-                comments: [{ author: "reviewer", body: "x".repeat(5_000) }],
+                comments: [
+                    {
+                        id: 103,
+                        url: "https://github.com/luke/app/pull/7#discussion_r103",
+                        author: "reviewer",
+                        body: "x".repeat(5_000),
+                        createdAt: "2026-10-20T23:50:00Z",
+                        updatedAt: "2026-10-20T23:50:00Z",
+                        resolved: false,
+                    },
+                ],
                 commentsTruncated: true,
             }),
             "Fix the review",

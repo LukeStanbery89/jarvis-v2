@@ -271,6 +271,12 @@ const notifications =
 // container's environment is a credential that outlives the job.
 let sandboxProxy: SandboxProxy | undefined;
 let codingJobs: ReturnType<typeof createCodingJobService> | undefined;
+// One GitHub client serves publishing, follow-ups and the tracker tools
+// (#140). It is created when the App is configured even without the sandbox:
+// reading an issue or commenting on it needs no container.
+const githubClient = appConfig.github
+    ? createGitHubClient(appConfig.github)
+    : undefined;
 if (appConfig.sandbox) {
     const sandbox = appConfig.sandbox;
     const proxySecret = loadProxySecret(
@@ -307,17 +313,16 @@ if (appConfig.sandbox) {
         repos: sandbox.repos,
     });
     // Publishing is optional and separate from running the job: without a
-    // GitHub App the branch stays local and the workspace is kept (#140). One
-    // client serves both halves — publishing a finished branch and reading a
-    // pull request a follow-up continues — so the installation token is
-    // exchanged once and cached.
-    const github = appConfig.github
-        ? createGitHubClient(appConfig.github)
-        : undefined;
-    const publisher = github
+    // GitHub App the branch stays local and the workspace is kept (#140). The
+    // shared client means the installation token is exchanged once and cached
+    // across publishing, follow-ups and the tracker tools.
+    const publisher = githubClient
         ? createGitHubPublisher({
-              client: github,
+              client: githubClient,
               push: (input) => workspace.push(input),
+              ...(appConfig.github?.reviewer
+                  ? { reviewer: appConfig.github.reviewer }
+                  : {}),
           })
         : undefined;
     codingJobs = createCodingJobService({
@@ -329,10 +334,16 @@ if (appConfig.sandbox) {
         config: sandbox,
         proxy: { url: sandbox.proxyUrl, secret: proxySecret },
         ...(publisher ? { publisher } : {}),
-        ...(github
+        ...(githubClient
             ? {
                   pullRequests: (input) =>
-                      github.readPullRequest(
+                      githubClient.readPullRequest(
+                          input.owner,
+                          input.repo,
+                          input.number,
+                      ),
+                  issues: (input) =>
+                      githubClient.getIssue(
                           input.owner,
                           input.repo,
                           input.number,
@@ -355,6 +366,20 @@ if (appConfig.sandbox && codingJobs) {
         }, apiKey=${
             appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"
         } (held by the broker), github=${appConfig.github ? "on" : "off"}`,
+    );
+}
+
+// GitHub is two surfaces: publishing (the App) and the tracker tools (the App
+// plus a repo allowlist). Saying which is on keeps a silent absence — the
+// model answering "I cannot read issues" — from looking like a bug when it is
+// a missing list.
+if (appConfig.github) {
+    logger.info(
+        `GitHub App configured: publishing=on, tracker=${
+            appConfig.github.repos.length > 0
+                ? `on (${appConfig.github.repos.join(",")})`
+                : "off (JARVIS_GITHUB_REPOS is empty)"
+        }, reviewer=${appConfig.github.reviewer ?? "repository owner"}`,
     );
 }
 
@@ -382,6 +407,16 @@ initAgentGraph({
         : {}),
     // The owner gate is the store's role, read per call rather than captured:
     // a demoted account must lose the capability immediately, not at restart.
+    ...(githubClient && appConfig.github?.repos.length
+        ? {
+              github: {
+                  client: githubClient,
+                  repos: appConfig.github.repos,
+                  isOwner: (userId: number) =>
+                      store.getUserById(userId)?.role === "owner",
+              },
+          }
+        : {}),
     ...(codingJobs
         ? {
               coding: {

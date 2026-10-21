@@ -878,6 +878,23 @@ export interface GitHubConfig {
     readonly installationId: string;
     /** The REST host (`JARVIS_GITHUB_API_BASE_URL`), for a GitHub Enterprise install. */
     readonly apiBaseUrl: string;
+    /**
+     * The repositories the tracker tools may name (`JARVIS_GITHUB_REPOS`).
+     *
+     * Defaults to the coding sandbox's allowlist — the App is installed on
+     * the same repositories, and one list is a fact rather than two copies of
+     * it. Empty means the tools are not registered at all.
+     */
+    readonly repos: readonly string[];
+    /**
+     * The login asked to review a published pull request
+     * (`JARVIS_GITHUB_REVIEWER`).
+     *
+     * `null` means the repository's owner — the human on a personal repo. An
+     * org-owned repository needs this set to a person, because an org cannot
+     * be a reviewer.
+     */
+    readonly reviewer: string | null;
 }
 
 /** Default GitHub REST host. */
@@ -934,6 +951,10 @@ export function getGitHubConfig(): GitHubConfig | null {
         apiBaseUrl:
             process.env.JARVIS_GITHUB_API_BASE_URL?.trim() ||
             DEFAULT_GITHUB_API_BASE_URL,
+        repos: parseCsv(
+            process.env.JARVIS_GITHUB_REPOS ?? process.env.JARVIS_SANDBOX_REPOS,
+        ),
+        reviewer: process.env.JARVIS_GITHUB_REVIEWER?.trim() || null,
     };
 }
 

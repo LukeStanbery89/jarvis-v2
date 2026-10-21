@@ -17,6 +17,9 @@ const VARS = [
     "JARVIS_GITHUB_APP_PRIVATE_KEY_PATH",
     "JARVIS_GITHUB_INSTALLATION_ID",
     "JARVIS_GITHUB_API_BASE_URL",
+    "JARVIS_GITHUB_REPOS",
+    "JARVIS_SANDBOX_REPOS",
+    "JARVIS_GITHUB_REVIEWER",
 ];
 
 afterEach(() => {
@@ -39,7 +42,42 @@ describe("GitHub App config", () => {
             installationId: "67890",
             privateKey: "-----BEGIN KEY-----",
             apiBaseUrl: "https://api.github.com",
+            repos: [],
+            reviewer: null,
         });
+    });
+
+    it("reads the reviewer login, and leaves it to the owner when unset", () => {
+        process.env.JARVIS_GITHUB_APP_ID = "12345";
+        process.env.JARVIS_GITHUB_INSTALLATION_ID = "67890";
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----";
+
+        expect(getGitHubConfig()?.reviewer).toBeNull();
+
+        process.env.JARVIS_GITHUB_REVIEWER = "luke-human";
+        expect(getGitHubConfig()?.reviewer).toBe("luke-human");
+    });
+
+    it("takes its repository allowlist from JARVIS_GITHUB_REPOS", () => {
+        process.env.JARVIS_GITHUB_APP_ID = "12345";
+        process.env.JARVIS_GITHUB_INSTALLATION_ID = "67890";
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----";
+        process.env.JARVIS_GITHUB_REPOS = "luke/app, luke/other";
+
+        expect(getGitHubConfig()?.repos).toEqual(["luke/app", "luke/other"]);
+    });
+
+    it("falls back to the sandbox allowlist when none is given", () => {
+        process.env.JARVIS_GITHUB_APP_ID = "12345";
+        process.env.JARVIS_GITHUB_INSTALLATION_ID = "67890";
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY = "-----BEGIN KEY-----";
+        process.env.JARVIS_SANDBOX_REPOS = "luke/app";
+
+        expect(getGitHubConfig()?.repos).toEqual(["luke/app"]);
+
+        // An explicit list wins over the sandbox's.
+        process.env.JARVIS_GITHUB_REPOS = "luke/other";
+        expect(getGitHubConfig()?.repos).toEqual(["luke/other"]);
     });
 
     it("unescapes an inline key and honours an API host", () => {
