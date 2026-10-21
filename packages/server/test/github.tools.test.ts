@@ -402,6 +402,10 @@ describe("GitHub tracker tools", () => {
         // The tail names the call that actually changes the branch.
         expect(text).toContain("startCodingJob");
         expect(text).toContain("pullRequest: 165");
+        // Each note carries the URL the job tool takes as `replyTo`.
+        expect(text).toContain(
+            "reply-to: https://github.com/luke/app/pull/165#discussion_r4333015888",
+        );
     });
 
     it("still shows the pull request when its comments cannot be read", async () => {

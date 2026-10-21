@@ -199,7 +199,11 @@ A **follow-up** continues an open pull request instead of starting a new branch:
 that PR's head branch from the remote, and its prompt carries the PR's
 description plus its review comments and conversation (newest last, bounded).
 The run pushes back to the same branch, so the review updates in place and no
-second PR opens; the ending says "Updated pull request". Only a PR in the
+second PR opens; the ending says "Updated pull request". When the request names
+the comment it answers (`replyTo`), the job's final message is posted after the
+push as a reply — a threaded reply for an inline review note, a quoted one for
+a conversation comment. The reply is best-effort and in-memory: a job resumed
+after a restart still pushes, but does not reply. Only a PR in the
 repository itself can be continued — a fork's branch is not on this origin, and
 a closed or merged PR has nothing left to do. The App needs **Pull requests:
 read & write**; reading the conversation (as opposed to inline review notes)

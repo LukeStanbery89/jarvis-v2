@@ -168,6 +168,22 @@ export interface GitHubClient {
         number: number,
         reviewers: readonly string[],
     ): Promise<void>;
+    /** Reads one issue comment — the quote for a conversation reply. */
+    getIssueComment(
+        owner: string,
+        repo: string,
+        commentId: number,
+        options?: { signal?: AbortSignal },
+    ): Promise<{ body: string; url: string }>;
+    /** Replies inside an inline review comment's thread. */
+    replyToReviewComment(
+        owner: string,
+        repo: string,
+        pullNumber: number,
+        commentId: number,
+        body: string,
+        options?: { signal?: AbortSignal },
+    ): Promise<CreatedOnGitHub>;
     /** Comments on an issue or pull request (one endpoint serves both). */
     commentOnIssue(
         owner: string,
@@ -788,6 +804,53 @@ export function createGitHubClient(
                     );
                 })
                 .map((entry) => issueFrom(entry, null));
+        },
+
+        async getIssueComment(
+            owner: string,
+            repo: string,
+            commentId: number,
+            options: { signal?: AbortSignal } = {},
+        ): Promise<{ body: string; url: string }> {
+            const token = await installationToken();
+            const raw = await api<{ body?: unknown; html_url?: unknown }>(
+                `/repos/${owner}/${repo}/issues/comments/${commentId}`,
+                {
+                    token: token.token,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return {
+                body: typeof raw.body === "string" ? raw.body : "",
+                url: typeof raw.html_url === "string" ? raw.html_url : "",
+            };
+        },
+
+        async replyToReviewComment(
+            owner: string,
+            repo: string,
+            pullNumber: number,
+            commentId: number,
+            body: string,
+            options: { signal?: AbortSignal } = {},
+        ): Promise<CreatedOnGitHub> {
+            const token = await installationToken();
+            const created = await api<{
+                id?: unknown;
+                html_url?: unknown;
+            }>(
+                `/repos/${owner}/${repo}/pulls/${pullNumber}/comments/${commentId}/replies`,
+                {
+                    method: "POST",
+                    token: token.token,
+                    body: { body },
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return createdFrom(
+                { number: created.id, html_url: created.html_url },
+                "comment",
+            );
         },
 
         async createIssue(

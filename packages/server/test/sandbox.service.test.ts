@@ -385,6 +385,7 @@ describe("starting a coding job", () => {
             repo: "luke/app",
             task: "Address the review comments",
             pullRequest: 165,
+            replyTo: { kind: "review", id: 433, url: null },
         });
         if (!started.ok) {
             throw new Error(`refused: ${started.reason}`);
@@ -415,8 +416,12 @@ describe("starting a coding job", () => {
         expect(prompt).toContain("Also add a test.");
         expect(prompt).toContain("## What this job should do");
         expect(prompt).toContain("Address the review comments");
+        expect(prompt).toContain("posted as a reply");
 
-        runner.emit(started.job.containerId ?? "", "fixed it");
+        runner.emit(
+            started.job.containerId ?? "",
+            '{"type":"text","part":{"text":"Removed the second comment."}}',
+        );
         runner.exit(started.job.containerId ?? "", 0);
         await started.done;
 
@@ -425,6 +430,10 @@ describe("starting a coding job", () => {
             expect.objectContaining({
                 branch: "jarvis/add-a-greeting-1234",
                 existing: { url: pull.url },
+                reply: {
+                    comment: { kind: "review", id: 433, url: null },
+                    body: "Removed the second comment.",
+                },
             }),
         );
         const row = store.getCodingJobById(started.job.id);
@@ -585,6 +594,18 @@ describe("starting a coding job", () => {
             await fork.service.start({ ...request, userId: fork.userId }),
         ).toMatchObject({ ok: false, code: "pull-request-fork" });
         expect(fork.workspace.prepared).toHaveLength(0);
+
+        // A reply target without the PR it belongs to is nothing to reply in.
+        const replyOnly = makeService({ pullRequests: async () => open });
+        expect(
+            await replyOnly.service.start({
+                ...request,
+                userId: replyOnly.userId,
+                pullRequest: undefined,
+                replyTo: { kind: "review", id: 433, url: null },
+            }),
+        ).toMatchObject({ ok: false, code: "reply-without-pull-request" });
+        expect(replyOnly.workspace.prepared).toHaveLength(0);
 
         // GitHub could not answer.
         const failing = makeService({

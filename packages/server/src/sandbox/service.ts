@@ -31,6 +31,7 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
 } from "@lukestanbery/jarvis-protocol";
 import type { SandboxConfig } from "../config";
+import type { CommentRef } from "../github/comment";
 import type { IssueSnapshot, PullRequestSnapshot } from "../github/client";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
@@ -91,7 +92,8 @@ export type CodingJobRefusalCode =
     | "pull-request-fork"
     | "issue-unavailable"
     | "issue-is-pull-request"
-    | "issue-and-pull-request";
+    | "issue-and-pull-request"
+    | "reply-without-pull-request";
 
 /** The result of asking to start one job. */
 export type StartCodingJobResult =
@@ -128,6 +130,15 @@ export interface CodingJobService {
          * instead of a read whose body the relay model would have to paste.
          */
         issue?: number;
+        /**
+         * The comment this follow-up answers (#140).
+         *
+         * Passed through to publishing: after a successful push, the job's
+         * final message is posted as a threaded reply (review note) or a
+         * quoted one (conversation comment). In-memory only — a job resumed
+         * after a restart still pushes, but does not reply.
+         */
+        replyTo?: CommentRef;
     }): Promise<StartCodingJobResult>;
     /**
      * Reconciles rows and containers after a restart, then supervises whatever
@@ -389,6 +400,7 @@ export function createCodingJobService(options: {
     async function supervise(
         job: AppCodingJob,
         handle: SandboxHandle,
+        replyTo?: CommentRef,
     ): Promise<void> {
         // A follow-up starts *at* its pull request, so the row already names
         // it; a new job learns the URL only when it publishes (#140).
@@ -485,6 +497,7 @@ export function createCodingJobService(options: {
             // been committed and collected, so a push can carry it and a pull
             // request can describe it. A GitHub failure does not undo the work
             // — the job still settles `ok`, and its ending says what happened.
+            const agentMessage = lastAgentMessage(tail.text());
             let prUrl: string | null = null;
             let publishError: string | null = null;
             if (ok && collected.changed && publisher !== undefined) {
@@ -498,6 +511,16 @@ export function createCodingJobService(options: {
                         diffSummary: collected.diffSummary,
                         ...(job.prUrl !== null
                             ? { existing: { url: job.prUrl } }
+                            : {}),
+                        ...(replyTo !== undefined
+                            ? {
+                                  reply: {
+                                      comment: replyTo,
+                                      body:
+                                          agentMessage ||
+                                          "Addressed in the latest commit.",
+                                  },
+                              }
                             : {}),
                     });
                     prUrl = published?.prUrl ?? null;
@@ -556,7 +579,7 @@ export function createCodingJobService(options: {
                 changed: collected.changed,
                 error,
                 diffSummary: collected.diffSummary,
-                lastMessage: lastAgentMessage(tail.text()),
+                lastMessage: agentMessage,
                 prUrl,
                 publishError,
                 followUp,
@@ -711,6 +734,16 @@ export function createCodingJobService(options: {
             // the task, and a number that names a pull request belongs to the
             // follow-up path instead.
             let issue: IssueSnapshot | null = null;
+            if (
+                input.replyTo !== undefined &&
+                input.pullRequest === undefined
+            ) {
+                return {
+                    ok: false,
+                    code: "reply-without-pull-request",
+                    reason: "a reply target needs the pull request it belongs to",
+                };
+            }
             if (input.issue !== undefined && input.pullRequest !== undefined) {
                 return {
                     ok: false,
@@ -811,7 +844,7 @@ export function createCodingJobService(options: {
             // the branch but not the conversation that shaped it.
             const prompt =
                 followUp !== null
-                    ? followUpPrompt(followUp, task)
+                    ? followUpPrompt(followUp, task, input.replyTo)
                     : issue !== null
                       ? issuePrompt(issue, task)
                       : task;
@@ -849,7 +882,7 @@ export function createCodingJobService(options: {
                 return {
                     ok: true,
                     job: claimed,
-                    done: supervise(claimed, handle),
+                    done: supervise(claimed, handle, input.replyTo),
                 };
             } catch (err) {
                 // The row must not sit `queued` forever because the container
@@ -1054,6 +1087,7 @@ function quote(body: string): string {
 export function followUpPrompt(
     pull: PullRequestSnapshot,
     task: string,
+    replyTo?: CommentRef,
 ): string {
     const lines: string[] = [
         `This job continues an existing pull request (#${pull.number}): ${pull.title}`,
@@ -1113,6 +1147,12 @@ export function followUpPrompt(
         task.trim() || "Address the review comments above.",
         "",
     );
+    if (replyTo !== undefined) {
+        lines.push(
+            "Your final message is posted as a reply to the comment you are answering; keep it short and say what changed.",
+            "",
+        );
+    }
     const prompt = lines.join("\n");
     return prompt.length > MAX_JOB_CONTEXT_CHARS
         ? `${prompt.slice(0, MAX_JOB_CONTEXT_CHARS - 1)}…`

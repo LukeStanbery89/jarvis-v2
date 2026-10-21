@@ -319,6 +319,7 @@ export function renderPullRequest(
                     ? `${body.slice(0, MAX_COMMENT_CHARS - 1)}…`
                     : body,
             ),
+            ...(comment.url.length > 0 ? [`  reply-to: ${comment.url}`] : []),
             "",
         );
     }
@@ -341,7 +342,7 @@ export function renderPullRequest(
     // it the one call that actually changes anything, by name, and the
     // watermark for asking "anything new?" later without re-reading the thread.
     lines.push(
-        `To address these comments, call startCodingJob with \`pullRequest: ${issue.number}\`.`,
+        `To address these comments, call startCodingJob with \`pullRequest: ${issue.number}\` and \`replyTo\` set to a comment's \`reply-to\` URL.`,
         `Read at: ${pull.readAt}`,
     );
     return lines.join("\n");

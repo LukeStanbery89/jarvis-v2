@@ -26,6 +26,7 @@ function makePublisher(
         url?: string;
         reviewer?: string;
         reviewError?: Error;
+        replyError?: Error;
     } = {},
 ) {
     const pushes: Array<{
@@ -42,6 +43,29 @@ function makePublisher(
             throw options.reviewError;
         }
     });
+    const replyFailure = (): void => {
+        if (options.replyError) {
+            throw options.replyError;
+        }
+    };
+    const getIssueComment = vi.fn(async () => ({
+        body: "Original note.",
+        url: "https://github.com/luke/app/pull/7#issuecomment-987",
+    }));
+    const replyToReviewComment = vi.fn(async () => {
+        replyFailure();
+        return {
+            number: 500,
+            url: "https://github.com/luke/app/pull/7#discussion_r500",
+        };
+    });
+    const commentOnIssue = vi.fn(async () => {
+        replyFailure();
+        return {
+            number: 501,
+            url: "https://github.com/luke/app/pull/7#issuecomment-501",
+        };
+    });
     const client = {
         installationToken: vi.fn(async () => ({
             token: "ghs_secret",
@@ -50,6 +74,9 @@ function makePublisher(
         defaultBranch: vi.fn(async () => "main"),
         createPullRequest,
         requestReviewers,
+        getIssueComment,
+        replyToReviewComment,
+        commentOnIssue,
     };
     const publisher = createGitHubPublisher({
         client,
@@ -63,7 +90,16 @@ function makePublisher(
             ? { reviewer: options.reviewer }
             : {}),
     });
-    return { publisher, pushes, client, createPullRequest, requestReviewers };
+    return {
+        publisher,
+        pushes,
+        client,
+        createPullRequest,
+        requestReviewers,
+        getIssueComment,
+        replyToReviewComment,
+        commentOnIssue,
+    };
 }
 
 const INPUT = {
@@ -164,6 +200,71 @@ describe("the GitHub publisher", () => {
         expect(requestReviewers).toHaveBeenCalledWith("luke", "app", 7, [
             "luke",
         ]);
+    });
+
+    it("replies inside the review thread it was started from", async () => {
+        const { publisher, replyToReviewComment } = makePublisher();
+
+        await publisher.publish({
+            ...INPUT,
+            existing: { url: "https://github.com/luke/app/pull/7" },
+            reply: {
+                comment: {
+                    kind: "review",
+                    id: 433,
+                    url: "https://github.com/luke/app/pull/7#discussion_r433",
+                },
+                body: "Done.",
+            },
+        });
+
+        expect(replyToReviewComment).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            7,
+            433,
+            "Done.",
+        );
+    });
+
+    it("quotes a conversation comment when replying", async () => {
+        const { publisher, getIssueComment, commentOnIssue } = makePublisher();
+
+        await publisher.publish({
+            ...INPUT,
+            existing: { url: "https://github.com/luke/app/pull/7" },
+            reply: {
+                comment: { kind: "issue", id: 987, url: null },
+                body: "Done.",
+            },
+        });
+
+        expect(getIssueComment).toHaveBeenCalledWith("luke", "app", 987);
+        expect(commentOnIssue).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            7,
+            "> Original note.\n\nDone.",
+        );
+    });
+
+    it("still publishes when the reply cannot be posted", async () => {
+        const { publisher } = makePublisher({
+            replyError: new Error("Resource not accessible by integration"),
+        });
+
+        const published = await publisher.publish({
+            ...INPUT,
+            existing: { url: "https://github.com/luke/app/pull/7" },
+            reply: {
+                comment: { kind: "review", id: 433, url: null },
+                body: "Done.",
+            },
+        });
+
+        expect(published).toEqual({
+            prUrl: "https://github.com/luke/app/pull/7",
+        });
     });
 
     it("leaves a non-GitHub remote unpublished", async () => {

@@ -18,6 +18,7 @@
  */
 import { tool, type ToolRuntime } from "@langchain/core/tools";
 import { z } from "zod";
+import { parseCommentRef } from "../../github/comment";
 import { logger } from "../../logger";
 import type { CodingJobService } from "../../sandbox/service";
 import { requireSignedInUser } from "./metering";
@@ -59,6 +60,13 @@ const schema = z.object({
         .describe(
             "Implement this GitHub issue: the job reads it and gives the agent its title, description and URL. Use it for 'implement issue #N' rather than pasting a long body into `task`. Do not also pass `pullRequest`.",
         ),
+    replyTo: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+            "For a pull request, the comment to answer: the `reply-to` URL that getGitHubPullRequest prints for it. The job posts its final message as a reply in that thread (or as a quoted reply for a conversation comment).",
+        ),
     // Coerced so a model that passes `165` as a number still reaches the
     // parser instead of failing validation over a type it "knew".
     pullRequest: z.coerce
@@ -89,7 +97,8 @@ const REFUSAL: Record<
     | "pull-request-fork"
     | "issue-unavailable"
     | "issue-is-pull-request"
-    | "issue-and-pull-request",
+    | "issue-and-pull-request"
+    | "reply-without-pull-request",
     string
 > = {
     "task-missing": "A coding job needs a task; say what the agent should do.",
@@ -114,6 +123,8 @@ const REFUSAL: Record<
         "That number is a pull request, not an issue; ask me to continue the pull request instead.",
     "issue-and-pull-request":
         "Pass either an issue or a pull request, not both.",
+    "reply-without-pull-request":
+        "Replying to a comment needs the pull request it belongs to; pass `pullRequest` too.",
 };
 
 /** A pull request reference: always a number, plus the repo a URL named. */
@@ -195,6 +206,16 @@ export function createCodingTool(deps: CodingToolDeps) {
             if (input.pullRequest !== undefined && ref === null) {
                 return "I could not read that pull request reference; give me its number or its URL.";
             }
+            const replyRef =
+                input.replyTo === undefined
+                    ? null
+                    : parseCommentRef(input.replyTo);
+            if (input.replyTo !== undefined && replyRef === null) {
+                return "I could not read that comment link; pass the `reply-to` URL from getGitHubPullRequest.";
+            }
+            if (replyRef !== null && ref === null) {
+                return REFUSAL["reply-without-pull-request"];
+            }
             if (input.issue !== undefined && ref !== null) {
                 return REFUSAL["issue-and-pull-request"];
             }
@@ -236,6 +257,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                         ? { crashPolicy: input.crashPolicy }
                         : {}),
                     ...(ref !== null ? { pullRequest: ref.number } : {}),
+                    ...(replyRef !== null ? { replyTo: replyRef } : {}),
                     ...(input.issue !== undefined
                         ? { issue: input.issue }
                         : {}),

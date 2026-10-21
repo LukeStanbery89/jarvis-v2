@@ -828,3 +828,74 @@ describe("resolved review threads", () => {
         });
     });
 });
+
+describe("replies", () => {
+    it("replies inside a review comment's thread", async () => {
+        const calls: Array<{ url: string; init: RequestInit }> = [];
+        const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+            calls.push({ url, init });
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            return json({
+                id: 500,
+                html_url: "https://github.com/luke/app/pull/7#discussion_r500",
+            });
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        const created = await client.replyToReviewComment(
+            "luke",
+            "app",
+            7,
+            433,
+            "Done.",
+        );
+
+        const post = calls.find((call) => call.url.includes("/replies"));
+        expect(post?.url).toBe(
+            "https://api.github.test/repos/luke/app/pulls/7/comments/433/replies",
+        );
+        expect(JSON.parse(String(post?.init.body))).toEqual({ body: "Done." });
+        expect(created).toEqual({
+            number: 500,
+            url: "https://github.com/luke/app/pull/7#discussion_r500",
+        });
+    });
+
+    it("reads the original comment to quote it", async () => {
+        const fetchImpl = vi.fn(async (url: string) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.endsWith("/issues/comments/987")) {
+                return json({
+                    body: "Original note.",
+                    html_url:
+                        "https://github.com/luke/app/pull/7#issuecomment-987",
+                });
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        const comment = await client.getIssueComment("luke", "app", 987);
+
+        expect(comment).toEqual({
+            body: "Original note.",
+            url: "https://github.com/luke/app/pull/7#issuecomment-987",
+        });
+    });
+});
