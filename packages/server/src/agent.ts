@@ -330,7 +330,10 @@ const CODING_RULE =
     "id and say you will tell them when it finishes. If they named a " +
     "repository, pass its exact owner/name; if you do not know that form — " +
     "a nickname like 'the JARVIS repo' is not one — omit `repo` rather than " +
-    "guessing. Never pass an invented or shortened slug. When the tool " +
+    "guessing. Never pass an invented or shortened slug. To continue an open " +
+    "pull request — address its review comments or revise it — pass " +
+    "`pullRequest` with its number or URL; that job works on the PR's branch " +
+    "and updates the same review. When the tool " +
     "refuses a repository and exactly one is allowed, call it again with " +
     "`repo` omitted instead of asking the user to repeat themselves; when " +
     "several are allowed, ask which. Never start a job for something that " +

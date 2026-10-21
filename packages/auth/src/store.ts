@@ -1152,6 +1152,14 @@ export interface CreateCodingJobInput {
     workspacePath: string;
     /** The model the run will use; recorded for later audit. */
     model?: string;
+    /**
+     * The pull request a follow-up job continues (#140).
+     *
+     * A job that opens its own leaves this unset and learns the URL when it
+     * publishes; a follow-up starts *at* one, so the row carries it from the
+     * first write and a resumed job still knows which PR it is updating.
+     */
+    prUrl?: string | null;
     /** Omitted means `prune` — the column's default, made explicit here. */
     crashPolicy?: CodingJobCrashPolicy;
 }
@@ -2732,7 +2740,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
             insertCodingJob: db.prepare(
-                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, pr_url, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
             ),
             selectCodingJob: db.prepare(
                 `${CODING_JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -3420,6 +3428,7 @@ export class SqliteAppDatabase implements AppDatabase {
             input.crashPolicy ?? "prune",
             input.workspacePath,
             input.model ?? null,
+            input.prUrl ?? null,
             input.createdAt,
         );
         // Just written, so a re-read cannot miss; the assertion documents that

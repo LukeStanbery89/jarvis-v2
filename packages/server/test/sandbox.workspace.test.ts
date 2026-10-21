@@ -353,6 +353,215 @@ describe("workspace lifecycle", () => {
         ).rejects.toThrow(/not a real directory/);
     });
 
+    it("pushes with the credential in the environment, never argv", async () => {
+        const calls: Array<{
+            args: readonly string[];
+            env?: Record<string, string>;
+        }> = [];
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: ["luke/app"],
+            git: async (args, options) => {
+                calls.push({
+                    args,
+                    ...(options?.env ? { env: { ...options.env } } : {}),
+                });
+                return { stdout: "", stderr: "" };
+            },
+        });
+        const repo = manager.allows("luke/app");
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-push",
+            repo,
+            branch: "jarvis/test",
+        });
+
+        await manager.push({
+            workspacePath: prepared.path,
+            branch: "jarvis/test",
+            auth: { username: "x-access-token", token: "ghs_secret" },
+        });
+
+        const push = calls.find((call) => call.args.includes("push"));
+        expect(push?.args).toEqual([
+            "-C",
+            prepared.path,
+            "push",
+            "--set-upstream",
+            "origin",
+            "jarvis/test",
+        ]);
+        // The secret is in the environment, not the command line.
+        expect(push?.args.join(" ")).not.toContain("ghs_secret");
+        const header = push?.env?.GIT_CONFIG_VALUE_0 ?? "";
+        expect(push?.env?.GIT_CONFIG_KEY_0).toBe(
+            "http.https://github.com/.extraheader",
+        );
+        expect(
+            Buffer.from(
+                header.replace(/^AUTHORIZATION: basic /i, ""),
+                "base64",
+            ).toString("utf8"),
+        ).toBe("x-access-token:ghs_secret");
+    });
+
+    it("pushes a real branch to a file:// origin", async () => {
+        const parent = tempDir("jarvis-push-");
+        const bare = path.join(parent, "origin.git");
+        git(["init", "--bare", "-b", "main", bare], parent);
+        const seed = path.join(parent, "seed");
+        git(["clone", bare, seed], parent);
+        writeFileSync(path.join(seed, "README.md"), "# Seed\n");
+        git(["add", "."], seed);
+        git(["commit", "-q", "-m", "init"], seed);
+        git(["push", "-q", "origin", "main"], seed);
+
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [`file://${bare}`],
+        });
+        const repo = manager.allows(`file://${bare}`);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-real-push",
+            repo,
+            branch: "jarvis/real",
+        });
+        writeFileSync(path.join(prepared.path, "README.md"), "# Changed\n");
+        await manager.commit({
+            workspacePath: prepared.path,
+            message: "JARVIS: change it",
+        });
+
+        await manager.push({
+            workspacePath: prepared.path,
+            branch: "jarvis/real",
+        });
+
+        const sha = git(
+            ["--git-dir", bare, "rev-parse", "jarvis/real"],
+            parent,
+        ).trim();
+        expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    it("checks out an existing branch for a follow-up and records its base", async () => {
+        const calls: Array<{ args: readonly string[] }> = [];
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: ["luke/app"],
+            git: async (args) => {
+                calls.push({ args });
+                return {
+                    stdout: args.includes("rev-parse")
+                        ? `${"a".repeat(40)}\n`
+                        : "",
+                    stderr: "",
+                };
+            },
+        });
+        const repo = manager.allows("luke/app");
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+
+        const prepared = await manager.prepare({
+            jobId: "job-follow",
+            repo,
+            branch: "jarvis/existing-pr",
+            existing: true,
+        });
+
+        // The PR's tip, not a new branch off the default one.
+        expect(calls.find((call) => call.args.includes("fetch"))?.args).toEqual(
+            [
+                "-C",
+                prepared.path,
+                "fetch",
+                "--no-tags",
+                "origin",
+                "jarvis/existing-pr",
+            ],
+        );
+        expect(
+            calls.find((call) => call.args.includes("checkout"))?.args,
+        ).toEqual([
+            "-C",
+            prepared.path,
+            "checkout",
+            "-B",
+            "jarvis/existing-pr",
+            "FETCH_HEAD",
+        ]);
+        // Beside the clone, so it never becomes part of the job's own diff.
+        expect(
+            readFileSync(
+                path.join(path.dirname(prepared.path), "base"),
+                "utf8",
+            ),
+        ).toBe(`${"a".repeat(40)}\n`);
+    });
+
+    it("reports only a follow-up's own work, not the PR's earlier commits", async () => {
+        const parent = tempDir("jarvis-follow-");
+        const bare = path.join(parent, "origin.git");
+        git(["init", "--bare", "-b", "main", bare], parent);
+        const seed = path.join(parent, "seed");
+        git(["clone", bare, seed], parent);
+        writeFileSync(path.join(seed, "README.md"), "# Seed\n");
+        git(["add", "."], seed);
+        git(["commit", "-q", "-m", "init"], seed);
+        git(["push", "-q", "origin", "main"], seed);
+        // The branch an open pull request already has.
+        git(["checkout", "-b", "jarvis/existing-pr"], seed);
+        writeFileSync(path.join(seed, "README.md"), "# PR work\n");
+        git(["add", "."], seed);
+        git(["commit", "-q", "-m", "pr work"], seed);
+        git(["push", "-q", "origin", "jarvis/existing-pr"], seed);
+
+        const manager = createWorkspaceManager({
+            root: tempDir("jarvis-jobs-"),
+            repos: [`file://${bare}`],
+        });
+        const repo = manager.allows(`file://${bare}`);
+        if (repo === null) {
+            throw new Error("fixture repo not allowed");
+        }
+        const prepared = await manager.prepare({
+            jobId: "job-follow-real",
+            repo,
+            branch: "jarvis/existing-pr",
+            existing: true,
+        });
+        expect(
+            readFileSync(path.join(prepared.path, "README.md"), "utf8"),
+        ).toBe("# PR work\n");
+
+        // The branch already carried a commit; this run has done nothing.
+        const clean = await manager.collect({
+            workspacePath: prepared.path,
+        });
+        expect(clean.changed).toBe(false);
+        expect(clean.diffSummary).toBe("");
+
+        writeFileSync(
+            path.join(prepared.path, "README.md"),
+            "# PR work\n\nA review fix.\n",
+        );
+        const changed = await manager.collect({
+            workspacePath: prepared.path,
+        });
+        expect(changed.changed).toBe(true);
+        expect(changed.diffSummary).toContain("README.md");
+        // The PR's earlier commit belongs to the review, not to this run.
+        expect(changed.diffSummary).not.toContain("pr work");
+    });
+
     it("never deletes outside its root", async () => {
         const root = tempDir("jarvis-jobs-");
         const outside = tempDir("jarvis-outside-");

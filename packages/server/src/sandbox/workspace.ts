@@ -69,7 +69,11 @@ export interface RepoSpec {
 /** Runs git; injectable so a test can assert the commands without one. */
 export type GitRunner = (
     args: readonly string[],
-    options?: { cwd?: string },
+    options?: {
+        cwd?: string;
+        /** Extra environment for this call (a credential, never an argv value). */
+        env?: Readonly<Record<string, string>>;
+    },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 /** The server-side and daemon-side names of one prepared clone. */
@@ -84,11 +88,19 @@ export interface PreparedWorkspace {
 export interface WorkspaceManager {
     /** Resolves an allowlist entry to a repository, or `null` when not allowed. */
     allows(repo: string): RepoSpec | null;
-    /** Clones the repository and creates the job's branch. */
+    /**
+     * Clones the repository and puts the job on its branch.
+     *
+     * A new job gets a fresh branch; a follow-up (`existing: true`) checks out
+     * the branch an open pull request already has, so its commits land on the
+     * PR instead of beside it.
+     */
     prepare(input: {
         jobId: string;
         repo: RepoSpec;
         branch: string;
+        /** Continue this remote branch instead of creating one (#140). */
+        existing?: boolean;
     }): Promise<PreparedWorkspace>;
     /** Describes what the run left behind. */
     collect(input: { workspacePath: string }): Promise<{
@@ -106,6 +118,20 @@ export interface WorkspaceManager {
      * @returns True when it made a commit, false when the tree was clean.
      */
     commit(input: { workspacePath: string; message: string }): Promise<boolean>;
+    /**
+     * Pushes the job's branch to its origin.
+     *
+     * The credential is a GitHub installation token delivered through the
+     * child's environment as a git config entry (`http.https://github.com/
+     * .extraheader`), never through argv: a command line is visible to `ps`
+     * and tends to end up in an error message. A non-HTTP remote — the probe's
+     * `file://` — is pushed without one.
+     */
+    push(input: {
+        workspacePath: string;
+        branch: string;
+        auth?: { username: string; token: string };
+    }): Promise<void>;
     /** Removes one job's workspace (the job directory, not just `repo`). */
     remove(workspacePath: string): Promise<void>;
 }
@@ -220,7 +246,11 @@ const defaultGit: GitRunner = async (args, options = {}) => {
         {
             cwd: options.cwd,
             maxBuffer: 16 * 1024 * 1024,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+            env: {
+                ...process.env,
+                ...options.env,
+                GIT_TERMINAL_PROMPT: "0",
+            },
         },
     );
     return { stdout, stderr };
@@ -315,6 +345,30 @@ export function sanitizeGitConfig(workspacePath: string): void {
 }
 
 /**
+ * Reads the commit a workspace started from, for `collect`.
+ *
+ * The marker is written beside the clone by `prepare`: it is the only record
+ * that survives a restart, and it is what makes a follow-up's diff describe
+ * this run rather than every commit the pull request already contained. A
+ * missing or malformed marker returns `null`, which falls back to the clone's
+ * `origin/HEAD`.
+ *
+ * @param workspacePath - The server-side clone path.
+ * @returns The commit, or `null`.
+ */
+function readStartCommit(workspacePath: string): string | null {
+    try {
+        const value = readFileSync(
+            path.join(path.dirname(workspacePath), "base"),
+            "utf8",
+        ).trim();
+        return /^[0-9a-f]{40,64}$/.test(value) ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Builds the workspace manager.
  *
  * @param options - The server root, the daemon's root, the allowlist and git.
@@ -359,7 +413,44 @@ export function createWorkspaceManager(options: {
                 input.repo.url,
                 dir,
             ]);
-            await git(["-C", dir, "checkout", "-b", input.branch]);
+            if (input.existing === true) {
+                // The branch may have moved since the clone's default fetch;
+                // FETCH_HEAD is exactly the tip the pull request names.
+                await git([
+                    "-C",
+                    dir,
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    input.branch,
+                ]);
+                await git([
+                    "-C",
+                    dir,
+                    "checkout",
+                    "-B",
+                    input.branch,
+                    "FETCH_HEAD",
+                ]);
+            } else {
+                await git(["-C", dir, "checkout", "-b", input.branch]);
+            }
+            // Where the run started, beside the clone rather than inside it
+            // (an untracked file in the repo would be the job's own diff).
+            // `collect` diffs against this, so a follow-up reports the work of
+            // *this run* rather than every commit the pull request already has.
+            const { stdout: start } = await git([
+                "-C",
+                dir,
+                "rev-parse",
+                "HEAD",
+            ]);
+            const base = start.trim();
+            if (/^[0-9a-f]{40,64}$/.test(base)) {
+                writeFileSync(path.join(jobDir, "base"), `${base}\n`, {
+                    mode: 0o600,
+                });
+            }
             return {
                 path: dir,
                 hostPath: path.join(hostRoot, input.jobId, "repo"),
@@ -390,15 +481,18 @@ export function createWorkspaceManager(options: {
                 "--no-ext-diff",
                 "--no-textconv",
             ]);
-            // Only the commits the run *added*: `origin/HEAD` is where the
-            // clone started, so a clean clone reports nothing instead of
-            // echoing the project's history back as an artifact.
+            // Only the commits the run *added*. `prepare` recorded where the
+            // clone started; a follow-up's branch already carried commits, so
+            // `origin/HEAD` (the base branch) would count the whole pull
+            // request as this run's work. The fallback covers a workspace
+            // prepared before the marker existed.
+            const start = readStartCommit(input.workspacePath);
             const { stdout: log } = await git([
                 "-C",
                 input.workspacePath,
                 "log",
                 "--oneline",
-                "origin/HEAD..HEAD",
+                start === null ? "origin/HEAD..HEAD" : `${start}..HEAD`,
             ]).catch(() => ({ stdout: "", stderr: "" }));
             const sections: string[] = [];
             if (status.trim().length > 0) {
@@ -453,6 +547,29 @@ export function createWorkspaceManager(options: {
                 input.message,
             ]);
             return true;
+        },
+
+        async push(input): Promise<void> {
+            const env: Record<string, string> = {};
+            if (input.auth !== undefined) {
+                const basic = Buffer.from(
+                    `${input.auth.username}:${input.auth.token}`,
+                ).toString("base64");
+                env.GIT_CONFIG_COUNT = "1";
+                env.GIT_CONFIG_KEY_0 = "http.https://github.com/.extraheader";
+                env.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${basic}`;
+            }
+            await git(
+                [
+                    "-C",
+                    input.workspacePath,
+                    "push",
+                    "--set-upstream",
+                    "origin",
+                    input.branch,
+                ],
+                { env },
+            );
         },
 
         async remove(workspacePath: string): Promise<void> {

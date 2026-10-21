@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 /** Default base URL of the local LM Studio OpenAI-compatible server. */
 import { homedir } from "node:os";
 import path from "node:path";
@@ -862,6 +863,81 @@ export const DEFAULT_RATE_LIMIT_CONFIG: RateLimitConfig = {
 };
 
 /**
+ * A GitHub App installation (#140).
+ *
+ * `privateKey` is the PEM content, not a path: the environment may carry it
+ * inline (with `\n` escapes) or the server reads the file named by
+ * `JARVIS_GITHUB_APP_PRIVATE_KEY_PATH` once at boot.
+ */
+export interface GitHubConfig {
+    /** The App's numeric id (`JARVIS_GITHUB_APP_ID`). */
+    readonly appId: string;
+    /** The App's PEM private key. */
+    readonly privateKey: string;
+    /** The installation serving the allowlisted repositories. */
+    readonly installationId: string;
+    /** The REST host (`JARVIS_GITHUB_API_BASE_URL`), for a GitHub Enterprise install. */
+    readonly apiBaseUrl: string;
+}
+
+/** Default GitHub REST host. */
+export const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
+
+/**
+ * Reads the GitHub App settings, or nothing when any piece is absent.
+ *
+ * A half-configured App is treated as absent rather than failing the boot: the
+ * sandbox still works, a finished branch simply stays local. The key may be
+ * inline (`\n` escapes allowed) or at `JARVIS_GITHUB_APP_PRIVATE_KEY_PATH`.
+ *
+ * @returns The settings, or `null` when the integration is off.
+ */
+export function getGitHubConfig(): GitHubConfig | null {
+    const appId = process.env.JARVIS_GITHUB_APP_ID?.trim() ?? "";
+    const installationId =
+        process.env.JARVIS_GITHUB_INSTALLATION_ID?.trim() ?? "";
+    let privateKey =
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY?.trim().replace(
+            /\\n/g,
+            "\n",
+        ) ?? "";
+    const keyPath =
+        process.env.JARVIS_GITHUB_APP_PRIVATE_KEY_PATH?.trim() ?? "";
+    if (privateKey.length === 0 && keyPath.length > 0) {
+        try {
+            privateKey = readFileSync(keyPath, "utf8").trim();
+        } catch {
+            privateKey = "";
+        }
+    }
+    if (
+        appId.length === 0 ||
+        installationId.length === 0 ||
+        privateKey.length === 0
+    ) {
+        return null;
+    }
+    // The App id is the numeric one on the App's settings page. Its slug and
+    // its client id are different values, and GitHub rejects either as a JWT
+    // issuer — catching it here turns "every job fails to publish" into one
+    // boot warning.
+    if (!/^\d+$/.test(appId)) {
+        logger.warn(
+            "JARVIS_GITHUB_APP_ID is not numeric; GitHub publishing is off (use the App ID from the App's settings page, not its name)",
+        );
+        return null;
+    }
+    return {
+        appId,
+        installationId,
+        privateKey,
+        apiBaseUrl:
+            process.env.JARVIS_GITHUB_API_BASE_URL?.trim() ||
+            DEFAULT_GITHUB_API_BASE_URL,
+    };
+}
+
+/**
  * App-level settings (accounts, sessions, and resource control).
  *
  * These are operator/account concerns rather than LLM configuration, so they
@@ -952,6 +1028,17 @@ export interface AppConfig {
      * browsers reject `*` alongside credentials anyway.
      */
     readonly corsOrigins?: readonly string[];
+    /**
+     * GitHub App settings for publishing a finished coding job (#140).
+     *
+     * Present only when the App id, its private key and the installation are
+     * all configured. An App rather than a personal token: the installation is
+     * scoped to the repositories it was granted, its token lives an hour, and
+     * nothing about it ever enters a job container — the host pushes and opens
+     * the pull request. Without it a finished branch stays local and the job
+     * keeps its workspace.
+     */
+    readonly github?: GitHubConfig;
     /**
      * Resource controls for transient image attachments (`JARVIS_ATTACHMENT_*`).
      *
@@ -1564,6 +1651,7 @@ export function getAppConfig(): AppConfig {
                           process.env.JARVIS_WIKIPEDIA_USER_AGENT ||
                           DEFAULT_WIKIPEDIA_USER_AGENT,
                   },
+        github: getGitHubConfig() ?? undefined,
         homeAssistant:
             !process.env.HOME_ASSISTANT_URL ||
             !process.env.HOME_ASSISTANT_ACCESS_TOKEN

@@ -27,9 +27,12 @@ import type { NotificationService } from "../src/notify/service";
 import { createFakeSandbox } from "../src/sandbox/fake";
 import {
     createCodingJobService,
+    followUpPrompt,
     lastAgentMessage,
 } from "../src/sandbox/service";
 import { deriveJobToken } from "../src/sandbox/proxy";
+import type { PullRequestSnapshot } from "../src/github/client";
+import type { JobPublisher } from "../src/sandbox/publish";
 import type { RepoSpec, WorkspaceManager } from "../src/sandbox/workspace";
 
 /** A config with every knob decided. */
@@ -61,6 +64,28 @@ const CONFIG: SandboxConfig = {
     keepJobRows: 100,
 };
 
+/** A minimal open pull request, for the prompt's own tests. */
+function pullRequest(
+    overrides: Partial<PullRequestSnapshot> = {},
+): PullRequestSnapshot {
+    return {
+        owner: "luke",
+        repo: "app",
+        number: 7,
+        url: "https://github.com/luke/app/pull/7",
+        title: "A change",
+        body: "",
+        head: "jarvis/a-change-1234",
+        base: "main",
+        state: "open",
+        headRepo: "luke/app",
+        comments: [],
+        commentsTruncated: false,
+        conversationUnavailable: false,
+        ...overrides,
+    };
+}
+
 /** A store with one owner. */
 function makeStore(): { store: AppDatabase; userId: number } {
     const store = createInMemoryAppDatabase();
@@ -76,17 +101,32 @@ function fakeWorkspace(
         collect?: () => { changed: boolean; diffSummary: string };
     } = {},
 ): WorkspaceManager & {
-    prepared: Array<{ jobId: string; branch: string }>;
+    prepared: Array<{ jobId: string; branch: string; existing?: boolean }>;
     removed: string[];
     commits: Array<{ workspacePath: string; message: string }>;
+    pushes: Array<{
+        workspacePath: string;
+        branch: string;
+        auth?: { username: string; token: string };
+    }>;
 } {
-    const prepared: Array<{ jobId: string; branch: string }> = [];
+    const prepared: Array<{
+        jobId: string;
+        branch: string;
+        existing?: boolean;
+    }> = [];
     const removed: string[] = [];
     const commits: Array<{ workspacePath: string; message: string }> = [];
+    const pushes: Array<{
+        workspacePath: string;
+        branch: string;
+        auth?: { username: string; token: string };
+    }> = [];
     return {
         prepared,
         removed,
         commits,
+        pushes,
         allows(repo: string): RepoSpec | null {
             if (options.allow === false) {
                 return null;
@@ -99,7 +139,11 @@ function fakeWorkspace(
             };
         },
         async prepare(input) {
-            prepared.push({ jobId: input.jobId, branch: input.branch });
+            prepared.push({
+                jobId: input.jobId,
+                branch: input.branch,
+                ...(input.existing === true ? { existing: true } : {}),
+            });
             return {
                 path: `/jobs/${input.jobId}/repo`,
                 hostPath: `/host/jobs/${input.jobId}/repo`,
@@ -119,6 +163,9 @@ function fakeWorkspace(
         async commit(input: { workspacePath: string; message: string }) {
             commits.push(input);
             return options.commit ?? true;
+        },
+        async push(input) {
+            pushes.push(input);
         },
     };
 }
@@ -162,6 +209,12 @@ function makeService(
     overrides: {
         config?: Partial<SandboxConfig>;
         proxy?: { url: string; secret: string };
+        publisher?: JobPublisher;
+        pullRequests?: (input: {
+            owner: string;
+            repo: string;
+            number: number;
+        }) => Promise<PullRequestSnapshot>;
         workspace?: FakeWorkspace;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
@@ -179,6 +232,10 @@ function makeService(
         workspace,
         config: { ...CONFIG, logRoot, ...overrides.config },
         ...(overrides.proxy ? { proxy: overrides.proxy } : {}),
+        ...(overrides.publisher ? { publisher: overrides.publisher } : {}),
+        ...(overrides.pullRequests
+            ? { pullRequests: overrides.pullRequests }
+            : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
         newId: () => `job-${++sequence}`,
@@ -250,6 +307,162 @@ describe("starting a coding job", () => {
                 message: "JARVIS: Fix the login bug",
             },
         ]);
+    });
+
+    it("continues a pull request on its branch, with the review as context", async () => {
+        const pull: PullRequestSnapshot = {
+            owner: "luke",
+            repo: "app",
+            number: 165,
+            url: "https://github.com/luke/app/pull/165",
+            title: "Add a greeting",
+            body: "Add a greeting to the app.",
+            head: "jarvis/add-a-greeting-1234",
+            base: "main",
+            state: "open",
+            headRepo: "luke/app",
+            comments: [
+                {
+                    author: "reviewer",
+                    body: "Please move this.",
+                    path: "src/app.ts",
+                    line: 12,
+                },
+                { author: "luke", body: "Also add a test." },
+            ],
+            commentsTruncated: false,
+            conversationUnavailable: false,
+        };
+        const pullRequests = vi.fn(async () => pull);
+        const publish = vi.fn(async () => ({ prUrl: pull.url }));
+        const { store, userId, workspace, runner, notify, service } =
+            makeService({ publisher: { publish }, pullRequests });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Address the review comments",
+            pullRequest: 165,
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(pullRequests).toHaveBeenCalledWith({
+            owner: "luke",
+            repo: "app",
+            number: 165,
+        });
+        // The PR's branch, checked out rather than created.
+        expect(started.job.branch).toBe("jarvis/add-a-greeting-1234");
+        expect(started.job.prUrl).toBe(pull.url);
+        expect(workspace.prepared).toEqual([
+            {
+                jobId: "job-1",
+                branch: "jarvis/add-a-greeting-1234",
+                existing: true,
+            },
+        ]);
+        // The row keeps what the user asked; the container gets the context.
+        expect(started.job.prompt).toBe("Address the review comments");
+        const prompt = runner.started[0]?.env.JARVIS_JOB_PROMPT ?? "";
+        expect(prompt).toContain("#165");
+        expect(prompt).toContain("Add a greeting");
+        expect(prompt).toContain("src/app.ts:12");
+        expect(prompt).toContain("Please move this.");
+        expect(prompt).toContain("Also add a test.");
+        expect(prompt).toContain("## What this job should do");
+        expect(prompt).toContain("Address the review comments");
+
+        runner.emit(started.job.containerId ?? "", "fixed it");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        // Push only: the PR already exists, and a second one would split it.
+        expect(publish).toHaveBeenCalledWith(
+            expect.objectContaining({
+                branch: "jarvis/add-a-greeting-1234",
+                existing: { url: pull.url },
+            }),
+        );
+        const row = store.getCodingJobById(started.job.id);
+        expect(row?.state).toBe("ok");
+        expect(row?.prUrl).toBe(pull.url);
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({
+                body: expect.stringContaining(
+                    `Updated pull request: ${pull.url}`,
+                ),
+            }),
+        );
+        // Pushed means the remote is the copy.
+        expect(workspace.removed).toContain("/jobs/job-1/repo");
+    });
+
+    it("refuses a follow-up it cannot honour, without cloning anything", async () => {
+        const open: PullRequestSnapshot = {
+            owner: "luke",
+            repo: "app",
+            number: 9,
+            url: "https://github.com/luke/app/pull/9",
+            title: "A change",
+            body: "",
+            head: "jarvis/a-change-1234",
+            base: "main",
+            state: "open",
+            headRepo: "luke/app",
+            comments: [],
+            commentsTruncated: false,
+            conversationUnavailable: false,
+        };
+        const request = {
+            userId: 1,
+            repo: "luke/app",
+            task: "Fix the review",
+            pullRequest: 9,
+        };
+
+        // No App: the PR cannot be read at all.
+        const noGithub = makeService();
+        const unavailable = await noGithub.service.start({
+            ...request,
+            userId: noGithub.userId,
+        });
+        expect(unavailable).toMatchObject({
+            ok: false,
+            code: "follow-ups-unavailable",
+        });
+        expect(noGithub.workspace.prepared).toHaveLength(0);
+
+        // Merged or closed.
+        const closed = makeService({
+            pullRequests: async () => ({ ...open, state: "merged" }),
+        });
+        expect(
+            await closed.service.start({ ...request, userId: closed.userId }),
+        ).toMatchObject({ ok: false, code: "pull-request-closed" });
+        expect(closed.workspace.prepared).toHaveLength(0);
+
+        // A fork's branch is not on this repository's origin.
+        const fork = makeService({
+            pullRequests: async () => ({ ...open, headRepo: "someone/app" }),
+        });
+        expect(
+            await fork.service.start({ ...request, userId: fork.userId }),
+        ).toMatchObject({ ok: false, code: "pull-request-fork" });
+        expect(fork.workspace.prepared).toHaveLength(0);
+
+        // GitHub could not answer.
+        const failing = makeService({
+            pullRequests: async () => {
+                throw new Error("404 Not Found");
+            },
+        });
+        expect(
+            await failing.service.start({ ...request, userId: failing.userId }),
+        ).toMatchObject({ ok: false, code: "pull-request-unavailable" });
+        expect(failing.workspace.prepared).toHaveLength(0);
     });
 
     it("records a failed run, removes its workspace and says why", async () => {
@@ -400,6 +613,83 @@ describe("starting a coding job", () => {
         );
         // The whole point: the real key is not in the container at all.
         expect(env.JARVIS_JOB_API_KEY).not.toBe("sk-real-provider-key");
+    });
+
+    it("publishes a successful branch and drops the clone after the push", async () => {
+        const publish = vi.fn(async () => ({
+            prUrl: "https://github.com/luke/app/pull/9",
+        }));
+        const { service, userId, runner, workspace, store, notify } =
+            makeService({ publisher: { publish } });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix the login bug",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+        const container = started.job.containerId ?? "";
+        runner.emit(container, '{"type":"text","part":{"text":"done"}}');
+        runner.exit(container, 0);
+        await started.done;
+
+        expect(publish).toHaveBeenCalledWith(
+            expect.objectContaining({
+                jobId: started.job.id,
+                repo: "luke/app",
+                branch: started.job.branch,
+                task: "Fix the login bug",
+            }),
+        );
+        expect(store.getCodingJobById(started.job.id)?.prUrl).toBe(
+            "https://github.com/luke/app/pull/9",
+        );
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({
+                body: expect.stringContaining(
+                    "Pull request: https://github.com/luke/app/pull/9",
+                ),
+            }),
+        );
+        // Pushed means disposable: the remote is the copy (#140).
+        expect(workspace.removed).toContain("/jobs/job-1/repo");
+    });
+
+    it("still settles ok when publishing fails, and keeps the workspace", async () => {
+        const publish = vi.fn(async () => {
+            throw new Error("no permission");
+        });
+        const { service, userId, runner, workspace, store, notify } =
+            makeService({ publisher: { publish } });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix the login bug",
+        });
+        if (!started.ok) {
+            throw new Error("fixture refused");
+        }
+        const container = started.job.containerId ?? "";
+        runner.emit(container, '{"type":"text","part":{"text":"done"}}');
+        runner.exit(container, 0);
+        await started.done;
+
+        const row = store.getCodingJobById(started.job.id);
+        expect(row?.state).toBe("ok");
+        expect(row?.prUrl).toBeNull();
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({
+                body: expect.stringContaining(
+                    "The branch was not pushed: no permission",
+                ),
+            }),
+        );
+        expect(workspace.removed).toEqual([]);
     });
 
     it("writes the full run to a log file beside the workspaces", async () => {
@@ -760,5 +1050,30 @@ describe("recovering coding jobs at boot", () => {
         // The row is gone, but the workspace's path is derivable from the id
         // the container's label carried.
         expect(workspace.removed).toEqual(["/jobs/deleted-job/repo"]);
+    });
+});
+
+describe("follow-up prompts", () => {
+    it("says when the conversation is missing rather than implying silence", () => {
+        const prompt = followUpPrompt(
+            pullRequest({ conversationUnavailable: true }),
+            "Fix the review",
+        );
+
+        expect(prompt).toContain("conversation could not be read");
+        expect(prompt).toContain("Fix the review");
+    });
+
+    it("bounds a long thread and says what was left out", () => {
+        const prompt = followUpPrompt(
+            pullRequest({
+                comments: [{ author: "reviewer", body: "x".repeat(5_000) }],
+                commentsTruncated: true,
+            }),
+            "Fix the review",
+        );
+
+        expect(prompt).toContain("Only the most recent comments are shown.");
+        expect(prompt.length).toBeLessThan(20_000);
     });
 });
