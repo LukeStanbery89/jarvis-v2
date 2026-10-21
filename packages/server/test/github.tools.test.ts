@@ -45,6 +45,7 @@ const PULL: PullRequestSnapshot = {
     comments: [],
     commentsTruncated: false,
     conversationUnavailable: false,
+    readAt: "2026-10-21T00:00:00.000Z",
 };
 
 const OWNER_RUNTIME = {
@@ -130,6 +131,84 @@ describe("GitHub tracker tools", () => {
         expect(text).toContain("https://github.com/luke/app/issues/140");
     });
 
+    it("asks only for comments newer than a read, and stamps the result", async () => {
+        const { invoke, client } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+            readPullRequest: vi.fn(async () => ({
+                ...PULL,
+                comments: [
+                    {
+                        author: "luke",
+                        body: "One more thing.",
+                        createdAt: "2026-10-21T00:10:00Z",
+                        updatedAt: "2026-10-21T00:10:00Z",
+                    },
+                ],
+                readAt: "2026-10-21T00:11:00.000Z",
+            })),
+        });
+
+        // A space-separated time is accepted and normalized, because a relay
+        // model will produce one sooner or later.
+        const text = await invoke("getGitHubPullRequest", {
+            number: 165,
+            since: "2026-10-21 00:00:00Z",
+        });
+
+        expect(client.readPullRequest).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            165,
+            expect.objectContaining({ since: "2026-10-21T00:00:00.000Z" }),
+        );
+        expect(text).toContain(
+            "## Comments since 2026-10-21T00:00:00.000Z (1)",
+        );
+        expect(text).toContain("One more thing.");
+        expect(text).toContain("Read at: 2026-10-21T00:11:00.000Z");
+    });
+
+    it("answers no-new-comments without pretending the thread is empty", async () => {
+        const { invoke } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+            readPullRequest: vi.fn(async () => ({
+                ...PULL,
+                comments: [],
+                readAt: "2026-10-21T00:11:00.000Z",
+            })),
+        });
+
+        const text = await invoke("getGitHubPullRequest", {
+            number: 165,
+            since: "2026-10-21T00:00:00Z",
+        });
+
+        expect(text).toContain(
+            "No new comments since 2026-10-21T00:00:00.000Z.",
+        );
+        expect(text).not.toContain("No review comments");
+    });
+
+    it("refuses a since it cannot read, without calling GitHub", async () => {
+        const { invoke, client } = makeTools();
+
+        const text = await invoke("getGitHubPullRequest", {
+            number: 165,
+            since: "yesterday afternoon",
+        });
+
+        expect(text).toContain("ISO-8601");
+        expect(client.getIssue).not.toHaveBeenCalled();
+    });
+
     it("points an issue read at the PR tool without fetching comments", async () => {
         const { invoke, client } = makeTools({
             getIssue: vi.fn(async () => ({
@@ -181,6 +260,8 @@ describe("GitHub tracker tools", () => {
                         body: "Make the comment say Hello, World!",
                         path: "README.md",
                         line: 1,
+                        createdAt: "2026-10-20T23:50:00Z",
+                        updatedAt: "2026-10-20T23:50:00Z",
                     },
                 ],
             })),

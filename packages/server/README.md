@@ -221,7 +221,9 @@ the relay model would have to paste. `getGitHubIssue` reads issues and
 `getGitHubPullRequest` reads pull requests, including their review comments and
 conversation: the issue endpoint's count covers the conversation only, so an
 inline review note would otherwise read as no comment at all. Each read points
-at the other tool when the number is the wrong kind.
+at the other tool when the number is the wrong kind. Both comment feeds accept
+`since`, so `getGitHubPullRequest` can return only what is new: pass the
+previous result's `Read at` and the thread is not re-sent.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with

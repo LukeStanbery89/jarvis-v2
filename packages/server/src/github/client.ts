@@ -40,6 +40,10 @@ export interface PullRequestComment {
     readonly path?: string;
     /** The line in that file, when GitHub reports one. */
     readonly line?: number;
+    /** When it was posted. */
+    readonly createdAt: string;
+    /** When it was last edited; GitHub's `since` filters on this. */
+    readonly updatedAt: string;
 }
 
 /** A pull request as a follow-up job needs it (#140). */
@@ -62,6 +66,8 @@ export interface PullRequestSnapshot {
     readonly comments: readonly PullRequestComment[];
     /** True when older comments were left out. */
     readonly commentsTruncated: boolean;
+    /** When the read finished — the watermark for a later `since` call. */
+    readonly readAt: string;
     /**
      * True when the conversation could not be read.
      *
@@ -165,7 +171,7 @@ export interface GitHubClient {
         owner: string,
         repo: string,
         number: number,
-        options?: { signal?: AbortSignal },
+        options?: { since?: string; signal?: AbortSignal },
     ): Promise<PullRequestSnapshot>;
     /** Opens a pull request and returns it. */
     createPullRequest(input: {
@@ -262,6 +268,7 @@ function commentsFrom(
                 line?: unknown;
                 original_line?: unknown;
                 created_at?: unknown;
+                updated_at?: unknown;
             };
             if (
                 typeof value.body !== "string" ||
@@ -282,16 +289,20 @@ function commentsFrom(
                 typeof rawLine === "number" && Number.isFinite(rawLine)
                     ? rawLine
                     : undefined;
+            const createdAt =
+                typeof value.created_at === "string" ? value.created_at : "";
             rows.push({
-                at:
-                    typeof value.created_at === "string"
-                        ? value.created_at
-                        : "",
+                at: createdAt,
                 comment: {
                     author,
                     body: value.body,
                     ...(path !== undefined ? { path } : {}),
                     ...(line !== undefined ? { line } : {}),
+                    createdAt,
+                    updatedAt:
+                        typeof value.updated_at === "string"
+                            ? value.updated_at
+                            : createdAt,
                 },
             });
         }
@@ -483,7 +494,7 @@ export function createGitHubClient(
             owner: string,
             repo: string,
             number: number,
-            options: { signal?: AbortSignal } = {},
+            options: { since?: string; signal?: AbortSignal } = {},
         ): Promise<PullRequestSnapshot> {
             const token = await installationToken();
             const pull = await api<{
@@ -512,15 +523,23 @@ export function createGitHubClient(
             // The conversation is best-effort: it is governed by the Issues
             // permission, and an App with only Pull requests access would
             // otherwise be unable to continue any review at all.
+            //
+            // `since` is supported by both endpoints ("last updated after"),
+            // which is what makes a re-read cost only the new comments.
+            const query = new URLSearchParams({ per_page: "100" });
+            if (options.since !== undefined) {
+                query.set("since", options.since);
+            }
+            const suffix = query.toString();
             const review = await api<unknown[]>(
-                `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`,
+                `/repos/${owner}/${repo}/pulls/${number}/comments?${suffix}`,
                 {
                     token: token.token,
                     ...(options.signal ? { signal: options.signal } : {}),
                 },
             );
             const conversation = await api<unknown[]>(
-                `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
+                `/repos/${owner}/${repo}/issues/${number}/comments?${suffix}`,
                 {
                     token: token.token,
                     ...(options.signal ? { signal: options.signal } : {}),
@@ -549,6 +568,9 @@ export function createGitHubClient(
                 headRepo,
                 ...commentsFrom(review, conversation ?? []),
                 conversationUnavailable: conversation === null,
+                // Captured after the responses, so a comment that landed
+                // during the read is both included and older than this.
+                readAt: new Date(now()).toISOString(),
             };
         },
 

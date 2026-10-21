@@ -228,6 +228,33 @@ export function renderIssue(issue: IssueSnapshot): string {
     return lines.join("\n");
 }
 
+/**
+ * Normalizes a `since` argument to GitHub's ISO-8601 form.
+ *
+ * The relay model may pass a date, a local-looking time, or nonsense; GitHub
+ * wants one spelling and a silent guess would show the wrong window. Accept
+ * anything `Date.parse` understands, normalize it, and name the format when it
+ * cannot be read.
+ *
+ * @param value - The model's argument, if any.
+ * @returns The normalized instant, an error sentence, or neither.
+ */
+export function normalizeSince(value: string | undefined): {
+    since?: string;
+    error?: string;
+} {
+    if (value === undefined || value.trim().length === 0) {
+        return {};
+    }
+    const ms = Date.parse(value);
+    if (!Number.isFinite(ms)) {
+        return {
+            error: "That is not a timestamp I can read. Pass an ISO-8601 instant, e.g. 2026-10-20T23:50:00Z.",
+        };
+    }
+    return { since: new Date(ms).toISOString() };
+}
+
 /** Indents a comment so a multi-line body stays inside its list item. */
 function quote(body: string): string {
     return body
@@ -251,18 +278,29 @@ function quote(body: string): string {
 export function renderPullRequest(
     issue: IssueSnapshot,
     pull: PullRequestSnapshot,
+    since?: string,
 ): string {
     const lines = [renderIssue(issue)];
     if (pull.comments.length === 0) {
         lines.push(
             "",
-            pull.conversationUnavailable
-                ? "(The conversation could not be read, and there are no inline review notes.)"
-                : "No review comments or conversation yet.",
+            since !== undefined
+                ? `No new comments since ${since}.`
+                : pull.conversationUnavailable
+                  ? "(The conversation could not be read, and there are no inline review notes.)"
+                  : "No review comments or conversation yet.",
+            "",
+            `Read at: ${pull.readAt}`,
         );
         return lines.join("\n");
     }
-    lines.push("", "## Review comments and conversation", "");
+    lines.push(
+        "",
+        since !== undefined
+            ? `## Comments since ${since} (${pull.comments.length})`
+            : "## Review comments and conversation",
+        "",
+    );
     for (const comment of pull.comments) {
         const where =
             comment.path === undefined
@@ -270,9 +308,11 @@ export function renderPullRequest(
                 : `${comment.path}${
                       comment.line === undefined ? "" : `:${comment.line}`
                   }`;
+        const when =
+            comment.createdAt.length > 0 ? ` (${comment.createdAt})` : "";
         const body = comment.body.trim();
         lines.push(
-            `- @${comment.author} on ${where}:`,
+            `- @${comment.author} on ${where}${when}:`,
             quote(
                 body.length > MAX_COMMENT_CHARS
                     ? `${body.slice(0, MAX_COMMENT_CHARS - 1)}…`
@@ -285,9 +325,11 @@ export function renderPullRequest(
         lines.push("(Only the most recent comments are shown.)", "");
     }
     // A small relay model reads the tail of a tool result most closely. Give
-    // it the one call that actually changes anything, by name.
+    // it the one call that actually changes anything, by name, and the
+    // watermark for asking "anything new?" later without re-reading the thread.
     lines.push(
         `To address these comments, call startCodingJob with \`pullRequest: ${issue.number}\`.`,
+        `Read at: ${pull.readAt}`,
     );
     return lines.join("\n");
 }
@@ -389,6 +431,10 @@ export function createGitHubTools(
                 if (!resolved.ok) {
                     return resolved.text;
                 }
+                const since = normalizeSince(input.since);
+                if (since.error !== undefined) {
+                    return since.error;
+                }
                 try {
                     const issue = await deps.client.getIssue(
                         resolved.repo.owner,
@@ -404,9 +450,14 @@ export function createGitHubTools(
                             resolved.repo.owner,
                             resolved.repo.name,
                             issue.number,
-                            signalOf(runtime),
+                            {
+                                ...(since.since !== undefined
+                                    ? { since: since.since }
+                                    : {}),
+                                ...signalOf(runtime),
+                            },
                         );
-                        return renderPullRequest(issue, pull);
+                        return renderPullRequest(issue, pull, since.since);
                     } catch (err) {
                         // A thread GitHub will not hand over still leaves the
                         // PR itself worth showing; say what is missing rather
@@ -431,6 +482,13 @@ export function createGitHubTools(
                 schema: z.object({
                     repo: repoField,
                     number: numberField,
+                    since: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Only show comments updated after this ISO-8601 instant (`2026-10-20T23:50:00Z`). Omit it for the whole thread; pass the previous result's `Read at` to see only what is new.",
+                        ),
                 }),
             },
         ),

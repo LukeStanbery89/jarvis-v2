@@ -382,6 +382,53 @@ describe("reading a pull request", () => {
         expect(pull.conversationUnavailable).toBe(true);
     });
 
+    it("dates each comment and stamps the read", async () => {
+        const { client } = clientFor({
+            html_url: "https://github.com/luke/app/pull/7",
+            title: "A change",
+            body: "",
+            state: "open",
+            merged: false,
+            head: { ref: "jarvis/x", repo: { full_name: "luke/app" } },
+            base: { ref: "main" },
+        });
+
+        const pull = await client.readPullRequest("luke", "app", 7);
+
+        expect(pull.comments[0]).toMatchObject({
+            createdAt: "2026-10-20T10:05:00Z",
+            updatedAt: "2026-10-20T10:05:00Z",
+        });
+        // The clock is injectable; the watermark is when the read finished.
+        expect(pull.readAt).toBe("2026-10-20T12:00:00.000Z");
+    });
+
+    it("passes since to both comment feeds", async () => {
+        const { client, urls } = clientFor({
+            html_url: "https://github.com/luke/app/pull/7",
+            title: "A change",
+            body: "",
+            state: "open",
+            merged: false,
+            head: { ref: "jarvis/x", repo: { full_name: "luke/app" } },
+            base: { ref: "main" },
+        });
+
+        await client.readPullRequest("luke", "app", 7, {
+            since: "2026-10-20T23:50:00Z",
+        });
+
+        const commentCalls = urls.filter(
+            (url) =>
+                url.includes("/pulls/7/comments") ||
+                url.includes("/issues/7/comments"),
+        );
+        expect(commentCalls).toHaveLength(2);
+        for (const url of commentCalls) {
+            expect(url).toContain("since=2026-10-20T23%3A50%3A00Z");
+        }
+    });
+
     it("reports a merged PR and a fork's head repository", async () => {
         const { client } = clientFor({
             html_url: "https://github.com/luke/app/pull/7",

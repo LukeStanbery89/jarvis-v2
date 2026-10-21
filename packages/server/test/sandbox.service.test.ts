@@ -99,6 +99,7 @@ function pullRequest(
         comments: [],
         commentsTruncated: false,
         conversationUnavailable: false,
+        readAt: "2026-10-21T00:00:00.000Z",
         ...overrides,
     };
 }
@@ -350,11 +351,19 @@ describe("starting a coding job", () => {
                     body: "Please move this.",
                     path: "src/app.ts",
                     line: 12,
+                    createdAt: "2026-10-20T23:50:00Z",
+                    updatedAt: "2026-10-20T23:50:00Z",
                 },
-                { author: "luke", body: "Also add a test." },
+                {
+                    author: "luke",
+                    body: "Also add a test.",
+                    createdAt: "2026-10-20T23:51:00Z",
+                    updatedAt: "2026-10-20T23:51:00Z",
+                },
             ],
             commentsTruncated: false,
             conversationUnavailable: false,
+            readAt: "2026-10-21T00:00:00.000Z",
         };
         const pullRequests = vi.fn(async () => pull);
         const publish = vi.fn(async () => ({ prUrl: pull.url }));
@@ -526,6 +535,7 @@ describe("starting a coding job", () => {
             comments: [],
             commentsTruncated: false,
             conversationUnavailable: false,
+            readAt: "2026-10-21T00:00:00.000Z",
         };
         const request = {
             userId: 1,
@@ -1178,7 +1188,14 @@ describe("follow-up prompts", () => {
     it("bounds a long thread and says what was left out", () => {
         const prompt = followUpPrompt(
             pullRequest({
-                comments: [{ author: "reviewer", body: "x".repeat(5_000) }],
+                comments: [
+                    {
+                        author: "reviewer",
+                        body: "x".repeat(5_000),
+                        createdAt: "2026-10-20T23:50:00Z",
+                        updatedAt: "2026-10-20T23:50:00Z",
+                    },
+                ],
                 commentsTruncated: true,
             }),
             "Fix the review",
