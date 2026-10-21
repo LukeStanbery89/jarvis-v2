@@ -165,6 +165,7 @@ export interface GitHubClient {
         owner: string,
         repo: string,
         number: number,
+        options?: { signal?: AbortSignal },
     ): Promise<PullRequestSnapshot>;
     /** Opens a pull request and returns it. */
     createPullRequest(input: {
@@ -482,6 +483,7 @@ export function createGitHubClient(
             owner: string,
             repo: string,
             number: number,
+            options: { signal?: AbortSignal } = {},
         ): Promise<PullRequestSnapshot> {
             const token = await installationToken();
             const pull = await api<{
@@ -512,11 +514,17 @@ export function createGitHubClient(
             // otherwise be unable to continue any review at all.
             const review = await api<unknown[]>(
                 `/repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`,
-                { token: token.token },
+                {
+                    token: token.token,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
             );
             const conversation = await api<unknown[]>(
                 `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
-                { token: token.token },
+                {
+                    token: token.token,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
             ).catch(() => null);
             const merged = pull.merged === true;
             const state = merged

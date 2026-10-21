@@ -9,11 +9,12 @@
  * which a person cannot act on.
  */
 import { describe, expect, it, vi } from "vitest";
-import type { IssueSnapshot } from "../src/github/client";
+import type { IssueSnapshot, PullRequestSnapshot } from "../src/github/client";
 import {
     createGitHubTools,
     renderIssue,
     renderIssues,
+    renderPullRequest as renderPullRequestText,
     type GitHubToolDeps,
 } from "../src/llm/tools/github";
 
@@ -30,6 +31,22 @@ const ISSUE: IssueSnapshot = {
     createdAt: "2026-10-19T10:00:00.000Z",
 };
 
+const PULL: PullRequestSnapshot = {
+    owner: "luke",
+    repo: "app",
+    number: 165,
+    url: "https://github.com/luke/app/pull/165",
+    title: "A change",
+    body: "",
+    head: "jarvis/a-change-1234",
+    base: "main",
+    state: "open",
+    headRepo: "luke/app",
+    comments: [],
+    commentsTruncated: false,
+    conversationUnavailable: false,
+};
+
 const OWNER_RUNTIME = {
     configurable: { sessionId: "s1", clientIp: "10.0.0.1", userId: 7 },
 };
@@ -44,6 +61,7 @@ function makeTools(
 ) {
     const client = {
         getIssue: vi.fn(async () => ISSUE),
+        readPullRequest: vi.fn(async () => PULL),
         listIssues: vi.fn(async () => [ISSUE]),
         createIssue: vi.fn(async () => ({
             number: 142,
@@ -117,6 +135,71 @@ describe("GitHub tracker tools", () => {
 
         expect(text).toContain("is a pull request");
         expect(text).toContain("startCodingJob");
+    });
+
+    it("shows a pull request's review comments, which the issue count hides", async () => {
+        // The live bug: the issue endpoint said "0 comments" because the note
+        // was an inline review comment, not a conversation message.
+        const { invoke, client } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+                commentCount: 0,
+            })),
+            readPullRequest: vi.fn(async () => ({
+                ...PULL,
+                comments: [
+                    {
+                        author: "luke",
+                        body: "Make the comment say Hello, World!",
+                        path: "README.md",
+                        line: 1,
+                    },
+                ],
+            })),
+        });
+
+        const text = await invoke("getGitHubIssue", { number: 165 });
+
+        expect(client.readPullRequest).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            165,
+            expect.anything(),
+        );
+        expect(text).toContain("Make the comment say Hello, World!");
+        expect(text).toContain("README.md:1");
+        expect(text).not.toContain("0 comment(s)");
+    });
+
+    it("still shows the pull request when its comments cannot be read", async () => {
+        const { invoke } = makeTools({
+            getIssue: vi.fn(async () => ({
+                ...ISSUE,
+                number: 165,
+                pullRequest: true,
+            })),
+            readPullRequest: vi.fn(async () => {
+                throw new Error(
+                    "GitHub /repos/luke/app/pulls/165/comments failed: 403 Forbidden",
+                );
+            }),
+        });
+
+        const text = await invoke("getGitHubIssue", { number: 165 });
+
+        expect(text).toContain("Work with the GitHub tracker");
+        expect(text).toContain("Review comments could not be read");
+    });
+
+    it("says a pull request has no comments only when the thread is empty", () => {
+        const text = renderPullRequestText(
+            { ...ISSUE, pullRequest: true, commentCount: 0 },
+            PULL,
+        );
+
+        expect(text).toContain("No review comments or conversation yet.");
     });
 
     it("asks which repository when several are allowed and none was named", async () => {

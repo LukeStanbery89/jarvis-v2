@@ -216,7 +216,10 @@ App must have **Issues: read & write** to read or write them. Creating a
 repository is deliberately not exposed. `startCodingJob` also takes `issue`: it
 reads the issue on the host and prepends its title, state, labels, URL and
 description to the task, so "implement issue #N" is one call instead of a body
-the relay model would have to paste.
+the relay model would have to paste. `getGitHubIssue` on a pull request also
+renders its review comments and conversation: the issue endpoint's count covers
+the conversation only, so an inline review note would otherwise read as no
+comment at all.
 
 The default coding model is **OpenCode's `big-pickle`** at
 `https://opencode.ai/inference/openai/v1`, authenticated with

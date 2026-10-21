@@ -320,14 +320,16 @@ const SCHEDULE_RULE =
  */
 const GITHUB_RULE =
     "You can read and update the project's GitHub tracker. Use " +
-    "getGitHubIssue when the user names an issue or pull request number and " +
-    "you need what it says; listGitHubIssues when they ask what is open or " +
-    "what to work on; createGitHubIssue only when they ask you to file or " +
-    "report an issue; and commentOnGitHub only when they ask you to post a " +
-    "comment there. To implement an issue, pass its number as `issue` to " +
-    "startCodingJob rather than pasting its description into the task. Never " +
-    "invent an issue number or a repository, and never comment on your own " +
-    "initiative.";
+    "getGitHubIssue when the user names an issue or pull request number or " +
+    "link and you need what it says — it also shows a pull request's review " +
+    "comments; read a GitHub link with it, never webSearch. Use " +
+    "listGitHubIssues when they ask what is open or what to work on; " +
+    "createGitHubIssue only when they ask you to file or report an issue; " +
+    "and commentOnGitHub only when they ask you to post a comment there. To " +
+    "implement an issue, pass its number as `issue` to startCodingJob rather " +
+    "than pasting its description; to act on a pull request's review, pass " +
+    "`pullRequest` — the job is given the comment thread. Never invent an " +
+    "issue number or a repository, and never comment on your own initiative.";
 
 const CODING_RULE =
     "You can start a coding job. When the user asks for any change to a " +

@@ -21,14 +21,22 @@ import {
     type ToolRuntime,
 } from "@langchain/core/tools";
 import { z } from "zod";
-import type { GitHubClient, IssueSnapshot } from "../../github/client";
+import type {
+    GitHubClient,
+    IssueSnapshot,
+    PullRequestSnapshot,
+} from "../../github/client";
 import { logger } from "../../logger";
 import { requireSignedInUser } from "./metering";
 
 /** The GitHub methods these tools call. */
 export type GitHubToolsClient = Pick<
     GitHubClient,
-    "getIssue" | "listIssues" | "createIssue" | "commentOnIssue"
+    | "getIssue"
+    | "readPullRequest"
+    | "listIssues"
+    | "createIssue"
+    | "commentOnIssue"
 >;
 
 /** Everything the tools need, injected at wiring time. */
@@ -54,6 +62,9 @@ const MAX_BODY_CHARS = 4_000;
 
 /** GitHub's title limit, kept here so a local error beats a round trip. */
 const MAX_TITLE_CHARS = 256;
+
+/** One comment's share of a rendered thread. */
+const MAX_COMMENT_CHARS = 1_200;
 
 /** The refusal a non-owner reads. */
 const OWNER_ONLY = "GitHub actions can only be used by the owner account.";
@@ -191,7 +202,17 @@ export function renderIssue(issue: IssueSnapshot): string {
             issue.createdAt.length > 0
                 ? ` on ${issue.createdAt.slice(0, 10)}`
                 : ""
-        }; ${issue.commentCount} comment(s)`,
+        }${
+            // On a pull request the issue endpoint's count is the
+            // conversation only; a review lives elsewhere. Saying "0
+            // comment(s)" there is how "address my comment" once became
+            // "there is nothing to address".
+            issue.pullRequest
+                ? issue.commentCount > 0
+                    ? `; ${issue.commentCount} conversation comment(s)`
+                    : ""
+                : `; ${issue.commentCount} comment(s)`
+        }`,
     ];
     if (issue.pullRequest) {
         lines.push(
@@ -204,6 +225,65 @@ export function renderIssue(issue: IssueSnapshot): string {
             ? `${body.slice(0, MAX_BODY_CHARS - 1)}…`
             : body || "(no description)",
     );
+    return lines.join("\n");
+}
+
+/** Indents a comment so a multi-line body stays inside its list item. */
+function quote(body: string): string {
+    return body
+        .split("\n")
+        .map((line) => `  ${line}`)
+        .join("\n");
+}
+
+/**
+ * Renders a pull request's review notes and conversation under its issue text.
+ *
+ * The issue endpoint reports a PR's **conversation** count and nothing about
+ * inline review notes, so a reader that stopped at `getIssue` would answer
+ * "0 comments" while a review sat on the diff. The client already merges both
+ * feeds; this is where they become model-facing text.
+ *
+ * @param issue - The issue fields.
+ * @param pull - The PR, with its comments.
+ * @returns The issue text plus the thread.
+ */
+export function renderPullRequest(
+    issue: IssueSnapshot,
+    pull: PullRequestSnapshot,
+): string {
+    const lines = [renderIssue(issue)];
+    if (pull.comments.length === 0) {
+        lines.push(
+            "",
+            pull.conversationUnavailable
+                ? "(The conversation could not be read, and there are no inline review notes.)"
+                : "No review comments or conversation yet.",
+        );
+        return lines.join("\n");
+    }
+    lines.push("", "## Review comments and conversation", "");
+    for (const comment of pull.comments) {
+        const where =
+            comment.path === undefined
+                ? "conversation"
+                : `${comment.path}${
+                      comment.line === undefined ? "" : `:${comment.line}`
+                  }`;
+        const body = comment.body.trim();
+        lines.push(
+            `- @${comment.author} on ${where}:`,
+            quote(
+                body.length > MAX_COMMENT_CHARS
+                    ? `${body.slice(0, MAX_COMMENT_CHARS - 1)}…`
+                    : body,
+            ),
+            "",
+        );
+    }
+    if (pull.commentsTruncated) {
+        lines.push("(Only the most recent comments are shown.)", "");
+    }
     return lines.join("\n");
 }
 
@@ -264,7 +344,28 @@ export function createGitHubTools(
                         input.number,
                         signalOf(runtime),
                     );
-                    return renderIssue(issue);
+                    if (!issue.pullRequest) {
+                        return renderIssue(issue);
+                    }
+                    // A review lives on the pulls endpoints, not in the issue
+                    // object: without this read, "address my comment" gets
+                    // answered with the issue's (conversation-only) count.
+                    try {
+                        const pull = await deps.client.readPullRequest(
+                            resolved.repo.owner,
+                            resolved.repo.name,
+                            issue.number,
+                            signalOf(runtime),
+                        );
+                        return renderPullRequest(issue, pull);
+                    } catch (err) {
+                        const message =
+                            err instanceof Error ? err.message : String(err);
+                        logger.warn(
+                            `github tool: could not read pull request #${issue.number}: ${message}`,
+                        );
+                        return `${renderIssue(issue)}\n\n(Review comments could not be read: ${message})`;
+                    }
                 } catch (err) {
                     return failure(err);
                 }
@@ -272,7 +373,7 @@ export function createGitHubTools(
             {
                 name: "getGitHubIssue",
                 description:
-                    "Read one GitHub issue (or pull request) by number — title, state, labels, description and URL. " +
+                    "Read one GitHub issue or pull request by number — title, state, labels, description and URL, plus a pull request's review comments and conversation. " +
                     "Use it when the user names an issue, for example to implement or summarise it. " +
                     "To act on a pull request's review, use startCodingJob with `pullRequest` instead.",
                 schema: z.object({
