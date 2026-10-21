@@ -98,7 +98,8 @@ const REFUSAL: Record<
     | "issue-unavailable"
     | "issue-is-pull-request"
     | "issue-and-pull-request"
-    | "reply-without-pull-request",
+    | "reply-without-pull-request"
+    | "broker-unreachable",
     string
 > = {
     "task-missing": "A coding job needs a task; say what the agent should do.",
@@ -125,6 +126,8 @@ const REFUSAL: Record<
         "Pass either an issue or a pull request, not both.",
     "reply-without-pull-request":
         "Replying to a comment needs the pull request it belongs to; pass `pullRequest` too.",
+    "broker-unreachable":
+        "The coding broker is not reachable, so I did not start a job. Start the sidecar (`npm run sandbox:proxy`) and try again.",
 };
 
 /** A pull request reference: always a number, plus the repo a URL named. */

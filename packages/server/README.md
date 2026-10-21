@@ -313,7 +313,12 @@ The script builds the server if `dist` is missing, creates `jarvis-sandbox` as
 an internal network (refusing a network of that name that has a route out),
 starts a stock `node:24` container with this checkout's build and hoisted
 `node_modules` mounted **read-only**, and attaches it to both networks. It is
-the same code the server runs, not an image build.
+the same code the server runs, not an image build. The command **detaches**:
+the container survives the terminal, `docker logs -f jarvis-proxy` follows it,
+and `docker stop jarvis-proxy` stops it. (A foreground helper is too easy to
+close by accident; the server now refuses a job when the broker does not
+answer, so a stopped sidecar is a sentence, not a DNS error inside a doomed
+container.)
 
 `packages/server/.env` then needs:
 
@@ -336,8 +341,11 @@ status endpoint at `http://jarvis:54321`.
 
 #### Failure modes
 
-- **Sidecar down** — model calls fail; the job ends `failed` with a clear broker
-  error instead of hanging.
+- **Sidecar not started** — `startCodingJob` probes the broker before cloning
+  and refuses with `broker-unreachable` (`start the sidecar and try again`), so
+  no workspace or container is spent on a doomed run.
+- **Sidecar dies mid-job** — model calls fail; the job ends `failed` with a
+  clear broker error instead of hanging.
 - **Server down** — the job-state check fails closed, the job fails, and boot
   recovery settles the row.
 - **Sidecar restarted** — tokens are HMAC-derived from the stable secret, so

@@ -16,7 +16,14 @@
  *      of that name that has a route out);
  *   3. starts `jarvis-proxy` on the default bridge, then attaches it to the
  *      internal network — two network cards, one container;
- *   4. follows its logs until Ctrl-C, then stops it.
+ *   4. detaches. The container keeps running when this command (or the
+ *      terminal that ran it) goes away; `docker logs -f jarvis-proxy` follows
+ *      it, and `docker stop jarvis-proxy` stops it.
+ *
+ * Detaching is deliberate: a foreground helper is too easy to close by
+ * accident, and the failure mode is a job that dies at its first model call
+ * with a DNS error. The server also refuses a job when the broker does not
+ * answer, so a stopped sidecar is named rather than guessed at.
  *
  * The server must point at it (`packages/server/.env`):
  *
@@ -26,7 +33,7 @@
  *   JARVIS_SANDBOX_NETWORK=jarvis-sandbox
  *   JARVIS_SANDBOX_EXTRA_HOSTS=none
  */
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -165,22 +172,9 @@ if (fileEnv.JARVIS_SANDBOX_PROXY_MODE !== "sidecar") {
     );
 }
 
-const logs = spawn("docker", ["logs", "-f", containerName], {
-    stdio: "inherit",
-});
-
-const stop = () => {
-    spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
-    process.exit(0);
-};
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
-logs.on("exit", (code) => {
-    if (code !== 0) {
-        console.error(
-            `\nThe sidecar exited (${code}). Common causes: the secret file was unreadable, ` +
-                "the server was not running for the job-state check, or the image was missing.",
-        );
-    }
-    process.exit(code ?? 0);
-});
+console.log(
+    `\nSidecar running as ${containerName}.\n` +
+        `  logs: docker logs -f ${containerName}\n` +
+        `  stop: docker stop ${containerName}\n` +
+        "It stays up when this terminal closes; the server refuses jobs while it is down.",
+);

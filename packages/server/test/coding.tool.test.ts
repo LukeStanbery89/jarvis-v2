@@ -242,6 +242,13 @@ describe("startCodingJob", () => {
             reason: "no PR",
         });
         expect(replyOnly.text).toContain("needs the pull request");
+
+        const noBroker = await invoke({
+            ok: false,
+            code: "broker-unreachable",
+            reason: "sidecar is down",
+        });
+        expect(noBroker.text).toContain("sandbox:proxy");
     });
 
     it("starts a job and reports its id and branch without claiming the work", async () => {
