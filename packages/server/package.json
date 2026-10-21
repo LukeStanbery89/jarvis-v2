@@ -46,6 +46,7 @@
         "dotenv": "^18.0.3",
         "express": "^5.2.1",
         "express-openapi-validator": "^5.4.0",
+        "underscore": "^1.13.8",
         "ws": "^8.21.3",
         "zod": "^4.6.5"
     },
