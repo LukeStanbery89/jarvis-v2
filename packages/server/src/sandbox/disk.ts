@@ -12,6 +12,7 @@
  * size. A failed measurement returns zero — the quota is a guard, and a guard
  * that fails must not kill a healthy job.
  */
+// sandbox e2e probe
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
