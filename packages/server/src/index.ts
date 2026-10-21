@@ -410,6 +410,7 @@ const webApp = createApp(
     inFlight,
     notifications,
     jobCreator,
+    codingJobs,
 );
 
 const { server } = createJarvisServer(webApp, {

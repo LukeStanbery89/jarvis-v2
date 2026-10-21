@@ -95,6 +95,9 @@ async function invoke(
         async stop() {
             return null;
         },
+        openLogStream() {
+            return { replay: [], subscribe: () => () => {} };
+        },
     };
     const deps: CodingToolDeps = {
         service,

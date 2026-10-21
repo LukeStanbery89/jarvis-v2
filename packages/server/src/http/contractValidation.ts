@@ -21,8 +21,15 @@ import { logger } from "../logger";
 
 const contractRequire = createRequire(__filename);
 
-/** Everything outside the contract surface (portal SPA, other paths) is skipped. */
-const IGNORED_PATHS = /^\/(?!api|health)/;
+/**
+ * Everything outside the contract surface (portal SPA, other paths) is skipped,
+ * and so is the coding-job log stream: its body is written incrementally, so
+ * there is no complete document for a response validator to inspect. The spec
+ * still declares it for clients and the generated types.
+ */
+const IGNORED_PATHS = (requestPath: string): boolean =>
+    /^\/(?!api|health)/.test(requestPath) ||
+    /^\/api\/coding-jobs\/[^/]+\/logs$/.test(requestPath);
 
 /**
  * Locates the REST spec the validator runs against: the Redocly-bundled

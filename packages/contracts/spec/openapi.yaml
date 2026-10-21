@@ -49,6 +49,9 @@ tags:
       description: Single-use first-owner setup.
     - name: ChatSessions
       description: Chat-thread sessions (`/api/sessions`) — the LangGraph threads, not cookie sessions.
+    - name: CodingJobs
+      description: >-
+          Coding jobs (#141) — sandboxed repository work started from chat.
     - name: Devices
       description: Device tokens and their lifecycle.
     - name: Health
@@ -1384,6 +1387,45 @@ paths:
                                 $ref: "#/components/schemas/Error"
                 "409":
                     description: The notification is already settled.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/coding-jobs/{id}/logs:
+        parameters:
+            - $ref: "#/components/parameters/PathJobId"
+        get:
+            operationId: codingJobLogs
+            summary: Follow one coding job's log
+            description: >-
+                The job's output as newline-delimited JSON frames, one frame per
+                line. While the job is queued or running the response replays
+                the buffered part and then follows the container until it
+                settles; a settled job's response is its full log file (empty
+                when the job never started a container). A job that belongs to
+                another account is answered 404, the same as one that does not
+                exist. The body is a stream, so the runtime contract validator
+                does not inspect it; this entry is the shape clients generate
+                against.
+            tags: [CodingJobs]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The job's log, one JSON frame per line.
+                    content:
+                        application/x-ndjson:
+                            schema:
+                                type: string
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such coding job for this account.
                     content:
                         application/json:
                             schema:
