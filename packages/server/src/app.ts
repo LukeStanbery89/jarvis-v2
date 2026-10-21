@@ -74,6 +74,22 @@ const attachmentBodyTooLarge = (_appConfig: AppConfig, maxBytes: number) => {
  * Machine health checks use `GET /health` regardless, so monitoring never
  * depends on either SPA being present.
  */
+/**
+ * The sidecar's job-state check (#141).
+ *
+ * Absent in embedded mode: the broker has the ledger in-process, so nothing
+ * needs an HTTP route. Present in sidecar mode only, where the proxy container
+ * proves a job is alive by presenting the job's own token.
+ */
+export interface InternalRoutesOptions {
+    jobState: {
+        /** The job id a token claims, or `null` when the token is not ours. */
+        verifyToken(token: string): string | null;
+        /** Whether the job may still spend the broker's key. */
+        isActive(jobId: string): boolean;
+    };
+}
+
 export function createApp(
     store: AppDatabase,
     appConfig: AppConfig,
@@ -82,6 +98,7 @@ export function createApp(
     notifications?: NotificationService,
     jobs?: JobCreator,
     codingLogs?: CodingLogSource,
+    internal?: InternalRoutesOptions,
 ) {
     const app = express();
 
@@ -131,6 +148,30 @@ export function createApp(
     app.get("/health", (req, res) => {
         res.status(200).json({ ok: true });
     });
+
+    // The broker sidecar's liveness check (#141): it has no database, so it
+    // asks here with the job's own token. Only mounted in sidecar mode; the
+    // token is the credential and the answer is one boolean.
+    if (internal !== undefined) {
+        app.get("/internal/job-state", (req, res) => {
+            res.set("cache-control", "no-store");
+            const header = req.headers.authorization;
+            const match =
+                typeof header === "string"
+                    ? /^Bearer\s+(.+)$/i.exec(header.trim())
+                    : null;
+            const token = match?.[1]?.trim() ?? null;
+            const jobId =
+                token === null ? null : internal.jobState.verifyToken(token);
+            if (jobId === null) {
+                res.status(401).json({
+                    error: "a valid coding-job token is required",
+                });
+                return;
+            }
+            res.json({ active: internal.jobState.isActive(jobId) });
+        });
+    }
 
     // The attachments router mounts after the validator (so its request and
     // response shapes stay contract-checked) but as its own path-scoped

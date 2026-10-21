@@ -29,7 +29,7 @@
  *     can even open a socket.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import {
     createServer,
     type IncomingMessage,
@@ -37,7 +37,6 @@ import {
     type ServerResponse,
 } from "node:http";
 import { Readable } from "node:stream";
-import { ensurePrivateFile } from "@lukestanbery/jarvis-auth";
 import { logger } from "../logger";
 
 /** The token version prefix; a future format can coexist with `jv1`. */
@@ -49,8 +48,9 @@ const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 /** A chat-completions request is a prompt plus context; 8 MiB is generous. */
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
-/** Above this many live counters, drop the ones whose jobs no longer run. */
+/** Above this many live counters, drop the ones nobody has used for this long. */
 const COUNTER_PRUNE_THRESHOLD = 32;
+const COUNTER_TTL_MS = 60 * 60 * 1000;
 
 /** The path prefix the job's provider base URL ends with. */
 const PROXY_PREFIX = "/v1";
@@ -91,9 +91,11 @@ export interface SandboxProxyOptions {
      * Whether a job may still use the broker.
      *
      * Consulted per request, so a settle, cancel or prune revokes the token
-     * without any coordination with the supervisor.
+     * without any coordination with the supervisor. The token is passed along
+     * because a sidecar has no ledger: it asks the server with the same
+     * credential the job presented, and caches the answer briefly.
      */
-    isJobActive(jobId: string): boolean;
+    isJobActive(jobId: string, token: string): boolean | Promise<boolean>;
 }
 
 /** The broker's lifecycle: start once, close for tests. */
@@ -167,6 +169,15 @@ export function verifyJobToken(secret: string, token: string): string | null {
  * @returns A secret of at least 32 characters.
  * @throws When the configured secret is shorter than 32 characters.
  */
+export function readProxySecret(path: string): string | null {
+    try {
+        const stored = readFileSync(path, "utf8").trim();
+        return stored.length >= 32 ? stored : null;
+    } catch {
+        return null;
+    }
+}
+
 export function loadProxySecret(configured: string, path: string): string {
     const value = configured.trim();
     if (value.length > 0) {
@@ -187,7 +198,13 @@ export function loadProxySecret(configured: string, path: string): string {
     }
     const generated = randomBytes(32).toString("base64url");
     writeFileSync(path, `${generated}\n`, { mode: 0o600 });
-    ensurePrivateFile(path);
+    // The sidecar runs the broker without the auth package, so this little
+    // posture helper is local rather than imported from it.
+    try {
+        chmodSync(path, 0o600);
+    } catch {
+        // Best-effort: only meaningful for a file this process created.
+    }
     return generated;
 }
 
@@ -204,6 +221,7 @@ export function loadProxySecret(configured: string, path: string): string {
  */
 export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
     const counts = new Map<string, number>();
+    const lastSeen = new Map<string, number>();
     let server: Server | null = null;
 
     const upstreamBase = options.upstreamBaseUrl.endsWith("/")
@@ -254,14 +272,21 @@ export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
         return Buffer.concat(chunks);
     }
 
-    /** Drops counters for jobs that have settled, so the map cannot grow forever. */
-    function pruneCounters(): void {
+    /**
+     * Drops counters nobody has touched for an hour, so the map cannot grow.
+     *
+     * Time-based rather than ledger-based because a sidecar has no ledger: the
+     * ledger check is per request, and a job cannot idle longer than its wall
+     * clock while still spending requests.
+     */
+    function pruneCounters(now: number): void {
         if (counts.size <= COUNTER_PRUNE_THRESHOLD) {
             return;
         }
-        for (const jobId of counts.keys()) {
-            if (!options.isJobActive(jobId)) {
+        for (const [jobId, at] of lastSeen) {
+            if (now - at > COUNTER_TTL_MS) {
                 counts.delete(jobId);
+                lastSeen.delete(jobId);
             }
         }
     }
@@ -313,7 +338,8 @@ export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
         }
 
         counts.set(jobId, used + 1);
-        pruneCounters();
+        lastSeen.set(jobId, Date.now());
+        pruneCounters(Date.now());
 
         const headers: Record<string, string> = {};
         for (const name of FORWARDED_HEADERS) {
@@ -410,7 +436,7 @@ export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
         const token = bearer(req);
         const claimed =
             token === null ? null : verifyJobToken(options.secret, token);
-        if (claimed === null) {
+        if (claimed === null || token === null) {
             fail(
                 res,
                 401,
@@ -419,7 +445,7 @@ export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
             );
             return;
         }
-        if (!options.isJobActive(claimed)) {
+        if (!(await options.isJobActive(claimed, token))) {
             fail(
                 res,
                 401,

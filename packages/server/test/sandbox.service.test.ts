@@ -26,6 +26,7 @@ import type { SandboxConfig } from "../src/config";
 import type { NotificationService } from "../src/notify/service";
 import { createFakeSandbox } from "../src/sandbox/fake";
 import {
+    brokerAnswers,
     createCodingJobService,
     followUpPrompt,
     lastAgentMessage,
@@ -55,8 +56,11 @@ const CONFIG: SandboxConfig = {
     proxyBind: "127.0.0.1",
     proxyPort: 54322,
     proxyUrl: "http://host.docker.internal:54322/v1",
+    proxyProbeUrl: "",
     proxySecret: "",
     proxyMaxRequestsPerJob: 500,
+    proxyMode: "embedded",
+    egressProxyUrl: "",
     network: "",
     logRoot: "/logs/coding",
     logMaxMb: 10,
@@ -243,6 +247,7 @@ function makeService(
         }) => Promise<IssueSnapshot>;
         workspace?: FakeWorkspace;
         workspaceSize?: (workspacePath: string) => Promise<number>;
+        probeBroker?: (url: string) => Promise<boolean>;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
     } = {},
@@ -266,6 +271,9 @@ function makeService(
         ...(overrides.issues ? { issues: overrides.issues } : {}),
         ...(overrides.workspaceSize
             ? { workspaceSize: overrides.workspaceSize }
+            : {}),
+        ...(overrides.probeBroker
+            ? { probeBroker: overrides.probeBroker }
             : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
@@ -315,6 +323,8 @@ describe("starting a coding job", () => {
             JARVIS_JOB_LLM_BASE_URL: "http://host.docker.internal:1234/v1",
             JARVIS_JOB_BRANCH: started.job.branch,
         });
+        // Embedded mode: the job reaches the broker and nothing else.
+        expect(runner.started[0]?.env).not.toHaveProperty("HTTP_PROXY");
 
         runner.emit(started.job.containerId ?? "", "working…");
         runner.exit(started.job.containerId ?? "", 0);
@@ -622,6 +632,68 @@ describe("starting a coding job", () => {
             await failing.service.start({ ...request, userId: failing.userId }),
         ).toMatchObject({ ok: false, code: "pull-request-unavailable" });
         expect(failing.workspace.prepared).toHaveLength(0);
+    });
+
+    it("gives a sidecar job the egress proxy and keeps the broker direct", async () => {
+        const { userId, runner, service } = makeService({
+            config: {
+                proxyMode: "sidecar",
+                proxyUrl: "http://proxy:54322/v1",
+                egressProxyUrl: "http://proxy:54323",
+            },
+            // Production always passes the broker (url + secret) when the
+            // sandbox is on: the same wiring derives the token in both modes.
+            proxy: { url: "http://proxy:54322/v1", secret: "s".repeat(32) },
+            probeBroker: async () => true,
+        });
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Install the dependencies and run the tests",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(runner.started[0]?.env).toMatchObject({
+            JARVIS_JOB_LLM_BASE_URL: "http://proxy:54322/v1",
+            HTTP_PROXY: "http://proxy:54323",
+            HTTPS_PROXY: "http://proxy:54323",
+            // The broker and the agent's own localhost control plane are
+            // reached directly, not through the forward proxy.
+            NO_PROXY: "proxy,localhost,127.0.0.1,::1",
+        });
+
+        runner.emit(started.job.containerId ?? "", "ok");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+    });
+
+    it("refuses a sidecar job when the broker is not running", async () => {
+        const probe = vi.fn(async () => false);
+        const { userId, workspace, service } = makeService({
+            config: {
+                proxyMode: "sidecar",
+                proxyUrl: "http://jarvis-proxy:54322/v1",
+                proxyProbeUrl: "http://127.0.0.1:54322/v1",
+            },
+            probeBroker: probe,
+        });
+
+        const result = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Install a dependency",
+        });
+
+        expect(result).toMatchObject({
+            ok: false,
+            code: "broker-unreachable",
+        });
+        // The server probes the host-reachable URL, not the job's name.
+        expect(probe).toHaveBeenCalledWith("http://127.0.0.1:54322/v1");
+        // Nothing was cloned, claimed or started for a doomed run.
+        expect(workspace.prepared).toHaveLength(0);
     });
 
     it("records a failed run, removes its workspace and says why", async () => {
@@ -1280,5 +1352,32 @@ describe("follow-up prompts", () => {
 
         expect(prompt).toContain("Only the most recent comments are shown.");
         expect(prompt.length).toBeLessThan(20_000);
+    });
+});
+
+describe("brokerAnswers", () => {
+    it("counts any HTTP answer, including the 401 an unauthenticated call gets", async () => {
+        const { createServer } = await import("node:http");
+        const server = createServer((_req, res) => {
+            res.writeHead(401).end();
+        });
+        await new Promise<void>((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", () => resolve());
+        });
+        const address = server.address();
+        const port =
+            typeof address === "object" && address !== null ? address.port : 0;
+        try {
+            expect(await brokerAnswers(`http://127.0.0.1:${port}/v1`)).toBe(
+                true,
+            );
+        } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    });
+
+    it("is false when nothing is listening", async () => {
+        expect(await brokerAnswers("http://127.0.0.1:1/v1")).toBe(false);
     });
 });

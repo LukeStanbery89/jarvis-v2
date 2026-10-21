@@ -25,6 +25,56 @@ describe("app", () => {
         expect(res.text).toBe("Hello World");
     });
 
+    it("answers the sidecar's job-state check with the token's job", async () => {
+        const app = createApp(
+            store,
+            {
+                appDbPath: ":memory:",
+                turnTimeoutMs: 30_000,
+                bootstrapToken: undefined,
+            },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+                jobState: {
+                    verifyToken: (token) => (token === "good" ? "job-1" : null),
+                    isActive: (jobId) => jobId === "job-1",
+                },
+            },
+        );
+
+        const ok = await request(app)
+            .get("/internal/job-state")
+            .set("authorization", "Bearer good");
+        expect(ok.status).toBe(200);
+        expect(ok.body).toEqual({ active: true });
+
+        const missing = await request(app).get("/internal/job-state");
+        expect(missing.status).toBe(401);
+
+        const bad = await request(app)
+            .get("/internal/job-state")
+            .set("authorization", "Bearer nope");
+        expect(bad.status).toBe(401);
+    });
+
+    it("does not mount the job-state check without a sidecar", async () => {
+        const res = await request(
+            createApp(store, {
+                appDbPath: ":memory:",
+                turnTimeoutMs: 30_000,
+                bootstrapToken: undefined,
+            }),
+        )
+            .get("/internal/job-state")
+            .set("authorization", "Bearer good");
+
+        expect(res.status).toBe(404);
+    });
+
     it("reports machine health via GET /health regardless of portal", async () => {
         const res = await request(
             createApp(store, {

@@ -46,6 +46,7 @@ import { createCodingJobService } from "./sandbox/service";
 import {
     createSandboxProxy,
     loadProxySecret,
+    verifyJobToken,
     type SandboxProxy,
 } from "./sandbox/proxy";
 import { createGitHubClient } from "./github/client";
@@ -270,6 +271,7 @@ const notifications =
 // job talks to it with a token derived from its own id, so nothing in a
 // container's environment is a credential that outlives the job.
 let sandboxProxy: SandboxProxy | undefined;
+let proxySecret: string | undefined;
 let codingJobs: ReturnType<typeof createCodingJobService> | undefined;
 // One GitHub client serves publishing, follow-ups and the tracker tools
 // (#140). It is created when the App is configured even without the sandbox:
@@ -279,34 +281,39 @@ const githubClient = appConfig.github
     : undefined;
 if (appConfig.sandbox) {
     const sandbox = appConfig.sandbox;
-    const proxySecret = loadProxySecret(
+    proxySecret = loadProxySecret(
         sandbox.proxySecret,
         path.join(path.dirname(appConfig.appDbPath), "sandbox-proxy.key"),
     );
-    sandboxProxy = createSandboxProxy({
-        bind: sandbox.proxyBind,
-        port: sandbox.proxyPort,
-        url: sandbox.proxyUrl,
-        secret: proxySecret,
-        upstreamBaseUrl: sandbox.llmBaseUrl,
-        model: sandbox.model,
-        apiKey: sandbox.apiKey,
-        maxRequestsPerJob: sandbox.proxyMaxRequestsPerJob,
-        // Per request, not once: a settle, cancel or prune revokes the token
-        // immediately, even one that leaked out of the container.
-        isJobActive: (jobId) => {
-            const job = store.getCodingJobById(jobId);
-            return (
-                job !== null &&
-                (job.state === "queued" || job.state === "running")
-            );
-        },
-    });
+    // In sidecar mode the broker runs in its own container on the job's
+    // internal network, and this process must not listen for jobs at all.
+    if (sandbox.proxyMode === "embedded") {
+        sandboxProxy = createSandboxProxy({
+            bind: sandbox.proxyBind,
+            port: sandbox.proxyPort,
+            url: sandbox.proxyUrl,
+            secret: proxySecret,
+            upstreamBaseUrl: sandbox.llmBaseUrl,
+            model: sandbox.model,
+            apiKey: sandbox.apiKey,
+            maxRequestsPerJob: sandbox.proxyMaxRequestsPerJob,
+            // Per request, not once: a settle, cancel or prune revokes the token
+            // immediately, even one that leaked out of the container.
+            isJobActive: (jobId) => {
+                const job = store.getCodingJobById(jobId);
+                return (
+                    job !== null &&
+                    (job.state === "queued" || job.state === "running")
+                );
+            },
+        });
+    }
     // The listener starts at the bottom of this file, chained ahead of coding
     // recovery: every job now depends on it, and an adopted container's first
     // model call must find it open. A broker that cannot bind is a sandbox that
     // cannot run, and exiting is better than a silent "the model refused" on
-    // every job.
+    // every job. A sidecar has no local listener, so recovery waits for
+    // nothing there.
     const workspace = createWorkspaceManager({
         root: sandbox.workspaceRoot,
         hostRoot: sandbox.workspaceHostRoot,
@@ -466,6 +473,27 @@ const jobCreator =
 
 // The coding sandbox (#141): the supervisor is built above, before the graph,
 // so the `startCodingJob` tool can reach it.
+// The sidecar's liveness check exists only in sidecar mode: in embedded mode
+// the broker has the ledger in-process, so no HTTP route is needed.
+const sidecarSecret =
+    appConfig.sandbox?.proxyMode === "sidecar" ? proxySecret : undefined;
+const internalRoutes =
+    sidecarSecret === undefined
+        ? undefined
+        : {
+              jobState: {
+                  verifyToken: (token: string) =>
+                      verifyJobToken(sidecarSecret, token),
+                  isActive: (jobId: string) => {
+                      const job = store.getCodingJobById(jobId);
+                      return (
+                          job !== null &&
+                          (job.state === "queued" || job.state === "running")
+                      );
+                  },
+              },
+          };
+
 const webApp = createApp(
     store,
     appConfig,
@@ -474,6 +502,7 @@ const webApp = createApp(
     notifications,
     jobCreator,
     codingJobs,
+    internalRoutes,
 );
 
 const { server } = createJarvisServer(webApp, {
@@ -500,7 +529,7 @@ void scheduler?.start();
 // only job-path at boot — and it waits for the broker's listener, so an adopted
 // container's first model call does not race the bind.
 void (sandboxProxy === undefined
-    ? Promise.resolve()
+    ? Promise.resolve().then(() => codingJobs?.recover())
     : sandboxProxy
           .start()
           .then(() => codingJobs?.recover())

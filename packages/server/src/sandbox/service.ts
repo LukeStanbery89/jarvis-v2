@@ -97,7 +97,8 @@ export type CodingJobRefusalCode =
     | "issue-unavailable"
     | "issue-is-pull-request"
     | "issue-and-pull-request"
-    | "reply-without-pull-request";
+    | "reply-without-pull-request"
+    | "broker-unreachable";
 
 /** The result of asking to start one job. */
 export type StartCodingJobResult =
@@ -249,6 +250,14 @@ export function createCodingJobService(options: {
      * carry a Docker storage quota (#141).
      */
     workspaceSize?: (workspacePath: string) => Promise<number>;
+    /**
+     * Whether the broker answers at all. Defaults to a short HTTP probe.
+     *
+     * Sidecar mode has no local listener, so a stopped sidecar would otherwise
+     * fail inside the container with a DNS error — a job row spent on a typo.
+     * Injected by tests.
+     */
+    probeBroker?: (url: string) => Promise<boolean>;
     now?: () => Date;
     newId?: () => string;
 }): CodingJobService {
@@ -264,6 +273,7 @@ export function createCodingJobService(options: {
         issues,
     } = options;
     const size = options.workspaceSize ?? workspaceBytes;
+    const probeBroker = options.probeBroker ?? brokerAnswers;
     const now = options.now ?? (() => new Date());
     const newId = options.newId ?? (() => randomUUID());
     const nowIso = () => now().toISOString();
@@ -688,6 +698,15 @@ export function createCodingJobService(options: {
         prepared: PreparedWorkspace,
         task: string,
     ): SandboxSpec {
+        // The broker's hostname is the one destination the job reaches
+        // directly; every other name goes through the egress proxy when one is
+        // configured, and `NO_PROXY` keeps the two apart (#141).
+        let brokerHost = "proxy";
+        try {
+            brokerHost = new URL(config.proxyUrl).hostname;
+        } catch {
+            // A malformed URL is the config's problem; the job still starts.
+        }
         return {
             jobId: job.id,
             image: config.image,
@@ -705,7 +724,11 @@ export function createCodingJobService(options: {
                 // derived from its own job id (#141 phase 7). Without a broker
                 // (tests, or a deliberately direct deployment) the old shape
                 // applies.
-                JARVIS_JOB_LLM_BASE_URL: proxy?.url ?? config.llmBaseUrl,
+                JARVIS_JOB_LLM_BASE_URL:
+                    proxy?.url ??
+                    (config.proxyMode === "sidecar"
+                        ? config.proxyUrl
+                        : config.llmBaseUrl),
                 JARVIS_JOB_MODEL_ID: config.model,
                 ...(proxy !== undefined
                     ? {
@@ -714,9 +737,32 @@ export function createCodingJobService(options: {
                               job.id,
                           ),
                       }
-                    : config.apiKey.length > 0
-                      ? { JARVIS_JOB_API_KEY: config.apiKey }
-                      : {}),
+                    : config.proxyMode === "sidecar"
+                      ? // No broker wiring means no derived token; never fall
+                        // back to the real key in a container.
+                        {}
+                      : config.apiKey.length > 0
+                        ? { JARVIS_JOB_API_KEY: config.apiKey }
+                        : {}),
+                // Research and installs go through the sidecar's forward
+                // proxy; without it the job reaches the broker and nothing
+                // else (the network has no other route).
+                ...(config.proxyMode === "sidecar" &&
+                config.egressProxyUrl.length > 0
+                    ? {
+                          HTTP_PROXY: config.egressProxyUrl,
+                          HTTPS_PROXY: config.egressProxyUrl,
+                          http_proxy: config.egressProxyUrl,
+                          https_proxy: config.egressProxyUrl,
+                          // The agent runs a local server (opencode on
+                          // 127.0.0.1:<port>) and its own client honors the
+                          // proxy env: without loopback here, the job proxies
+                          // its own control plane and the egress layer refuses
+                          // it as private.
+                          NO_PROXY: `${brokerHost},localhost,127.0.0.1,::1`,
+                          no_proxy: `${brokerHost},localhost,127.0.0.1,::1`,
+                      }
+                    : {}),
                 HOME: "/home/job",
             },
             limits: {
@@ -786,6 +832,22 @@ export function createCodingJobService(options: {
                     ok: false,
                     code: "busy",
                     reason: `${config.maxJobs} coding job(s) are already running`,
+                };
+            }
+
+            // A sidecar has no local listener: if it is not running, the job
+            // would spend a container and fail with a DNS error. Ask the broker
+            // first so the refusal names the fix.
+            if (
+                config.proxyMode === "sidecar" &&
+                !(await probeBroker(config.proxyProbeUrl || config.proxyUrl))
+            ) {
+                return {
+                    ok: false,
+                    code: "broker-unreachable",
+                    reason: `the broker sidecar is not reachable at ${
+                        config.proxyProbeUrl || config.proxyUrl
+                    }`,
                 };
             }
 
@@ -1076,6 +1138,28 @@ export function createCodingJobService(options: {
             return logHub.open(jobId);
         },
     };
+}
+
+/**
+ * Whether the broker is listening.
+ *
+ * Any HTTP response counts — including the 401 an unauthenticated
+ * `GET /v1/models` gets, because "the process answered" is the question. A
+ * sidecar that is down has no DNS name and throws instead.
+ *
+ * @param url - The broker base (`http://jarvis-proxy:54322/v1`).
+ * @returns True when a response came back.
+ */
+export async function brokerAnswers(url: string): Promise<boolean> {
+    try {
+        const response = await fetch(`${url.replace(/\/+$/, "")}/models`, {
+            method: "GET",
+            signal: AbortSignal.timeout(2_000),
+        });
+        return response.status > 0;
+    } catch {
+        return false;
+    }
 }
 
 /**
