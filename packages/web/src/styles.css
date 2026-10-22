@@ -2712,3 +2712,127 @@ textarea::placeholder {
         grid-row: 1 / span 2;
     }
 }
+
+/* Unified presentation styles (#156) */
+.job-card {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    margin-bottom: 0.5rem;
+}
+
+.job-card-compact {
+    padding: 0.5rem 0.75rem;
+}
+
+.job-card-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.job-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.job-card-primary {
+    font-size: 1.35rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.job-card-compact .job-card-primary {
+    font-size: 1rem;
+}
+
+.job-card-title {
+    font-weight: 600;
+    margin-top: 0.25rem;
+}
+
+.job-card-details {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+
+.job-card-actions {
+    flex: 0 0 auto;
+}
+
+.class-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.125rem 0.375rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+}
+
+.chip-timer {
+    background: rgba(255, 180, 64, 0.15);
+}
+.chip-reminder {
+    background: rgba(120, 160, 255, 0.15);
+}
+.chip-notification {
+    background: rgba(160, 255, 200, 0.15);
+}
+
+.countdown {
+    font-variant-numeric: tabular-nums;
+}
+
+.row-actions {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+}
+
+.row-actions-trigger {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+}
+
+.row-actions-dropdown {
+    position: absolute;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.25rem;
+    display: flex;
+    flex-direction: column;
+    z-index: 10;
+}
+
+.notification-card {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    margin-bottom: 0.5rem;
+}
+
+.notification-card-primary {
+    font-weight: 600;
+    margin-top: 0.25rem;
+}
+
+.notification-card-details {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+
+.notification-card-actions {
+    flex: 0 0 auto;
+}

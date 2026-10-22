@@ -14,9 +14,10 @@
  */
 import { AppLink } from "../../AppLink";
 import { clockParts, formatDate } from "../../clock";
-import { describeRunAt, upcomingJobs } from "../../jobs";
+import { upcomingJobs } from "../../jobs";
 import { useClock } from "../../hooks/useClock";
 import type { JobsState } from "../../hooks/useJobs";
+import { JobCard } from "./Row/JobCard";
 
 /** How many jobs "coming up" lists before the pages take over. */
 const UPCOMING_LIMIT = 5;
@@ -71,21 +72,14 @@ export function Dashboard({ username, jobs, unread }: DashboardProps) {
                 ) : (
                     <ul className="dashboard-jobs">
                         {upcoming.map((job) => (
-                            <li key={job.id} className="dashboard-job">
-                                <span
-                                    className={`dashboard-class dashboard-class-${job.class}`}
-                                >
-                                    {job.class}
-                                </span>
-                                <span className="dashboard-label">
-                                    {job.label}
-                                </span>
-                                <span className="dashboard-when">
-                                    {job.state === "running"
-                                        ? "running now"
-                                        : describeRunAt(job.runAt, now)}
-                                </span>
-                            </li>
+                            <JobCard
+                                key={job.id}
+                                job={job}
+                                now={now}
+                                variant="compact"
+                                showKind={true}
+                                actions={null}
+                            />
                         ))}
                     </ul>
                 )}
