@@ -77,8 +77,6 @@ export function Dashboard({ username, jobs, unread }: DashboardProps) {
                                 job={job}
                                 now={now}
                                 variant="compact"
-                                showKind={true}
-                                actions={null}
                             />
                         ))}
                     </ul>

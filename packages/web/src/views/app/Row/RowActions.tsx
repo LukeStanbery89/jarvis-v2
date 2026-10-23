@@ -1,70 +1,57 @@
 /**
- * Menu-based actions for rows (#156) - controls cost nothing until invoked.
+ * A row's actions, folded into one `⋯` menu (#156).
+ *
+ * The presentation module's point is that a row's primary fact gets the room;
+ * a bar of Edit / Snooze / Cancel buttons is what took it. So the list pages
+ * show a single trigger and the actions live behind it — the controls are
+ * effectively zero-width until they are asked for.
+ *
+ * It is a native `<details>` rather than a popover or a JS menu: the browser
+ * hides a closed `<details>` for free (no state, no outside-click handling, no
+ * positioning), and — the reason it matters to the tests — the buttons are
+ * still in the static markup, so a node-only render can assert them without
+ * opening anything. `SnoozeMenu` stays a popover because its presets must
+ * escape the toast's scrolling column; a row's actions are never inside that
+ * column, so the simpler element is enough.
  */
-import { useState } from "react";
-
 export interface RowAction {
+    /** The button's label. Also its React key (labels are unique per row). */
     label: string;
-    onClick: () => void;
-    primary?: boolean;
+    /** Runs the action. */
+    onClick(): void;
 }
 
+/** Props for {@link RowActions}. */
 export interface RowActionsProps {
+    /** The actions to offer, in menu order. Empty renders nothing. */
     actions: RowAction[];
+    /** Extra classes for the menu. */
     className?: string;
 }
 
+/**
+ * One `⋯` menu of actions.
+ *
+ * @param props - See {@link RowActionsProps}.
+ */
 export function RowActions({ actions, className = "" }: RowActionsProps) {
-    const [open, setOpen] = useState(false);
     if (actions.length === 0) {
         return null;
     }
-    // If only primary action and no menu needed? Issue says "single ⋯ or ✎ + ⋯",
-    // but be flexible - show primary inline if present and small set
-    const primary = actions.find((a) => a.primary);
-    const others = actions.filter((a) => !a.primary);
-
     return (
-        <div className={`row-actions ${className}`.trim()}>
-            {primary && (
-                <button
-                    type="button"
-                    className="row-action-primary"
-                    onClick={primary.onClick}
-                >
-                    {primary.label}
-                </button>
-            )}
-            {others.length > 0 && (
-                <div className="row-actions-menu">
+        <details className={`row-actions ${className}`.trim()}>
+            <summary aria-label="Actions">⋯</summary>
+            <div className="row-actions-menu" role="group">
+                {actions.map((action) => (
                     <button
+                        key={action.label}
                         type="button"
-                        className="row-actions-trigger"
-                        aria-haspopup="menu"
-                        aria-expanded={open}
-                        onClick={() => setOpen((o) => !o)}
+                        onClick={action.onClick}
                     >
-                        ⋯
+                        {action.label}
                     </button>
-                    {open && (
-                        <div className="row-actions-dropdown" role="menu">
-                            {others.map((action, i) => (
-                                <button
-                                    key={i}
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                        action.onClick();
-                                        setOpen(false);
-                                    }}
-                                >
-                                    {action.label}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            )}
-        </div>
+                ))}
+            </div>
+        </details>
     );
 }

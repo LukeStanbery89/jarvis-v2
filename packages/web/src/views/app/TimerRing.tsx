@@ -69,7 +69,6 @@ export function TimerRing({ timer, onStop }: TimerRingProps) {
             }}
         >
             <ClassChip kind={presented.kind} />
-            <p className="timer-ring-eyebrow">Timer</p>
             <h2 id="timer-ring-title" className="timer-ring-title">
                 {presented.primary}
             </h2>

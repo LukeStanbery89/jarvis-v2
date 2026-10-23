@@ -1187,15 +1187,6 @@ textarea::placeholder {
     flex: 1;
 }
 
-.notification-eyebrow {
-    display: block;
-    margin-bottom: 0.05rem;
-    color: var(--primary-dim);
-    font-size: 0.68rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-}
-
 .notification-needs-answer {
     color: var(--primary-dim);
 }
@@ -1962,14 +1953,6 @@ textarea::placeholder {
     background: rgba(0, 0, 0, 0.82);
 }
 
-.timer-ring-eyebrow {
-    margin: 0;
-    font-size: 0.72rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    opacity: 0.7;
-}
-
 .timer-ring-title {
     margin: 0.35rem 0 0;
     font-size: 1.85rem;
@@ -2713,126 +2696,143 @@ textarea::placeholder {
     }
 }
 
-/* Unified presentation styles (#156) */
-.job-card {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-2);
-    margin-bottom: 0.5rem;
-}
+/* Unified presentation (#156).
+ *
+ * The shared components emit the app's existing class names — a job row is a
+ * `.job-item` pane, a record a `.notification-item` — so these rules add only
+ * what the presentation module introduced: the class chip, the primary fact's
+ * weight, the folded `⋯` action menu and the body block. Every value is drawn
+ * from the theme's own tokens. (The first revision of this block referenced the
+ * admin portal's `--border`/`--surface`/`--radius`, which do not exist in the
+ * app's sheet — the panes and chips rendered with no edge at all.) */
 
-.job-card-compact {
-    padding: 0.5rem 0.75rem;
-}
-
-.job-card-main {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.job-card-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
-
-.job-card-primary {
-    font-size: 1.35rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.job-card-compact .job-card-primary {
-    font-size: 1rem;
-}
-
-.job-card-title {
-    font-weight: 600;
-    margin-top: 0.25rem;
-}
-
-.job-card-details {
-    color: var(--text-dim);
-    font-size: 0.9rem;
-}
-
-.job-card-actions {
-    flex: 0 0 auto;
-}
-
+/* The class eyebrow, as a chip: the same uppercase, letterspaced line the job
+ * and notification heads already used, but bounded so it reads as a label. The
+ * theme is one hue; the timer steps up because it is the class that interrupts. */
 .class-chip {
     display: inline-flex;
     align-items: center;
-    padding: 0.125rem 0.375rem;
+    padding: 0.02rem 0.45rem;
+    border: 1px solid var(--primary-border);
     border-radius: 999px;
-    font-size: 0.75rem;
-    border: 1px solid var(--border);
+    color: var(--primary-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
 }
 
 .chip-timer {
-    background: rgba(255, 180, 64, 0.15);
-}
-.chip-reminder {
-    background: rgba(120, 160, 255, 0.15);
-}
-.chip-notification {
-    background: rgba(160, 255, 200, 0.15);
+    color: var(--primary);
+    border-color: var(--primary-dim);
 }
 
-.countdown {
+/* The class's primary fact (#156): the time remaining or the moment, made the
+ * loudest line in the row rather than the dimmest. Scoped so a settled row's
+ * moment keeps its step-back. */
+.job-primary {
+    color: var(--primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.countdown,
+.job-when,
+.dashboard-when,
+.job-primary {
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
+/* A body (Markdown, so links survive) and the plain detail lines under a row's
+ * title. Compact, so a body does not turn a list row into a paragraph. */
+.row-body p {
+    margin: 0.15rem 0 0;
+}
+
+.job-detail,
+.notification-detail {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+}
+
+.row-body a,
+.job-detail a,
+.notification-detail a {
+    color: var(--primary);
+}
+
+/* A row's controls, folded into one `⋯` (#156): a native disclosure whose
+ * buttons are hidden until it is opened, so the primary fact keeps the width.
+ * Styled from the same tokens as `SnoozeMenu`, the row's other control. */
 .row-actions {
-    display: flex;
-    gap: 0.25rem;
+    position: relative;
+    display: inline-flex;
     align-items: center;
 }
 
-.row-actions-trigger {
-    min-width: 2.75rem;
-    min-height: 2.75rem;
+.row-actions > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+    color: var(--primary);
+    font-size: 0.9rem;
+    line-height: 1;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
 }
 
-.row-actions-dropdown {
+.row-actions > summary::-webkit-details-marker {
+    display: none;
+}
+
+.row-actions > summary:hover,
+.row-actions[open] > summary {
+    background: var(--primary-wash);
+    border-color: var(--primary-dim);
+}
+
+.row-actions-menu {
     position: absolute;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.25rem;
+    top: calc(100% + 0.25rem);
+    right: 0;
+    z-index: 6;
     display: flex;
     flex-direction: column;
-    z-index: 10;
+    gap: 2px;
+    min-width: 8rem;
+    padding: 0.3rem;
+    background: var(--panel);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
 }
 
-.notification-card {
+/* The items read as menu items, not as the row's buttons: full width, left
+ * aligned, a wash on hover. Placed after `.job-actions button` /
+ * `.notification-actions button` so it wins the shared specificity. */
+.row-actions-menu button {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-2);
-    margin-bottom: 0.5rem;
+    justify-content: flex-start;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
 }
 
-.notification-card-primary {
-    font-weight: 600;
-    margin-top: 0.25rem;
-}
-
-.notification-card-details {
-    color: var(--text-dim);
-    font-size: 0.9rem;
-}
-
-.notification-card-actions {
-    flex: 0 0 auto;
+.row-actions-menu button:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+    border-color: var(--primary-border);
 }

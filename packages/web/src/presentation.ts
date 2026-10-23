@@ -8,7 +8,7 @@
  */
 import type { Job } from "./api";
 import type { ClientNotification } from "./notifications";
-import { describeRunAt, jobBody, repeatText, gateText } from "./jobs";
+import { describeRunAt, jobBody, repeatText } from "./jobs";
 import { describeBody, describeNotice } from "./notifications";
 
 /** Structured parts a row/card renders, per class. */
@@ -19,7 +19,13 @@ export interface Presented {
     primary: string;
     /** The thing itself — the user's label or the message's title. */
     title: string;
-    /** Everything else: body, repeats, gate, "waiting for your answer". */
+    /**
+     * The message's body, when it says more than the title. Rendered as
+     * Markdown (so links survive), never as raw text. A job's own body reads
+     * the same way; `null` when the title says it all.
+     */
+    body: string | null;
+    /** Plain lines under the title: a job's cadence, "waiting for your answer". */
     details: string[];
     /** Whether `primary` is a live countdown (the timer case). */
     countdown: boolean;
@@ -30,20 +36,10 @@ export interface Presented {
  * Timer: time remaining primary; Reminder: moment primary.
  */
 export function presentJob(job: Job, now: Date): Presented {
-    const body = jobBody(job);
     const details: string[] = [];
-    if (body !== null) {
-        details.push(body);
-    }
     const repeat = repeatText(job);
     if (repeat !== null) {
         details.push(`repeats ${repeat}`);
-    }
-    if (job.gate !== undefined) {
-        const g = gateText(job);
-        if (g !== null) {
-            details.push(g);
-        }
     }
 
     if (job.class === "timer") {
@@ -63,6 +59,7 @@ export function presentJob(job: Job, now: Date): Presented {
             kind: "Timer",
             primary,
             title: job.label,
+            body: jobBody(job),
             details,
             countdown: job.state !== "running" && isWithinHour,
         };
@@ -77,6 +74,7 @@ export function presentJob(job: Job, now: Date): Presented {
             kind: "Reminder",
             primary,
             title: job.label,
+            body: jobBody(job),
             details,
             countdown: false,
         };
@@ -89,6 +87,7 @@ export function presentJob(job: Job, now: Date): Presented {
         kind: "Notification",
         primary,
         title: job.label,
+        body: jobBody(job),
         details,
         countdown: false,
     };
@@ -96,31 +95,27 @@ export function presentJob(job: Job, now: Date): Presented {
 
 /**
  * Present a notification record for rendering.
- * Notification: message is primary (title/body as message).
+ *
+ * The **message is primary**: `primary` is the record's title — the headline
+ * the user was shown — and `body` carries the detail under it, rendered as
+ * Markdown so links survive. `details` holds the non-message notes only
+ * ("waiting for your answer").
  */
 export function presentNotification(
     notification: ClientNotification,
     _now: Date,
 ): Presented {
-    const body = describeBody(notification);
     const details: string[] = [];
-    if (body !== null) {
-        details.push(body);
-    }
     if (notification.requiresAnswer === true) {
         details.push("waiting for your answer");
     }
 
-    const kind = describeNotice(notification);
-    const title = notification.title;
-    // Message is primary for notifications - put the full message as primary
-    const primary = body !== null ? `${title} ${body}` : title;
-
     return {
-        kind,
-        primary,
-        title,
-        details: body !== null ? details.filter((d) => d !== body) : details,
+        kind: describeNotice(notification),
+        primary: notification.title,
+        title: notification.title,
+        body: describeBody(notification),
+        details,
         countdown: false,
     };
 }

@@ -4,10 +4,10 @@
  */
 import { X } from "lucide-react";
 import { AppLink } from "../../AppLink";
-import { describeBody, describeNotice } from "../../notifications";
+import { Markdown } from "../../Markdown";
 import type { ClientNotification } from "../../notifications";
-import { SnoozeMenu } from "./SnoozeMenu";
 import { presentNotification } from "../../presentation";
+import { SnoozeMenu } from "./SnoozeMenu";
 import { useClock } from "../../hooks/useClock";
 import { ClassChip } from "./Row/ClassChip";
 
@@ -46,9 +46,6 @@ function ToastCard({
 }: ToastCardProps) {
     const now = useClock();
     const presented = presentNotification(notification, now);
-    // The title says it all for most reminders, and a body that only restates it
-    // reads as a stutter (#90 phase 6c) — see `describeBody`.
-    const body = describeBody(notification);
     return (
         <div
             className={`notification-banner notification-${notification.priority} notification-${notification.class} toast`}
@@ -56,17 +53,16 @@ function ToastCard({
         >
             <div className="notification-text">
                 <ClassChip kind={presented.kind} />
-                <span className="notification-eyebrow">
-                    {describeNotice(notification)}
-                </span>
                 <strong>{presented.primary}</strong>
-                {body !== null && body !== notification.title && (
-                    <span> {body}</span>
+                {presented.body !== null && (
+                    <div className="row-body">
+                        <Markdown text={presented.body} />
+                    </div>
                 )}
-                {notification.requiresAnswer === true && (
+                {presented.details.length > 0 && (
                     <em className="notification-needs-answer">
                         {" "}
-                        (waiting for your answer)
+                        ({presented.details.join("; ")})
                     </em>
                 )}
             </div>
