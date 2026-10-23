@@ -15,6 +15,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
     buildCreateOptions,
+    WORKSPACE_BIND_MODE,
     createDockerSandbox,
     type DockerContainerSummary,
     type DockerCreateOptions,
@@ -176,7 +177,7 @@ describe("docker sandbox request", () => {
             Labels: { "jarvis.managed": "jarvis", "jarvis.job": "c1" },
         });
         expect(options.HostConfig).toMatchObject({
-            Binds: ["/host/jobs/c1/repo:/workspace:rw"],
+            Binds: [`/host/jobs/c1/repo:/workspace:${WORKSPACE_BIND_MODE}`],
             CapDrop: ["ALL"],
             SecurityOpt: ["no-new-privileges"],
             ReadonlyRootfs: true,
@@ -202,7 +203,7 @@ describe("docker sandbox request", () => {
         );
 
         expect(options.HostConfig.Binds).toEqual([
-            "/host/jobs/c1/repo:/repo:rw",
+            `/host/jobs/c1/repo:/repo:${WORKSPACE_BIND_MODE}`,
         ]);
         expect(options.WorkingDir).toBe("/repo");
         expect(options.HostConfig.Tmpfs).toMatchObject({

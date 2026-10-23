@@ -214,14 +214,14 @@ describe("chat websocket", () => {
         expect(chunks).toEqual([]);
     });
 
-    it("reports an empty response when the model answers nothing after a tool call", async () => {
+    it("finishes a tool-only turn with a confirmation instead of an empty-response error", async () => {
         const { chunks, toolResults, done, error } = await exchange({
             prompt: "silent",
             sessionId: SESSION_ID,
         });
-        expect(error).toMatch(/empty response/i);
+        expect(error).toBeNull();
         expect(done).toBe(true);
-        expect(chunks).toEqual([]);
+        expect(chunks.join("")).toMatch(/tool calls completed/i);
         expect(toolResults).toHaveLength(1);
     });
 

@@ -681,13 +681,14 @@ async function handleAuth(
  * The turn's `token` events are assembled as they stream, so two things can be
  * done once the stream ends: the whole response is logged in one
  * `logger.sensitive` event (visible verbatim in development), and a turn that
- * produced **no prose at all** — whitespace-only chunks included — is reported
- * as `the model returned an empty response` instead of a bare `done`. That
- * empty-answer case is a real model failure, not a client bug: a reasoning
- * model that spends its whole output budget thinking returns an `AIMessage`
- * with empty `content`, which the tracker correctly turns into zero tokens, and
- * the client would otherwise render a permanently blank bubble with no
- * explanation.
+ * produced **no prose at all** — whitespace-only chunks included — is handled.
+ * A text-free turn with **no tool calls** is a real model failure, not a client
+ * bug: a reasoning model that spends its whole output budget thinking returns
+ * an `AIMessage` with empty `content`, which the tracker correctly turns into
+ * zero tokens, and the client would otherwise render a permanently blank
+ * bubble with no explanation. A text-free turn that *did* make tool calls is
+ * different: the tool cards are the turn's output, so it finishes with a short
+ * confirmation instead of a misleading error.
  *
  * When a TTS engine is configured and the turn is eligible — a **voice-mode
  * prompt from a socket that declared the `audio` capability** (#83) — the
@@ -971,11 +972,29 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
             toolCalls: toolCallCount,
         });
         if (responseText.trim() === "") {
-            logger.warn(
-                `Agent produced no response text after ${toolCallCount} tool call(s); reporting an empty response`,
-            );
-            finishWithError("the model returned an empty response");
-            return;
+            if (toolCallCount > 0) {
+                // The tool calls are the turn's output; models often return no
+                // prose after a tool-only turn. The client already has the
+                // cards, so finish with a short confirmation rather than a
+                // misleading "empty response" error.
+                const confirmation =
+                    "Done — the requested tool calls completed.";
+                responseText = confirmation;
+                if (socket.readyState === WebSocket.OPEN) {
+                    firstTokenAt ??= Date.now();
+                    sendFrame(
+                        socket,
+                        toServerFrame({ type: "token", text: confirmation }),
+                    );
+                    speaking?.push(confirmation);
+                }
+            } else {
+                logger.warn(
+                    "Agent produced no response text and no tool calls; reporting an empty response",
+                );
+                finishWithError("the model returned an empty response");
+                return;
+            }
         }
         if (socket.readyState !== WebSocket.OPEN) {
             return;

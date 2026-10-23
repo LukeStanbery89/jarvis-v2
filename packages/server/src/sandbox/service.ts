@@ -36,6 +36,7 @@ import type { CommentRef } from "../github/comment";
 import type { IssueSnapshot, PullRequestSnapshot } from "../github/client";
 import { logger } from "../logger";
 import type { NotificationService } from "../notify/service";
+import { clearJobArtifacts, readJobArtifacts } from "./artifacts";
 import { workspaceBytes } from "./disk";
 import { createCodingLogHub, type CodingLogStream } from "./logHub";
 import {
@@ -68,6 +69,91 @@ const LOG_TAIL_BYTES = 16 * 1024;
 
 /** How often the supervisor weighs a running job's workspace (#141). */
 const QUOTA_CHECK_MS = 10_000;
+
+/** How large one questions comment may grow before it is cut. */
+const QUESTION_COMMENT_MAX_CHARS = 32 * 1024;
+
+/**
+ * The lifecycle every job is asked to follow (#94).
+ *
+ * A coding job is not a one-shot edit: plan first, ask instead of guessing,
+ * never merge, and address review feedback. The contract is prepended to the
+ * task so it does not depend on the relay model remembering it, and it names
+ * the two artifact paths the supervisor reads.
+ */
+const SDLC_PROMPT = `Work through this task as a software change, not a one-shot edit:
+
+1. Read the task (and any issue or pull request context) and write a plan to .jarvis/plan.md: the files and surfaces you expect to touch, the approach, the risks, and how you will verify the change. Keep .jarvis/brief.md to the task, the feedback, the acceptance criteria and the surfaces; re-read it after a context compaction.
+2. If a requirement is ambiguous, or the task or issue has a "Decisions to make" or "Open questions" section, write .jarvis/questions.json with those questions and stop. Never pick a decision that changes the outcome. If the task asks you to stop for plan approval, put the approval question there too. Format: {"questions":["...","..."]}.
+3. When answers are provided, update the plan and continue.
+4. Implement the change, and wire every new component or module into every surface the task names. Prefer \`edit\` for an existing file; use \`write\` only for a new file or a complete replacement. Inspect with \`read\`/\`glob\`/\`grep\`; do not use \`shell\` with \`cat\`, \`grep\`, \`sed\` or heredocs for file I/O. A new file that nothing imports is not a change.
+5. Run \`npm run check\` from the repository root as soon as the edits are complete, before your final message, and fix every failure (lint, types, tests and formatting). The job fails and no pull request opens while that check is red.
+6. Never merge a pull request; merging is the user's decision.
+7. If review feedback is provided, address it on the same branch.
+
+This container has no GitHub credentials: do not run \`gh\`, and do not fetch issue or pull-request pages; the task and PR context are in this prompt.
+
+.jarvis/ is your channel to the supervisor, not part of the change: do not commit it.`;
+
+/**
+ * Prefixes a task with the SDLC contract.
+ *
+ * @param task - The user's task, possibly with issue/PR context.
+ * @returns The instruction handed to the container.
+ */
+function withSdlc(task: string): string {
+    return `${SDLC_PROMPT}\n\n---\n\n${task}`;
+}
+
+/**
+ * Builds the instruction for a job reopened with answers.
+ *
+ * @param job - The parked row, whose `prompt` is the original task.
+ * @param answers - The user's answers, in their own words.
+ * @returns The instruction handed to the new container.
+ */
+function resumeTask(job: AppCodingJob, answers: string): string {
+    const plan =
+        job.plan !== null && job.plan.trim().length > 0
+            ? `\n\nYour previous plan:\n${job.plan.trim()}`
+            : "";
+    return withSdlc(
+        `${job.prompt}\n\nThe user answered your questions:\n${answers.trim()}${plan}\n\nUpdate the plan and continue from where you stopped. Do not repeat work that is already in the workspace.`,
+    );
+}
+
+/**
+ * The issue comment that carries a job's plan and questions (#94).
+ *
+ * The hidden marker names the job, so the poller can find the comment and read
+ * only what humans wrote after it. The visible heading is for the person.
+ *
+ * @param job - The parked job.
+ * @param artifacts - Its plan and questions.
+ * @returns The comment body, bounded.
+ */
+function questionCommentBody(
+    job: AppCodingJob,
+    artifacts: { plan: string | null; questions: readonly string[] },
+): string {
+    const lines = [
+        "### JARVIS — questions before I continue",
+        `<!-- jarvis:questions job=${job.id} -->`,
+        "",
+    ];
+    if (artifacts.plan !== null && artifacts.plan.trim().length > 0) {
+        lines.push("**Plan**", "", artifacts.plan.trim(), "");
+    }
+    lines.push("**Questions**", "");
+    artifacts.questions.forEach((question, index) => {
+        lines.push(`${index + 1}. ${question}`);
+    });
+    lines.push("", "Answer here and I will continue from the same workspace.");
+    const body = lines.join("\n");
+    return body.length > QUESTION_COMMENT_MAX_CHARS
+        ? `${body.slice(0, QUESTION_COMMENT_MAX_CHARS - 1)}…`
+        : body;
+}
 
 /** A settled run's outcome, as the announcement needs it. */
 interface Ending {
@@ -112,6 +198,11 @@ export type StartCodingJobResult =
     | { ok: true; job: AppCodingJob; done: Promise<void> }
     | { ok: false; code: CodingJobRefusalCode; reason: string };
 
+/** The result of answering a job that was waiting for input (#94). */
+export type ResumeCodingJobResult =
+    | { ok: true; job: AppCodingJob; done: Promise<void> }
+    | { ok: false; reason: string };
+
 /** The supervisor's public surface. */
 export interface CodingJobService {
     /**
@@ -143,6 +234,16 @@ export interface CodingJobService {
          */
         issue?: number;
         /**
+         * The issue whose thread should receive this job's questions.
+         *
+         * Used by the coding watch when the work is a pull request but the
+         * conversation lives on the issue that started it. It records the
+         * issue on the row without reading it or changing the prompt: a parked
+         * PR follow-up posts its questions there, and the watcher resumes it
+         * from the issue answers. Distinct from `issue`, which is context.
+         */
+        issueForQuestions?: number;
+        /**
          * The comment this follow-up answers (#140).
          *
          * Passed through to publishing: after a successful push, the job's
@@ -165,6 +266,25 @@ export interface CodingJobService {
      * @returns The row after the attempt, or `null` for a foreign or missing id.
      */
     stop(userId: number, jobId: string): Promise<AppCodingJob | null>;
+    /**
+     * Reopens a job parked in `awaiting-answer` with the user's answers (#94).
+     *
+     * The same row and the same workspace are reused: the agent's partial tree
+     * is still there, and the answers are appended to the prompt with the plan
+     * it wrote. The `awaiting-answer` → `queued` transition is the claim, so a
+     * second caller cannot start a second run.
+     *
+     * @param userId - The owner.
+     * @param jobId - The parked job.
+     * @param answers - The user's answers, in their own words.
+     * @returns The running job, or a sentence explaining why it did not resume.
+     */
+    resume(
+        userId: number,
+        jobId: string,
+        answers: string,
+        options?: { lastSeenCommentId?: number },
+    ): Promise<ResumeCodingJobResult>;
     /**
      * One of the caller's own jobs, or `null` for a foreign or missing id.
      *
@@ -292,6 +412,19 @@ export function createCodingJobService(options: {
     }) => Promise<IssueSnapshot>;
     notifications?: Pick<NotificationService, "notify">;
     /**
+     * Posts the plan and questions on an issue (#94).
+     *
+     * Called by the supervisor with the host-side App token; the job container
+     * never holds one. Absent means the questions reach only the notification
+     * (and the chat via `resume`), which is the issue-less path.
+     */
+    commentOnIssue?: (input: {
+        owner: string;
+        repo: string;
+        number: number;
+        body: string;
+    }) => Promise<{ id: number; url: string }>;
+    /**
      * Measures a workspace's bytes. Injected by tests; `du` by default.
      *
      * The quota is enforced by sampling, because a bind-mounted clone cannot
@@ -319,6 +452,7 @@ export function createCodingJobService(options: {
         publisher,
         pullRequests,
         issues,
+        commentOnIssue,
     } = options;
     const size = options.workspaceSize ?? workspaceBytes;
     const probeBroker = options.probeBroker ?? brokerAnswers;
@@ -374,7 +508,13 @@ export function createCodingJobService(options: {
                 if (job === null) {
                     return false;
                 }
-                if (job.state === "queued" || job.state === "running") {
+                if (
+                    job.state === "queued" ||
+                    job.state === "running" ||
+                    job.state === "awaiting-answer"
+                ) {
+                    // A parked job's workspace is where the next attempt
+                    // continues; it is not history yet (#94).
                     return true;
                 }
                 const finished =
@@ -454,6 +594,98 @@ export function createCodingJobService(options: {
         } catch (err) {
             logger.warn(
                 `coding job ${job.id}: could not announce its ending: ${describe(err)}`,
+            );
+        }
+    }
+
+    /**
+     * Posts a job's plan and questions on its issue (#94).
+     *
+     * The app-token comment is host-side; the job never holds the credential.
+     * A failure is logged and the job still parks: the notification is the
+     * fallback channel, and the workspace is not thrown away over a comment.
+     *
+     * @param job - The parking job.
+     * @param artifacts - Its plan and questions.
+     * @returns The comment's id and URL, or `null` when it was not posted.
+     */
+    async function postQuestions(
+        job: AppCodingJob,
+        artifacts: { plan: string | null; questions: readonly string[] },
+    ): Promise<{ id: number; url: string } | null> {
+        if (job.issueNumber === null) {
+            return null;
+        }
+        if (commentOnIssue === undefined) {
+            logger.warn(
+                `coding job ${job.id}: no GitHub commenter is wired, so its questions stay in the notification`,
+            );
+            return null;
+        }
+        const [owner, name] = job.repo.split("/");
+        if (owner === undefined || name === undefined) {
+            return null;
+        }
+        try {
+            return await commentOnIssue({
+                owner,
+                repo: name,
+                number: job.issueNumber,
+                body: questionCommentBody(job, artifacts),
+            });
+        } catch (err) {
+            logger.warn(
+                `coding job ${job.id}: could not post its questions: ${describe(err)}`,
+            );
+            return null;
+        }
+    }
+
+    /**
+     * Tells the user a job is parked on a question (#94).
+     *
+     * The notification is the courtesy that makes the state visible in the
+     * chat; the issue comment is the durable home of the question. Neither
+     * changes the row if it fails.
+     *
+     * @param job - The parked job.
+     * @param questions - What it asked.
+     * @param commentUrl - Where the questions were posted, when they were.
+     */
+    async function announceQuestions(
+        job: AppCodingJob,
+        questions: readonly string[],
+        commentUrl: string | null,
+    ): Promise<void> {
+        if (notifications === undefined) {
+            return;
+        }
+        const first =
+            questions[0] ?? "I need more information before I can continue.";
+        const more =
+            questions.length > 1 ? ` (+${questions.length - 1} more)` : "";
+        const where =
+            commentUrl !== null
+                ? `\n\nI asked on the issue: ${commentUrl}`
+                : "\n\nAnswer in the chat when you are ready.";
+        try {
+            await notifications.notify(job.userId, {
+                kind: "coding.question",
+                class: "notification",
+                priority: "normal",
+                title: clamp(
+                    `Coding job needs answers: ${job.repo}`,
+                    MAX_NOTIFICATION_TITLE_LENGTH,
+                ),
+                body: clamp(
+                    `${first}${more}${where}`,
+                    MAX_NOTIFICATION_BODY_LENGTH,
+                ),
+                dedupeKey: `coding.questions:${job.id}`,
+            });
+        } catch (err) {
+            logger.warn(
+                `coding job ${job.id}: could not announce its questions: ${describe(err)}`,
             );
         }
     }
@@ -564,6 +796,10 @@ export function createCodingJobService(options: {
             }
 
             const ok = stopReason === null && exit.exitCode === 0;
+            // The entrypoint runs the repository's own gate after the agent
+            // (#94); name that failure rather than a bare exit code.
+            const checkFailed =
+                !ok && tail.text().includes("JARVIS_CHECK_FAILED");
             const error = ok
                 ? null
                 : stopReason === "disk"
@@ -572,7 +808,36 @@ export function createCodingJobService(options: {
                     ? `the job exceeded its ${Math.round(
                           config.wallClockMs / 60_000,
                       )}-minute wall clock`
-                    : `the agent exited with code ${exit.exitCode ?? "unknown"}`;
+                    : checkFailed
+                      ? "the repository's check failed (`npm run check`); see the job log"
+                      : `the agent exited with code ${exit.exitCode ?? "unknown"}`;
+
+            // The SDLC artifacts (#94). Read before any commit: a run that
+            // needs answers must not publish a half-understood change, and a
+            // completed run's plan belongs in the pull request body.
+            const artifacts = ok
+                ? await readJobArtifacts(job.workspacePath)
+                : { plan: null, questions: [] as readonly string[] };
+            if (ok && artifacts.questions.length > 0) {
+                await clearJobArtifacts(job.workspacePath);
+                const comment = await postQuestions(job, artifacts);
+                const awaited = ledger.awaitCodingJob(job.id, {
+                    plan: artifacts.plan ?? "",
+                    questionCommentId: comment?.id ?? null,
+                    lastSeenCommentId: comment?.id ?? null,
+                });
+                await announceQuestions(
+                    awaited ?? job,
+                    artifacts.questions,
+                    comment?.url ?? null,
+                );
+                // The `finally` below removes the container. The workspace
+                // stays: the answer follow-up continues in this tree.
+                return;
+            }
+            if (ok) {
+                await clearJobArtifacts(job.workspacePath);
+            }
 
             // A model can edit a file and *say* it committed without calling
             // git — the first live run did. Committing here makes the claim
@@ -623,6 +888,7 @@ export function createCodingJobService(options: {
                         branch: job.branch,
                         task: job.prompt,
                         diffSummary: collected.diffSummary,
+                        plan: artifacts.plan,
                         ...(job.prUrl !== null
                             ? { existing: { url: job.prUrl } }
                             : {}),
@@ -729,6 +995,24 @@ export function createCodingJobService(options: {
                 });
             }
         }
+    }
+
+    /**
+     * Maps a server-side workspace path back to the daemon's view.
+     *
+     * A resumed job skips `prepare`, so it has no `PreparedWorkspace`; the host
+     * side is the configured host root plus the same relative path. A path
+     * outside the root (a hand-written row) falls back to itself rather than
+     * mounting the wrong tree.
+     *
+     * @param workspacePath - The server-side clone path.
+     * @returns The path the Docker daemon resolves.
+     */
+    function hostPathFor(workspacePath: string): string {
+        const relative = path.relative(config.workspaceRoot, workspacePath);
+        return relative.startsWith("..") || path.isAbsolute(relative)
+            ? workspacePath
+            : path.join(config.workspaceHostRoot, relative);
     }
 
     /**
@@ -1054,13 +1338,28 @@ export function createCodingJobService(options: {
                 workspacePath: prepared.path,
                 crashPolicy: input.crashPolicy ?? "prune",
                 model: config.model,
-                ...(followUp !== null ? { prUrl: followUp.url } : {}),
+                ...(followUp !== null
+                    ? {
+                          prUrl: followUp.url,
+                          // Every comment in the snapshot is read by this run;
+                          // the watcher starts from the newest one (#94).
+                          lastSeenCommentId:
+                              followUp.comments.length > 0
+                                  ? Math.max(
+                                        ...followUp.comments.map(
+                                            (comment) => comment.id,
+                                        ),
+                                    )
+                                  : null,
+                      }
+                    : {}),
+                issueNumber: issue?.number ?? input.issueForQuestions ?? null,
                 createdAt: nowIso(),
             });
 
             try {
                 const handle = await runner.start(
-                    specFor(job, prepared, prompt),
+                    specFor(job, prepared, withSdlc(prompt)),
                 );
                 const claimed = ledger.claimCodingJob(
                     job.id,
@@ -1071,9 +1370,12 @@ export function createCodingJobService(options: {
                     await handle.remove();
                     throw new Error("the job was claimed by another process");
                 }
+                const questionIssue = issue?.number ?? input.issueForQuestions;
                 logger.info(
                     `coding job ${claimed.id} started: repo=${claimed.repo}, branch=${claimed.branch}` +
-                        (issue === null ? "" : `, issue=#${issue.number}`) +
+                        (questionIssue === undefined
+                            ? ""
+                            : `, issue=#${questionIssue}`) +
                         `, model=${config.model}, container=${handle.containerId}`,
                 );
                 return {
@@ -1092,6 +1394,94 @@ export function createCodingJobService(options: {
                     nowIso(),
                 );
                 await workspace.remove(prepared.path).catch(() => {});
+                throw err;
+            }
+        },
+
+        async resume(
+            userId,
+            jobId,
+            answers,
+            options,
+        ): Promise<ResumeCodingJobResult> {
+            const text = answers.trim();
+            if (text.length === 0) {
+                return {
+                    ok: false,
+                    reason: "The answers were empty; tell me what to do next.",
+                };
+            }
+            const job = ledger.getCodingJob(userId, jobId);
+            if (job === null) {
+                return {
+                    ok: false,
+                    reason: `No coding job ${jobId} belongs to you.`,
+                };
+            }
+            if (job.state !== "awaiting-answer") {
+                return {
+                    ok: false,
+                    reason: `Coding job ${job.id} is ${job.state}, not waiting for answers.`,
+                };
+            }
+            if (
+                ledger.listRunningCodingJobs(config.maxJobs).length >=
+                config.maxJobs
+            ) {
+                return {
+                    ok: false,
+                    reason: `${config.maxJobs} coding job(s) are already running; try again when one finishes.`,
+                };
+            }
+            // The transition is the claim: two callers (the chat tool and the
+            // poller) cannot both reopen the same parked row.
+            const reopened = ledger.reopenCodingJob(
+                job.id,
+                options?.lastSeenCommentId ?? job.lastSeenCommentId ?? null,
+            );
+            if (reopened === null || reopened.state !== "queued") {
+                return {
+                    ok: false,
+                    reason: `Coding job ${job.id} could not be reopened; it may have been cancelled.`,
+                };
+            }
+            const prepared: PreparedWorkspace = {
+                path: job.workspacePath,
+                hostPath: hostPathFor(job.workspacePath),
+            };
+            try {
+                const handle = await runner.start(
+                    specFor(reopened, prepared, resumeTask(job, text)),
+                );
+                const claimed = ledger.claimCodingJob(
+                    job.id,
+                    handle.containerId,
+                    nowIso(),
+                );
+                if (claimed === null) {
+                    await handle.remove();
+                    return {
+                        ok: false,
+                        reason: `Coding job ${job.id} was already claimed; try again.`,
+                    };
+                }
+                logger.info(
+                    `coding job ${claimed.id} resumed with answers: repo=${claimed.repo}, container=${handle.containerId}`,
+                );
+                return {
+                    ok: true,
+                    job: claimed,
+                    done: supervise(claimed, handle),
+                };
+            } catch (err) {
+                // A container that never started must not leave the row
+                // queued forever; the parked workspace is kept for a retry.
+                ledger.settleCodingJob(
+                    job.id,
+                    "failed",
+                    { error: describe(err) },
+                    nowIso(),
+                );
                 throw err;
             }
         },
@@ -1186,6 +1576,23 @@ export function createCodingJobService(options: {
             const job = ledger.getCodingJob(userId, jobId);
             if (job === null) {
                 return null;
+            }
+            if (job.state === "awaiting-answer") {
+                // No container is running; the row and the parked workspace are
+                // all there is to discard. The row transition is the store's.
+                const cancelled = ledger.cancelCodingJob(
+                    userId,
+                    jobId,
+                    nowIso(),
+                );
+                await workspace
+                    .remove(job.workspacePath)
+                    .catch((err: unknown) => {
+                        logger.warn(
+                            `coding job ${job.id}: could not remove its awaiting workspace: ${describe(err)}`,
+                        );
+                    });
+                return cancelled;
             }
             if (job.state !== "running") {
                 return job;

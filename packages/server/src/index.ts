@@ -43,6 +43,7 @@ import { createJobCreator } from "./scheduler/create";
 import { createJobRunner } from "./scheduler/runner";
 import { createScheduler } from "./scheduler/loop";
 import { createCodingJobService } from "./sandbox/service";
+import { startCodingWatch } from "./sandbox/watch";
 import {
     createSandboxProxy,
     loadProxySecret,
@@ -367,10 +368,40 @@ if (appConfig.sandbox) {
                           input.repo,
                           input.number,
                       ),
+                  // The agent has no GitHub credential; the supervisor posts
+                  // the plan/questions with the App token (#94).
+                  commentOnIssue: (input) =>
+                      githubClient
+                          .commentOnIssue(
+                              input.owner,
+                              input.repo,
+                              input.number,
+                              input.body,
+                          )
+                          .then((comment) => ({
+                              id: comment.number,
+                              url: comment.url,
+                          })),
               }
             : {}),
         ...(notifications ? { notifications } : {}),
     });
+    // The SDLC re-arm loop (#94): answers on an issue, and new review
+    // feedback on a JARVIS PR, become follow-up runs. It needs the App (to
+    // read the threads and know its own login) and can be turned off.
+    if (githubClient && sandbox.watchEnabled) {
+        startCodingWatch({
+            ledger: store,
+            github: githubClient,
+            service: codingJobs,
+            intervalMs: sandbox.watchIntervalMs,
+        });
+        logger.info(
+            `Coding watch active: every ${Math.round(
+                sandbox.watchIntervalMs / 1000,
+            )}s`,
+        );
+    }
 }
 
 // Say so at boot. The tool's absence is silent otherwise, and "the model

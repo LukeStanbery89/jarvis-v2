@@ -121,10 +121,26 @@ export interface CreatedOnGitHub {
     readonly url: string;
 }
 
+/** One comment on an issue's conversation (#94). */
+export interface IssueComment {
+    /** GitHub's database id; the poller's watermark. */
+    readonly id: number;
+    readonly author: string;
+    readonly body: string;
+    readonly createdAt: string;
+    readonly url: string;
+}
+
+/** The reactions GitHub accepts on an issue or review comment. */
+export type ReactionContent =
+    "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
+
 /** What a caller needs from GitHub. */
 export interface GitHubClient {
     /** A live installation token, cached until it is nearly expired. */
     installationToken(): Promise<InstallationToken>;
+    /** The App installation's own login, cached; its comments are JARVIS's. */
+    botLogin(): Promise<string>;
     /** Reads one issue (or pull request) by number. */
     getIssue(
         owner: string,
@@ -132,6 +148,18 @@ export interface GitHubClient {
         number: number,
         options?: { signal?: AbortSignal },
     ): Promise<IssueSnapshot>;
+    /**
+     * Reads an issue's conversation comments (#94).
+     *
+     * `since` is GitHub's "last updated after" filter; the poller also
+     * compares ids, because an edited older comment is not a new answer.
+     */
+    readIssueComments(
+        owner: string,
+        repo: string,
+        number: number,
+        options?: { since?: string; signal?: AbortSignal },
+    ): Promise<IssueComment[]>;
     /**
      * Lists issues, newest first.
      *
@@ -192,6 +220,23 @@ export interface GitHubClient {
         body: string,
         options?: { signal?: AbortSignal },
     ): Promise<CreatedOnGitHub>;
+    /**
+     * Adds a reaction to a conversation or review comment.
+     *
+     * PR conversation comments live on the issues endpoint; inline review
+     * comments have their own path. The two are distinguished by `kind` (the
+     * same split `CommentRef` carries), so the caller never guesses from an id.
+     */
+    reactToComment(
+        input: {
+            owner: string;
+            repo: string;
+            kind: "issue" | "review";
+            id: number;
+        },
+        content: ReactionContent,
+        options?: { signal?: AbortSignal },
+    ): Promise<void>;
     /** The repository's default branch, which a pull request targets. */
     defaultBranch(owner: string, repo: string): Promise<string>;
     /**
@@ -495,6 +540,8 @@ export function createGitHubClient(
     const fetchImpl = options.fetch ?? fetch;
     const now = options.now ?? (() => Date.now());
     let cached: InstallationToken | null = null;
+    /** The installation's own login; stable for the App's lifetime. */
+    let cachedBotLogin: string | null = null;
 
     /** One REST call, with GitHub's message surfaced and the token kept out. */
     async function api<T>(
@@ -646,8 +693,95 @@ export function createGitHubClient(
         return cached;
     };
 
+    /**
+     * The login the installation token acts as (`<slug>[bot]`).
+     *
+     * The poller uses it to tell JARVIS's own comments — questions, replies,
+     * PR bodies — from a human's answer. Cached because it never changes for
+     * one installation.
+     */
+    const botLogin = async (): Promise<string> => {
+        if (cachedBotLogin !== null) {
+            return cachedBotLogin;
+        }
+        const token = await installationToken();
+        try {
+            // Most installations answer /user with the bot account. If this
+            // one does not, the App's slug is the same identity and needs the
+            // JWT, so fall back rather than losing the watcher.
+            const user = await api<{ login?: unknown }>("/user", {
+                token: token.token,
+            });
+            if (typeof user.login === "string" && user.login.length > 0) {
+                cachedBotLogin = user.login;
+                return cachedBotLogin;
+            }
+        } catch {
+            // Fall through to /app.
+        }
+        const jwt = signAppJwt(config.appId, config.privateKey, now());
+        const app = await api<{ slug?: unknown }>("/app", { token: jwt });
+        if (typeof app.slug !== "string" || app.slug.length === 0) {
+            throw new Error("GitHub returned an unexpected /app shape");
+        }
+        cachedBotLogin = `${app.slug}[bot]`;
+        return cachedBotLogin;
+    };
+
     return {
         installationToken,
+        botLogin,
+
+        async readIssueComments(
+            owner: string,
+            repo: string,
+            number: number,
+            options: { since?: string; signal?: AbortSignal } = {},
+        ): Promise<IssueComment[]> {
+            const token = await installationToken();
+            const query = new URLSearchParams({ per_page: "100" });
+            if (options.since !== undefined) {
+                query.set("since", options.since);
+            }
+            const raw = await api<unknown[]>(
+                `/repos/${owner}/${repo}/issues/${number}/comments?${query.toString()}`,
+                {
+                    token: token.token,
+                    ...(options.signal ? { signal: options.signal } : {}),
+                },
+            );
+            return raw.map((entry) => {
+                const comment = entry as {
+                    id?: unknown;
+                    user?: { login?: unknown };
+                    body?: unknown;
+                    created_at?: unknown;
+                    html_url?: unknown;
+                };
+                if (
+                    typeof comment.id !== "number" ||
+                    typeof comment.body !== "string" ||
+                    typeof comment.user?.login !== "string"
+                ) {
+                    throw new Error(
+                        `GitHub returned an unexpected issue comment shape for #${number}`,
+                    );
+                }
+                return {
+                    id: comment.id,
+                    author: comment.user.login,
+                    body: comment.body,
+                    createdAt:
+                        typeof comment.created_at === "string"
+                            ? comment.created_at
+                            : "",
+                    url:
+                        typeof comment.html_url === "string"
+                            ? comment.html_url
+                            : "",
+                };
+            });
+        },
 
         async readPullRequest(
             owner: string,
@@ -913,6 +1047,20 @@ export function createGitHubClient(
                 { number: created.id, html_url: created.html_url },
                 "comment",
             );
+        },
+
+        async reactToComment(input, content, options = {}): Promise<void> {
+            const token = await installationToken();
+            const path =
+                input.kind === "review"
+                    ? `/repos/${input.owner}/${input.repo}/pulls/comments/${input.id}/reactions`
+                    : `/repos/${input.owner}/${input.repo}/issues/comments/${input.id}/reactions`;
+            await api(path, {
+                method: "POST",
+                token: token.token,
+                body: { content },
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
         },
 
         async defaultBranch(owner: string, repo: string): Promise<string> {

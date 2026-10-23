@@ -123,6 +123,29 @@ describe("coding-job recovery", () => {
         expect(handlers.fail).not.toHaveBeenCalled();
     });
 
+    it("removes an awaiting job's container but keeps its workspace", async () => {
+        const { store, userId } = makeStore();
+        makeJob(store, userId, "parked");
+        store.awaitCodingJob("parked", { plan: "Plan." });
+        const runner = createFakeSandbox({
+            containers: [{ containerId: "c-parked", jobId: "parked" }],
+        });
+        const handlers = { ...spies(), discard: vi.fn(async () => {}) };
+
+        const summary = await reconcileCodingJobs({
+            ledger: store,
+            runner,
+            handlers,
+        });
+
+        expect(summary.removed).toBe(1);
+        expect(runner.removed).toEqual(["c-parked"]);
+        // The parked row's tree is the next attempt's workspace: only the
+        // leftover container is discarded, never the workspace.
+        expect(handlers.discard).not.toHaveBeenCalled();
+        expect(store.getCodingJobById("parked")?.state).toBe("awaiting-answer");
+    });
+
     it("adopts a running container under a resume job", async () => {
         const { store, userId } = makeStore();
         const job = makeJob(store, userId, "resume-me", { policy: "resume" });

@@ -323,7 +323,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                 "It clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
                 "It does not return the work itself, so do not wait for it in the reply. " +
                 "`repo` may be omitted when the user did not name one and exactly one repository is allowed. " +
-                "Use getCodingJob for its status and cancelCodingJob to stop it. " +
+                "Use getCodingJob for its status, resumeCodingJob to answer questions it posts, and cancelCodingJob to stop it. " +
                 "Owner-only, one job at a time.",
             schema,
         },
@@ -370,15 +370,38 @@ function describeJob(
         `Branch: ${job.branch}`,
         `Pull request: ${job.prUrl ?? "none"}`,
         job.model === null ? "" : `Model: ${job.model}`,
+        job.issueNumber === null ? "" : `Issue: #${job.issueNumber}`,
+        job.questionCommentId === null || job.issueNumber === null
+            ? ""
+            : `Questions: https://github.com/${job.repo}/issues/${job.issueNumber}#issuecomment-${job.questionCommentId}`,
+        job.state === "awaiting-answer"
+            ? "Waiting for answers: answer in the issue, or call resumeCodingJob with the answers."
+            : "",
         `Started: ${job.startedAt ?? "not yet"} · finished: ${
             job.finishedAt ?? "not yet"
         }`,
         job.lastError === null ? "" : `Last error: ${job.lastError}`,
         job.diffSummary === null ? "" : `Diff: ${job.diffSummary}`,
+        job.plan === null || job.plan.trim().length === 0
+            ? ""
+            : `Plan:\n${planPreview(job.plan)}`,
         recent,
     ]
         .filter((line) => line.length > 0)
         .join("\n");
+}
+
+/**
+ * The beginning of the plan, bounded for the relay model.
+ *
+ * @param plan - The plan the agent wrote.
+ * @returns At most {@link STATUS_TAIL_CHARS} characters.
+ */
+function planPreview(plan: string): string {
+    const text = plan.trim();
+    return text.length > STATUS_TAIL_CHARS
+        ? `${text.slice(0, STATUS_TAIL_CHARS)}…`
+        : text;
 }
 
 /**
@@ -515,9 +538,73 @@ export function createCodingCancelTool(deps: CodingToolDeps) {
     );
 }
 
+/** The resume tool's input shape. */
+const resumeSchema = z.object({
+    jobId: z.string().min(1).describe("The id `startCodingJob` returned."),
+    answers: z
+        .string()
+        .min(1)
+        .describe(
+            "The user's answers to the job's questions, in their own words. Include the question context when the job asked more than one.",
+        ),
+});
+
 /**
- * All three coding tools, in the order the agent should see them: start, then
- * inspect, then the destructive one.
+ * Builds `resumeCodingJob`: the answer half of the SDLC loop (#94).
+ *
+ * The service reopens the same row and the same workspace, so the agent
+ * continues in the tree it already edited. The atomic transition means the
+ * chat tool and the issue poller cannot start two runs from one answer.
+ *
+ * @param deps - The service, the owner gate and the allowlist.
+ * @returns The `resumeCodingJob` tool.
+ */
+export function createCodingResumeTool(deps: CodingToolDeps) {
+    return tool(
+        async (
+            input: z.infer<typeof resumeSchema>,
+            runtime: ToolRuntime,
+        ): Promise<string> => {
+            const gate = requireCodingOwner(deps, runtime, "resumeCodingJob");
+            if (!gate.ok) {
+                return gate.text;
+            }
+            try {
+                const result = await deps.service.resume(
+                    gate.userId,
+                    input.jobId,
+                    input.answers,
+                );
+                if (!result.ok) {
+                    return result.reason;
+                }
+                return `Resumed coding job ${result.job.id} in ${result.job.repo} on branch ${result.job.branch}. I will notify you when it finishes.`;
+            } catch (err) {
+                logger.error(
+                    `resumeCodingJob failed: ${
+                        err instanceof Error
+                            ? (err.stack ?? err.message)
+                            : String(err)
+                    }`,
+                );
+                return "I could not resume that coding job; the server log has the reason.";
+            }
+        },
+        {
+            name: "resumeCodingJob",
+            description:
+                "Continue a coding job that is waiting for answers. " +
+                "Use it when the user answers the questions a job posted, or says to go ahead. " +
+                "`answers` is the user's reply in their own words; `jobId` is the parked job's id. " +
+                "Owner-only.",
+            schema: resumeSchema,
+        },
+    );
+}
+
+/**
+ * All four coding tools, in the order the agent should see them: start, then
+ * inspect, then the answer, then the destructive one.
  *
  * @param deps - The service, the owner gate and the allowlist.
  * @returns The tools to register.
@@ -526,6 +613,7 @@ export function createCodingTools(deps: CodingToolDeps) {
     return [
         createCodingTool(deps),
         createCodingStatusTool(deps),
+        createCodingResumeTool(deps),
         createCodingCancelTool(deps),
     ];
 }

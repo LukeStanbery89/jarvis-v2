@@ -557,6 +557,13 @@ describe("issues", () => {
                     html_url: "https://github.com/luke/app/issues/142",
                 });
             }
+            if (
+                init.method === "POST" &&
+                (url.endsWith("/issues/comments/987/reactions") ||
+                    url.endsWith("/pulls/comments/433/reactions"))
+            ) {
+                return json({ id: 1, content: "eyes" });
+            }
             throw new Error(`unexpected url ${url} ${init.method ?? "GET"}`);
         });
         return {
@@ -621,6 +628,42 @@ describe("issues", () => {
         expect(JSON.parse(String(post?.init.body))).toEqual({
             title: "A bug",
             body: "It breaks.",
+        });
+    });
+
+    it("reacts to issue and review comments on their own endpoints", async () => {
+        const { client, calls } = clientFor();
+
+        await client.reactToComment(
+            { owner: "luke", repo: "app", kind: "issue", id: 987 },
+            "eyes",
+        );
+        await client.reactToComment(
+            { owner: "luke", repo: "app", kind: "review", id: 433 },
+            "+1",
+        );
+
+        const issue = calls.find(
+            (call) =>
+                call.init.method === "POST" &&
+                call.url.endsWith("/issues/comments/987/reactions"),
+        );
+        expect(issue?.url).toBe(
+            "https://api.github.test/repos/luke/app/issues/comments/987/reactions",
+        );
+        expect(JSON.parse(String(issue?.init.body))).toEqual({
+            content: "eyes",
+        });
+        const review = calls.find(
+            (call) =>
+                call.init.method === "POST" &&
+                call.url.endsWith("/pulls/comments/433/reactions"),
+        );
+        expect(review?.url).toBe(
+            "https://api.github.test/repos/luke/app/pulls/comments/433/reactions",
+        );
+        expect(JSON.parse(String(review?.init.body))).toEqual({
+            content: "+1",
         });
     });
 
@@ -897,5 +940,103 @@ describe("replies", () => {
             body: "Original note.",
             url: "https://github.com/luke/app/pull/7#issuecomment-987",
         });
+    });
+});
+
+describe("the coding watch reads (#94)", () => {
+    it("lists issue comments with the since filter and a stable shape", async () => {
+        const calls: string[] = [];
+        const fetchImpl = vi.fn(async (url: string) => {
+            calls.push(url);
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.includes("/issues/12/comments")) {
+                return json([
+                    {
+                        id: 78,
+                        user: { login: "luke" },
+                        body: "Use Postgres.",
+                        created_at: "2026-10-20T12:01:00Z",
+                        html_url:
+                            "https://github.com/luke/app/issues/12#issuecomment-78",
+                    },
+                ]);
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        const comments = await client.readIssueComments("luke", "app", 12, {
+            since: "2026-10-20T12:00:00Z",
+        });
+
+        expect(comments).toEqual([
+            {
+                id: 78,
+                author: "luke",
+                body: "Use Postgres.",
+                createdAt: "2026-10-20T12:01:00Z",
+                url: "https://github.com/luke/app/issues/12#issuecomment-78",
+            },
+        ]);
+        const url = calls.find((call) => call.includes("/issues/12/comments"));
+        expect(url).toContain("per_page=100");
+        expect(url).toContain("since=2026-10-20T12%3A00%3A00Z");
+    });
+
+    it("caches the App's own login", async () => {
+        let userCalls = 0;
+        const fetchImpl = vi.fn(async (url: string) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.endsWith("/user")) {
+                userCalls += 1;
+                return json({ login: "jarvis[bot]" });
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        expect(await client.botLogin()).toBe("jarvis[bot]");
+        expect(await client.botLogin()).toBe("jarvis[bot]");
+        expect(userCalls).toBe(1);
+    });
+
+    it("falls back to the App slug when /user is not allowed", async () => {
+        const fetchImpl = vi.fn(async (url: string) => {
+            if (url.endsWith("/access_tokens")) {
+                return json({
+                    token: "ghs_secret",
+                    expires_at: "2026-10-20T13:00:00Z",
+                });
+            }
+            if (url.endsWith("/user")) {
+                return json({ message: "Not Found" }, 404);
+            }
+            if (url.endsWith("/app")) {
+                return json({ slug: "jarvis-coding-agent" });
+            }
+            throw new Error(`unexpected ${url}`);
+        });
+        const client = createGitHubClient(CONFIG, {
+            fetch: fetchImpl as unknown as typeof fetch,
+            now: () => Date.parse("2026-10-20T12:00:00Z"),
+        });
+
+        expect(await client.botLogin()).toBe("jarvis-coding-agent[bot]");
     });
 });

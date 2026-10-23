@@ -46,6 +46,8 @@ const SANDBOX_VARS = [
     "JARVIS_SANDBOX_WORKSPACE_RETENTION_DAYS",
     "JARVIS_SANDBOX_LOG_RETENTION_DAYS",
     "JARVIS_SANDBOX_KEEP_JOB_ROWS",
+    "JARVIS_CODING_WATCH",
+    "JARVIS_CODING_WATCH_MS",
 ];
 
 afterEach(() => {
@@ -98,6 +100,8 @@ describe("sandbox config", () => {
             workspaceRetentionDays: 14,
             logRetentionDays: 30,
             keepJobRows: 100,
+            watchEnabled: true,
+            watchIntervalMs: 300_000,
         });
         // One default home for the workspace tree, beside the database.
         expect(defaultSandboxWorkspaceRoot()).toBe(
@@ -224,6 +228,17 @@ describe("sandbox config", () => {
         process.env.JARVIS_SANDBOX_PROXY_MODE = "embedded";
 
         expect(getAppConfig().sandbox?.proxyMode).toBe("embedded");
+    });
+
+    it("turns the coding watch off, and clamps a fast interval", () => {
+        process.env.JARVIS_SANDBOX = "docker";
+        process.env.JARVIS_CODING_WATCH = "off";
+        process.env.JARVIS_CODING_WATCH_MS = "5000";
+
+        const sandbox = getAppConfig().sandbox;
+
+        expect(sandbox?.watchEnabled).toBe(false);
+        expect(sandbox?.watchIntervalMs).toBe(10_000);
     });
 
     it("treats a misspelled mode as sidecar rather than opening egress", () => {

@@ -35,6 +35,11 @@ export interface PublishInput {
     /** `collect`'s summary, so the pull request says what changed. */
     diffSummary: string;
     /**
+     * The plan the agent wrote (`.jarvis/plan.md`, #94), included in the PR
+     * body so the reviewer sees the approach and not only the diff.
+     */
+    plan?: string | null;
+    /**
      * The pull request this run continues (#140).
      *
      * Present means "push only": the branch already has a PR, so opening a
@@ -95,10 +100,12 @@ function pullNumber(url: string): number | null {
 
 /** The pull request body: what was asked, what changed, and which job. */
 function bodyFor(input: PublishInput): string {
+    const plan = input.plan?.trim() ?? "";
     const body = [
         "## Task",
         "",
         input.task.trim(),
+        ...(plan.length > 0 ? ["", "## Plan", "", plan] : []),
         "",
         "## Change",
         "",
@@ -128,6 +135,7 @@ export function createGitHubPublisher(options: {
         | "getIssueComment"
         | "replyToReviewComment"
         | "commentOnIssue"
+        | "reactToComment"
     >;
     push(input: {
         workspacePath: string;
@@ -171,6 +179,15 @@ export function createGitHubPublisher(options: {
                     reply.comment.id,
                     body,
                 );
+                await options.client.reactToComment(
+                    {
+                        owner: repo.owner,
+                        repo: repo.name,
+                        kind: reply.comment.kind,
+                        id: reply.comment.id,
+                    },
+                    "+1",
+                );
                 return;
             }
             const original = await options.client.getIssueComment(
@@ -183,6 +200,15 @@ export function createGitHubPublisher(options: {
                 repo.name,
                 number,
                 quotedReply(original.body, body),
+            );
+            await options.client.reactToComment(
+                {
+                    owner: repo.owner,
+                    repo: repo.name,
+                    kind: reply.comment.kind,
+                    id: reply.comment.id,
+                },
+                "+1",
             );
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

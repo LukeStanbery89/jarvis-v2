@@ -574,6 +574,17 @@ export interface SandboxConfig {
      * default 100. Older rows are pruned at every settle.
      */
     readonly keepJobRows: number;
+    /**
+     * Whether the coding watch polls for issue answers and PR feedback
+     * (`JARVIS_CODING_WATCH`, default on). Off leaves parked jobs to the chat
+     * (`resumeCodingJob`) and PR feedback to the user.
+     */
+    readonly watchEnabled: boolean;
+    /**
+     * How often the watch polls (`JARVIS_CODING_WATCH_MS`), default five
+     * minutes. GitHub's rate budget is the ceiling; one read per job per tick.
+     */
+    readonly watchIntervalMs: number;
 }
 
 /** Laptop-safe sandbox defaults: one job, two cores, 4 GiB, 45 minutes. */
@@ -618,6 +629,8 @@ export const DEFAULT_SANDBOX_CONFIG = {
     workspaceRetentionDays: 14,
     logRetentionDays: 30,
     keepJobRows: 100,
+    watchEnabled: true,
+    watchIntervalMs: 300_000,
 } as const;
 
 /**
@@ -1611,6 +1624,22 @@ export function getAppConfig(): AppConfig {
                               "JARVIS_SANDBOX_KEEP_JOB_ROWS",
                               process.env.JARVIS_SANDBOX_KEEP_JOB_ROWS,
                               DEFAULT_SANDBOX_CONFIG.keepJobRows,
+                          ),
+                          // Anything but an explicit off leaves the watch on;
+                          // the watcher itself is only started when the App is
+                          // configured.
+                          watchEnabled: !["off", "0", "false"].includes(
+                              (process.env.JARVIS_CODING_WATCH ?? "")
+                                  .trim()
+                                  .toLowerCase(),
+                          ),
+                          watchIntervalMs: Math.max(
+                              10_000,
+                              numberOr(
+                                  "JARVIS_CODING_WATCH_MS",
+                                  process.env.JARVIS_CODING_WATCH_MS,
+                                  DEFAULT_SANDBOX_CONFIG.watchIntervalMs,
+                              ),
                           ),
                       };
                   })()

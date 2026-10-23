@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { AppCodingJob } from "@lukestanbery/jarvis-auth";
 import {
     createCodingCancelTool,
+    createCodingResumeTool,
     createCodingStatusTool,
     createCodingTool,
     type CodingToolDeps,
@@ -36,6 +37,10 @@ const JOB: AppCodingJob = {
     logTail: "",
     diffSummary: null,
     prUrl: null,
+    issueNumber: null,
+    questionCommentId: null,
+    plan: null,
+    lastSeenCommentId: null,
     attempts: 1,
     lastError: null,
     createdAt: "2026-10-19T12:00:00.000Z",
@@ -104,6 +109,9 @@ async function invoke(
         },
         async stop() {
             return null;
+        },
+        async resume() {
+            return { ok: false, reason: "not used here" };
         },
         get() {
             return null;
@@ -450,6 +458,7 @@ function serviceWith(
         jobs?: AppCodingJob[];
         stop?: (userId: number, jobId: string) => Promise<AppCodingJob | null>;
         output?: (userId: number, jobId: string) => Promise<string | null>;
+        resume?: CodingJobService["resume"];
     } = {},
 ): CodingJobService {
     return {
@@ -460,6 +469,9 @@ function serviceWith(
             return { adopted: 0, pruned: 0, failed: 0, removed: 0, errors: 0 };
         },
         stop: overrides.stop ?? (async () => null),
+        resume:
+            overrides.resume ??
+            (async () => ({ ok: false, reason: "not used here" })),
         get: () => overrides.job ?? null,
         list: () => overrides.jobs ?? [],
         output: overrides.output ?? (async () => null),
@@ -519,6 +531,27 @@ describe("getCodingJob", () => {
         expect(text).toContain(JOB.branch);
         expect(text).toContain("https://github.com/luke/app/pull/9");
         expect(text).toContain("added 1 package");
+    });
+
+    it("shows a parked job's plan and question link", async () => {
+        const text = await invokeStatus(
+            serviceWith({
+                job: {
+                    ...JOB,
+                    state: "awaiting-answer",
+                    issueNumber: 12,
+                    questionCommentId: 77,
+                    plan: "Plan: use Postgres.",
+                },
+            }),
+            { jobId: JOB.id },
+        );
+
+        expect(text).toContain("Waiting for answers");
+        expect(text).toContain(
+            "https://github.com/luke/app/issues/12#issuecomment-77",
+        );
+        expect(text).toContain("Plan: use Postgres.");
     });
 
     it("quotes the live log while a job is still running", async () => {
@@ -604,6 +637,83 @@ describe("cancelCodingJob", () => {
         );
 
         expect(text).toContain("could not stop");
+        expect(text).not.toContain("docker is down");
+    });
+});
+
+/** Invokes the resume tool as the owner (or as asked). */
+async function invokeResume(
+    service: CodingJobService,
+    jobId = JOB.id,
+    answers = "Use Postgres on 5432.",
+    options: { runtime?: unknown; owner?: boolean } = {},
+): Promise<string> {
+    const tool = createCodingResumeTool({
+        service,
+        isOwner: (userId) => (options.owner ?? true) && userId === 7,
+        repos: ["luke/app"],
+    });
+    return (await tool.invoke(
+        { jobId, answers },
+        (options.runtime ?? OWNER_RUNTIME) as never,
+    )) as string;
+}
+
+describe("resumeCodingJob", () => {
+    it("resumes a parked job with the answers", async () => {
+        let seen: { userId: number; jobId: string; answers: string } | null =
+            null;
+        const text = await invokeResume(
+            serviceWith({
+                resume: async (userId, jobId, answers) => {
+                    seen = { userId, jobId, answers };
+                    return { ok: true, job: JOB, done: Promise.resolve() };
+                },
+            }),
+        );
+
+        expect(text).toContain("Resumed coding job");
+        expect(seen).toEqual({
+            userId: 7,
+            jobId: JOB.id,
+            answers: "Use Postgres on 5432.",
+        });
+    });
+
+    it("relays the service's refusal", async () => {
+        const text = await invokeResume(
+            serviceWith({
+                resume: async () => ({
+                    ok: false,
+                    reason: "Coding job job-1 is ok, not waiting for answers.",
+                }),
+            }),
+        );
+
+        expect(text).toContain("not waiting for answers");
+    });
+
+    it("is owner-only and refuses a guest", async () => {
+        expect(
+            await invokeResume(serviceWith(), JOB.id, "x", { owner: false }),
+        ).toContain("owner account");
+        expect(
+            await invokeResume(serviceWith(), JOB.id, "x", {
+                runtime: GUEST_RUNTIME,
+            }),
+        ).toContain("sign");
+    });
+
+    it("says so when the service throws, without leaking its message", async () => {
+        const text = await invokeResume(
+            serviceWith({
+                resume: async () => {
+                    throw new Error("docker is down");
+                },
+            }),
+        );
+
+        expect(text).toContain("could not resume");
         expect(text).not.toContain("docker is down");
     });
 });

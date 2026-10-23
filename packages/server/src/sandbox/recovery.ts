@@ -132,15 +132,18 @@ export async function reconcileCodingJobs(options: {
         const job = ledger.getCodingJobById(container.jobId);
 
         if (job === null || job.state !== "running") {
-            // Nothing owns this container: no row, or a row that already
-            // settled. It is an orphan whichever way, and removing it is the
-            // only safe act — leaving it running would spend resources for a
-            // result nobody will read.
+            // Nothing owns this container: no row, a row that already settled,
+            // or a row parked on a question. It is an orphan whichever way, and
+            // removing it is the only safe act — leaving it running would spend
+            // resources for a result nobody will read. A parked job's workspace
+            // is the *next* attempt's tree, so only its container is dropped.
             try {
-                await handlers.discard?.(
-                    container.jobId,
-                    container.containerId,
-                );
+                if (job === null || job.state !== "awaiting-answer") {
+                    await handlers.discard?.(
+                        container.jobId,
+                        container.containerId,
+                    );
+                }
                 await runner.remove(container.containerId);
                 summary.removed++;
             } catch (err) {

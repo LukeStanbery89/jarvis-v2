@@ -24,6 +24,23 @@ set -eu
 : "${JARVIS_JOB_MODEL_ID:?JARVIS_JOB_MODEL_ID is required}"
 : "${JARVIS_JOB_LLM_BASE_URL:?JARVIS_JOB_LLM_BASE_URL is required}"
 
+# A coding job is a development/test checkout (#94): the agent's own checks and
+# the entrypoint's gate need the dev toolchain. `test` rather than `development`
+# because the logger's sensitive-payload tests expect redaction by default. The
+# cache lives beside the workspace because `/home/job` is a 256 MB tmpfs; a full
+# monorepo install would fill it before the check could start. `.jarvis/` is
+# excluded from the commit by the workspace manager.
+export NODE_ENV=test
+export NPM_CONFIG_CACHE=/workspace/.jarvis/npm-cache
+export NPM_CONFIG_LOGS_DIR=/workspace/.jarvis/npm-logs
+mkdir -p "$NPM_CONFIG_CACHE" "$NPM_CONFIG_LOGS_DIR"
+
+# Seed the brief from the task so a context compaction always has the
+# feedback and acceptance at hand. The agent may refine it, but it cannot
+# start without the task in a file it can re-read.
+mkdir -p .jarvis
+printf '%s\n' "$JARVIS_JOB_PROMPT" > .jarvis/brief.md
+
 config_dir="$HOME/.config/opencode"
 mkdir -p "$config_dir"
 
@@ -71,7 +88,7 @@ stylesheets="$(git ls-files | grep -Ei '\.(css|scss|sass|less)$' | head -20 || t
 # "change the primary color", a small model answered "I cannot … without
 # specific context or files to edit" and exited without reading anything. It
 # was not refusing the sandbox — it did not know it was *in* a clone, which
-# files it could read, or that nobody would answer a question.
+# files it could read, or that a question could be posted and answered.
 context="You are JARVIS's coding agent, working in a git clone of ${JARVIS_JOB_REPO} on branch ${JARVIS_JOB_BRANCH} at /workspace.
 
 Repository map (directories that contain tracked files; never guess a path, search for it):
@@ -83,8 +100,15 @@ ${stylesheets}
 How to work:
 - Search before you read. Use grep or glob with broad patterns and read what they return. Search the concept in several spellings (\`primary\`, \`--primary\`, \`accent\`, \`brand\`, \`color\`), not only the user's exact words.
 - Never conclude that something is absent after one or two guessed filenames. If a search finds nothing, broaden it or list the directory; a failed guess is not evidence.
-- Make the change in the working tree and commit it with a clear message. If a commit is not possible, say so plainly.
-- Nobody can answer questions while you work. If the task is ambiguous, choose the most reasonable interpretation, make the change, and state your assumption in your final message.
+- Use the read, glob and grep tools to inspect files, and edit and write to change them. Do not use shell with cat, grep, sed or heredocs for file I/O; reserve shell for builds, tests and git.
+- Write your plan to .jarvis/plan.md before editing.
+- If the task is ambiguous, or the task or issue lists decisions or open questions, write .jarvis/questions.json and stop. The supervisor posts the questions and resumes you with the answers; do not pick a decision that changes the outcome. If the task asks for plan approval, ask for it in the same file.
+- Wire every new component or module into every surface the task names. A new file that nothing imports is not a change.
+- This container has no GitHub credentials. Do not run \`gh\`, and do not fetch issue or pull-request pages; the task and PR context are in this prompt.
+- Prefer \`edit\` for an existing file; use \`write\` only for a new file or a complete replacement.
+- Keep .jarvis/brief.md to the task, the feedback, the acceptance criteria and the surfaces; re-read it after a context compaction.
+- Run \`npm run check\` from /workspace as soon as the edits are complete, before your final message. Fix every failure (lint, types, tests and formatting). The entrypoint re-runs it; a red check fails the job and no pull request opens.
+- Make the change in the working tree and commit it with a clear message. Never merge a pull request. If a commit is not possible, say so plainly.
 
 Task: ${JARVIS_JOB_PROMPT}"
 
@@ -94,9 +118,46 @@ Task: ${JARVIS_JOB_PROMPT}"
 # `--standalone` is v2's "private server": without it the CLI discovers or
 # starts a shared background service on the host, and a job container wants the
 # process it was given to be the whole story — it dies with the container.
-exec opencode run \
+#
+# The entrypoint does not `exec` any more: a completed run has to pass the
+# repository's own gate before the supervisor may publish it (#94). A run that
+# parked on questions is exempt; its check happens on the answer run, after the
+# edits exist.
+if opencode run \
     --standalone \
     --model "jarvis/${JARVIS_JOB_MODEL_ID}" \
     --auto \
     --format json \
-    -- "$context"
+    -- "$context"; then
+    status=0
+else
+    status=$?
+fi
+
+if [ "$status" -eq 0 ] && [ ! -f .jarvis/questions.json ]; then
+    # A partial `npm install` can leave a node_modules that cannot run the
+    # check; look for the tools themselves. The old image defaulted to
+    # production, so an install the agent ran may have no dev deps at all.
+    rm -rf "$HOME/.npm"
+    if [ ! -x node_modules/.bin/eslint ] ||
+        [ ! -x node_modules/.bin/tsc ] ||
+        [ ! -x node_modules/.bin/vitest ] ||
+        [ ! -x node_modules/.bin/vite ] ||
+        [ ! -x node_modules/.bin/prettier ]; then
+        echo "JARVIS: installing development dependencies for the check" >&2
+        if ! npm install --include=dev --no-audit --no-fund; then
+            echo "JARVIS_CHECK_FAILED: npm install failed" >&2
+            exit 1
+        fi
+    fi
+    echo "JARVIS: running npm run check" >&2
+    if ! npm run check; then
+        echo "JARVIS_CHECK_FAILED: npm run check failed; the job will not publish" >&2
+        exit 1
+    fi
+    # Scratch, not part of the change: a successful job keeps its workspace,
+    # and a full install cache is hundreds of MB of it.
+    rm -rf .jarvis/npm-cache .jarvis/npm-logs
+fi
+
+exit "$status"
