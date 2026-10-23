@@ -28,12 +28,14 @@ describe("presentJob", () => {
         });
         const p = presentJob(job, now);
         expect(p.kind).toBe("Timer");
-        expect(p.primary).toMatch(/in/);
+        // A timer's primary fact is a clock face (#156 review), not the coarse
+        // prose a moment gets.
+        expect(p.primary).toBe("00:05:00");
         expect(p.title).toBe("Kettle");
         expect(p.countdown).toBe(true);
     });
 
-    it("timer countdown precision - seconds under an hour", () => {
+    it("timer countdown is hh:mm:ss, even under a minute", () => {
         const job = makeJob({
             id: "t2",
             class: "timer",
@@ -42,7 +44,7 @@ describe("presentJob", () => {
             runAt: new Date(now.getTime() + 30_000).toISOString(),
         });
         const p = presentJob(job, now);
-        expect(p.primary).toMatch(/seconds?|30|due now/);
+        expect(p.primary).toBe("00:00:30");
         expect(p.countdown).toBe(true);
     });
 

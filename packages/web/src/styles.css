@@ -2743,6 +2743,47 @@ textarea::placeholder {
     white-space: nowrap;
 }
 
+/* A timer's countdown is the card (#156 review): the remaining time in its own
+ * block, half the row wide, at a size that reads across the room. The label and
+ * body sit beside it rather than under it, so the number shares its line with
+ * nothing. */
+.job-countdown-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.2rem;
+}
+
+.job-countdown {
+    flex: 0 0 50%;
+    min-width: 0;
+    color: var(--primary);
+    font-size: 2.1rem;
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: 0.02em;
+}
+
+.job-countdown-facts {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* On a phone the two halves stack: half a narrow card is too little for an
+ * `hh:mm:ss` this large. */
+@media (max-width: 30rem) {
+    .job-countdown-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35rem;
+    }
+
+    .job-countdown {
+        flex: none;
+        width: 100%;
+    }
+}
+
 /* A body (Markdown, so links survive) and the plain detail lines under a row's
  * title. Compact, so a body does not turn a list row into a paragraph. */
 .row-body p {
@@ -2763,16 +2804,18 @@ textarea::placeholder {
     color: var(--primary);
 }
 
-/* A row's controls, folded into one `⋯` (#156): a native disclosure whose
- * buttons are hidden until it is opened, so the primary fact keeps the width.
- * Styled from the same tokens as `SnoozeMenu`, the row's other control. */
+/* A row's controls, folded into one `⋯` (#156): a single trigger whose menu is
+ * hidden until it is asked for, so the primary fact keeps the width. Styled from
+ * the same tokens as `SnoozeMenu`, the row's other control. */
 .row-actions {
-    position: relative;
     display: inline-flex;
     align-items: center;
 }
 
-.row-actions > summary {
+/* The `⋯` trigger. It is a button inside `.job-actions`/`.notification-actions`,
+ * which style their buttons as wide as "Mark read"; the menu trigger must stay a
+ * square, so its width is restated at a specificity that beats them. */
+.row-actions .row-actions-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2780,30 +2823,30 @@ textarea::placeholder {
     padding: 0.2rem 0.5rem;
     border: 1px solid var(--primary-border);
     border-radius: 4px;
+    background: transparent;
     color: var(--primary);
     font-size: 0.9rem;
     line-height: 1;
-    list-style: none;
     cursor: pointer;
-    user-select: none;
 }
 
-.row-actions > summary::-webkit-details-marker {
-    display: none;
-}
-
-.row-actions > summary:hover,
-.row-actions[open] > summary {
+.row-actions .row-actions-toggle:hover,
+.row-actions.open .row-actions-toggle {
     background: var(--primary-wash);
     border-color: var(--primary-dim);
 }
 
+/* The menu is a popover (#156 review): it lives in the top layer, so a later
+ * card — which `backdrop-filter` turns into a stacking context — cannot paint
+ * over it, and it is mutually exclusive with the snooze popover (two
+ * `popover="auto"` menus cannot be open at once). `inset: auto` undoes the UA's
+ * viewport centring; the component measures and writes `left`/`top`. Deliberately
+ * **no `display` here**: the UA's closed-popover rule must win, or the menu
+ * renders permanently open (see the note on `.snooze-options`). */
 .row-actions-menu {
-    position: absolute;
-    top: calc(100% + 0.25rem);
-    right: 0;
-    z-index: 6;
-    display: flex;
+    position: fixed;
+    inset: auto;
+    margin: 0;
     flex-direction: column;
     gap: 2px;
     min-width: 8rem;
@@ -2812,6 +2855,10 @@ textarea::placeholder {
     border: 1px solid var(--primary-border);
     border-radius: 6px;
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
+.row-actions-menu:popover-open {
+    display: flex;
 }
 
 /* The items read as menu items, not as the row's buttons: full width, left

@@ -151,6 +151,9 @@ describe("the notifications page renders through the shared cards", () => {
         // The body renders as Markdown (a paragraph), not appended raw text.
         expect(html).toContain("Take meds now");
         expect(html).toContain("row-actions");
+        // The menu is a popover, so a later card cannot paint over it (#156
+        // review).
+        expect(html).toContain('popover="auto"');
         expect(html).toContain("Mark read");
         expect(html).toContain("Dismiss");
     });

@@ -8,7 +8,7 @@
  */
 import type { Job } from "./api";
 import type { ClientNotification } from "./notifications";
-import { describeRunAt, jobBody, repeatText } from "./jobs";
+import { describeRunAt, formatCountdown, jobBody, repeatText } from "./jobs";
 import { describeBody, describeNotice } from "./notifications";
 
 /** Structured parts a row/card renders, per class. */
@@ -43,25 +43,26 @@ export function presentJob(job: Job, now: Date): Presented {
     }
 
     if (job.class === "timer") {
-        const primary =
-            job.state === "running"
-                ? "running now"
-                : describeRunAt(job.runAt, now);
-        const isWithinHour =
-            job.state !== "running" &&
-            (() => {
-                const at = new Date(job.runAt).getTime();
-                if (Number.isNaN(at)) return false;
-                const diff = at - now.getTime();
-                return diff >= -60000 && diff < 60 * 60_000;
-            })();
+        // A timer's primary fact is the time remaining, as a clock face the
+        // countdown can tick (#156 review): `hh:mm:ss`, not the coarse prose a
+        // moment gets. A running timer has no remaining time left to show.
+        if (job.state === "running") {
+            return {
+                kind: "Timer",
+                primary: "running now",
+                title: job.label,
+                body: jobBody(job),
+                details,
+                countdown: false,
+            };
+        }
         return {
             kind: "Timer",
-            primary,
+            primary: formatCountdown(job.runAt, now),
             title: job.label,
             body: jobBody(job),
             details,
-            countdown: job.state !== "running" && isWithinHour,
+            countdown: true,
         };
     }
 

@@ -102,6 +102,22 @@ describe("the jobs pages render", () => {
         expect(html).not.toContain("repeats");
     });
 
+    it("draws a timer's remaining time as a large hh:mm:ss countdown", () => {
+        // #156 review: the timer's primary fact is a clock face, in its own
+        // half-width block, not the coarse "in 4 minutes" prose.
+        const html = renderToStaticMarkup(
+            createElement(TimersPage, {
+                jobs: jobsState([job({ class: "timer", label: "Kettle" })]),
+                notifications,
+                token: "device-token",
+            }),
+        );
+
+        expect(html).toContain("job-countdown-row");
+        expect(html).toContain("job-countdown");
+        expect(html).toMatch(/\d{2}:\d{2}:\d{2}/);
+    });
+
     it("offers an owed row, and a settled one, their own runs", () => {
         // #90 phase 8f: a gated firing that declines announces nothing, so the
         // job row's own history is the only place it exists — for an owed row

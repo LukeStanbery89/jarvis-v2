@@ -89,6 +89,39 @@ export function JobCard({
         );
     }
 
+    // Everything under the primary fact: the label, the body, the cadence, the
+    // gate and the runs disclosure. Kept in one node because a countdown row
+    // sets it beside the countdown while every other row stacks it as before.
+    const facts = (
+        <>
+            <strong>{presented.title}</strong>
+            {presented.body !== null && (
+                <div className="row-body">
+                    <Markdown text={presented.body} />
+                </div>
+            )}
+            {presented.details.map((detail) => (
+                <span key={detail} className="job-detail">
+                    {" "}
+                    {detail}
+                </span>
+            ))}
+            {gate !== null && (
+                <span
+                    className="job-gate"
+                    title={
+                        job.gate !== undefined
+                            ? `only runs when ${job.gate.tool} changes`
+                            : undefined
+                    }
+                >
+                    {gate}
+                </span>
+            )}
+            {runs}
+        </>
+    );
+
     return (
         <li
             className={`job-item job-${job.class} ${className}`.trim()}
@@ -98,43 +131,28 @@ export function JobCard({
             <div className="job-text">
                 <div className="job-head">
                     {showKind && <ClassChip kind={presented.kind} />}
-                    {presented.countdown ? (
-                        <Countdown
-                            runAt={job.runAt}
-                            state={job.state}
-                            className="job-when job-primary"
-                        />
-                    ) : (
+                    {!presented.countdown && (
                         <span className="job-when job-primary">
                             {presented.primary}
                         </span>
                     )}
                 </div>
-                <strong>{presented.title}</strong>
-                {presented.body !== null && (
-                    <div className="row-body">
-                        <Markdown text={presented.body} />
+                {/* A timer's countdown is the card (#156 review): its own block,
+                    half the row wide, with the label and body beside it. Every
+                    other class keeps the stacked layout, its primary already
+                    sitting in the head. */}
+                {presented.countdown ? (
+                    <div className="job-countdown-row">
+                        <Countdown
+                            runAt={job.runAt}
+                            state={job.state}
+                            className="job-when job-primary job-countdown"
+                        />
+                        <div className="job-countdown-facts">{facts}</div>
                     </div>
+                ) : (
+                    facts
                 )}
-                {presented.details.map((detail) => (
-                    <span key={detail} className="job-detail">
-                        {" "}
-                        {detail}
-                    </span>
-                ))}
-                {gate !== null && (
-                    <span
-                        className="job-gate"
-                        title={
-                            job.gate !== undefined
-                                ? `only runs when ${job.gate.tool} changes`
-                                : undefined
-                        }
-                    >
-                        {gate}
-                    </span>
-                )}
-                {runs}
             </div>
             {actions !== undefined && (
                 <div className="job-actions">{actions}</div>
