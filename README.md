@@ -89,8 +89,12 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
 
 Then set at least `JARVIS_SANDBOX_REPOS` (an `owner/name` allowlist) and
 `JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key — the default coding model
-is `big-pickle`, free on OpenCode's Console endpoint). A Go-plan model works
-too: point `JARVIS_SANDBOX_LLM_BASE_URL` at
+is `big-pickle`, free on OpenCode's Console endpoint). Set
+`JARVIS_SANDBOX_MODELS` to a comma-separated ladder and the job falls to the
+next rung when the provider runs out of quota — for example
+`big-pickle,deepseek-v4.1-flash@400k`, where `@400k` caps the effective context
+window so compaction starts well below the model's real limit. A Go-plan model
+works too: point `JARVIS_SANDBOX_LLM_BASE_URL` at
 `https://opencode.ai/inference/go/openai/v1` and pick a Go id. A local model
 works instead: point
 `JARVIS_SANDBOX_LLM_BASE_URL` at `http://host.docker.internal:1234/v1`,
@@ -140,20 +144,21 @@ a published tarball.
 
 ## Commands
 
-| Command                | Description                                           |
-| ---------------------- | ----------------------------------------------------- |
-| `npm run build`        | Build all packages                                    |
-| `npm run typecheck`    | Type-check all packages (src + tests)                 |
-| `npm test`             | Run all package tests                                 |
-| `npm run test:scripts` | Run the root tooling tests under `scripts/`           |
-| `npm run check`        | Deps + lint + build + typecheck + test + format check |
-| `npm run check:deps`   | Verify no package imports an undeclared dependency    |
-| `npm run lint`         | Lint all TS/TSX sources with ESLint                   |
-| `npm run lint:fix`     | Lint and autofix all TS/TSX sources with ESLint       |
-| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost)    |
-| `npm run graph:health` | Report graphify structural health                     |
-| `npm run format`       | Auto-format all files with Prettier                   |
-| `npm run format:check` | Verify formatting without modifying files             |
+| Command                | Description                                                    |
+| ---------------------- | -------------------------------------------------------------- |
+| `npm run build`        | Build all packages                                             |
+| `npm run typecheck`    | Type-check all packages (src + tests)                          |
+| `npm test`             | Run all package tests                                          |
+| `npm run test:scripts` | Run the root tooling tests under `scripts/`                    |
+| `npm run check`        | Deps + wiring + lint + build + typecheck + test + format check |
+| `npm run check:deps`   | Verify no package imports an undeclared dependency             |
+| `npm run check:wiring` | Verify every added source file has a direct importer           |
+| `npm run lint`         | Lint all TS/TSX sources with ESLint                            |
+| `npm run lint:fix`     | Lint and autofix all TS/TSX sources with ESLint                |
+| `npm run graph:update` | Rebuild the graphify knowledge graph (no LLM cost)             |
+| `npm run graph:health` | Report graphify structural health                              |
+| `npm run format`       | Auto-format all files with Prettier                            |
+| `npm run format:check` | Verify formatting without modifying files                      |
 
 ## API docs
 

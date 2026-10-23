@@ -28,12 +28,26 @@ describe("readProxyServerConfig", () => {
             egressPolicy: "public",
             egressHosts: [],
             upstreamBaseUrl: "https://opencode.ai/inference/openai/v1",
-            model: "big-pickle",
+            models: ["big-pickle"],
             apiKey: "",
             secret: SECRET,
             statusUrl: "http://host.docker.internal:54321",
             maxRequestsPerJob: 500,
         });
+    });
+
+    it("reads a model ladder, and the older one-model spelling", () => {
+        const ladder = readProxyServerConfig({
+            JARVIS_PROXY_SECRET: SECRET,
+            JARVIS_PROXY_MODELS: "big-pickle, deepseek-v4.1-flash@400k",
+        });
+        expect(ladder.models).toEqual(["big-pickle", "deepseek-v4.1-flash"]);
+
+        const legacy = readProxyServerConfig({
+            JARVIS_PROXY_SECRET: SECRET,
+            JARVIS_PROXY_MODEL: "lmstudio/qwen3",
+        });
+        expect(legacy.models).toEqual(["lmstudio/qwen3"]);
     });
 
     it("reads an allowlist policy and its hosts", () => {

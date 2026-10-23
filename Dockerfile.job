@@ -72,8 +72,13 @@ COPY packages/server/sandbox/job-entrypoint.sh /usr/local/bin/job-entrypoint
 RUN chmod 755 /usr/local/bin/job-entrypoint
 
 USER job
+# A coding job is a development/test checkout, not the app's runtime: the
+# agent must be able to install the dev toolchain (eslint, tsc, vitest, vite)
+# and run the repository's `npm run check`. `test`, not `development`, because
+# the logger's sensitive-payload tests expect redaction by default. The
+# production image is `Dockerfile`.
 ENV HOME=/home/job \
-    NODE_ENV=production
+    NODE_ENV=test
 
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/job-entrypoint"]

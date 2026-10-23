@@ -47,7 +47,11 @@ services:
             # explicitly when composing from a context where it is not.
             JARVIS_SANDBOX_WORKSPACE_HOST_ROOT: "${JARVIS_SANDBOX_WORKSPACE_HOST_ROOT:-${PWD}/.jarvis/jobs}"
             JARVIS_SANDBOX_REPOS: "${JARVIS_SANDBOX_REPOS:-}"
+            # The ladder (`id` or `id@limit`, comma-separated); the older
+            # one-model setting still works as the fallback.
+            JARVIS_SANDBOX_MODELS: "${JARVIS_SANDBOX_MODELS:-}"
             JARVIS_SANDBOX_MODEL: "${JARVIS_SANDBOX_MODEL:-big-pickle}"
+            JARVIS_SANDBOX_MODEL_CONTEXT: "${JARVIS_SANDBOX_MODEL_CONTEXT:-200000}"
             # The OpenCode workspace key. It stays in the server and the
             # sidecar: each job is handed a token derived from its own id
             # (#141 phase 7).
@@ -100,6 +104,9 @@ services:
         restart: unless-stopped
         environment:
             JARVIS_PROXY_UPSTREAM_BASE_URL: "${JARVIS_SANDBOX_LLM_BASE_URL:-https://opencode.ai/inference/openai/v1}"
+            # The ladder when set; otherwise the broker falls back to the
+            # older one-model setting below.
+            JARVIS_PROXY_MODELS: "${JARVIS_SANDBOX_MODELS:-}"
             JARVIS_PROXY_MODEL: "${JARVIS_SANDBOX_MODEL:-big-pickle}"
             JARVIS_PROXY_API_KEY: "${JARVIS_SANDBOX_API_KEY:-}"
             # The secret the server writes beside the database; the same file

@@ -161,7 +161,11 @@ execFileSync(
             "https://opencode.ai/inference/openai/v1"
         }`,
         "-e",
-        `JARVIS_PROXY_MODEL=${env.JARVIS_SANDBOX_MODEL || "big-pickle"}`,
+        `JARVIS_PROXY_MODELS=${
+            env.JARVIS_SANDBOX_MODELS ||
+            env.JARVIS_SANDBOX_MODEL ||
+            "big-pickle"
+        }`,
         "-e",
         `JARVIS_PROXY_API_KEY=${env.JARVIS_SANDBOX_API_KEY || ""}`,
         "node:24-bookworm-slim",

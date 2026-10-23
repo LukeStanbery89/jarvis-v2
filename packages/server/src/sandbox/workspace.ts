@@ -22,9 +22,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
+import { appendFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { ensurePrivateDir } from "@lukestanbery/jarvis-auth";
+import { logger } from "../logger";
 
 const execFileAsync = promisify(execFile);
 
@@ -434,6 +435,22 @@ export function createWorkspaceManager(options: {
                 ]);
             } else {
                 await git(["-C", dir, "checkout", "-b", input.branch]);
+            }
+            // The SDLC artifacts are the job's channel to the supervisor, not
+            // part of the change (#94). Excluding them keeps a `git add -A`
+            // inside the container from putting them on the branch; the
+            // supervisor still deletes the directory before its own git calls.
+            try {
+                await appendFile(
+                    path.join(dir, ".git", "info", "exclude"),
+                    "\n# JARVIS job artifacts\n.jarvis/\n",
+                );
+            } catch (err) {
+                logger.warn(
+                    `workspace ${input.jobId}: could not exclude .jarvis from git: ${
+                        err instanceof Error ? err.message : String(err)
+                    }`,
+                );
             }
             // Where the run started, beside the clone rather than inside it
             // (an untracked file in the repo would be the job's own diff).

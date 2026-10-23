@@ -27,6 +27,7 @@ import {
 
 const SECRET = "test-secret-that-is-long-enough-1234";
 const MODEL = "big-pickle";
+const FALLBACK_MODEL = "deepseek-v4.1-flash";
 
 /** One request the fake upstream received. */
 interface Hit {
@@ -113,7 +114,7 @@ async function makeProxy(
         url: "http://job.test:54322/v1",
         secret: SECRET,
         upstreamBaseUrl: upstream.url,
-        model: MODEL,
+        models: [MODEL, FALLBACK_MODEL],
         apiKey: overrides.apiKey ?? "sk-real-upstream",
         maxRequestsPerJob: overrides.maxRequestsPerJob ?? 100,
         isJobActive: overrides.isJobActive ?? (() => true),
@@ -278,6 +279,18 @@ describe("the broker", () => {
             error: { message: expect.stringContaining(MODEL) },
         });
         expect(fixture.hits).toHaveLength(0);
+    });
+
+    it("accepts every rung of the model ladder", async () => {
+        const fixture = await makeProxy();
+        const response = await chat(
+            fixture,
+            deriveJobToken(SECRET, "job-1"),
+            chatBody(FALLBACK_MODEL),
+        );
+
+        expect(response.status).toBe(200);
+        expect(fixture.hits).toHaveLength(1);
     });
 
     it("serves only its two routes", async () => {

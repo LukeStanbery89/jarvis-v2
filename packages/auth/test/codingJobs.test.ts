@@ -17,8 +17,13 @@
  *   process's, because the boot reaper finds a container by label and has no
  *   owner to scope by.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createInMemoryAppDatabase } from "../src/testing";
+import { openAppDatabase } from "../src/store";
 import type { AppDatabase } from "../src";
 
 /** A store with one owner and one plain user, plus their ids. */
@@ -78,6 +83,10 @@ describe("coding-job ledger", () => {
             logTail: "",
             diffSummary: null,
             prUrl: null,
+            issueNumber: null,
+            questionCommentId: null,
+            plan: null,
+            lastSeenCommentId: null,
             attempts: 0,
             lastError: null,
             createdAt: "2026-10-19T12:00:00.000Z",
@@ -350,5 +359,182 @@ describe("coding-job ledger", () => {
                 .listCodingJobs(ownerId, { includeSettled: true })
                 .map((j) => j.id),
         ).toEqual(["live", "d", "c"]);
+    });
+});
+
+describe("waiting for answers (#94)", () => {
+    it("parks a running job, refuses a terminal settle, and reopens it", () => {
+        const { store, ownerId } = makeStore();
+        const job = store.createCodingJob(ownerId, codingJob());
+        expect(
+            store.claimCodingJob(job.id, "c1", "2026-10-19T12:01:00.000Z")
+                ?.state,
+        ).toBe("running");
+
+        const awaited = store.awaitCodingJob(job.id, {
+            plan: "Use Postgres.",
+            questionCommentId: 42,
+            lastSeenCommentId: 42,
+        });
+        expect(awaited).toMatchObject({
+            state: "awaiting-answer",
+            plan: "Use Postgres.",
+            questionCommentId: 42,
+            lastSeenCommentId: 42,
+            finishedAt: null,
+        });
+        expect(store.listAwaitingCodingJobs(10).map((j) => j.id)).toEqual([
+            job.id,
+        ]);
+
+        // The parked state is not terminal: a settle cannot end it, and a
+        // second await is a no-op rather than an overwrite.
+        expect(
+            store.settleCodingJob(job.id, "ok", {}, "2026-10-19T12:30:00.000Z")
+                ?.state,
+        ).toBe("awaiting-answer");
+        expect(store.awaitCodingJob(job.id, { plan: "Other" })?.plan).toBe(
+            "Use Postgres.",
+        );
+
+        const reopened = store.reopenCodingJob(job.id, 43);
+        expect(reopened).toMatchObject({
+            state: "queued",
+            containerId: null,
+            startedAt: null,
+            lastSeenCommentId: 43,
+        });
+        expect(
+            store.claimCodingJob(job.id, "c2", "2026-10-19T12:31:00.000Z")
+                ?.attempts,
+        ).toBe(2);
+    });
+
+    it("cancels a parked job only for its owner", () => {
+        const { store, ownerId, userId } = makeStore();
+        const job = store.createCodingJob(ownerId, codingJob());
+        store.claimCodingJob(job.id, "c1", "2026-10-19T12:01:00.000Z");
+        store.awaitCodingJob(job.id, { plan: "Plan." });
+
+        expect(
+            store.cancelCodingJob(userId, job.id, "2026-10-19T12:02:00.000Z"),
+        ).toBeNull();
+        expect(
+            store.cancelCodingJob(ownerId, job.id, "2026-10-19T12:02:00.000Z")
+                ?.state,
+        ).toBe("cancelled");
+        expect(store.listAwaitingCodingJobs(10)).toHaveLength(0);
+    });
+
+    it("lists jobs with a pull request, newest first, for the watcher", () => {
+        const { store, ownerId } = makeStore();
+        const first = store.createCodingJob(ownerId, {
+            ...codingJob({
+                id: "first",
+                createdAt: "2026-10-19T10:00:00.000Z",
+            }),
+            prUrl: "https://github.com/luke/app/pull/9",
+        });
+        const second = store.createCodingJob(ownerId, {
+            ...codingJob({
+                id: "second",
+                createdAt: "2026-10-19T11:00:00.000Z",
+            }),
+            prUrl: "https://github.com/luke/app/pull/9",
+        });
+        store.createCodingJob(ownerId, {
+            ...codingJob({
+                id: "plain",
+                createdAt: "2026-10-19T12:00:00.000Z",
+            }),
+        });
+
+        expect(store.listCodingJobsWithPr(10).map((job) => job.id)).toEqual([
+            second.id,
+            first.id,
+        ]);
+    });
+
+    it("records the issue and the watermark at creation", () => {
+        const { store, ownerId } = makeStore();
+        const created = store.createCodingJob(ownerId, {
+            ...codingJob(),
+            issueNumber: 12,
+            lastSeenCommentId: 7,
+        });
+
+        expect(created).toMatchObject({
+            issueNumber: 12,
+            lastSeenCommentId: 7,
+        });
+    });
+});
+
+describe("v19 migration", () => {
+    it("widens the state CHECK and adds the SDLC columns without losing rows", () => {
+        const dir = mkdtempSync(join(tmpdir(), "jarvis-v19-"));
+        const file = join(dir, "db.sqlite");
+        try {
+            const store = openAppDatabase(file);
+            const owner = store.createUser("luke", "hash", "owner");
+            store.close();
+
+            // Recreate the v18 shape: no `awaiting-answer`, no SDLC columns.
+            const raw = new Database(file);
+            raw.exec(`
+                DROP TABLE coding_jobs;
+                CREATE TABLE coding_jobs (
+                    id             TEXT PRIMARY KEY,
+                    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    repo           TEXT NOT NULL,
+                    branch         TEXT NOT NULL,
+                    prompt         TEXT NOT NULL,
+                    state          TEXT NOT NULL CHECK (state IN ('queued', 'running', 'ok', 'failed', 'cancelled')),
+                    crash_policy   TEXT NOT NULL DEFAULT 'prune' CHECK (crash_policy IN ('prune', 'resume')),
+                    container_id   TEXT,
+                    workspace_path TEXT NOT NULL,
+                    model          TEXT,
+                    log_tail       TEXT NOT NULL DEFAULT '',
+                    diff_summary   TEXT,
+                    pr_url         TEXT,
+                    attempts       INTEGER NOT NULL DEFAULT 0,
+                    last_error     TEXT,
+                    created_at     TEXT NOT NULL,
+                    started_at     TEXT,
+                    finished_at    TEXT
+                );
+                INSERT INTO coding_jobs (
+                    id, user_id, repo, branch, prompt, state, workspace_path,
+                    created_at, finished_at
+                ) VALUES (
+                    'c1', ${owner.id}, 'luke/app', 'jarvis/old', 'Old work.',
+                    'ok', '/jobs/c1/repo', '2026-10-19T12:00:00.000Z',
+                    '2026-10-19T12:30:00.000Z'
+                );
+                PRAGMA user_version = 18;
+            `);
+            raw.close();
+
+            const migrated = openAppDatabase(file);
+            expect(migrated.getCodingJobById("c1")).toMatchObject({
+                state: "ok",
+                issueNumber: null,
+                questionCommentId: null,
+                plan: null,
+                lastSeenCommentId: null,
+            });
+
+            // The new state is accepted on the rebuilt table.
+            const job = migrated.createCodingJob(owner.id, {
+                ...codingJob({ id: "c2" }),
+            });
+            migrated.claimCodingJob(job.id, "c2", "2026-10-19T12:01:00.000Z");
+            expect(
+                migrated.awaitCodingJob(job.id, { plan: "New plan." })?.state,
+            ).toBe("awaiting-answer");
+            migrated.close();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

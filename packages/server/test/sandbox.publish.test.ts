@@ -66,6 +66,7 @@ function makePublisher(
             url: "https://github.com/luke/app/pull/7#issuecomment-501",
         };
     });
+    const reactToComment = vi.fn(async () => undefined);
     const client = {
         installationToken: vi.fn(async () => ({
             token: "ghs_secret",
@@ -77,6 +78,7 @@ function makePublisher(
         getIssueComment,
         replyToReviewComment,
         commentOnIssue,
+        reactToComment,
     };
     const publisher = createGitHubPublisher({
         client,
@@ -99,6 +101,7 @@ function makePublisher(
         getIssueComment,
         replyToReviewComment,
         commentOnIssue,
+        reactToComment,
     };
 }
 
@@ -146,6 +149,16 @@ describe("the GitHub publisher", () => {
         expect(requestReviewers).toHaveBeenCalledWith("luke", "app", 7, [
             "luke",
         ]);
+    });
+
+    it("includes the agent's plan in the pull request body", async () => {
+        const { publisher, createPullRequest } = makePublisher();
+
+        await publisher.publish({ ...INPUT, plan: "1. Read the test." });
+
+        const body = createPullRequest.mock.calls[0]?.[0].body ?? "";
+        expect(body).toContain("## Plan");
+        expect(body).toContain("1. Read the test.");
     });
 
     it("asks the configured reviewer instead of the owner", async () => {
@@ -203,7 +216,8 @@ describe("the GitHub publisher", () => {
     });
 
     it("replies inside the review thread it was started from", async () => {
-        const { publisher, replyToReviewComment } = makePublisher();
+        const { publisher, replyToReviewComment, reactToComment } =
+            makePublisher();
 
         await publisher.publish({
             ...INPUT,
@@ -225,10 +239,15 @@ describe("the GitHub publisher", () => {
             433,
             "Done.",
         );
+        expect(reactToComment).toHaveBeenCalledWith(
+            { owner: "luke", repo: "app", kind: "review", id: 433 },
+            "+1",
+        );
     });
 
     it("quotes a conversation comment when replying", async () => {
-        const { publisher, getIssueComment, commentOnIssue } = makePublisher();
+        const { publisher, getIssueComment, commentOnIssue, reactToComment } =
+            makePublisher();
 
         await publisher.publish({
             ...INPUT,
@@ -245,6 +264,10 @@ describe("the GitHub publisher", () => {
             "app",
             7,
             "> Original note.\n\nDone.",
+        );
+        expect(reactToComment).toHaveBeenCalledWith(
+            { owner: "luke", repo: "app", kind: "issue", id: 987 },
+            "+1",
         );
     });
 

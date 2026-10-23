@@ -245,30 +245,51 @@ ${JOB_MODEL_RUNS_TABLE};`;
  * `container_id` is what makes `resume` possible at all: the boot reaper finds
  * the container by label, the row by id, and adopts one from the other.
  */
-const CODING_JOBS_SCHEMA = `CREATE TABLE IF NOT EXISTS coding_jobs (
-    id             TEXT PRIMARY KEY,
-    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    repo           TEXT NOT NULL,
-    branch         TEXT NOT NULL,
-    prompt         TEXT NOT NULL,
-    state          TEXT NOT NULL CHECK (state IN ('queued', 'running', 'ok', 'failed', 'cancelled')),
-    crash_policy   TEXT NOT NULL DEFAULT 'prune' CHECK (crash_policy IN ('prune', 'resume')),
-    container_id   TEXT,
-    workspace_path TEXT NOT NULL,
-    model          TEXT,
-    log_tail       TEXT NOT NULL DEFAULT '',
-    diff_summary   TEXT,
-    pr_url         TEXT,
-    attempts       INTEGER NOT NULL DEFAULT 0,
-    last_error     TEXT,
-    created_at     TEXT NOT NULL,
-    started_at     TEXT,
-    finished_at    TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_coding_jobs_user
+/**
+ * The coding-job table (#141), as a function because the v19 migration has to
+ * **rebuild** it: SQLite cannot widen a `CHECK` in place, and `awaiting-answer`
+ * (#94) is a new state.
+ *
+ * @param name - The table name; a rebuild writes `coding_jobs_v19` first.
+ * @returns The `CREATE TABLE` statement.
+ */
+function codingJobsTable(name: string): string {
+    return `CREATE TABLE IF NOT EXISTS ${name} (
+    id                   TEXT PRIMARY KEY,
+    user_id              INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    repo                 TEXT NOT NULL,
+    branch               TEXT NOT NULL,
+    prompt               TEXT NOT NULL,
+    state                TEXT NOT NULL CHECK (state IN ('queued', 'running', 'awaiting-answer', 'ok', 'failed', 'cancelled')),
+    crash_policy         TEXT NOT NULL DEFAULT 'prune' CHECK (crash_policy IN ('prune', 'resume')),
+    container_id         TEXT,
+    workspace_path       TEXT NOT NULL,
+    model                TEXT,
+    log_tail             TEXT NOT NULL DEFAULT '',
+    diff_summary         TEXT,
+    pr_url               TEXT,
+    issue_number         INTEGER,
+    question_comment_id  INTEGER,
+    plan                 TEXT,
+    last_seen_comment_id INTEGER,
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    last_error           TEXT,
+    created_at           TEXT NOT NULL,
+    started_at           TEXT,
+    finished_at          TEXT
+)`;
+}
+
+/** The coding-job indexes; re-created after a v19 rebuild. */
+const CODING_JOB_INDEXES = `CREATE INDEX IF NOT EXISTS idx_coding_jobs_user
     ON coding_jobs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_coding_jobs_running
-    ON coding_jobs (state) WHERE state = 'running';`;
+    ON coding_jobs (state) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_coding_jobs_awaiting
+    ON coding_jobs (state) WHERE state = 'awaiting-answer';`;
+
+const CODING_JOBS_SCHEMA = `${codingJobsTable("coding_jobs")};
+${CODING_JOB_INDEXES}`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -1082,12 +1103,19 @@ export interface JobLedger {
 export const CODING_JOB_STATES = [
     "queued",
     "running",
+    "awaiting-answer",
     "ok",
     "failed",
     "cancelled",
 ] as const;
 
-/** A coding job's state: queued, one attempt running, or one of three endings. */
+/**
+ * A coding job's state: queued, one attempt running, waiting for the user to
+ * answer questions, or one of three endings.
+ *
+ * `awaiting-answer` is **non-terminal** (#94): the job keeps its workspace and
+ * can be reopened with the answers; only the three endings are settled.
+ */
 export type CodingJobState = (typeof CODING_JOB_STATES)[number];
 
 /**
@@ -1133,6 +1161,23 @@ export interface AppCodingJob {
     diffSummary: string | null;
     /** The pull request the job opened, when a later step did. */
     prUrl: string | null;
+    /** The issue this job implements, when it was started from one (#94). */
+    issueNumber: number | null;
+    /**
+     * The comment that carries this job's questions (#94), when it is
+     * `awaiting-answer`. The poller reads the thread after it.
+     */
+    questionCommentId: number | null;
+    /** The agent's plan, posted with the questions or carried into the PR. */
+    plan: string | null;
+    /**
+     * The newest comment this job has accounted for (#94).
+     *
+     * For an awaiting job it is the question comment; for a PR follow-up it is
+     * the newest human review comment the follow-up was started for. The
+     * poller compares against it so one comment cannot start two jobs.
+     */
+    lastSeenCommentId: number | null;
     /** How many times it has been claimed; a claim is an attempt. */
     attempts: number;
     /** Why the last attempt failed, for a `failed` job. */
@@ -1160,6 +1205,10 @@ export interface CreateCodingJobInput {
      * first write and a resumed job still knows which PR it is updating.
      */
     prUrl?: string | null;
+    /** The issue this job implements, when it was started from one (#94). */
+    issueNumber?: number | null;
+    /** The newest comment this job already accounts for, for the poller. */
+    lastSeenCommentId?: number | null;
     /** Omitted means `prune` — the column's default, made explicit here. */
     crashPolicy?: CodingJobCrashPolicy;
 }
@@ -1228,6 +1277,45 @@ export interface CodingJobLedger {
      */
     listRunningCodingJobs(limit: number): AppCodingJob[];
     /**
+     * A job's questions were posted; it is waiting for answers (#94).
+     *
+     * `running` → `awaiting-answer`, recording the plan, the comment that
+     * carries the questions and the newest comment already accounted for (the
+     * question itself). The state is in the WHERE clause, so a duplicate call
+     * is a no-op and returns the row as it is.
+     *
+     * @returns The row after the attempt, or `null` for a missing id.
+     */
+    awaitCodingJob(
+        id: string,
+        input: {
+            plan: string;
+            questionCommentId?: number | null;
+            lastSeenCommentId?: number | null;
+        },
+    ): AppCodingJob | null;
+    /**
+     * Reopens an awaiting job for another attempt:
+     * `awaiting-answer` → `queued`. The transition is the claim, so two
+     * pollers cannot start two runs; the next {@link claimCodingJob} owns the
+     * container id and the attempt count.
+     *
+     * @param lastSeenCommentId - The newest comment now accounted for.
+     * @returns The reopened row, or `null` when it was not awaiting.
+     */
+    reopenCodingJob(
+        id: string,
+        lastSeenCommentId?: number | null,
+    ): AppCodingJob | null;
+    /** Every `awaiting-answer` job across users — the poller's feed. */
+    listAwaitingCodingJobs(limit: number): AppCodingJob[];
+    /**
+     * Recent jobs that name a pull request, newest first — the PR-feedback
+     * feed (#94). The caller dedupes by URL: the first row for a PR is its
+     * latest attempt and carries the watermark.
+     */
+    listCodingJobsWithPr(limit: number): AppCodingJob[];
+    /**
      * Claims a `queued` job for this process: `queued` → `running`, recording
      * the container and counting the attempt.
      *
@@ -1245,12 +1333,12 @@ export interface CodingJobLedger {
         at: string,
     ): AppCodingJob | null;
     /**
-     * Cancels one of the caller's own **queued** jobs.
+     * Cancels one of the caller's own **queued** or **awaiting-answer** jobs.
      *
      * A running job is not cancellable through this path: stopping its
      * container is the supervisor's act, not a row edit, and a row marked
      * cancelled while the agent kept writing would be a lie. (The service's
-     * stop path arrives with the supervisor.)
+     * stop path owns that race.)
      *
      * @returns The row after the attempt — unchanged when it could not be
      * cancelled — or `null` when no such job belongs to `userId`.
@@ -1279,7 +1367,10 @@ export interface CodingJobLedger {
      */
     settleCodingJob(
         id: string,
-        state: Exclude<CodingJobState, "queued" | "running">,
+        state: Exclude<
+            CodingJobState,
+            "queued" | "running" | "awaiting-answer"
+        >,
         result: SettleCodingJobInput,
         at: string,
     ): AppCodingJob | null;
@@ -1461,6 +1552,10 @@ interface CodingJobRow {
     logTail: string;
     diffSummary: string | null;
     prUrl: string | null;
+    issueNumber: number | null;
+    questionCommentId: number | null;
+    plan: string | null;
+    lastSeenCommentId: number | null;
     attempts: number;
     lastError: string | null;
     createdAt: string;
@@ -1469,7 +1564,7 @@ interface CodingJobRow {
 }
 
 /** The coding-job SELECT list (`mapCodingJob` is the other half). */
-const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, model, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt FROM coding_jobs`;
+const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, model, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, issue_number AS issueNumber, question_comment_id AS questionCommentId, plan, last_seen_comment_id AS lastSeenCommentId, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt FROM coding_jobs`;
 
 /** The states a coding job never returns from. */
 const SETTLED_CODING_JOB_STATES = `('ok', 'failed', 'cancelled')`;
@@ -1623,6 +1718,10 @@ function mapCodingJob(row: CodingJobRow): AppCodingJob {
         logTail: row.logTail,
         diffSummary: row.diffSummary,
         prUrl: row.prUrl,
+        issueNumber: row.issueNumber,
+        questionCommentId: row.questionCommentId,
+        plan: row.plan,
+        lastSeenCommentId: row.lastSeenCommentId,
         attempts: row.attempts,
         lastError: row.lastError,
         createdAt: row.createdAt,
@@ -2358,6 +2457,33 @@ ${NOTIFICATION_INDEXES}`);
         }
         db.pragma("user_version = 18");
     }
+
+    if (version < 19) {
+        // v19: `awaiting-answer` joins the coding-job states (#94), and the row
+        // learns where its questions were posted. SQLite cannot widen a CHECK
+        // in place, so rebuild — the same shape as v16. The four new columns
+        // are filled with NULL for existing rows; the guard keeps a fresh
+        // database (which already has the new table from `SCHEMA`) untouched.
+        if (!tableSqlHas(db, "coding_jobs", "'awaiting-answer'")) {
+            const rebuild = db.transaction((): void => {
+                db.exec(`${codingJobsTable("coding_jobs_v19")};
+INSERT INTO coding_jobs_v19 (
+    id, user_id, repo, branch, prompt, state, crash_policy, container_id,
+    workspace_path, model, log_tail, diff_summary, pr_url, attempts,
+    last_error, created_at, started_at, finished_at
+)
+SELECT id, user_id, repo, branch, prompt, state, crash_policy, container_id,
+       workspace_path, model, log_tail, diff_summary, pr_url, attempts,
+       last_error, created_at, started_at, finished_at
+  FROM coding_jobs;
+DROP TABLE coding_jobs;
+ALTER TABLE coding_jobs_v19 RENAME TO coding_jobs;
+${CODING_JOB_INDEXES}`);
+            });
+            rebuild();
+        }
+        db.pragma("user_version = 19");
+    }
 }
 
 export function openAppDatabase(
@@ -2446,6 +2572,10 @@ export class SqliteAppDatabase implements AppDatabase {
         selectCodingJobs: Database.Statement;
         selectCodingJobsWithSettled: Database.Statement;
         selectRunningCodingJobs: Database.Statement;
+        selectAwaitingCodingJobs: Database.Statement;
+        selectCodingJobsWithPr: Database.Statement;
+        awaitCodingJob: Database.Statement;
+        reopenCodingJob: Database.Statement;
         claimCodingJob: Database.Statement;
         settleCodingJob: Database.Statement;
         cancelCodingJob: Database.Statement;
@@ -2740,7 +2870,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
             insertCodingJob: db.prepare(
-                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, pr_url, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, pr_url, issue_number, last_seen_comment_id, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
             ),
             selectCodingJob: db.prepare(
                 `${CODING_JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -2760,6 +2890,27 @@ export class SqliteAppDatabase implements AppDatabase {
             selectRunningCodingJobs: db.prepare(
                 `${CODING_JOB_COLUMNS} WHERE state = 'running' ORDER BY started_at ASC, rowid ASC LIMIT ?`,
             ),
+            // The poller's feed (#94): jobs waiting for an answer, oldest
+            // first so a long queue cannot starve the first one.
+            selectAwaitingCodingJobs: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE state = 'awaiting-answer' ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+            ),
+            // The PR-feedback feed (#94): newest first, so the first row for a
+            // URL is the latest attempt and its watermark is authoritative.
+            selectCodingJobsWithPr: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE pr_url IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            // The question was posted: settle the non-terminal waiting state.
+            // `running` in the WHERE clause makes a duplicate a no-op.
+            awaitCodingJob: db.prepare(
+                "UPDATE coding_jobs SET state = 'awaiting-answer', plan = ?, question_comment_id = ?, last_seen_comment_id = COALESCE(?, last_seen_comment_id), last_error = NULL WHERE id = ? AND state = 'running'",
+            ),
+            // The reopen *is* the claim for an answer: only one poller can move
+            // the row out of `awaiting-answer`, and the next claim starts the
+            // container. Clear the previous attempt's fields.
+            reopenCodingJob: db.prepare(
+                "UPDATE coding_jobs SET state = 'queued', container_id = NULL, started_at = NULL, finished_at = NULL, last_error = NULL, last_seen_comment_id = COALESCE(?, last_seen_comment_id) WHERE id = ? AND state = 'awaiting-answer'",
+            ),
             // The claim *is* the transition, as for a scheduled job: `queued`
             // in the WHERE clause makes a second claimant touch no row. The
             // container id lands here, at the start, because `resume` needs it
@@ -2776,7 +2927,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "UPDATE coding_jobs SET state = ?, diff_summary = COALESCE(?, diff_summary), pr_url = COALESCE(?, pr_url), log_tail = COALESCE(?, log_tail), last_error = ?, finished_at = ? WHERE id = ? AND (state = 'running' OR (state = 'queued' AND ? = 'failed'))",
             ),
             cancelCodingJob: db.prepare(
-                "UPDATE coding_jobs SET state = 'cancelled', finished_at = ? WHERE user_id = ? AND id = ? AND state = 'queued'",
+                "UPDATE coding_jobs SET state = 'cancelled', finished_at = ? WHERE user_id = ? AND id = ? AND state IN ('queued', 'awaiting-answer')",
             ),
             setCodingJobLogTail: db.prepare(
                 "UPDATE coding_jobs SET log_tail = ? WHERE id = ?",
@@ -3429,6 +3580,8 @@ export class SqliteAppDatabase implements AppDatabase {
             input.workspacePath,
             input.model ?? null,
             input.prUrl ?? null,
+            input.issueNumber ?? null,
+            input.lastSeenCommentId ?? null,
             input.createdAt,
         );
         // Just written, so a re-read cannot miss; the assertion documents that
@@ -3471,6 +3624,45 @@ export class SqliteAppDatabase implements AppDatabase {
         return rows.map(mapCodingJob);
     }
 
+    listAwaitingCodingJobs(limit: number): AppCodingJob[] {
+        const rows = this.statements.selectAwaitingCodingJobs.all(
+            Math.max(1, limit),
+        ) as CodingJobRow[];
+        return rows.map(mapCodingJob);
+    }
+
+    listCodingJobsWithPr(limit: number): AppCodingJob[] {
+        const rows = this.statements.selectCodingJobsWithPr.all(
+            Math.max(1, limit),
+        ) as CodingJobRow[];
+        return rows.map(mapCodingJob);
+    }
+
+    awaitCodingJob(
+        id: string,
+        input: {
+            plan: string;
+            questionCommentId?: number | null;
+            lastSeenCommentId?: number | null;
+        },
+    ): AppCodingJob | null {
+        this.statements.awaitCodingJob.run(
+            input.plan,
+            input.questionCommentId ?? null,
+            input.lastSeenCommentId ?? null,
+            id,
+        );
+        return this.getCodingJobById(id);
+    }
+
+    reopenCodingJob(
+        id: string,
+        lastSeenCommentId?: number | null,
+    ): AppCodingJob | null {
+        this.statements.reopenCodingJob.run(lastSeenCommentId ?? null, id);
+        return this.getCodingJobById(id);
+    }
+
     claimCodingJob(
         id: string,
         containerId: string,
@@ -3495,7 +3687,10 @@ export class SqliteAppDatabase implements AppDatabase {
 
     settleCodingJob(
         id: string,
-        state: Exclude<CodingJobState, "queued" | "running">,
+        state: Exclude<
+            CodingJobState,
+            "queued" | "running" | "awaiting-answer"
+        >,
         result: SettleCodingJobInput,
         at: string,
     ): AppCodingJob | null {

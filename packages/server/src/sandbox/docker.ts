@@ -49,6 +49,16 @@ const DEFAULT_TMPFS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * How the workspace is mounted.
+ *
+ * Docker Desktop for macOS writes through a bind mount much more slowly than
+ * through its own cache; `delegated` lets the guest write ahead and flush in
+ * the background. Linux has no equivalent, so the mode stays plain `rw`.
+ */
+export const WORKSPACE_BIND_MODE =
+    process.platform === "darwin" ? "rw,delegated" : "rw";
+
+/**
  * The host alias a job needs to reach its model.
  *
  * Same spelling `docker-compose.yml` gives the server itself. Harmless on
@@ -168,7 +178,7 @@ export function buildCreateOptions(spec: SandboxSpec): DockerCreateOptions {
         // returns and make stdout/stderr indistinguishable.
         Tty: false,
         HostConfig: {
-            Binds: [`${spec.workspacePath}:${target}:rw`],
+            Binds: [`${spec.workspacePath}:${target}:${WORKSPACE_BIND_MODE}`],
             CapDrop: ["ALL"],
             SecurityOpt: ["no-new-privileges"],
             ReadonlyRootfs: true,

@@ -49,7 +49,7 @@ const CONFIG: SandboxConfig = {
     wallClockMs: 60_000,
     maxWorkspaceMb: 2048,
     repos: ["luke/app"],
-    model: "lmstudio/qwen3",
+    models: [{ id: "lmstudio/qwen3", contextTokens: 200_000 }],
     llmBaseUrl: "http://host.docker.internal:1234/v1",
     apiKey: "",
     extraHosts: [],
@@ -67,6 +67,8 @@ const CONFIG: SandboxConfig = {
     workspaceRetentionDays: 14,
     logRetentionDays: 30,
     keepJobRows: 100,
+    watchEnabled: true,
+    watchIntervalMs: 300_000,
 };
 
 /** A minimal open issue. */
@@ -124,6 +126,8 @@ function fakeWorkspace(
         allow?: boolean;
         commit?: boolean;
         collect?: () => { changed: boolean; diffSummary: string };
+        /** Where `prepare` says the clone is; defaults to `/jobs`. */
+        root?: string;
     } = {},
 ): WorkspaceManager & {
     prepared: Array<{ jobId: string; branch: string; existing?: boolean }>;
@@ -170,8 +174,12 @@ function fakeWorkspace(
                 ...(input.existing === true ? { existing: true } : {}),
             });
             return {
-                path: `/jobs/${input.jobId}/repo`,
-                hostPath: `/host/jobs/${input.jobId}/repo`,
+                path: options.root
+                    ? path.join(options.root, input.jobId, "repo")
+                    : `/jobs/${input.jobId}/repo`,
+                hostPath: options.root
+                    ? path.join(options.root, "host", input.jobId, "repo")
+                    : `/host/jobs/${input.jobId}/repo`,
             };
         },
         async collect() {
@@ -250,6 +258,12 @@ function makeService(
         probeBroker?: (url: string) => Promise<boolean>;
         runner?: ReturnType<typeof createFakeSandbox>;
         now?: () => Date;
+        commentOnIssue?: (input: {
+            owner: string;
+            repo: string;
+            number: number;
+            body: string;
+        }) => Promise<{ id: number; url: string }>;
     } = {},
 ) {
     const { store, userId } = makeStore();
@@ -274,6 +288,9 @@ function makeService(
             : {}),
         ...(overrides.probeBroker
             ? { probeBroker: overrides.probeBroker }
+            : {}),
+        ...(overrides.commentOnIssue
+            ? { commentOnIssue: overrides.commentOnIssue }
             : {}),
         notifications: notify,
         now: overrides.now ?? (() => new Date("2026-10-19T12:00:00.000Z")),
@@ -318,11 +335,35 @@ describe("starting a coding job", () => {
             command: [],
         });
         expect(runner.started[0]?.env).toMatchObject({
-            JARVIS_JOB_PROMPT: "Fix the login bug",
-            JARVIS_JOB_MODEL_ID: "lmstudio/qwen3",
+            JARVIS_JOB_MODELS: "lmstudio/qwen3|200000",
             JARVIS_JOB_LLM_BASE_URL: "http://host.docker.internal:1234/v1",
             JARVIS_JOB_BRANCH: started.job.branch,
         });
+        // The task carries the SDLC contract and ends with the user's words.
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            "Never merge a pull request",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            ".jarvis/questions.json",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            "npm run check",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            "Decisions to make",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            ".jarvis/brief.md",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            "no GitHub credentials",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            "Prefer `edit`",
+        );
+        expect(runner.started[0]?.env.JARVIS_JOB_PROMPT).toContain(
+            "Fix the login bug",
+        );
         // Embedded mode: the job reaches the broker and nothing else.
         expect(runner.started[0]?.env).not.toHaveProperty("HTTP_PROXY");
 
@@ -400,6 +441,7 @@ describe("starting a coding job", () => {
             repo: "luke/app",
             task: "Address the review comments",
             pullRequest: 165,
+            issueForQuestions: 140,
             replyTo: { kind: "review", id: 433, url: null },
         });
         if (!started.ok) {
@@ -423,6 +465,9 @@ describe("starting a coding job", () => {
         ]);
         // The row keeps what the user asked; the container gets the context.
         expect(started.job.prompt).toBe("Address the review comments");
+        // The PR supplies the branch and prompt; the issue is only the thread
+        // a parked follow-up would post its questions on.
+        expect(started.job.issueNumber).toBe(140);
         const prompt = runner.started[0]?.env.JARVIS_JOB_PROMPT ?? "";
         expect(prompt).toContain("#165");
         expect(prompt).toContain("Add a greeting");
@@ -670,6 +715,36 @@ describe("starting a coding job", () => {
         await started.done;
     });
 
+    it("hands the whole model ladder to the container", async () => {
+        const { userId, runner, service } = makeService({
+            config: {
+                models: [
+                    { id: "big-pickle", contextTokens: 200_000 },
+                    { id: "deepseek-v4.1-flash", contextTokens: 400_000 },
+                ],
+            },
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Add the settings toggle",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(runner.started[0]?.env.JARVIS_JOB_MODELS).toBe(
+            "big-pickle|200000\ndeepseek-v4.1-flash|400000",
+        );
+        // The row records the model the run starts on, not the fallbacks.
+        expect(started.job.model).toBe("big-pickle");
+
+        runner.emit(started.job.containerId ?? "", "ok");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+    });
+
     it("refuses a sidecar job when the broker is not running", async () => {
         const probe = vi.fn(async () => false);
         const { userId, workspace, service } = makeService({
@@ -793,6 +868,244 @@ describe("starting a coding job", () => {
 
         await service.stop(userId, started.job.id);
         await started.done;
+    });
+
+    it("parks a job on its questions, posts them and keeps the workspace", async () => {
+        const root = tempDir("jarvis-await-");
+        const workspace = fakeWorkspace({ root });
+        const comments: Array<{
+            owner: string;
+            repo: string;
+            number: number;
+            body: string;
+        }> = [];
+        const { userId, runner, service, notify, store } = makeService({
+            config: {
+                workspaceRoot: root,
+                workspaceHostRoot: path.join(root, "host"),
+            },
+            workspace,
+            issues: async () => issueSnapshot({ number: 12 }),
+            commentOnIssue: async (input) => {
+                comments.push(input);
+                return {
+                    id: 77,
+                    url: "https://github.com/luke/app/issues/12#issuecomment-77",
+                };
+            },
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Build the thing",
+            issue: 12,
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        const workspacePath = started.job.workspacePath;
+        mkdirSync(path.join(workspacePath, ".jarvis"), { recursive: true });
+        writeFileSync(
+            path.join(workspacePath, ".jarvis", "plan.md"),
+            "Plan: use Postgres.",
+        );
+        writeFileSync(
+            path.join(workspacePath, ".jarvis", "questions.json"),
+            JSON.stringify({ questions: ["Which database?", "Which port?"] }),
+        );
+
+        runner.emit(started.job.containerId ?? "", "thinking…");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        const row = store.getCodingJobById(started.job.id);
+        expect(row).toMatchObject({
+            state: "awaiting-answer",
+            issueNumber: 12,
+            questionCommentId: 77,
+            lastSeenCommentId: 77,
+            plan: "Plan: use Postgres.",
+            finishedAt: null,
+        });
+        expect(comments).toHaveLength(1);
+        expect(comments[0]?.number).toBe(12);
+        expect(comments[0]?.body).toContain("Which database?");
+        expect(comments[0]?.body).toContain("Which port?");
+        expect(comments[0]?.body).toContain(
+            `<!-- jarvis:questions job=${started.job.id} -->`,
+        );
+        // Nothing was committed or published, and the tree is still there for
+        // the answer follow-up; only the artifacts were removed.
+        expect(workspace.commits).toHaveLength(0);
+        expect(workspace.pushes).toHaveLength(0);
+        expect(workspace.removed).toHaveLength(0);
+        expect(existsSync(path.join(workspacePath, ".jarvis"))).toBe(false);
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({ kind: "coding.question" }),
+        );
+        expect(store.listAwaitingCodingJobs(10).map((job) => job.id)).toEqual([
+            started.job.id,
+        ]);
+    });
+
+    it("resumes the same workspace and prompt with the answers", async () => {
+        const root = tempDir("jarvis-resume-");
+        const workspace = fakeWorkspace({ root });
+        const { userId, runner, service, store } = makeService({
+            config: {
+                workspaceRoot: root,
+                workspaceHostRoot: path.join(root, "host"),
+            },
+            workspace,
+            issues: async () => issueSnapshot({ number: 12 }),
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Build the thing",
+            issue: 12,
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        const workspacePath = started.job.workspacePath;
+        mkdirSync(path.join(workspacePath, ".jarvis"), { recursive: true });
+        writeFileSync(
+            path.join(workspacePath, ".jarvis", "plan.md"),
+            "Plan: use Postgres.",
+        );
+        writeFileSync(
+            path.join(workspacePath, ".jarvis", "questions.json"),
+            JSON.stringify({ questions: ["Which database?"] }),
+        );
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        const resumed = await service.resume(
+            userId,
+            started.job.id,
+            "Use Postgres on 5432.",
+        );
+        if (!resumed.ok) {
+            throw new Error(`refused: ${resumed.reason}`);
+        }
+
+        expect(resumed.job).toMatchObject({
+            state: "running",
+            attempts: 2,
+            workspacePath,
+        });
+        // The same tree, mapped to the daemon's view; no second clone.
+        expect(workspace.prepared).toHaveLength(1);
+        expect(runner.started[1]?.workspacePath).toBe(
+            path.join(root, "host", started.job.id, "repo"),
+        );
+        const prompt = runner.started[1]?.env.JARVIS_JOB_PROMPT ?? "";
+        expect(prompt).toContain("Use Postgres on 5432.");
+        expect(prompt).toContain("Your previous plan");
+        expect(prompt).toContain("Plan: use Postgres.");
+
+        runner.exit(resumed.job.containerId ?? "", 0);
+        await resumed.done;
+        expect(store.getCodingJobById(started.job.id)?.state).toBe("ok");
+    });
+
+    it("cancels a parked job and removes its workspace", async () => {
+        const root = tempDir("jarvis-cancel-await-");
+        const workspace = fakeWorkspace({ root });
+        const { userId, runner, service, store } = makeService({
+            config: {
+                workspaceRoot: root,
+                workspaceHostRoot: path.join(root, "host"),
+            },
+            workspace,
+        });
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Build the thing",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        mkdirSync(path.join(started.job.workspacePath, ".jarvis"), {
+            recursive: true,
+        });
+        writeFileSync(
+            path.join(started.job.workspacePath, ".jarvis", "questions.json"),
+            JSON.stringify({ questions: ["Which database?"] }),
+        );
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        const stopped = await service.stop(userId, started.job.id);
+        expect(stopped?.state).toBe("cancelled");
+        expect(store.getCodingJobById(started.job.id)?.state).toBe("cancelled");
+        expect(workspace.removed).toContain(started.job.workspacePath);
+    });
+
+    it("puts the plan in the publisher's input on a completed run", async () => {
+        const root = tempDir("jarvis-plan-");
+        const workspace = fakeWorkspace({ root });
+        const publish = vi.fn(async () => ({
+            prUrl: "https://github.com/luke/app/pull/9",
+        }));
+        const { userId, runner, service } = makeService({
+            config: {
+                workspaceRoot: root,
+                workspaceHostRoot: path.join(root, "host"),
+            },
+            workspace,
+            publisher: { publish },
+        });
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Build the thing",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        mkdirSync(path.join(started.job.workspacePath, ".jarvis"), {
+            recursive: true,
+        });
+        writeFileSync(
+            path.join(started.job.workspacePath, ".jarvis", "plan.md"),
+            "Plan: change one file.",
+        );
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        expect(publish).toHaveBeenCalledWith(
+            expect.objectContaining({ plan: "Plan: change one file." }),
+        );
+    });
+
+    it("names a failed repository check instead of a bare exit code", async () => {
+        const { store, userId, runner, service } = makeService();
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Fix it",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        const containerId = started.job.containerId ?? "";
+        runner.emit(containerId, "JARVIS: running npm run check");
+        runner.emit(
+            containerId,
+            "JARVIS_CHECK_FAILED: npm run check failed; the job will not publish",
+        );
+        runner.exit(containerId, 1);
+        await started.done;
+
+        const row = store.getCodingJobById(started.job.id);
+        expect(row?.state).toBe("failed");
+        expect(row?.lastError).toContain("check failed");
     });
 
     it("records a failed run, removes its workspace and says why", async () => {
@@ -1173,7 +1486,7 @@ describe("starting a coding job", () => {
         const remote = makeService({
             config: {
                 llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
-                model: "deepseek-v4.1-flash",
+                models: [{ id: "deepseek-v4.1-flash", contextTokens: 400_000 }],
                 apiKey: "",
             },
         });
@@ -1199,7 +1512,7 @@ describe("starting a coding job", () => {
             }),
         ).toMatchObject({ ok: false, code: "task-missing" });
 
-        const noModel = makeService({ config: { model: "" } });
+        const noModel = makeService({ config: { models: [] } });
         expect(
             await noModel.service.start({
                 userId: noModel.userId,

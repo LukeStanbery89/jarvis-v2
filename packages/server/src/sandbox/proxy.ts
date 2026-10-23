@@ -81,8 +81,15 @@ export interface SandboxProxyOptions {
     secret: string;
     /** The real OpenAI-compatible endpoint the broker forwards to. */
     upstreamBaseUrl: string;
-    /** The only model a job may ask for. */
-    model: string;
+    /**
+     * The models a job may ask for: the deployment's ladder, in order.
+     *
+     * The broker is not a model-quality gate, but it is a pin — a container
+     * that could name any model could spend an account's budget on one it was
+     * never given. An allowlist keeps the fallback rungs usable without
+     * widening that.
+     */
+    models: readonly string[];
     /** The real provider key; empty for a local upstream. */
     apiKey: string;
     /** Accepted requests per job before the broker refuses (`429`). */
@@ -326,11 +333,18 @@ export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
                 fail(res, 400, "the request body is not valid JSON");
                 return;
             }
-            if (parsed.model !== options.model) {
+            if (
+                typeof parsed.model !== "string" ||
+                !options.models.includes(parsed.model)
+            ) {
                 fail(
                     res,
                     403,
-                    `this coding job may only use the model ${options.model}`,
+                    `this coding job may only use ${
+                        options.models.length === 1
+                            ? `the model ${options.models[0]}`
+                            : `the models ${options.models.join(", ")}`
+                    }`,
                     "permission_error",
                 );
                 return;
