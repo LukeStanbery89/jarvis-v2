@@ -2,18 +2,18 @@
  * The notifications page (#90 phases 6c, 7): the notification class, whole.
  *
  * Two halves, because the class has two halves in time. **Scheduled** is work of
- * this class that has not arrived yet — the model's `scheduleTask` jobs ("turn
- * the kitchen light on at 8pm", "a weather summary at 8am") and any note written
- * here by hand. They had no page at all before phase 7d: pending, they appeared
- * only on the dashboard and could not be cancelled from the UI. **Recorded** is
- * everything the server has filed, with the actions each row allows: mark read,
- * dismiss, snooze. A thing that is scheduled stops being scheduled when it fires
- * and becomes a record, so the same item never shows in both lists.
+ * this class that has not arrived yet — the model's `scheduleTask` jobs and any
+ * note written here by hand. **Recorded** is everything the server has filed,
+ * with the actions each row allows: mark read, dismiss, snooze. A thing that is
+ * scheduled stops being scheduled when it fires and becomes a record, so the
+ * same item never shows in both lists.
  *
- * The page also takes over from the chat's inline notification list, which only
- * existed while the conversation was on screen — the wrong home for the reading
- * surface, now that the toast carries the interrupting half and the nav badge
- * carries the count.
+ * Both halves render through the shared presentation components (#156): the
+ * scheduled rows through `JobRow`/`JobCard` (the same row the Timers and
+ * Reminders pages use) and the records through `NotificationCard`, so a
+ * notification says the same thing here as it does in the toast. The page keeps
+ * the list-page chrome (`page page-rows`), which is where its gutters and
+ * centred measure come from.
  *
  * "Snoozed until 7:00 PM" is assembled from the row **and its job**
  * (`snoozeUntil`): the notification records the deferral, the job holds the
@@ -33,9 +33,7 @@ import { snoozeReminder, snoozeRequestFor } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
 import { useJobPage } from "../../hooks/useJobPage";
 import {
-    describeBody,
     describeDelivery,
-    describeNotice,
     describeNotificationState,
     isSettled,
 } from "../../notifications";
@@ -46,6 +44,8 @@ import { JobForm } from "./JobForm";
 import { JobRow } from "./JobRow";
 import { JobRuns } from "./JobRuns";
 import { SnoozeMenu } from "./SnoozeMenu";
+import { NotificationCard } from "./Row/NotificationCard";
+import { RowActions } from "./Row/RowActions";
 
 /** How many scheduled rows the section shows (the dashboard is the glance). */
 const SCHEDULED_LIMIT = 50;
@@ -76,8 +76,11 @@ interface NotificationRowProps {
 /**
  * One notification, with the actions its state and class allow.
  *
- * A settled row offers nothing: read, answered, dismissed and snoozed are final,
- * and offering an action the server would refuse is worse than offering none.
+ * A settled row offers nothing but its runs: read, answered, dismissed and
+ * snoozed are final, and offering an action the server would refuse is worse
+ * than offering none. The actions live behind a `⋯` (`RowActions`), so the
+ * message keeps the row's width; a reminder's deferral keeps its own menu,
+ * because it is a choice of offset rather than a single action.
  */
 function NotificationRow({
     item,
@@ -89,84 +92,51 @@ function NotificationRow({
     onSnooze,
 }: NotificationRowProps) {
     const settled = isSettled(item.state);
-    // The title says it all for most reminders (#90 phase 6c) — see `describeBody`.
-    const body = describeBody(item);
-    // The state column holds a sentence for a snoozed row, because "snoozed" alone
-    // is the half of it the user did not ask about.
+    // The state column holds a sentence for a snoozed row, because "snoozed"
+    // alone is the half of it the user did not ask about.
     const state =
         item.state === "snoozed"
             ? describeSnooze(snoozeUntil(item.jobId, jobs.jobs), now)
             : describeNotificationState(item.state);
+
     return (
-        <li
-            className={`notification-item notification-${item.priority} notification-${item.class}`}
-        >
-            <div className="notification-text">
-                {/* What it is and what happened to it share the top line, as
-                    they do on a job row (#146 phase D). */}
-                <div className="notification-head">
-                    <span className="notification-eyebrow">
-                        {describeNotice(item)}
-                    </span>
-                    {/* `delivered` is the one state that means "you have not
-                        seen this", so it is the one that gets the amber NEW
-                        (#90 phase 7d) — keyed off the state rather than the
-                        word, so rewording the label cannot silently drop the
-                        emphasis. */}
-                    <span
-                        className={`notification-state${
-                            item.state === "delivered"
-                                ? " notification-state-new"
-                                : ""
-                        }`}
-                    >
-                        {state}
-                    </span>
-                </div>
-                <strong>{item.title}</strong>
-                {body !== null && <span> {body}</span>}
-                {item.requiresAnswer === true && (
-                    <em className="notification-needs-answer">
-                        {" "}
-                        (waiting for your answer)
-                    </em>
-                )}
-                {/* What the job actually did, when the record knows which job it
-                    was. Absent for a record with no `jobId` (one raised by
-                    something other than a job), and for a job since pruned it
-                    says so rather than showing nothing. */}
-                {item.jobId !== undefined && (
+        <NotificationCard
+            notification={item}
+            now={now}
+            state={state}
+            runs={
+                item.jobId !== undefined ? (
                     <JobRuns token={token} jobId={item.jobId} />
-                )}
-            </div>
-            <div className="notification-actions">
-                {!settled && (
-                    <>
-                        <button
-                            type="button"
-                            onClick={() => onMarkRead(item.id)}
-                        >
-                            Mark read
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => onDismiss(item.id)}
-                        >
-                            Dismiss
-                        </button>
-                    </>
-                )}
-                {/* Only a reminder can be deferred, and only while it is still
-                    owed (a job row's own Snooze is on the reminder pages). */}
-                {!settled &&
-                    item.class === "reminder" &&
-                    item.jobId !== undefined && (
-                        <SnoozeMenu
-                            onSnooze={(minutes) => onSnooze(item, minutes)}
-                        />
-                    )}
-            </div>
-        </li>
+                ) : undefined
+            }
+            actions={
+                <>
+                    {!settled &&
+                        item.class === "reminder" &&
+                        item.jobId !== undefined && (
+                            <SnoozeMenu
+                                onSnooze={(minutes) => onSnooze(item, minutes)}
+                            />
+                        )}
+                    <RowActions
+                        actions={
+                            settled
+                                ? []
+                                : [
+                                      {
+                                          label: "Mark read",
+                                          onClick: () => onMarkRead(item.id),
+                                      },
+                                      {
+                                          label: "Dismiss",
+                                          onClick: () => onDismiss(item.id),
+                                      },
+                                  ]
+                        }
+                    />
+                </>
+            }
+        />
     );
 }
 
@@ -306,9 +276,9 @@ export function NotificationsPage({
                         )}
                     </p>
                 )}
-                {/* The headings only appear when there is something scheduled:
-                    the page is one list on a normal day, and the split is worth
-                    naming exactly when it matters. */}
+                {/* The headings only appear when there is something scheduled: the
+                page is one list on a normal day, and the split is worth naming
+                exactly when it matters. */}
                 {scheduled.length > 0 ? (
                     <>
                         <section

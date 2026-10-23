@@ -22,6 +22,7 @@ import {
     describeSnooze,
     editPatchFor,
     emptyRunsNote,
+    formatCountdown,
     gateText,
     instantFromDuration,
     jobBody,
@@ -222,6 +223,41 @@ describe("describeRunAt", () => {
 
     it("says so when the moment cannot be read", () => {
         expect(describeRunAt("", now)).toBe("at an unknown time");
+    });
+});
+
+describe("formatCountdown (#156)", () => {
+    const now = new Date(2026, 9, 17, 12, 0);
+
+    it("reads the remaining span as hh:mm:ss", () => {
+        expect(
+            formatCountdown(new Date(2026, 9, 17, 14, 5, 9).toISOString(), now),
+        ).toBe("02:05:09");
+    });
+
+    it("keeps the seconds under a minute, zero-padded", () => {
+        expect(
+            formatCountdown(
+                new Date(2026, 9, 17, 12, 0, 30).toISOString(),
+                now,
+            ),
+        ).toBe("00:00:30");
+    });
+
+    it("does not cap the hours at a day", () => {
+        expect(
+            formatCountdown(new Date(2026, 9, 19, 12, 0).toISOString(), now),
+        ).toBe("48:00:00");
+    });
+
+    it("clamps a moment already reached rather than going negative", () => {
+        expect(
+            formatCountdown(new Date(2026, 9, 17, 11, 59).toISOString(), now),
+        ).toBe("00:00:00");
+    });
+
+    it("says so when the moment cannot be read", () => {
+        expect(formatCountdown("", now)).toBe("--:--:--");
     });
 });
 

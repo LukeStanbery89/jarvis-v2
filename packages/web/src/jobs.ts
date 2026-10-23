@@ -171,6 +171,40 @@ export function describeRunAt(runAt: string, now: Date): string {
 }
 
 /**
+ * A timer's remaining time as a clock face: `hh:mm:ss` (#156 review).
+ *
+ * A timer is the one class whose primary fact is a *duration*, and a duration
+ * the user is watching wants the shape of a stopwatch, not the coarse "in 4
+ * minutes" prose a moment gets — so the timer card shows this where a reminder
+ * shows its moment. The hours are not capped at a day: a two-day timer reads
+ * `48:00:00`, which is still a countdown rather than a date the user has to
+ * subtract from. A moment already reached clamps to `00:00:00` instead of going
+ * negative; the scheduler will fire it, and a minus sign is not a fact worth
+ * showing.
+ *
+ * @param runAt - The job's `runAt` (an ISO instant).
+ * @param now - The clock to compare against (injected, for tests).
+ * @returns The remaining span as `hh:mm:ss`, or `--:--:--` when `runAt` will not
+ *   parse.
+ */
+export function formatCountdown(runAt: string, now: Date): string {
+    const at = new Date(runAt).getTime();
+    if (Number.isNaN(at)) {
+        return "--:--:--";
+    }
+    const remaining = at - now.getTime();
+    if (remaining <= 0) {
+        return "00:00:00";
+    }
+    const totalSeconds = Math.floor(remaining / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (value: number): string => String(value).padStart(2, "0");
+    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}
+
+/**
  * How long one attempt took, in the unit its size deserves (#90 phase 7d).
  *
  * `describeSpan` floors to whole minutes, which is right for a list of moments

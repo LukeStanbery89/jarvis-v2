@@ -1187,15 +1187,6 @@ textarea::placeholder {
     flex: 1;
 }
 
-.notification-eyebrow {
-    display: block;
-    margin-bottom: 0.05rem;
-    color: var(--primary-dim);
-    font-size: 0.68rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-}
-
 .notification-needs-answer {
     color: var(--primary-dim);
 }
@@ -1962,14 +1953,6 @@ textarea::placeholder {
     background: rgba(0, 0, 0, 0.82);
 }
 
-.timer-ring-eyebrow {
-    margin: 0;
-    font-size: 0.72rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    opacity: 0.7;
-}
-
 .timer-ring-title {
     margin: 0.35rem 0 0;
     font-size: 1.85rem;
@@ -2711,4 +2694,192 @@ textarea::placeholder {
         grid-column: 3;
         grid-row: 1 / span 2;
     }
+}
+
+/* Unified presentation (#156).
+ *
+ * The shared components emit the app's existing class names — a job row is a
+ * `.job-item` pane, a record a `.notification-item` — so these rules add only
+ * what the presentation module introduced: the class chip, the primary fact's
+ * weight, the folded `⋯` action menu and the body block. Every value is drawn
+ * from the theme's own tokens. (The first revision of this block referenced the
+ * admin portal's `--border`/`--surface`/`--radius`, which do not exist in the
+ * app's sheet — the panes and chips rendered with no edge at all.) */
+
+/* The class eyebrow, as a chip: the same uppercase, letterspaced line the job
+ * and notification heads already used, but bounded so it reads as a label. The
+ * theme is one hue; the timer steps up because it is the class that interrupts. */
+.class-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.02rem 0.45rem;
+    border: 1px solid var(--primary-border);
+    border-radius: 999px;
+    color: var(--primary-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.chip-timer {
+    color: var(--primary);
+    border-color: var(--primary-dim);
+}
+
+/* The class's primary fact (#156): the time remaining or the moment, made the
+ * loudest line in the row rather than the dimmest. Scoped so a settled row's
+ * moment keeps its step-back. */
+.job-primary {
+    color: var(--primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.countdown,
+.job-when,
+.dashboard-when,
+.job-primary {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* A timer's countdown is the card (#156 review): the remaining time in its own
+ * block, half the row wide, at a size that reads across the room. The label and
+ * body sit beside it rather than under it, so the number shares its line with
+ * nothing. */
+.job-countdown-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.2rem;
+}
+
+.job-countdown {
+    flex: 0 0 50%;
+    min-width: 0;
+    color: var(--primary);
+    font-size: 2.1rem;
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: 0.02em;
+}
+
+.job-countdown-facts {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* On a phone the two halves stack: half a narrow card is too little for an
+ * `hh:mm:ss` this large. */
+@media (max-width: 30rem) {
+    .job-countdown-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35rem;
+    }
+
+    .job-countdown {
+        flex: none;
+        width: 100%;
+    }
+}
+
+/* A body (Markdown, so links survive) and the plain detail lines under a row's
+ * title. Compact, so a body does not turn a list row into a paragraph. */
+.row-body p {
+    margin: 0.15rem 0 0;
+}
+
+.job-detail,
+.notification-detail {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+}
+
+.row-body a,
+.job-detail a,
+.notification-detail a {
+    color: var(--primary);
+}
+
+/* A row's controls, folded into one `⋯` (#156): a single trigger whose menu is
+ * hidden until it is asked for, so the primary fact keeps the width. Styled from
+ * the same tokens as `SnoozeMenu`, the row's other control. */
+.row-actions {
+    display: inline-flex;
+    align-items: center;
+}
+
+/* The `⋯` trigger. It is a button inside `.job-actions`/`.notification-actions`,
+ * which style their buttons as wide as "Mark read"; the menu trigger must stay a
+ * square, so its width is restated at a specificity that beats them. */
+.row-actions .row-actions-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--primary);
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.row-actions .row-actions-toggle:hover,
+.row-actions.open .row-actions-toggle {
+    background: var(--primary-wash);
+    border-color: var(--primary-dim);
+}
+
+/* The menu is a popover (#156 review): it lives in the top layer, so a later
+ * card — which `backdrop-filter` turns into a stacking context — cannot paint
+ * over it, and it is mutually exclusive with the snooze popover (two
+ * `popover="auto"` menus cannot be open at once). `inset: auto` undoes the UA's
+ * viewport centring; the component measures and writes `left`/`top`. Deliberately
+ * **no `display` here**: the UA's closed-popover rule must win, or the menu
+ * renders permanently open (see the note on `.snooze-options`). */
+.row-actions-menu {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 8rem;
+    padding: 0.3rem;
+    background: var(--panel);
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
+.row-actions-menu:popover-open {
+    display: flex;
+}
+
+/* The items read as menu items, not as the row's buttons: full width, left
+ * aligned, a wash on hover. Placed after `.job-actions button` /
+ * `.notification-actions button` so it wins the shared specificity. */
+.row-actions-menu button {
+    display: flex;
+    justify-content: flex-start;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.row-actions-menu button:hover {
+    color: var(--primary);
+    background: var(--primary-wash);
+    border-color: var(--primary-border);
 }
