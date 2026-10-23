@@ -297,7 +297,10 @@ request; the supervisor names it as a check failure. A run that parked on
 `.jarvis/questions.json` is exempt — its check runs on the answer run, after
 the edits exist. The entrypoint context tells the agent to ask on the task's
 “Decisions to make”/“Open questions” instead of choosing, and to wire every new
-component into the surfaces the task names. It also tells the agent it has no
+component into the surfaces the task names. `npm run check:wiring` makes that
+rule enforceable: every added source file needs a direct non-test, non-barrel
+importer, and the agent must add a render/integration test for each named
+surface. It also tells the agent it has no
 GitHub credentials (so it does not run `gh` or fetch issue/PR pages — the
 context is in the prompt), to prefer `edit` over `write`, to keep
 `.jarvis/brief.md` for a context compaction, and to run the check before its

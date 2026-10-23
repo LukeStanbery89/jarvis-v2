@@ -103,7 +103,7 @@ How to work:
 - Use the read, glob and grep tools to inspect files, and edit and write to change them. Do not use shell with cat, grep, sed or heredocs for file I/O; reserve shell for builds, tests and git.
 - Write your plan to .jarvis/plan.md before editing.
 - If the task is ambiguous, or the task or issue lists decisions or open questions, write .jarvis/questions.json and stop. The supervisor posts the questions and resumes you with the answers; do not pick a decision that changes the outcome. If the task asks for plan approval, ask for it in the same file.
-- Wire every new component or module into every surface the task names. A new file that nothing imports is not a change.
+- Wire every new component or module into every surface the task names. A new file is wired only when a non-test, non-barrel source imports it and the named surface renders it; \`npm run check:wiring\` enforces this. Add a render/integration test for each named surface; a component-only test is not enough.
 - This container has no GitHub credentials. Do not run \`gh\`, and do not fetch issue or pull-request pages; the task and PR context are in this prompt.
 - Prefer \`edit\` for an existing file; use \`write\` only for a new file or a complete replacement.
 - Keep .jarvis/brief.md to the task, the feedback, the acceptance criteria and the surfaces; re-read it after a context compaction.
