@@ -89,8 +89,12 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
 
 Then set at least `JARVIS_SANDBOX_REPOS` (an `owner/name` allowlist) and
 `JARVIS_SANDBOX_API_KEY` (an OpenCode workspace key — the default coding model
-is `big-pickle`, free on OpenCode's Console endpoint). A Go-plan model works
-too: point `JARVIS_SANDBOX_LLM_BASE_URL` at
+is `big-pickle`, free on OpenCode's Console endpoint). Set
+`JARVIS_SANDBOX_MODELS` to a comma-separated ladder and the job falls to the
+next rung when the provider runs out of quota — for example
+`big-pickle,deepseek-v4.1-flash@400k`, where `@400k` caps the effective context
+window so compaction starts well below the model's real limit. A Go-plan model
+works too: point `JARVIS_SANDBOX_LLM_BASE_URL` at
 `https://opencode.ai/inference/go/openai/v1` and pick a Go id. A local model
 works instead: point
 `JARVIS_SANDBOX_LLM_BASE_URL` at `http://host.docker.internal:1234/v1`,

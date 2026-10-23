@@ -29,6 +29,8 @@ const SANDBOX_VARS = [
     "JARVIS_SANDBOX_WALL_CLOCK_MINUTES",
     "JARVIS_SANDBOX_REPOS",
     "JARVIS_SANDBOX_MODEL",
+    "JARVIS_SANDBOX_MODELS",
+    "JARVIS_SANDBOX_MODEL_CONTEXT",
     "JARVIS_SANDBOX_LLM_BASE_URL",
     "JARVIS_SANDBOX_API_KEY",
     "JARVIS_SANDBOX_EXTRA_HOSTS",
@@ -82,7 +84,7 @@ describe("sandbox config", () => {
             wallClockMs: 45 * 60 * 1000,
             maxWorkspaceMb: 2048,
             repos: [],
-            model: "big-pickle",
+            models: [{ id: "big-pickle", contextTokens: 200_000 }],
             llmBaseUrl: "https://opencode.ai/inference/openai/v1",
             apiKey: "",
             extraHosts: ["host.docker.internal:host-gateway"],
@@ -149,7 +151,7 @@ describe("sandbox config", () => {
             pids: 256,
             wallClockMs: 10 * 60 * 1000,
             repos: ["luke/app", "other/repo"],
-            model: "lmstudio/qwen3",
+            models: [{ id: "lmstudio/qwen3", contextTokens: 200_000 }],
             llmBaseUrl: "http://model.lan:1234/v1",
             apiKey: "sk-test",
             extraHosts: ["db:172.18.0.2"],
@@ -165,6 +167,19 @@ describe("sandbox config", () => {
             logRetentionDays: 21,
             keepJobRows: 50,
         });
+    });
+
+    it("reads a model ladder with per-model context windows", () => {
+        process.env.JARVIS_SANDBOX = "docker";
+        process.env.JARVIS_SANDBOX_MODEL = "ignored-when-the-ladder-is-set";
+        process.env.JARVIS_SANDBOX_MODEL_CONTEXT = "256k";
+        process.env.JARVIS_SANDBOX_MODELS =
+            " big-pickle , deepseek-v4.1-flash@400k , big-pickle ";
+
+        expect(getAppConfig().sandbox?.models).toEqual([
+            { id: "big-pickle", contextTokens: 256_000 },
+            { id: "deepseek-v4.1-flash", contextTokens: 400_000 },
+        ]);
     });
 
     it("derives the broker URL from the port unless it is named", () => {

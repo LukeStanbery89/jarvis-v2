@@ -301,7 +301,7 @@ if (appConfig.sandbox) {
             url: sandbox.proxyUrl,
             secret: proxySecret,
             upstreamBaseUrl: sandbox.llmBaseUrl,
-            model: sandbox.model,
+            models: sandbox.models.map((model) => model.id),
             apiKey: sandbox.apiKey,
             maxRequestsPerJob: sandbox.proxyMaxRequestsPerJob,
             // Per request, not once: a settle, cancel or prune revokes the token
@@ -411,9 +411,10 @@ if (appConfig.sandbox && codingJobs) {
     logger.info(
         `Coding sandbox active: image=${appConfig.sandbox.image}, repos=${
             appConfig.sandbox.repos.join(",") || "(none)"
-        }, model=${appConfig.sandbox.model || "(unset)"}, mode=${
-            appConfig.sandbox.proxyMode
-        }, network=${
+        }, models=${
+            appConfig.sandbox.models.map((model) => model.id).join(" -> ") ||
+            "(unset)"
+        }, mode=${appConfig.sandbox.proxyMode}, network=${
             appConfig.sandbox.network || "(bridge)"
         }, proxy=${appConfig.sandbox.proxyUrl}, apiKey=${
             appConfig.sandbox.apiKey.length > 0 ? "set" : "unset"

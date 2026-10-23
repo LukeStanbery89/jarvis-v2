@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # The coding sandbox's entrypoint (#141).
 #
 # Runs inside a container the server started with:
@@ -6,7 +6,7 @@
 #   - the job's branch checked out at /workspace (the only writable mount),
 #   - a read-only root filesystem and a writable tmpfs HOME,
 #   - no credentials, no docker socket, no host home directory,
-#   - the task, model id and endpoint in the environment.
+#   - the task, the model ladder and the endpoint in the environment.
 #
 # The agent's provider block is generated *here*, from the environment, rather
 # than baked into the image: a deployment changes its model or endpoint without
@@ -21,7 +21,7 @@ set -eu
 : "${JARVIS_JOB_PROMPT:?JARVIS_JOB_PROMPT is required}"
 : "${JARVIS_JOB_REPO:?JARVIS_JOB_REPO is required}"
 : "${JARVIS_JOB_BRANCH:?JARVIS_JOB_BRANCH is required}"
-: "${JARVIS_JOB_MODEL_ID:?JARVIS_JOB_MODEL_ID is required}"
+: "${JARVIS_JOB_MODELS:?JARVIS_JOB_MODELS is required}"
 : "${JARVIS_JOB_LLM_BASE_URL:?JARVIS_JOB_LLM_BASE_URL is required}"
 
 # A coding job is a development/test checkout (#94): the agent's own checks and
@@ -58,6 +58,48 @@ if [ -n "${JARVIS_JOB_API_KEY:-}" ]; then
     api_field=", \"apiKey\": \"${JARVIS_JOB_API_KEY}\""
 fi
 
+# The model ladder, one `id|contextTokens` per line, built by the server from
+# `JARVIS_SANDBOX_MODELS`. Every rung is declared with an explicit window:
+# without one OpenCode assumes 200k for an unknown custom model, which is wrong
+# in both directions once a fallback can be a 1M-token model. The window here is
+# the *effective* one — a cap, not the provider's physical limit — so automatic
+# compaction starts below the line the operator chose.
+output_tokens=32000
+models_json=""
+model_ids=""
+model_count=0
+while IFS='|' read -r model_id context_tokens; do
+    [ -n "$model_id" ] || continue
+    case "$model_id" in
+        *[!A-Za-z0-9._/-]*)
+            echo "JARVIS_JOB_MODELS has an id this entrypoint cannot safely embed: $model_id" >&2
+            exit 1
+            ;;
+    esac
+    case "$context_tokens" in
+        '' | *[!0-9]*)
+            echo "JARVIS_JOB_MODELS has no numeric context budget for $model_id" >&2
+            exit 1
+            ;;
+    esac
+    separator=""
+    [ -z "$models_json" ] || separator=","
+    models_json="${models_json}${separator}
+        \"${model_id}\": {
+          \"name\": \"${model_id}\",
+          \"limit\": { \"context\": ${context_tokens}, \"output\": ${output_tokens} }
+        }"
+    model_ids="${model_ids} ${model_id}"
+    model_count=$((model_count + 1))
+done <<EOF
+${JARVIS_JOB_MODELS}
+EOF
+
+if [ "$model_count" -eq 0 ]; then
+    echo "JARVIS_JOB_MODELS named no model" >&2
+    exit 1
+fi
+
 cat > "$config_dir/opencode.json" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -66,10 +108,13 @@ cat > "$config_dir/opencode.json" <<EOF
       "npm": "@ai-sdk/openai-compatible",
       "name": "JARVIS model",
       "options": { "baseURL": "${JARVIS_JOB_LLM_BASE_URL}"${api_field} },
-      "models": {
-        "${JARVIS_JOB_MODEL_ID}": { "name": "${JARVIS_JOB_MODEL_ID}" }
+      "models": {${models_json}
       }
     }
+  },
+  "compaction": {
+    "auto": true,
+    "keep": { "tokens": 30000 }
   }
 }
 EOF
@@ -123,15 +168,56 @@ Task: ${JARVIS_JOB_PROMPT}"
 # repository's own gate before the supervisor may publish it (#94). A run that
 # parked on questions is exempt; its check happens on the answer run, after the
 # edits exist.
-if opencode run \
-    --standalone \
-    --model "jarvis/${JARVIS_JOB_MODEL_ID}" \
-    --auto \
-    --format json \
-    -- "$context"; then
-    status=0
-else
-    status=$?
+# Walk the ladder. Only a provider quota (or rate-limit) failure moves to the
+# next rung: a red check, a tool error or a bad request is the job's own problem,
+# and switching models would only lose the conversation that diagnosed it.
+#
+# The same session is resumed with `--session`, so the fallback model inherits
+# the whole conversation rather than restarting from the branch. The JSON stream
+# is teed so the job log stays live *and* the failure can be classified; bash's
+# PIPESTATUS is what makes the agent's exit code survive the pipe.
+status=0
+session_id=""
+previous=""
+attempt=0
+for model in $model_ids; do
+    attempt=$((attempt + 1))
+    run_log="$HOME/opencode-run-${attempt}.jsonl"
+    session_args=()
+    if [ "$attempt" -eq 1 ]; then
+        message="$context"
+    elif [ -n "$session_id" ]; then
+        echo "JARVIS: $previous reported no quota left; continuing on $model" >&2
+        message="You were interrupted by a model quota error. The conversation above is your own work: continue the task from exactly where you stopped, without repeating completed work. Re-read .jarvis/plan.md and .jarvis/brief.md if you need them."
+        session_args=(--session "$session_id")
+    else
+        # No session id was emitted (the run died before its first event), so
+        # there is no conversation to resume: start this rung with the brief.
+        echo "JARVIS: $previous reported no quota left; restarting on $model" >&2
+        message="$context"
+    fi
+    opencode run \
+        --standalone \
+        "${session_args[@]}" \
+        --model "jarvis/${model}" \
+        --auto \
+        --format json \
+        -- "$message" 2>&1 | tee "$run_log"
+    status=${PIPESTATUS[0]}
+    if [ "$status" -eq 0 ]; then
+        break
+    fi
+    if [ -z "$session_id" ]; then
+        session_id="$(sed -n 's/.*"sessionID":"\([^"]*\)".*/\1/p' "$run_log" | head -n 1)"
+    fi
+    if ! grep -Eq '"type":"provider\.(quota|rate_limit)"' "$run_log"; then
+        break
+    fi
+    previous="$model"
+done
+
+if [ "$status" -ne 0 ] && [ "$attempt" -ge "$model_count" ]; then
+    echo "JARVIS_MODEL_EXHAUSTED: the model ladder ended without a successful run (last: $model)" >&2
 fi
 
 if [ "$status" -eq 0 ] && [ ! -f .jarvis/questions.json ]; then

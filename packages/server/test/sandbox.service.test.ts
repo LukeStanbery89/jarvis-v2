@@ -49,7 +49,7 @@ const CONFIG: SandboxConfig = {
     wallClockMs: 60_000,
     maxWorkspaceMb: 2048,
     repos: ["luke/app"],
-    model: "lmstudio/qwen3",
+    models: [{ id: "lmstudio/qwen3", contextTokens: 200_000 }],
     llmBaseUrl: "http://host.docker.internal:1234/v1",
     apiKey: "",
     extraHosts: [],
@@ -335,7 +335,7 @@ describe("starting a coding job", () => {
             command: [],
         });
         expect(runner.started[0]?.env).toMatchObject({
-            JARVIS_JOB_MODEL_ID: "lmstudio/qwen3",
+            JARVIS_JOB_MODELS: "lmstudio/qwen3|200000",
             JARVIS_JOB_LLM_BASE_URL: "http://host.docker.internal:1234/v1",
             JARVIS_JOB_BRANCH: started.job.branch,
         });
@@ -709,6 +709,36 @@ describe("starting a coding job", () => {
             // reached directly, not through the forward proxy.
             NO_PROXY: "proxy,localhost,127.0.0.1,::1",
         });
+
+        runner.emit(started.job.containerId ?? "", "ok");
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+    });
+
+    it("hands the whole model ladder to the container", async () => {
+        const { userId, runner, service } = makeService({
+            config: {
+                models: [
+                    { id: "big-pickle", contextTokens: 200_000 },
+                    { id: "deepseek-v4.1-flash", contextTokens: 400_000 },
+                ],
+            },
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Add the settings toggle",
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        expect(runner.started[0]?.env.JARVIS_JOB_MODELS).toBe(
+            "big-pickle|200000\ndeepseek-v4.1-flash|400000",
+        );
+        // The row records the model the run starts on, not the fallbacks.
+        expect(started.job.model).toBe("big-pickle");
 
         runner.emit(started.job.containerId ?? "", "ok");
         runner.exit(started.job.containerId ?? "", 0);
@@ -1456,7 +1486,7 @@ describe("starting a coding job", () => {
         const remote = makeService({
             config: {
                 llmBaseUrl: "https://opencode.ai/inference/go/openai/v1",
-                model: "deepseek-v4.1-flash",
+                models: [{ id: "deepseek-v4.1-flash", contextTokens: 400_000 }],
                 apiKey: "",
             },
         });
@@ -1482,7 +1512,7 @@ describe("starting a coding job", () => {
             }),
         ).toMatchObject({ ok: false, code: "task-missing" });
 
-        const noModel = makeService({ config: { model: "" } });
+        const noModel = makeService({ config: { models: [] } });
         expect(
             await noModel.service.start({
                 userId: noModel.userId,

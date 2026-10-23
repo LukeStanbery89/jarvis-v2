@@ -1061,7 +1061,12 @@ export function createCodingJobService(options: {
                     (config.proxyMode === "sidecar"
                         ? config.proxyUrl
                         : config.llmBaseUrl),
-                JARVIS_JOB_MODEL_ID: config.model,
+                // The ladder, one `id|contextTokens` per line. The entrypoint
+                // declares each rung with that effective window and walks the
+                // list when a provider reports a quota error.
+                JARVIS_JOB_MODELS: config.models
+                    .map((model) => `${model.id}|${model.contextTokens}`)
+                    .join("\n"),
                 // The provider key never enters a container: with no broker
                 // the job gets no key at all, rather than the real one (#141).
                 ...(proxy !== undefined
@@ -1120,11 +1125,14 @@ export function createCodingJobService(options: {
                     reason: "a coding job needs a task to work on",
                 };
             }
-            if (config.model.trim().length === 0) {
+            // The ladder's first rung is the model the job starts on; an empty
+            // ladder is the only "no model" shape left.
+            const primary = config.models[0];
+            if (primary === undefined) {
                 return {
                     ok: false,
                     code: "model-missing",
-                    reason: "no coding model is configured (`JARVIS_SANDBOX_MODEL`)",
+                    reason: "no coding model is configured (`JARVIS_SANDBOX_MODELS`)",
                 };
             }
             if (
@@ -1337,7 +1345,7 @@ export function createCodingJobService(options: {
                 prompt: task,
                 workspacePath: prepared.path,
                 crashPolicy: input.crashPolicy ?? "prune",
-                model: config.model,
+                model: primary.id,
                 ...(followUp !== null
                     ? {
                           prUrl: followUp.url,
@@ -1376,7 +1384,9 @@ export function createCodingJobService(options: {
                         (questionIssue === undefined
                             ? ""
                             : `, issue=#${questionIssue}`) +
-                        `, model=${config.model}, container=${handle.containerId}`,
+                        `, models=${config.models
+                            .map((model) => model.id)
+                            .join(" -> ")}, container=${handle.containerId}`,
                 );
                 return {
                     ok: true,

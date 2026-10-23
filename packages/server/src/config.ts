@@ -387,6 +387,26 @@ export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
  * resource or a policy the operator can tune, and the defaults are deliberately
  * modest — a coding job on a laptop must not be able to take the machine down.
  */
+/**
+ * One rung of the coding-model ladder (#94).
+ *
+ * The agent starts on the first entry and falls to the next when the provider
+ * reports a quota or rate-limit error. Both live behind one OpenAI-compatible
+ * endpoint, so a fallback keeps the same session and the same conversation.
+ */
+export interface SandboxModel {
+    /** The id the endpoint accepts (`big-pickle`, `deepseek-v4.1-flash`). */
+    readonly id: string;
+    /**
+     * The context window the agent budgets against, in tokens.
+     *
+     * This is the **effective** window, not necessarily the model's physical
+     * one: a 1M-token model is declared here at the cap the operator wants, so
+     * OpenCode compacts near that line instead of filling the whole window.
+     */
+    readonly contextTokens: number;
+}
+
 export interface SandboxConfig {
     /** The job image, built by this repository (`JARVIS_SANDBOX_IMAGE`). */
     readonly image: string;
@@ -435,14 +455,18 @@ export interface SandboxConfig {
      */
     readonly repos: readonly string[];
     /**
-     * The model id the agent asks for at {@link llmBaseUrl}
-     * (`JARVIS_SANDBOX_MODEL`). Defaults to `big-pickle`, the free stealth
-     * model on OpenCode's Console endpoint; a Go-plan or local endpoint
-     * overrides this and {@link llmBaseUrl} together. Empty refuses to start a
-     * job — a sandbox with no model would spend a clone to discover it has
-     * nothing to think with.
+     * The model ladder the agent may use at {@link llmBaseUrl}
+     * (`JARVIS_SANDBOX_MODELS`; `JARVIS_SANDBOX_MODEL` is the older, one-model
+     * spelling). The first entry is the primary; each later entry is a fallback
+     * used only when the provider reports a quota or rate-limit error.
+     *
+     * Entries are `id` or `id@limit`, where the limit is the effective context
+     * window in tokens (`400k`, `1m`, `400000`). An entry without a limit uses
+     * `JARVIS_SANDBOX_MODEL_CONTEXT` (200k). Empty refuses to start a job — a
+     * sandbox with no model would spend a clone to discover it has nothing to
+     * think with.
      */
-    readonly model: string;
+    readonly models: readonly SandboxModel[];
     /**
      * The OpenAI-compatible endpoint a job's agent talks to
      * (`JARVIS_SANDBOX_LLM_BASE_URL`).
@@ -587,6 +611,15 @@ export interface SandboxConfig {
     readonly watchIntervalMs: number;
 }
 
+/**
+ * The context window a ladder entry budgets against when it names none.
+ *
+ * 200k is OpenCode's own fallback for an unknown custom model, so leaving it
+ * here keeps the arithmetic honest for a model whose real window is larger
+ * (Big Pickle) instead of silently promising more than the endpoint accepts.
+ */
+export const DEFAULT_SANDBOX_MODEL_CONTEXT = 200_000;
+
 /** Laptop-safe sandbox defaults: one job, two cores, 4 GiB, 45 minutes. */
 export const DEFAULT_SANDBOX_CONFIG = {
     image: "jarvis-job:latest",
@@ -602,9 +635,14 @@ export const DEFAULT_SANDBOX_CONFIG = {
     // served by the Console endpoint (not the Go one). The same workspace key
     // authenticates both, and the job's own `opencode run` is the client the
     // free tier admits. A deployment that wants a Go-plan model overrides both
-    // this URL and the model; one that runs locally points both at the host and
-    // leaves the key empty.
-    model: "big-pickle",
+    // this URL and the ladder; one that runs locally points both at the host
+    // and leaves the key empty.
+    models: [
+        {
+            id: "big-pickle",
+            contextTokens: DEFAULT_SANDBOX_MODEL_CONTEXT,
+        },
+    ],
     llmBaseUrl: "https://opencode.ai/inference/openai/v1",
     apiKey: "",
     // The broker (#141 phase 7): a job gets a derived token, never the key.
@@ -1356,6 +1394,71 @@ function parseCsv(raw: string | undefined): string[] {
  * @param raw - `JARVIS_SANDBOX_EXTRA_HOSTS`, or `undefined` when unset.
  * @returns The entries to pass through.
  */
+/**
+ * Reads a token count such as `400k`, `1m` or `400000`.
+ *
+ * @returns The tokens, or `null` when the text is not a positive count.
+ */
+function parseTokenCount(raw: string): number | null {
+    const match = /^(\d+(?:\.\d+)?)\s*([km])?$/i.exec(raw.trim());
+    if (match === null) {
+        return null;
+    }
+    const suffix = match[2]?.toLowerCase();
+    const scale = suffix === "m" ? 1_000_000 : suffix === "k" ? 1_000 : 1;
+    const tokens = Math.round(Number(match[1]) * scale);
+    return Number.isFinite(tokens) && tokens > 0 ? tokens : null;
+}
+
+/**
+ * Parses the coding-model ladder.
+ *
+ * `JARVIS_SANDBOX_MODELS` is a comma-separated list of `id` or `id@limit`
+ * entries; `JARVIS_SANDBOX_MODEL` (the older single-model setting) is the
+ * fallback when the ladder is unset. Duplicate ids are dropped, keeping the
+ * first — the primary is the first entry, order is the fallback order, and a
+ * repeated id would only retry a model that just failed.
+ *
+ * A malformed limit falls back to the default window rather than dropping the
+ * entry: the model is still worth using, and a typo in a budget should not
+ * quietly remove the operator's fallback.
+ *
+ * @param raw - `JARVIS_SANDBOX_MODELS`.
+ * @param fallbackModel - `JARVIS_SANDBOX_MODEL`, used when `raw` is empty.
+ * @param defaultContextTokens - The window for entries without a limit.
+ * @returns The ladder; empty when neither setting names a model.
+ */
+export function parseSandboxModels(
+    raw: string | undefined,
+    fallbackModel: string | undefined,
+    defaultContextTokens: number = DEFAULT_SANDBOX_MODEL_CONTEXT,
+): SandboxModel[] {
+    const configured = (raw ?? "").trim();
+    const entries =
+        configured.length > 0
+            ? parseCsv(configured)
+            : [(fallbackModel ?? "").trim()].filter(
+                  (entry) => entry.length > 0,
+              );
+    const models: SandboxModel[] = [];
+    const seen = new Set<string>();
+    for (const entry of entries) {
+        const at = entry.lastIndexOf("@");
+        const id = (at === -1 ? entry : entry.slice(0, at)).trim();
+        if (id.length === 0 || seen.has(id)) {
+            continue;
+        }
+        const declared =
+            at === -1 ? null : parseTokenCount(entry.slice(at + 1));
+        seen.add(id);
+        models.push({
+            id,
+            contextTokens: declared ?? defaultContextTokens,
+        });
+    }
+    return models;
+}
+
 function parseExtraHosts(raw: string | undefined): string[] {
     if (raw === undefined) {
         return [...DEFAULT_SANDBOX_CONFIG.extraHosts];
@@ -1558,9 +1661,17 @@ export function getAppConfig(): AppConfig {
                               DEFAULT_SANDBOX_CONFIG.maxWorkspaceMb,
                           ),
                           repos: parseCsv(process.env.JARVIS_SANDBOX_REPOS),
-                          model:
+                          models: parseSandboxModels(
+                              process.env.JARVIS_SANDBOX_MODELS,
+                              // Unset means the default model; an explicitly
+                              // empty value means "no model" and is refused.
                               process.env.JARVIS_SANDBOX_MODEL ??
-                              DEFAULT_SANDBOX_CONFIG.model,
+                                  DEFAULT_SANDBOX_CONFIG.models[0]?.id,
+                              parseTokenCount(
+                                  process.env.JARVIS_SANDBOX_MODEL_CONTEXT ??
+                                      "",
+                              ) ?? DEFAULT_SANDBOX_MODEL_CONTEXT,
+                          ),
                           llmBaseUrl:
                               process.env.JARVIS_SANDBOX_LLM_BASE_URL ??
                               DEFAULT_SANDBOX_CONFIG.llmBaseUrl,

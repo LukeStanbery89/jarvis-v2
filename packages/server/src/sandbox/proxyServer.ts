@@ -22,7 +22,9 @@
  *   JARVIS_PROXY_EGRESS_PORT      forward-proxy port (54323)
  *   JARVIS_PROXY_EGRESS_POLICY    `public` (default), `allowlist`, `open`, `none`
  *   JARVIS_PROXY_EGRESS_HOSTS     comma-separated allowlist for `allowlist`
- *   JARVIS_PROXY_UPSTREAM_BASE_URL, JARVIS_PROXY_MODEL, JARVIS_PROXY_API_KEY
+ *   JARVIS_PROXY_UPSTREAM_BASE_URL, JARVIS_PROXY_MODELS, JARVIS_PROXY_API_KEY
+ *                                 (JARVIS_PROXY_MODEL is the older one-model
+ *                                 spelling; MODELS is the ladder)
  *   JARVIS_PROXY_SECRET           or JARVIS_PROXY_SECRET_PATH
  *   JARVIS_PROXY_STATUS_URL       the server base (http://host.docker.internal:54321)
  *   JARVIS_PROXY_MAX_REQUESTS     per-job cap (500)
@@ -52,7 +54,8 @@ export interface ProxyServerConfig {
     readonly egressPolicy: SidecarEgressPolicy;
     readonly egressHosts: readonly string[];
     readonly upstreamBaseUrl: string;
-    readonly model: string;
+    /** The models a job may ask for; the deployment's fallback ladder. */
+    readonly models: readonly string[];
     readonly apiKey: string;
     /** `null` when neither the environment nor the private file supplied one. */
     readonly secret: string | null;
@@ -117,6 +120,19 @@ export function readProxyServerConfig(
         configuredSecret.length >= 32
             ? configuredSecret
             : readProxySecret(secretPath);
+    // `JARVIS_PROXY_MODEL` is the older, one-model spelling: keep it working,
+    // but the ladder is what a deployment with a fallback sets. A rung may
+    // carry `@limit` (the agent's context budget) — it is the same string the
+    // server's `JARVIS_SANDBOX_MODELS` uses, and the broker only pins ids, so
+    // the suffix is dropped here rather than requiring every deployment to
+    // keep two spellings in sync.
+    const models = parseCsv(
+        env.JARVIS_PROXY_MODELS?.trim()
+            ? env.JARVIS_PROXY_MODELS
+            : env.JARVIS_PROXY_MODEL,
+    )
+        .map((entry) => entry.split("@")[0]?.trim() ?? "")
+        .filter((entry) => entry.length > 0);
     return {
         bind: env.JARVIS_PROXY_BIND?.trim() || "0.0.0.0",
         port: numberOr("JARVIS_PROXY_PORT", env.JARVIS_PROXY_PORT, 54322),
@@ -130,7 +146,7 @@ export function readProxyServerConfig(
         upstreamBaseUrl:
             env.JARVIS_PROXY_UPSTREAM_BASE_URL?.trim() ||
             "https://opencode.ai/inference/openai/v1",
-        model: env.JARVIS_PROXY_MODEL?.trim() || "big-pickle",
+        models: models.length > 0 ? models : ["big-pickle"],
         apiKey: env.JARVIS_PROXY_API_KEY ?? "",
         secret,
         statusUrl:
@@ -225,7 +241,7 @@ export async function startProxySidecar(
         url: `http://proxy:${config.port}/v1`,
         secret: config.secret,
         upstreamBaseUrl: config.upstreamBaseUrl,
-        model: config.model,
+        models: config.models,
         apiKey: config.apiKey,
         maxRequestsPerJob: config.maxRequestsPerJob,
         isJobActive: (jobId, token) => isJobActive(jobId, token),
@@ -260,9 +276,11 @@ export async function startProxySidecar(
             config.egressHosts.length > 0
                 ? `, ${config.egressHosts.length} host(s)`
                 : ""
-        }), model=${config.model}, apiKey=${
-            config.apiKey.length > 0 ? "set" : "unset"
-        }, status=${config.statusUrl}`,
+        }), models=${config.models.join(
+            " -> ",
+        )}, apiKey=${config.apiKey.length > 0 ? "set" : "unset"}, status=${
+            config.statusUrl
+        }`,
     );
 
     return {
