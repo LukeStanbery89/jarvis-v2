@@ -10,8 +10,13 @@
  *
  * A barrel `index.ts` re-export is deliberately not an importer. Neither is a
  * test: a unit test of the component proves the component, not that a page
- * renders it. The base is `JARVIS_WIRING_BASE` when set (the job can name the
- * PR's base), otherwise `origin/main`.
+ * renders it.
+ *
+ * The base is `JARVIS_WIRING_BASE` when set (the job can name the PR's base),
+ * otherwise the first base ref that resolves (`origin/<GITHUB_BASE_REF>`,
+ * `origin/main`, `main`). GitHub Actions checks out `refs/pull/N/merge` — a
+ * synthetic merge commit whose first parent is the base tip — and that checkout
+ * has no `origin/main`, so the merge commit's first parent is the last resort.
  *
  * Usage:
  *
@@ -26,16 +31,78 @@ const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
 }).trim();
 process.chdir(root);
 
-const base = process.env.JARVIS_WIRING_BASE ?? "origin/main";
-let mergeBase;
-try {
-    mergeBase = execFileSync("git", ["merge-base", base, "HEAD"], {
-        encoding: "utf8",
-    }).trim();
-} catch {
-    console.error(`check:wiring — cannot resolve the base \`${base}\``);
+/**
+ * The refs to try, most specific first.
+ *
+ * `GITHUB_BASE_REF` is set on a pull-request run; naming it before
+ * `origin/main` means a fork or a non-`main` base is compared against the right
+ * branch rather than a lucky default.
+ *
+ * @returns The candidate refs, in order.
+ */
+function baseCandidates() {
+    const candidates = [];
+    if (process.env.JARVIS_WIRING_BASE) {
+        candidates.push(process.env.JARVIS_WIRING_BASE);
+    }
+    if (process.env.GITHUB_BASE_REF) {
+        candidates.push(
+            `origin/${process.env.GITHUB_BASE_REF}`,
+            process.env.GITHUB_BASE_REF,
+        );
+    }
+    candidates.push("origin/main", "main");
+    return [...new Set(candidates)];
+}
+
+/**
+ * Resolves the commit this branch's changes are measured from.
+ *
+ * A plain local checkout has `origin/main` (or `main`). The Actions checkout of
+ * a pull request does not: it is a synthetic merge commit, so the base tip is
+ * its first parent. If neither shape is available the check fails rather than
+ * guessing — comparing against the wrong base would either miss the added files
+ * or flag the whole repository.
+ *
+ * @returns The merge-base commit.
+ */
+function resolveMergeBase() {
+    const tried = [];
+    for (const base of baseCandidates()) {
+        tried.push(base);
+        try {
+            return execFileSync("git", ["merge-base", base, "HEAD"], {
+                encoding: "utf8",
+                // A candidate that does not exist is the normal path in the
+                // Actions checkout; its `fatal:` belongs in the "tried" line,
+                // not in every log.
+                stdio: ["ignore", "pipe", "ignore"],
+            }).trim();
+        } catch {
+            // Try the next candidate.
+        }
+    }
+    const parents = execFileSync(
+        "git",
+        ["rev-list", "--parents", "-n", "1", "HEAD"],
+        { encoding: "utf8" },
+    )
+        .trim()
+        .split(" ")
+        .filter(Boolean);
+    if (parents.length >= 3) {
+        tried.push("HEAD^1 (pull-request merge commit)");
+        return execFileSync("git", ["merge-base", "HEAD^1", "HEAD"], {
+            encoding: "utf8",
+        }).trim();
+    }
+    console.error(
+        `check:wiring — cannot resolve a base (tried ${tried.join(", ")})`,
+    );
     process.exit(1);
 }
+
+const mergeBase = resolveMergeBase();
 
 /** One source file under a package's `src`. */
 function isSource(file) {
