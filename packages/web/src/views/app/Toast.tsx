@@ -60,7 +60,9 @@ function ToastCard({
                     {describeNotice(notification)}
                 </span>
                 <strong>{presented.primary}</strong>
-                {body !== null && body !== notification.title && <span> {body}</span>}
+                {body !== null && body !== notification.title && (
+                    <span> {body}</span>
+                )}
                 {notification.requiresAnswer === true && (
                     <em className="notification-needs-answer">
                         {" "}

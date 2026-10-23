@@ -14,7 +14,9 @@ export interface CountdownProps {
 export function Countdown({ runAt, state, className = "" }: CountdownProps) {
     const now = useClock(1000);
     if (state === "running") {
-        return <span className={`countdown ${className}`.trim()}>running now</span>;
+        return (
+            <span className={`countdown ${className}`.trim()}>running now</span>
+        );
     }
     const text = describeRunAt(runAt, now);
     return <span className={`countdown ${className}`.trim()}>{text}</span>;

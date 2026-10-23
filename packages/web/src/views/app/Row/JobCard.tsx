@@ -6,6 +6,7 @@ import { presentJob } from "../../../presentation";
 import type { Job } from "../../../api";
 import { ClassChip } from "./ClassChip";
 import { Countdown } from "./Countdown";
+import { gateText } from "../../../jobs";
 
 export interface JobCardProps {
     job: Job;
@@ -28,6 +29,7 @@ export function JobCard({
 }: JobCardProps) {
     const presented = presentJob(job, now);
     const isCompact = variant === "compact";
+    const gate = gateText(job);
 
     return (
         <li
@@ -59,6 +61,18 @@ export function JobCard({
                             </div>
                         ))}
                     </div>
+                )}
+                {gate !== null && (
+                    <span
+                        className="job-gate"
+                        title={
+                            job.gate
+                                ? `only runs when ${job.gate.tool} changes`
+                                : undefined
+                        }
+                    >
+                        {gate}
+                    </span>
                 )}
             </div>
             {!isCompact && actions !== undefined && (

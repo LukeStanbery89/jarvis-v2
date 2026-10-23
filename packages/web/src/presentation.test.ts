@@ -5,7 +5,9 @@ import type { ClientNotification } from "./notifications";
 
 const now = new Date("2026-01-01T12:00:00Z");
 
-function makeJob(partial: Partial<Job> & Pick<Job, "id" | "class" | "label" | "runAt">): Job {
+function makeJob(
+    partial: Partial<Job> & Pick<Job, "id" | "class" | "label" | "runAt">,
+): Job {
     return {
         message: partial.label,
         state: "pending",

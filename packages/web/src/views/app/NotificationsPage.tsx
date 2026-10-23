@@ -7,9 +7,7 @@ import { snoozeReminder, snoozeRequestFor } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
 import { useJobPage } from "../../hooks/useJobPage";
 import {
-    describeBody,
     describeDelivery,
-    describeNotice,
     describeNotificationState,
     isSettled,
 } from "../../notifications";
@@ -21,7 +19,6 @@ import { JobRow } from "./JobRow";
 import { JobRuns } from "./JobRuns";
 import { SnoozeMenu } from "./SnoozeMenu";
 import { NotificationCard } from "./Row/NotificationCard";
-import { JobCard } from "./Row/JobCard";
 
 /** How many scheduled rows the section shows (the dashboard is the glance). */
 const SCHEDULED_LIMIT = 50;
@@ -68,7 +65,14 @@ function NotificationRow({
             : describeNotificationState(item.state);
 
     const actions = (
-        <div style={{ display: "flex", gap: "0.25rem", alignItems: "center", flexWrap: "wrap" }}>
+        <div
+            style={{
+                display: "flex",
+                gap: "0.25rem",
+                alignItems: "center",
+                flexWrap: "wrap",
+            }}
+        >
             {!settled && (
                 <>
                     <button type="button" onClick={() => onMarkRead(item.id)}>
@@ -183,7 +187,7 @@ export function NotificationsPage({
             </header>
             {lastTest !== null && (
                 <p className="notifications-last-test">
-                    {lastTest.ok ? "Test sent." : `Test failed: ${lastTest.error}`}
+                    {describeDelivery(lastTest.delivered, lastTest.suppressed)}
                 </p>
             )}
             <section className="notifications-section">
@@ -198,13 +202,15 @@ export function NotificationsPage({
                                 job={job}
                                 now={now}
                                 token={token}
-                                onCancel={jobs.cancel}
-                                onEdit={page.openEdit}
+                                onCancel={(id) => {
+                                    void jobs.cancel(id);
+                                }}
+                                onEdit={page.edit}
                             />
                         ))}
                     </ul>
                 )}
-                <button type="button" onClick={page.openCreate}>
+                <button type="button" onClick={page.create}>
                     New notification
                 </button>
             </section>
@@ -218,17 +224,13 @@ export function NotificationsPage({
                     onSnooze={snooze}
                 />
             </section>
-            {page.open && (
+            {page.form !== null && (
                 <JobForm
-                    open={page.open}
-                    draft={page.draft}
-                    saving={page.saving}
-                    error={page.error}
-                    quiet={page.quiet}
-                    onChange={page.change}
-                    onCancel={page.close}
-                    onSave={page.save}
-                    fixedClass="notification"
+                    jobClass="notification"
+                    editing={page.form.job}
+                    jobs={jobs}
+                    onClose={page.close}
+                    onSaved={page.saved}
                 />
             )}
         </main>

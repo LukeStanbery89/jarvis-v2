@@ -3,7 +3,6 @@
  */
 import type { Job } from "../../api";
 import { JobCard } from "./Row/JobCard";
-import { RowActions } from "./Row/RowActions";
 import { JobRuns } from "./JobRuns";
 import { SnoozeMenu } from "./SnoozeMenu";
 
@@ -38,11 +37,16 @@ export function JobRow({
     onSnooze,
 }: JobRowProps) {
     const actions = (
-        <div style={{ display: "flex", gap: "0.25rem", alignItems: "center", flexWrap: "wrap" }}>
+        <div
+            style={{
+                display: "flex",
+                gap: "0.25rem",
+                alignItems: "center",
+                flexWrap: "wrap",
+            }}
+        >
             {onSnooze !== undefined && (
-                <SnoozeMenu
-                    onSnooze={(minutes) => onSnooze(job, minutes)}
-                />
+                <SnoozeMenu onSnooze={(minutes) => onSnooze(job, minutes)} />
             )}
             {job.state === "pending" && (
                 <button type="button" onClick={() => onEdit(job)}>
@@ -56,5 +60,13 @@ export function JobRow({
         </div>
     );
 
-    return <JobCard job={job} now={now} variant="normal" showKind={false} actions={actions} />;
+    return (
+        <JobCard
+            job={job}
+            now={now}
+            variant="normal"
+            showKind={false}
+            actions={actions}
+        />
+    );
 }

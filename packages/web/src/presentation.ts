@@ -8,8 +8,8 @@
  */
 import type { Job } from "./api";
 import type { ClientNotification } from "./notifications";
-import { describeRunAt, describeMoment, jobBody, repeatText, gateText } from "./jobs";
-import { describeBody, describeNotice, describeNotificationState } from "./notifications";
+import { describeRunAt, jobBody, repeatText, gateText } from "./jobs";
+import { describeBody, describeNotice } from "./notifications";
 
 /** Structured parts a row/card renders, per class. */
 export interface Presented {
@@ -48,19 +48,31 @@ export function presentJob(job: Job, now: Date): Presented {
 
     if (job.class === "timer") {
         const primary =
-            job.state === "running" ? "running now" : describeRunAt(job.runAt, now);
+            job.state === "running"
+                ? "running now"
+                : describeRunAt(job.runAt, now);
+        const isWithinHour =
+            job.state !== "running" &&
+            (() => {
+                const at = new Date(job.runAt).getTime();
+                if (Number.isNaN(at)) return false;
+                const diff = at - now.getTime();
+                return diff >= -60000 && diff < 60 * 60_000;
+            })();
         return {
             kind: "Timer",
             primary,
             title: job.label,
             details,
-            countdown: job.state !== "running" && primary.startsWith("in "),
+            countdown: job.state !== "running" && isWithinHour,
         };
     }
 
     if (job.class === "reminder") {
         const primary =
-            job.state === "running" ? "running now" : describeRunAt(job.runAt, now);
+            job.state === "running"
+                ? "running now"
+                : describeRunAt(job.runAt, now);
         return {
             kind: "Reminder",
             primary,
@@ -88,7 +100,7 @@ export function presentJob(job: Job, now: Date): Presented {
  */
 export function presentNotification(
     notification: ClientNotification,
-    now: Date,
+    _now: Date,
 ): Presented {
     const body = describeBody(notification);
     const details: string[] = [];
