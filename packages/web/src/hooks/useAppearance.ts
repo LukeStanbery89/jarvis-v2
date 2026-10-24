@@ -22,7 +22,7 @@ export interface AppearanceState {
     setParticles(on: boolean): void;
     /** Turns the frosted-glass treatment on or off. */
     setGlass(on: boolean): void;
-    /** Shows or hides the top bar's link labels. */
+    /** Shows or hides the wide-screen rail's labels. */
     setNavLabels(on: boolean): void;
 }
 

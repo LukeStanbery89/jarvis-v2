@@ -90,9 +90,9 @@ export interface SettingsProps {
     glassOn: boolean;
     /** Flips the frosted glass (off = solid panes, same layout). */
     onToggleGlass(): void;
-    /** The bar's links show their text labels (#146 phase D). */
+    /** The wide-screen left menu shows its text labels (#146 phase D). */
     navLabelsOn: boolean;
-    /** Flips the bar's link labels (off = icons alone, as on the rail). */
+    /** Flips the left menu's labels (off = icons alone). */
     onToggleNavLabels(): void;
 
     /** Signs out of this browser. */
@@ -384,9 +384,10 @@ export function Settings(props: SettingsProps) {
             {/* Appearance (#146 phase B2) is its own group rather than a corner
                 of "This browser": these switches change what the app looks
                 like, and they are the only ones that do — the particle field,
-                the frosted glass, and whether the bar's links spell out their
-                page. They are still stored in this browser, so the hint says so
-                — the group no longer sits under a heading that implies it. */}
+                the frosted glass, and whether the wide-screen left menu spells
+                out its pages. They are still stored in this browser, so the hint
+                says so — the group no longer sits under a heading that implies
+                it. */}
             <section className="settings-group">
                 <h3>Appearance</h3>
                 <p className="settings-hint">
@@ -429,8 +430,8 @@ export function Settings(props: SettingsProps) {
                 </label>
                 <p className="settings-note">
                     {navLabelsOn
-                        ? "The top bar's links spell out their page."
-                        : "The top bar shows icons alone — the rail's shape, in the bar."}
+                        ? "On wide screens, the left menu spells out its pages."
+                        : "On wide screens, the left menu shows icons alone."}
                 </p>
             </section>
 

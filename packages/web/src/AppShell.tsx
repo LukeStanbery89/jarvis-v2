@@ -128,8 +128,9 @@ export function AppShell({
     const audio = useAudio();
     /**
      * This browser's visual preferences (#146 phases B2, D): whether the field
-     * is mounted, whether the panes blur, and whether the bar's links show their
-     * labels. Per browser rather than per account — see `appearance.ts` for why.
+     * is mounted, whether the panes blur, and whether the wide-screen rail shows
+     * its page labels. Per browser rather than per account — see `appearance.ts`
+     * for why.
      */
     const appearance = useAppearance();
 
@@ -539,12 +540,15 @@ export function AppShell({
                 voiceError={voice.voiceErrorText}
                 locationHint={locationHint}
                 locationSentence={describeLocationState(location.locationState)}
-                navLabels={appearance.appearance.navLabels}
             />
             {/* The wide-screen rail (#146 phase D): the same destinations as the
                 bar's links, as a column, where the display has the width to
-                spend on one. Hidden by CSS below its breakpoint. */}
-            <IconRail unread={notifications.unread} />
+                spend on one. Hidden by CSS below its breakpoint. It is the one
+                surface the **Navigation labels** switch reaches (#177). */}
+            <IconRail
+                unread={notifications.unread}
+                navLabels={appearance.appearance.navLabels}
+            />
             <div className="app-view">{currentView()}</div>
             {toasts.length > 0 && (
                 <ToastStack

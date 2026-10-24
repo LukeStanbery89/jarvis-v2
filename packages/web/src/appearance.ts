@@ -15,7 +15,7 @@ export interface Appearance {
     particles: boolean;
     /** Frosted glass on panes; off leaves solid panes in the same layout. */
     glass: boolean;
-    /** Text labels on the top bar's links; off leaves the icons alone. */
+    /** Text labels on the wide-screen left menu; off leaves its icons alone. */
     navLabels: boolean;
 }
 

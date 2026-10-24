@@ -1,5 +1,5 @@
 /**
- * The icon rail (#146 phase D): a column of destinations on a display wide
+ * The navigation rail (#146 phase D): a column of destinations on a display wide
  * enough to spend one.
  *
  * It is the wide-screen form of the list the bar already carries — the
@@ -9,11 +9,15 @@
  * hamburger carries them (under 60rem), so there is exactly one set of
  * destinations at every width.
  *
- * Icon-only, so every item is a real `aria-label` plus a `title` for the
- * pointer: the rail is the one place in the app where a destination has no
- * visible word. The unread badge is the bar's own (`.navbar-badge`), moved onto
- * the item's corner — the same number in the same place, whichever affordance is
- * showing it.
+ * The **Navigation labels** preference is the rail's own (#177): on, every item
+ * is its icon beside its word; off, the word is hidden and the icon stands
+ * alone. Because `display: none` would take the word out of the accessibility
+ * tree, every item keeps a real `aria-label` plus a `title` for the pointer, so
+ * it is named in both modes. The switch reaches only this component — the bar,
+ * the drawer and the hamburger are not in its scope. The unread badge is the
+ * bar's own (`.navbar-badge`), moved onto the icon's corner
+ * (`.rail-link-icon`) — the same number in the same place, whichever affordance
+ * is showing it.
  */
 import {
     Bell,
@@ -42,20 +46,28 @@ const ITEMS: { to: AppRoute; label: string; Icon: LucideIcon }[] = [
 export interface IconRailProps {
     /** Notifications neither read nor dismissed (the badge). */
     unread: number;
+    /** Whether each item shows its word beside its icon (the appearance switch). */
+    navLabels: boolean;
 }
 
 /**
  * The wide-screen navigation rail, rendered by {@link AppShell} beside the view.
  *
  * Hidden by CSS below its breakpoint rather than by a width probe, so the
- * server-rendered and first-paint layouts agree with the stylesheet.
+ * server-rendered and first-paint layouts agree with the stylesheet. Whether the
+ * words show is `data-nav-labels` on the nav, so the flip is one attribute the
+ * stylesheet reads and the markup is the same in both modes.
  *
  * @param props - See {@link IconRailProps}.
  */
-export function IconRail({ unread }: IconRailProps) {
+export function IconRail({ unread, navLabels }: IconRailProps) {
     const route = useRoute();
     return (
-        <nav className="rail" aria-label="Pages">
+        <nav
+            className="rail"
+            aria-label="Pages"
+            data-nav-labels={navLabels ? "on" : "off"}
+        >
             {ITEMS.map(({ to, label, Icon }) => (
                 <AppLink
                     key={to}
@@ -65,12 +77,15 @@ export function IconRail({ unread }: IconRailProps) {
                     title={label}
                     current={route === to}
                 >
-                    <Icon size={18} aria-hidden="true" />
-                    {to === "notifications" && unread > 0 && (
-                        <span className="navbar-badge rail-badge">
-                            {unread}
-                        </span>
-                    )}
+                    <span className="rail-link-icon">
+                        <Icon size={18} aria-hidden="true" />
+                        {to === "notifications" && unread > 0 && (
+                            <span className="navbar-badge rail-badge">
+                                {unread}
+                            </span>
+                        )}
+                    </span>
+                    <span className="rail-link-label">{label}</span>
                 </AppLink>
             ))}
             {/* Admin is not a page of this app (#146 phase C): it leaves for the
@@ -82,7 +97,10 @@ export function IconRail({ unread }: IconRailProps) {
                 title="Admin portal — a separate app"
                 aria-label="Admin"
             >
-                <ExternalLink size={18} aria-hidden="true" />
+                <span className="rail-link-icon">
+                    <ExternalLink size={18} aria-hidden="true" />
+                </span>
+                <span className="rail-link-label">Admin</span>
             </a>
         </nav>
     );

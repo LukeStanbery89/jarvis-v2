@@ -14,3 +14,6 @@ packages/contracts/docs/
 packages/contracts/src/generated/
 # Graphify knowledge-graph output: regenerable via `graphify update`.
 graphify-out/
+# The coding agent's own channel (plan, brief, questions) and its npm cache:
+# never part of the change, so never formatted as source.
+.jarvis/

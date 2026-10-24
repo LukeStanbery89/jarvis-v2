@@ -269,19 +269,6 @@ textarea::placeholder {
     gap: 0.25rem;
 }
 
-/*
- * "Navigation labels" off (#146 phase D): the bar's links keep their icons and
- * lose their words — the rail's shape, in the bar. The rule is scoped to
- * `.navbar-links`, which is the bar's own list: it only exists between 60 and
- * 80 rem (hidden below by the 60 rem query, and above by the 80 rem one), so
- * this can never reach the drawer (`.navbar-drawer-link`) or the rail
- * (`.rail-link`). The `aria-label`/`title` on each link carry the name the
- * hidden word no longer can.
- */
-.navbar[data-nav-labels="off"] .navbar-links .navbar-link-label {
-    display: none;
-}
-
 .navbar-link,
 .navbar-drawer-link {
     display: inline-flex;
@@ -447,21 +434,47 @@ textarea::placeholder {
  * from 80 rem — where the bar's links would otherwise sit a long way from the
  * content they swap. Hidden below that by CSS, not a width probe, so the first
  * paint and the stylesheet cannot disagree.
+ *
+ * The **Navigation labels** switch is the rail's own: on, each row is its icon
+ * beside its word; off, the label is hidden and the row falls back to the 2.5
+ * rem square it has always been. `data-nav-labels` on the rail is the flip the
+ * stylesheet reads.
  */
 .rail {
     display: none;
 }
 
 .rail-link {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-height: 2.5rem;
+    padding: 0 0.6rem;
+    border-radius: 6px;
+    color: var(--primary-dim);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+/* The icon's own box, so the unread badge keeps its corner once the label
+   beside it widens the row. */
+.rail-link-icon {
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+}
+
+/* Off, the words go and every row is the icon square again. */
+.rail[data-nav-labels="off"] .rail-link {
     width: 2.5rem;
-    height: 2.5rem;
-    border-radius: 6px;
-    color: var(--primary-dim);
-    text-decoration: none;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+}
+
+.rail[data-nav-labels="off"] .rail-link-label {
+    display: none;
 }
 
 .rail-link:hover,
@@ -478,7 +491,7 @@ textarea::placeholder {
 .rail-sep {
     width: 1.5rem;
     height: 1px;
-    margin: 0.25rem 0;
+    margin: 0.25rem auto;
     background: var(--primary-border);
 }
 
@@ -505,11 +518,16 @@ textarea::placeholder {
     .rail {
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: stretch;
         gap: 0.25rem;
         padding: 0.6rem 0.4rem;
         background: var(--panel);
         border-right: 1px solid var(--primary-border);
+    }
+
+    /* Icon-only, the rail is a centred column of squares. */
+    .rail[data-nav-labels="off"] {
+        align-items: center;
     }
 
     /* The rail carries the destinations here, so the bar's links step aside
