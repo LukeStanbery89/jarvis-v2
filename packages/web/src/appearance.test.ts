@@ -39,9 +39,14 @@ describe("parseAppearance", () => {
     });
 
     it("reads a stored shape", () => {
-        expect(parseAppearance('{"particles":false,"glass":true}')).toEqual({
+        expect(
+            parseAppearance(
+                '{"particles":false,"glass":true,"navLabels":false}',
+            ),
+        ).toEqual({
             particles: false,
             glass: true,
+            navLabels: false,
         });
     });
 
@@ -49,17 +54,24 @@ describe("parseAppearance", () => {
         expect(parseAppearance('{"particles":false}')).toEqual({
             particles: false,
             glass: DEFAULT_APPEARANCE.glass,
+            navLabels: DEFAULT_APPEARANCE.navLabels,
         });
         expect(parseAppearance('{"glass":false}')).toEqual({
             particles: DEFAULT_APPEARANCE.particles,
             glass: false,
+            navLabels: DEFAULT_APPEARANCE.navLabels,
+        });
+        expect(parseAppearance('{"navLabels":false}')).toEqual({
+            particles: DEFAULT_APPEARANCE.particles,
+            glass: DEFAULT_APPEARANCE.glass,
+            navLabels: false,
         });
     });
 
     it("ignores a field of the wrong type", () => {
-        expect(parseAppearance('{"particles":"no","glass":1}')).toEqual(
-            DEFAULT_APPEARANCE,
-        );
+        expect(
+            parseAppearance('{"particles":"no","glass":1,"navLabels":0}'),
+        ).toEqual(DEFAULT_APPEARANCE);
     });
 
     it("is the default for anything that is not an object", () => {
@@ -72,14 +84,19 @@ describe("parseAppearance", () => {
 describe("loadAppearance / saveAppearance", () => {
     it("round-trips through storage", () => {
         const storage = memoryStorage();
-        saveAppearance(storage, { particles: false, glass: false });
+        saveAppearance(storage, {
+            particles: false,
+            glass: false,
+            navLabels: false,
+        });
 
         expect(storage.getItem(APPEARANCE_KEY)).toBe(
-            '{"particles":false,"glass":false}',
+            '{"particles":false,"glass":false,"navLabels":false}',
         );
         expect(loadAppearance(storage)).toEqual({
             particles: false,
             glass: false,
+            navLabels: false,
         });
     });
 
@@ -99,7 +116,11 @@ describe("loadAppearance / saveAppearance", () => {
         };
 
         expect(() =>
-            saveAppearance(storage, { particles: false, glass: true }),
+            saveAppearance(storage, {
+                particles: false,
+                glass: true,
+                navLabels: true,
+            }),
         ).not.toThrow();
     });
 });

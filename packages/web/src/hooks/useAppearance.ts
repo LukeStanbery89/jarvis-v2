@@ -14,7 +14,7 @@ import {
 } from "../appearance";
 import type { Appearance } from "../appearance";
 
-/** The appearance state and the two setters the panel needs. */
+/** The appearance state and the setters the panel needs. */
 export interface AppearanceState {
     /** The current preferences. */
     appearance: Appearance;
@@ -22,6 +22,8 @@ export interface AppearanceState {
     setParticles(on: boolean): void;
     /** Turns the frosted-glass treatment on or off. */
     setGlass(on: boolean): void;
+    /** Shows or hides the top bar's link labels. */
+    setNavLabels(on: boolean): void;
 }
 
 /**
@@ -54,5 +56,6 @@ export function useAppearance(): AppearanceState {
         appearance,
         setParticles: (on: boolean) => update({ particles: on }),
         setGlass: (on: boolean) => update({ glass: on }),
+        setNavLabels: (on: boolean) => update({ navLabels: on }),
     };
 }

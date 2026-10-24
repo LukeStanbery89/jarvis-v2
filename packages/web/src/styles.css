@@ -269,6 +269,19 @@ textarea::placeholder {
     gap: 0.25rem;
 }
 
+/*
+ * "Navigation labels" off (#146 phase D): the bar's links keep their icons and
+ * lose their words — the rail's shape, in the bar. The rule is scoped to
+ * `.navbar-links`, which is the bar's own list: it only exists between 60 and
+ * 80 rem (hidden below by the 60 rem query, and above by the 80 rem one), so
+ * this can never reach the drawer (`.navbar-drawer-link`) or the rail
+ * (`.rail-link`). The `aria-label`/`title` on each link carry the name the
+ * hidden word no longer can.
+ */
+.navbar[data-nav-labels="off"] .navbar-links .navbar-link-label {
+    display: none;
+}
+
 .navbar-link,
 .navbar-drawer-link {
     display: inline-flex;

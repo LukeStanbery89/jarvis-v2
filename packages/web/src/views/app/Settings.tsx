@@ -8,7 +8,7 @@
  * microphone, a location) cannot be synced without lying — so the panel says
  * which is which rather than presenting one flat list of switches.
  * **Appearance** (#146) is browser-local like that second group, but it gets
- * its own heading: "This browser" is about permissions and hardware, and two
+ * its own heading: "This browser" is about permissions and hardware, and
  * switches that change what the app looks like would be lost at the bottom of
  * it. Its hint still states the storage rule, because the group no longer sits
  * under a heading that implies it.
@@ -90,6 +90,10 @@ export interface SettingsProps {
     glassOn: boolean;
     /** Flips the frosted glass (off = solid panes, same layout). */
     onToggleGlass(): void;
+    /** The bar's links show their text labels (#146 phase D). */
+    navLabelsOn: boolean;
+    /** Flips the bar's link labels (off = icons alone, as on the rail). */
+    onToggleNavLabels(): void;
 
     /** Signs out of this browser. */
     onSignOut(): void;
@@ -129,6 +133,8 @@ export function Settings(props: SettingsProps) {
         onToggleParticles,
         glassOn,
         onToggleGlass,
+        navLabelsOn,
+        onToggleNavLabels,
         onSignOut,
     } = props;
 
@@ -376,10 +382,11 @@ export function Settings(props: SettingsProps) {
             </section>
 
             {/* Appearance (#146 phase B2) is its own group rather than a corner
-                of "This browser": these two switches change what the app looks
-                like, and they are the only ones that do. They are still stored
-                in this browser, so the hint says so — the group no longer sits
-                under a heading that implies it. */}
+                of "This browser": these switches change what the app looks
+                like, and they are the only ones that do — the particle field,
+                the frosted glass, and whether the bar's links spell out their
+                page. They are still stored in this browser, so the hint says so
+                — the group no longer sits under a heading that implies it. */}
             <section className="settings-group">
                 <h3>Appearance</h3>
                 <p className="settings-hint">
@@ -410,6 +417,20 @@ export function Settings(props: SettingsProps) {
                     {glassOn
                         ? "Panes blur what is behind them."
                         : "Panes are solid — cheaper to draw on a slow machine."}
+                </p>
+
+                <label className="settings-row">
+                    <input
+                        type="checkbox"
+                        checked={navLabelsOn}
+                        onChange={onToggleNavLabels}
+                    />
+                    <span>Navigation labels</span>
+                </label>
+                <p className="settings-note">
+                    {navLabelsOn
+                        ? "The top bar's links spell out their page."
+                        : "The top bar shows icons alone — the rail's shape, in the bar."}
                 </p>
             </section>
 
