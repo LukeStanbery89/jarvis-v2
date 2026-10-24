@@ -92,6 +92,8 @@ describe("coding-job ledger", () => {
             createdAt: "2026-10-19T12:00:00.000Z",
             startedAt: null,
             finishedAt: null,
+            sessionId: null,
+            questions: null,
         });
     });
 
@@ -408,6 +410,41 @@ describe("waiting for answers (#94)", () => {
             store.claimCodingJob(job.id, "c2", "2026-10-19T12:31:00.000Z")
                 ?.attempts,
         ).toBe(2);
+    });
+
+    it("keeps the questions and their session until the job resumes (#94)", () => {
+        const { store, ownerId } = makeStore();
+        const job = store.createCodingJob(ownerId, {
+            ...codingJob(),
+            sessionId: "ses_chat_1",
+        });
+        expect(job.sessionId).toBe("ses_chat_1");
+        expect(job.questions).toBeNull();
+        store.claimCodingJob(job.id, "c1", "2026-10-19T12:01:00.000Z");
+        store.awaitCodingJob(job.id, { plan: "Plan." });
+        store.setCodingJobQuestions(job.id, [
+            "Postgres or SQLite?",
+            "Which branch?",
+        ]);
+
+        expect(
+            store
+                .listAwaitingCodingJobsBySession(ownerId, "ses_chat_1", 5)
+                .map((row) => ({ id: row.id, questions: row.questions })),
+        ).toEqual([
+            {
+                id: job.id,
+                questions: ["Postgres or SQLite?", "Which branch?"],
+            },
+        ]);
+        // Another conversation is not told about this one's work.
+        expect(
+            store.listAwaitingCodingJobsBySession(ownerId, "ses_other", 5),
+        ).toEqual([]);
+
+        // Reopening is the answer: the stored questions must not be relayed
+        // again once the job is running.
+        expect(store.reopenCodingJob(job.id)?.questions).toBeNull();
     });
 
     it("cancels a parked job only for its owner", () => {

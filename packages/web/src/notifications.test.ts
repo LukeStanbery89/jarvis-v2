@@ -98,6 +98,22 @@ describe("mergeNotification", () => {
         });
     });
 
+    it("keeps the coding-job link when a later frame repeats the id (#94)", () => {
+        const list = [
+            make({
+                id: "a",
+                requiresAnswer: true,
+                codingJobId: "c1",
+                state: "delivered",
+            }),
+        ];
+        const merged = mergeNotification(list, make({ id: "a" }));
+        expect(merged[0]).toMatchObject({
+            requiresAnswer: true,
+            codingJobId: "c1",
+        });
+    });
+
     it("bounds the list, dropping the oldest", () => {
         let list: ClientNotification[] = [];
         for (let i = 0; i < NOTIFICATION_LIMIT + 5; i += 1) {

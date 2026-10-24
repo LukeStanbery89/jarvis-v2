@@ -76,6 +76,13 @@ export type SettlementResult =
 export interface NotificationService {
     /** Records a notification and attempts delivery. */
     notify(userId: number, input: NotificationInput): Promise<NotifyOutcome>;
+    /**
+     * One notification, or `null` for a missing or foreign id.
+     *
+     * The answer route reads it before settling: the coding-job link lives on
+     * the record, and a client only sends the id and the reply.
+     */
+    get(userId: number, id: string): AppNotification | null;
     /** A page of the user's notifications, plus the unread count for a badge. */
     list(
         userId: number,
@@ -94,6 +101,25 @@ export interface NotificationService {
     dismiss(userId: number, id: string): SettlementResult;
     /** Answers an answerable notification: a hybrid of read and dismissed. */
     answer(userId: number, id: string, answer: unknown): SettlementResult;
+    /**
+     * Retires the question notifications linked to a coding job (#94).
+     *
+     * Called when the job resumes, whichever channel answered it: the GitHub
+     * comment path and the chat tool do not pass through the REST answer route,
+     * so without this the in-app row would keep asking a question the job has
+     * already moved past. `read` rather than `answered` because no answer text
+     * reached this record — the reply lives where it was written.
+     *
+     * @param userId - The job's owner.
+     * @param codingJobId - The job that resumed.
+     * @param options.exceptId - A row to leave alone (the REST answer's own).
+     * @returns How many rows were settled.
+     */
+    settleCodingQuestion(
+        userId: number,
+        codingJobId: string,
+        options?: { exceptId?: string },
+    ): number;
 }
 
 /**
@@ -128,6 +154,10 @@ export function createNotificationService(
     };
 
     return {
+        get(userId: number, id: string): AppNotification | null {
+            return store.getNotification(userId, id);
+        },
+
         async notify(
             userId: number,
             input: NotificationInput,
@@ -242,6 +272,19 @@ export function createNotificationService(
             return removed === null
                 ? { ok: false, reason: "missing" }
                 : { ok: true, notification: removed };
+        },
+
+        settleCodingQuestion(
+            userId: number,
+            codingJobId: string,
+            options: { exceptId?: string } = {},
+        ): number {
+            return store.settleCodingQuestionNotifications(
+                userId,
+                codingJobId,
+                options.exceptId ?? null,
+                now().toISOString(),
+            );
         },
 
         answer(userId: number, id: string, answer: unknown): SettlementResult {

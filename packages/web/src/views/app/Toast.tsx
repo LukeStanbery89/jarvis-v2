@@ -36,7 +36,9 @@ interface ToastCardProps {
 }
 
 /**
- * One card: the words, and the three actions plus the way into the list.
+ * One card: the words, and the actions the class allows plus the way into the
+ * list. An answerable notification replaces "Mark read" with a link to its
+ * answer box (#94): reading a question does not retire it.
  */
 function ToastCard({
     notification,
@@ -46,6 +48,10 @@ function ToastCard({
 }: ToastCardProps) {
     const now = useClock();
     const presented = presentNotification(notification, now);
+    // A question is settled by its answer, not by reading it (#94). Offering
+    // "Mark read" here would retire the card while the coding job stayed
+    // parked, so the toast leads to the answer box instead.
+    const answerable = notification.requiresAnswer === true;
     return (
         <div
             className={`notification-banner notification-${notification.priority} notification-${notification.class} toast`}
@@ -67,12 +73,14 @@ function ToastCard({
                 )}
             </div>
             <div className="notification-actions">
-                <button
-                    type="button"
-                    onClick={() => onMarkRead(notification.id)}
-                >
-                    Mark read
-                </button>
+                {!answerable && (
+                    <button
+                        type="button"
+                        onClick={() => onMarkRead(notification.id)}
+                    >
+                        Mark read
+                    </button>
+                )}
                 <button
                     type="button"
                     onClick={() => onDismiss(notification.id)}
@@ -90,7 +98,7 @@ function ToastCard({
                         />
                     )}
                 <AppLink to="notifications" className="toast-link">
-                    All notifications
+                    {answerable ? "Answer" : "All notifications"}
                 </AppLink>
             </div>
         </div>

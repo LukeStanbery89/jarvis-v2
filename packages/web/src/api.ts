@@ -265,6 +265,23 @@ export function createApi(
             return result.notification;
         },
         /**
+         * Answers an answerable notification (#94). When the record names a
+         * coding job, the server resumes it before settling the row, so a 409
+         * means the job could not be resumed and the row is still answerable.
+         */
+        async answerNotification(
+            token: string,
+            id: string,
+            answer: string,
+        ): Promise<Notification> {
+            const result = await request<{ notification: Notification }>(
+                "POST",
+                `/api/notifications/${encodeURIComponent(id)}/answer`,
+                { token, body: { answer } },
+            );
+            return result.notification;
+        },
+        /**
          * Raises a notification for the caller (#139) and reports what
          * happened to it: `delivered` is how many live clients received the
          * frame, `suppressed` names the gate that held it back (`absent` when

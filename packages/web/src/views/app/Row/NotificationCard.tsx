@@ -31,6 +31,12 @@ export interface NotificationCardProps {
     actions?: ReactNode;
     /** The run disclosure, when the record knows its job. */
     runs?: ReactNode;
+    /**
+     * Content below the record's text — an answer box for a question (#94).
+     * Full-width inside the text column rather than in the actions slot: an
+     * answer is a reply, not another control.
+     */
+    footer?: ReactNode;
     /** Extra classes for the row. */
     className?: string;
 }
@@ -46,6 +52,7 @@ export function NotificationCard({
     state,
     actions,
     runs,
+    footer,
     className = "",
 }: NotificationCardProps) {
     const presented = presentNotification(notification, now);
@@ -84,6 +91,13 @@ export function NotificationCard({
                     </span>
                 ))}
                 {runs}
+                {notification.state === "answered" &&
+                    notification.answer !== undefined && (
+                        <p className="notification-answer-text">
+                            You answered: {notification.answer}
+                        </p>
+                    )}
+                {footer}
             </div>
             {actions !== undefined && (
                 <div className="notification-actions">{actions}</div>

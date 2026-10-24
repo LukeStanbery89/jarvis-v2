@@ -32,8 +32,27 @@ import { parseLimit } from "../http/params";
 import { sessionCookieName } from "../http/cookies";
 import { logger } from "../logger";
 import type { AppConfig } from "../config";
-import { NotificationInputError } from "./types";
+import { NotificationInputError, validateAnswer } from "./types";
 import type { NotificationService, SettlementResult } from "./service";
+
+/**
+ * Called before an answerable notification is settled.
+ *
+ * The answer has a consumer when the record names a coding job: the reply must
+ * resume it. Running the consumer **before** the settlement keeps the two
+ * facts in the right order — a job that could not be resumed leaves the
+ * notification unanswered, so the user can retry rather than reading
+ * "answered" over a job that is still parked. The route knows nothing about
+ * coding jobs; the composition root supplies this.
+ */
+export type NotificationAnswerHandler = (
+    userId: number,
+    notification: AppNotification,
+    answer: string,
+) =>
+    | { ok: true }
+    | { ok: false; reason: string }
+    | Promise<{ ok: true } | { ok: false; reason: string }>;
 
 /** Default page size for a list call. */
 const DEFAULT_LIMIT = 50;
@@ -63,6 +82,8 @@ export interface NotificationResponse {
      * — rather than on the notification itself.
      */
     jobId?: string;
+    /** The coding job an answer resumes (#94), when the notification asks. */
+    codingJobId?: string;
     createdAt: string;
     deliveredAt?: string;
     settledAt?: string;
@@ -85,6 +106,9 @@ export function toNotificationResponse(
             ? { answer: notification.answer }
             : {}),
         ...(notification.jobId !== null ? { jobId: notification.jobId } : {}),
+        ...(notification.codingJobId !== null
+            ? { codingJobId: notification.codingJobId }
+            : {}),
         createdAt: notification.createdAt,
         ...(notification.deliveredAt !== null
             ? { deliveredAt: notification.deliveredAt }
@@ -107,6 +131,7 @@ export function createNotificationRouter(
     store: AppDatabase,
     service: NotificationService,
     appConfig: AppConfig,
+    onAnswer?: NotificationAnswerHandler,
 ): Router {
     const router = Router();
     const secure = Boolean(appConfig.tlsCertPath && appConfig.tlsKeyPath);
@@ -215,18 +240,40 @@ export function createNotificationRouter(
         "/notifications/:id/answer",
         authenticated,
         requireCsrf,
-        route((req, res) => {
+        route(async (req, res) => {
             const jarv = authed(req).jarv;
-            const answer = (req.body as { answer?: unknown } | undefined)
-                ?.answer;
-            sendSettlement(
-                res,
-                service.answer(
-                    jarv.user.id,
-                    notificationId(req.params.id),
-                    answer,
-                ),
+            const id = notificationId(req.params.id);
+            const answer = validateAnswer(
+                (req.body as { answer?: unknown } | undefined)?.answer,
             );
+            const existing = service.get(jarv.user.id, id);
+            if (existing === null) {
+                res.status(404).json({ error: "notification not found" });
+                return;
+            }
+            if (!existing.requiresAnswer) {
+                res.status(400).json({
+                    error: "notification does not require an answer",
+                });
+                return;
+            }
+            if (isSettled(existing)) {
+                res.status(409).json({
+                    error: "notification is already settled",
+                });
+                return;
+            }
+            // The consumer runs first: a job that cannot be resumed must leave
+            // the notification unanswered, or the user would read "answered"
+            // over a job that never started.
+            if (existing.codingJobId !== null && onAnswer !== undefined) {
+                const outcome = await onAnswer(jarv.user.id, existing, answer);
+                if (!outcome.ok) {
+                    res.status(409).json({ error: outcome.reason });
+                    return;
+                }
+            }
+            sendSettlement(res, service.answer(jarv.user.id, id, answer));
         }),
     );
 
@@ -248,6 +295,7 @@ function notificationInputFrom(body: unknown): {
     body?: string;
     requiresAnswer?: boolean;
     dedupeKey?: string;
+    codingJobId?: string;
 } {
     if (typeof body !== "object" || body === null) {
         throw new NotificationInputError("body must be a JSON object");
@@ -292,6 +340,14 @@ function notificationInputFrom(body: unknown): {
             : {}),
         ...(candidate.dedupeKey !== undefined
             ? { dedupeKey: optionalString(candidate.dedupeKey, "dedupeKey") }
+            : {}),
+        ...(candidate.codingJobId !== undefined
+            ? {
+                  codingJobId: optionalString(
+                      candidate.codingJobId,
+                      "codingJobId",
+                  ),
+              }
             : {}),
     };
 }
@@ -338,6 +394,24 @@ function notificationId(value: unknown): string {
 /**
  * Maps a thrown error onto the `{ error }` shape the API promises.
  */
+/**
+ * Whether a notification has already been settled.
+ *
+ * `pending` and `delivered` still want attention; every other state is final
+ * from the user's point of view, so a second answer is a conflict rather than
+ * another settlement.
+ *
+ * @param notification - The stored record.
+ * @returns True when it is read, answered or snoozed.
+ */
+function isSettled(notification: AppNotification): boolean {
+    return (
+        notification.state === "read" ||
+        notification.state === "answered" ||
+        notification.state === "snoozed"
+    );
+}
+
 function handleError(res: Response, err: unknown): void {
     if (err instanceof NotificationInputError) {
         res.status(400).json({ error: err.message });

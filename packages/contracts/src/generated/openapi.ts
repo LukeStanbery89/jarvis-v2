@@ -738,6 +738,8 @@ export interface components {
             requiresAnswer?: boolean;
             /** @description Producer-side coalescing key: while an unsettled notification with the same key exists, a new one replaces it instead of stacking. */
             dedupeKey?: string;
+            /** @description The coding job an answer resumes (#94), when this notification asks the user a question. Distinct from `jobId`, which names a scheduler job. */
+            codingJobId?: string;
         };
         /** @description One stored notification, as the API exposes it. */
         Notification: {
@@ -762,6 +764,8 @@ export interface components {
             answer?: string;
             /** @description The job this notification is about (#90), when a scheduler announcement produced it. It is what lets a reminder's row — or the floating toast, wherever the user is — act on the reminder (snooze it) rather than only acknowledge the notification. Absent for a notification no job stands behind, and nulled if the job is later pruned. */
             jobId?: string;
+            /** @description The coding job whose questions this notification carries (#94), when an answer should resume it. Absent when the notification is informational, and nulled if the job is later pruned. */
+            codingJobId?: string;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */

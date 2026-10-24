@@ -252,6 +252,14 @@ export interface CodingJobService {
          * after a restart still pushes, but does not reply.
          */
         replyTo?: CommentRef;
+        /**
+         * The chat session that asked for the job (#94), when a chat tool did.
+         *
+         * Stored on the row so a parked job's questions can be relayed into
+         * that conversation on its next turn. A job started from the API or a
+         * scheduler has none; its questions reach the user as a notification.
+         */
+        sessionId?: string;
     }): Promise<StartCodingJobResult>;
     /**
      * Reconciles rows and containers after a restart, then supervises whatever
@@ -283,7 +291,16 @@ export interface CodingJobService {
         userId: number,
         jobId: string,
         answers: string,
-        options?: { lastSeenCommentId?: number },
+        options?: {
+            lastSeenCommentId?: number;
+            /**
+             * The answerable notification the user is replying through (#94),
+             * when the resume came from the notifications page. Other rows
+             * linked to the job are settled by the resume; this one is left
+             * for the route, which settles it with the answer text.
+             */
+            notificationId?: string;
+        },
     ): Promise<ResumeCodingJobResult>;
     /**
      * One of the caller's own jobs, or `null` for a foreign or missing id.
@@ -410,7 +427,10 @@ export function createCodingJobService(options: {
         repo: string;
         number: number;
     }) => Promise<IssueSnapshot>;
-    notifications?: Pick<NotificationService, "notify">;
+    notifications?: Pick<
+        NotificationService,
+        "notify" | "settleCodingQuestion"
+    >;
     /**
      * Posts the plan and questions on an issue (#94).
      *
@@ -666,8 +686,8 @@ export function createCodingJobService(options: {
             questions.length > 1 ? ` (+${questions.length - 1} more)` : "";
         const where =
             commentUrl !== null
-                ? `\n\nI asked on the issue: ${commentUrl}`
-                : "\n\nAnswer in the chat when you are ready.";
+                ? `\n\nI asked on the issue: ${commentUrl}\nYou can also answer here or in the chat that asked for this job.`
+                : "\n\nAnswer here, or reply in the chat that asked for this job.";
         try {
             await notifications.notify(job.userId, {
                 kind: "coding.question",
@@ -682,6 +702,10 @@ export function createCodingJobService(options: {
                     MAX_NOTIFICATION_BODY_LENGTH,
                 ),
                 dedupeKey: `coding.questions:${job.id}`,
+                // The answer is the job's whole point (#94): the route resumes
+                // it, and the link is what tells the answer where to go.
+                requiresAnswer: true,
+                codingJobId: job.id,
             });
         } catch (err) {
             logger.warn(
@@ -826,6 +850,14 @@ export function createCodingJobService(options: {
                     questionCommentId: comment?.id ?? null,
                     lastSeenCommentId: comment?.id ?? null,
                 });
+                // Keep the questions on the row: the in-session relay reads
+                // them on the next turn, and the workspace may be gone by then.
+                if (awaited !== null) {
+                    ledger.setCodingJobQuestions(
+                        awaited.id,
+                        artifacts.questions,
+                    );
+                }
                 await announceQuestions(
                     awaited ?? job,
                     artifacts.questions,
@@ -1346,6 +1378,7 @@ export function createCodingJobService(options: {
                 workspacePath: prepared.path,
                 crashPolicy: input.crashPolicy ?? "prune",
                 model: primary.id,
+                sessionId: input.sessionId ?? null,
                 ...(followUp !== null
                     ? {
                           prUrl: followUp.url,
@@ -1478,6 +1511,26 @@ export function createCodingJobService(options: {
                 logger.info(
                     `coding job ${claimed.id} resumed with answers: repo=${claimed.repo}, container=${handle.containerId}`,
                 );
+                // The job is running, so the question is settled whichever
+                // channel answered it (GitHub, the chat tool, or the REST
+                // answer). The REST route's own row is excluded: it settles
+                // that one with the answer text it collected.
+                try {
+                    notifications?.settleCodingQuestion(
+                        claimed.userId,
+                        claimed.id,
+                        {
+                            ...(options?.notificationId !== undefined
+                                ? { exceptId: options.notificationId }
+                                : {}),
+                        },
+                    );
+                } catch (err) {
+                    // A courtesy settle must never fail a running job.
+                    logger.warn(
+                        `coding job ${claimed.id}: could not settle its question notification: ${describe(err)}`,
+                    );
+                }
                 return {
                     ok: true,
                     job: claimed,

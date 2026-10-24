@@ -16,7 +16,7 @@
  * The in-app channel is exercised for real (a fake socket through the real
  * hub), so a change to the frame mapping or the registry shows up here.
  */
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import request from "supertest";
@@ -184,6 +184,63 @@ describe("notification store (#139)", () => {
         store.setNotificationState(userId, "a", "read", { answer: undefined });
         const again = store.setNotificationState(userId, "a", "snoozed");
         expect(again?.state).toBe("read");
+    });
+
+    it("stores the coding-job link an answer resumes (#94)", () => {
+        const job = store.createCodingJob(userId, {
+            id: "c1",
+            repo: "luke/app",
+            branch: "jarvis/answerable",
+            prompt: "Fix it.",
+            workspacePath: "/jobs/c1/repo",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        const created = store.createNotification(userId, {
+            id: "n1",
+            kind: "coding.question",
+            priority: "normal",
+            title: "Coding job needs answers",
+            requiresAnswer: true,
+            codingJobId: job.id,
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        expect(created.codingJobId).toBe("c1");
+        expect(store.getNotification(userId, "n1")?.codingJobId).toBe("c1");
+    });
+
+    it("settles the question rows a resume retires (#94)", () => {
+        const job = store.createCodingJob(userId, {
+            id: "c3",
+            repo: "luke/app",
+            branch: "jarvis/questions",
+            prompt: "Fix it.",
+            workspacePath: "/jobs/c3/repo",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        for (const id of ["q1", "q2"]) {
+            store.createNotification(userId, {
+                id,
+                kind: "coding.question",
+                priority: "normal",
+                title: "Need answers",
+                requiresAnswer: true,
+                codingJobId: job.id,
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+        }
+        // The route's own row (`q1`) is left for the answer settlement; the
+        // other row is retired because the job is running again.
+        expect(
+            store.settleCodingQuestionNotifications(
+                userId,
+                job.id,
+                "q1",
+                "2026-10-15T19:00:00.000Z",
+            ),
+        ).toBe(1);
+        expect(store.getNotification(userId, "q1")?.state).not.toBe("read");
+        expect(store.getNotification(userId, "q2")?.state).toBe("read");
     });
 
     it("keeps the answer on an answered notification", () => {
@@ -759,6 +816,111 @@ describe("notification routes (#139)", () => {
             .set("authorization", `Bearer ${token}`)
             .send({ answer: "again" })
             .expect(409);
+    });
+
+    it("resumes the linked coding job before settling the answer (#94)", async () => {
+        const job = store.createCodingJob(userId, {
+            id: "c1",
+            repo: "luke/app",
+            branch: "jarvis/answerable",
+            prompt: "Fix it.",
+            workspacePath: "/jobs/c1/repo",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        const created = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                kind: "coding.question",
+                title: "Which database?",
+                requiresAnswer: true,
+                codingJobId: job.id,
+            })
+            .expect(201);
+        const id = created.body.notification.id as string;
+        const resume = vi.fn(async () => ({ ok: true as const }));
+        const app = createApp(
+            store,
+            appConfig,
+            undefined,
+            undefined,
+            service,
+            undefined,
+            undefined,
+            undefined,
+            resume,
+        );
+
+        const answered = await request(app)
+            .post(`/api/notifications/${id}/answer`)
+            .set("authorization", `Bearer ${token}`)
+            .send({ answer: "Postgres" })
+            .expect(200);
+
+        expect(resume).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({ codingJobId: job.id }),
+            "Postgres",
+        );
+        expect(answered.body.notification).toMatchObject({
+            state: "answered",
+            answer: "Postgres",
+        });
+    });
+
+    it("leaves the row answerable when the job cannot resume (#94)", async () => {
+        const job = store.createCodingJob(userId, {
+            id: "c2",
+            repo: "luke/app",
+            branch: "jarvis/gone",
+            prompt: "Fix it.",
+            workspacePath: "/jobs/c2/repo",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        const created = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                kind: "coding.question",
+                title: "Still there?",
+                requiresAnswer: true,
+                codingJobId: job.id,
+            })
+            .expect(201);
+        const id = created.body.notification.id as string;
+        const app = createApp(
+            store,
+            appConfig,
+            undefined,
+            undefined,
+            service,
+            undefined,
+            undefined,
+            undefined,
+            async () => ({
+                ok: false,
+                reason: "that coding job is no longer waiting for answers",
+            }),
+        );
+
+        const refused = await request(app)
+            .post(`/api/notifications/${id}/answer`)
+            .set("authorization", `Bearer ${token}`)
+            .send({ answer: "Postgres" })
+            .expect(409);
+        expect(refused.body.error).toContain("no longer waiting");
+
+        // The settlement follows the consumer: a failed resume must not read
+        // "answered" over a job that never restarted.
+        const listed = await request(buildApp())
+            .get("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .expect(200);
+        expect(listed.body.notifications[0]).toMatchObject({
+            id,
+            requiresAnswer: true,
+        });
+        expect(listed.body.notifications[0].state).not.toBe("answered");
     });
 
     it("rejects an unanswerable notification and a bad body", async () => {

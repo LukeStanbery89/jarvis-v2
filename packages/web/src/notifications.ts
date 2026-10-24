@@ -65,6 +65,12 @@ export interface ClientNotification {
      * client could only guess which reminder a banner was about.
      */
     jobId?: string;
+    /**
+     * The coding job whose questions this notification carries (#94), when an
+     * answer resumes it. A frame may lack it (the live shape is a subset); the
+     * REST record is authoritative, and the merge keeps a known link.
+     */
+    codingJobId?: string;
 }
 
 /**
@@ -105,6 +111,9 @@ export function fromRecord(record: Notification): ClientNotification {
         ...(record.requiresAnswer === true ? { requiresAnswer: true } : {}),
         ...(record.answer !== undefined ? { answer: record.answer } : {}),
         ...(record.jobId !== undefined ? { jobId: record.jobId } : {}),
+        ...(record.codingJobId !== undefined
+            ? { codingJobId: record.codingJobId }
+            : {}),
         state: record.state,
     };
 }
@@ -148,8 +157,16 @@ export function mergeNotification(
     next[index] = {
         ...incoming,
         state: isSettled(existing.state) ? existing.state : incoming.state,
-        // A settled answer is user data; a later frame cannot drop it.
+        // A settled answer is user data; a later frame cannot drop it. The
+        // coding-job link is in the same position: the live frame is a subset,
+        // so a frame must not erase a link the record already supplied.
         ...(existing.answer !== undefined ? { answer: existing.answer } : {}),
+        // A question does not stop being a question because a later frame
+        // arrived without the flag (the live frame is a subset of the record).
+        ...(existing.requiresAnswer === true ? { requiresAnswer: true } : {}),
+        ...(existing.codingJobId !== undefined
+            ? { codingJobId: existing.codingJobId }
+            : {}),
     };
     return next.sort(byNewest).slice(0, NOTIFICATION_LIMIT);
 }

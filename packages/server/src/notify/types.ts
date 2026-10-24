@@ -74,6 +74,15 @@ export interface NotificationInput {
      * reminder it came from instead of the client guessing from the title.
      */
     jobId?: string;
+    /**
+     * The coding job this notification asks a question about (#94), when the
+     * answer should resume it.
+     *
+     * Distinct from {@link jobId}, which names a scheduler job: a coding job
+     * lives in the sandbox ledger. The answer route resolves this link; the
+     * client never has to send it back.
+     */
+    codingJobId?: string;
 }
 
 /** What one delivery attempt achieved, for the caller and the tests. */
@@ -178,7 +187,7 @@ export function normalizeNotificationInput(
         "kind" | "class" | "priority" | "title" | "requiresAnswer"
     >
 > &
-    Pick<NotificationInput, "body" | "dedupeKey" | "jobId"> {
+    Pick<NotificationInput, "body" | "dedupeKey" | "jobId" | "codingJobId"> {
     const kind = input.kind?.trim() ?? "";
     const title = input.title?.trim() ?? "";
     const notificationClass = input.class ?? "notification";
@@ -217,6 +226,17 @@ export function normalizeNotificationInput(
             `dedupeKey must be at most ${MAX_DEDUPE_KEY_LENGTH} characters`,
         );
     }
+    // A coding-job id is a UUID-shaped token, not display text: bound it so a
+    // caller cannot store an essay under a column the answer route trusts.
+    const codingJobId = input.codingJobId?.trim();
+    if (
+        codingJobId !== undefined &&
+        (codingJobId.length === 0 || codingJobId.length > 64)
+    ) {
+        throw new NotificationInputError(
+            "codingJobId must be a non-empty string of at most 64 characters",
+        );
+    }
     return {
         kind,
         class: notificationClass,
@@ -228,6 +248,9 @@ export function normalizeNotificationInput(
             ? { dedupeKey }
             : {}),
         ...(input.jobId !== undefined ? { jobId: input.jobId } : {}),
+        ...(codingJobId !== undefined && codingJobId.length > 0
+            ? { codingJobId }
+            : {}),
     };
 }
 

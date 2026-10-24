@@ -52,14 +52,14 @@ Real paths, not hash routes (#90 phase 6a): the server's SPA fallback replays
 without a route on the server, and a URL reads as the page it names. The admin
 portal is a different app at `/admin` and keeps its own hash router.
 
-| Path             | Today                                                                                   |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| `/`              | The dashboard: the clock, what is coming up, the unread count                           |
-| `/chat`          | The conversation                                                                        |
-| `/timers`        | The countdowns still running: New, Edit, Cancel, and a Recent history                   |
-| `/reminders`     | What the assistant owes you: New, Edit, **Repeats**, Cancel, **Snooze**, Recent         |
-| `/notifications` | What is scheduled of the class, then everything recorded (Mark read · Dismiss · Snooze) |
-| anything else    | The dashboard (a typo or an old link gets the front door, not an error)                 |
+| Path             | Today                                                                                                       |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| `/`              | The dashboard: the clock, what is coming up, the unread count                                               |
+| `/chat`          | The conversation                                                                                            |
+| `/timers`        | The countdowns still running: New, Edit, Cancel, and a Recent history                                       |
+| `/reminders`     | What the assistant owes you: New, Edit, **Repeats**, Cancel, **Snooze**, Recent                             |
+| `/notifications` | What is scheduled of the class, then everything recorded (Mark read · Dismiss · Snooze · Answer a question) |
+| anything else    | The dashboard (a typo or an old link gets the front door, not an error)                                     |
 
 In-app links are `AppLink`s over the store in `src/router.ts`: a click swaps the
 view with `history.pushState` instead of reloading the document, so Back and
@@ -499,6 +499,16 @@ it can appear. The client reports it rather than the view inferring it from the
 status sequence: `connecting` and `reconnecting` both precede `connected`, so a
 view effect trying to tell them apart ends up keyed on something that changes
 every render — which is a fetch loop, not a reconnect.
+
+An **answerable** notification (#94) — raised with `requiresAnswer`, e.g. a
+coding job parked on a question — is settled by replying, not by reading it, so
+its row renders an answer box in place of Mark read. Submitting calls
+`POST /api/notifications/:id/answer`; the server resumes the job behind the
+question _before_ it marks the row `answered`, so a refusal leaves the form (and
+the draft) in place with the server's reason, and the answered text is shown on
+the settled row. The record carries the job's `codingJobId`, but the form never
+sends it: the server resolves the link, so a client cannot point an answer at a
+job it was not given.
 
 A **held-back** notification (quiet hours, the per-minute budget, the user's own
 switch) is pushed to nobody at all — the suppression gate returns before any

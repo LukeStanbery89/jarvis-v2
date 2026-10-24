@@ -44,8 +44,10 @@ function job(overrides: Partial<AppCodingJob> = {}): AppCodingJob {
         createdAt: START,
         startedAt: START,
         finishedAt: START,
+        sessionId: null,
+        questions: null,
         ...overrides,
-    };
+    } as AppCodingJob;
 }
 
 /** An open issue. */
