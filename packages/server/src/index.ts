@@ -14,6 +14,7 @@
 import "dotenv/config";
 import path from "node:path";
 import { createApp } from "./app";
+import type { NotificationAnswerHandler } from "./notify/http";
 import {
     getAppConfig,
     getLlmConfig,
@@ -540,6 +541,30 @@ const internalRoutes =
               },
           };
 
+// The answer half of the coding ask (#94): answering a job's question in the
+// app resumes the parked job, exactly as a GitHub reply does. The notification
+// route owns the settlement order; this only says what the answer does.
+const codingForAnswers = codingJobs;
+const onNotificationAnswer: NotificationAnswerHandler | undefined =
+    codingForAnswers === undefined
+        ? undefined
+        : async (userId, notification, answer) => {
+              if (notification.codingJobId === null) {
+                  return { ok: true };
+              }
+              const result = await codingForAnswers.resume(
+                  userId,
+                  notification.codingJobId,
+                  answer,
+                  // The route settles this row itself, with the answer text;
+                  // the resume settles any other question rows for the job.
+                  { notificationId: notification.id },
+              );
+              return result.ok
+                  ? { ok: true }
+                  : { ok: false, reason: result.reason };
+          };
+
 const webApp = createApp(
     store,
     appConfig,
@@ -549,6 +574,7 @@ const webApp = createApp(
     jobCreator,
     codingJobs,
     internalRoutes,
+    onNotificationAnswer,
 );
 
 const { server } = createJarvisServer(webApp, {

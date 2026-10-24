@@ -159,6 +159,23 @@ function requireCodingOwner(
     return { ok: true, userId: signed.userId };
 }
 
+/**
+ * The chat session this tool call belongs to (#94).
+ *
+ * The graph runs every turn with `configurable.thread_id = sessionId`, so the
+ * runtime carries it. A tool invoked outside a chat (a test, a future direct
+ * call) has none, and its job simply has no session to relay questions into.
+ *
+ * @param runtime - The LangChain tool runtime.
+ * @returns The session id, or `null`.
+ */
+function sessionIdFrom(runtime: ToolRuntime): string | null {
+    const configurable = runtime.configurable as
+        Record<string, unknown> | undefined;
+    const value = configurable?.thread_id;
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 /** A pull request reference: always a number, plus the repo a URL named. */
 export interface PullRequestRef {
     number: number;
@@ -271,11 +288,13 @@ export function createCodingTool(deps: CodingToolDeps) {
                     : `Which repository? Allowed: ${deps.repos.join(", ")}.`;
             }
 
+            const sessionId = sessionIdFrom(runtime);
             try {
                 const result = await deps.service.start({
                     userId: gate.userId,
                     repo,
                     task,
+                    ...(sessionId !== null ? { sessionId } : {}),
                     ...(input.crashPolicy !== undefined
                         ? { crashPolicy: input.crashPolicy }
                         : {}),

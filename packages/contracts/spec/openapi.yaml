@@ -2217,6 +2217,14 @@ components:
                         replaces it instead of stacking.
                     minLength: 1
                     maxLength: 64
+                codingJobId:
+                    type: string
+                    description: >-
+                        The coding job an answer resumes (#94), when this
+                        notification asks the user a question. Distinct from
+                        `jobId`, which names a scheduler job.
+                    minLength: 1
+                    maxLength: 64
         Notification:
             type: object
             description: One stored notification, as the API exposes it.
@@ -2278,6 +2286,15 @@ components:
                         is — act on the reminder (snooze it) rather than only
                         acknowledge the notification. Absent for a notification no
                         job stands behind, and nulled if the job is later pruned.
+                    maxLength: 64
+                codingJobId:
+                    type: string
+                    description: >-
+                        The coding job whose questions this notification carries
+                        (#94), when an answer should resume it. Absent when the
+                        notification is informational, and nulled if the job is
+                        later pruned.
+                    minLength: 1
                     maxLength: 64
                 createdAt:
                     type: string

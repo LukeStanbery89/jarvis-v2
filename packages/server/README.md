@@ -334,6 +334,18 @@ one: OpenCode compacts at 15% below that line, so `@400k` means compaction near
 without a suffix uses `JARVIS_SANDBOX_MODEL_CONTEXT` (200k), and the older
 single-model `JARVIS_SANDBOX_MODEL` keeps working when the ladder is unset.
 
+A parked job's questions are **answerable in two places** (#94). The supervisor
+raises the `coding.question` notification with `requiresAnswer` and the job id,
+so the notifications page renders an answer box and
+`POST /api/notifications/:id/answer` resumes the same parked job before it
+settles the row — a job that cannot resume leaves the question answerable
+rather than reading "answered" over work that never restarted. A job started
+from chat also records its `sessionId`; the next turn in that conversation is
+prefixed with the stored questions and the instruction not to invent an answer,
+so the user can answer in the chat and the model calls `resumeCodingJob`. The
+GitHub comment path remains the durable asynchronous channel, and all three
+paths reopen the same row and workspace.
+
 ### The broker sidecar and egress (#141)
 
 A job runs model-directed code, so "the container has the internet" is the one

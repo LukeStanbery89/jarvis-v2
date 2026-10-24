@@ -1276,6 +1276,78 @@ textarea::placeholder {
     border-left-style: dashed;
 }
 
+/* The answer box for an answerable notification (#94). It sits under the
+   record's text, full width, because an answer is a reply rather than another
+   control in the actions column. */
+.notification-answer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.notification-answer label {
+    font-size: 0.75rem;
+    color: var(--primary-dim);
+}
+
+.notification-answer textarea {
+    width: 100%;
+    min-height: 3.5rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--primary-border);
+    border-radius: 0.45rem;
+    background: var(--primary-wash);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+    resize: vertical;
+}
+
+.notification-answer textarea:focus {
+    outline: 1px solid var(--primary-dim);
+    outline-offset: 1px;
+}
+
+.notification-answer-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.notification-answer-actions button {
+    padding: 0.35rem 0.8rem;
+    border: 1px solid var(--primary-border);
+    border-radius: 0.4rem;
+    background: var(--control);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.notification-answer-actions button:hover:not(:disabled) {
+    background: var(--control-strong);
+}
+
+.notification-answer-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.notification-answer-error {
+    margin: 0;
+    color: var(--error);
+    font-size: 0.8rem;
+}
+
+.notification-answer-text {
+    margin: 0.35rem 0 0;
+    font-size: 0.8rem;
+    color: var(--primary-dim);
+}
+
 .job-list {
     display: flex;
     flex-direction: column;

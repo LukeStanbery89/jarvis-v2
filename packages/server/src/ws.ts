@@ -69,6 +69,7 @@ import type { NotificationHub } from "./notify/hub";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
 import { toServerFrame } from "./transport";
+import { MAX_RELAYED_JOBS, withCodingAsks } from "./sandbox/ask";
 import { speakTurn, type AudioTurn } from "./tts/orchestrator";
 import type { TtsProvider } from "./tts/types";
 import type { AttachmentStore } from "./attachments/store";
@@ -497,6 +498,22 @@ async function handlePrompt(
             }
         }
     }
+    // The in-session ask relay (#94): a job started from this conversation
+    // that parked on questions is carried into the turn, so the agent can
+    // relay them and resume the job with the answer. Only the session that
+    // asked for the work sees it — the lookup is user- and session-scoped.
+    const effectivePrompt =
+        conn.ctx.kind === "authed"
+            ? withCodingAsks(
+                  store.listAwaitingCodingJobsBySession(
+                      conn.ctx.user.id,
+                      prompt.sessionId,
+                      MAX_RELAYED_JOBS,
+                  ),
+                  prompt.prompt,
+              )
+            : prompt.prompt;
+
     const turn = await sessions.runTurn({
         sessionId: prompt.sessionId,
         actor: conn.ctx,
@@ -518,7 +535,7 @@ async function handlePrompt(
                 }
                 await streamEventsToSocket({
                     socket,
-                    prompt: prompt.prompt,
+                    prompt: effectivePrompt,
                     sessionId,
                     turnTimeoutMs: options.turnTimeoutMs,
                     capabilities: conn.capabilities,

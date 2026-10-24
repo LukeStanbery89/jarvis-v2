@@ -139,7 +139,10 @@ function jobsTable(name: string): string {
  * database and a fresh one converge on the same shape rather than merely the
  * same columns.
  */
-function notificationsTable(name: string): string {
+function notificationsTable(
+    name: string,
+    options: { codingJobLink?: boolean } = {},
+): string {
     return `CREATE TABLE IF NOT EXISTS ${name} (
     id              TEXT PRIMARY KEY,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -155,7 +158,12 @@ function notificationsTable(name: string): string {
     created_at      TEXT NOT NULL,
     delivered_at    TEXT,
     settled_at      TEXT,
-    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL
+    job_id          TEXT REFERENCES jobs(id) ON DELETE SET NULL${
+        options.codingJobLink === false
+            ? ""
+            : `,
+    coding_job_id   TEXT REFERENCES coding_jobs(id) ON DELETE SET NULL`
+    }
 )`;
 }
 
@@ -276,7 +284,9 @@ function codingJobsTable(name: string): string {
     last_error           TEXT,
     created_at           TEXT NOT NULL,
     started_at           TEXT,
-    finished_at          TEXT
+    finished_at          TEXT,
+    session_id           TEXT,
+    questions_json       TEXT
 )`;
 }
 
@@ -541,6 +551,13 @@ export interface AppNotification {
      * notification the user already received stays true.
      */
     jobId: string | null;
+    /**
+     * The coding job whose questions this notification carries (#94), or
+     * `null`. An answer to the notification resumes that job; `ON DELETE SET
+     * NULL` because the job is history once pruned, while the notification the
+     * user received stays true.
+     */
+    codingJobId: string | null;
     createdAt: string;
     deliveredAt: string | null;
     /** When the notification reached a terminal state. */
@@ -562,6 +579,11 @@ export interface CreateNotificationInput {
     dedupeKey?: string | null;
     /** The job this notification is about (#90 phase 5), when there is one. */
     jobId?: string | null;
+    /**
+     * The coding job an answer resumes (#94), when this notification asks the
+     * user a question. `jobId` is the scheduler's table; this is the sandbox's.
+     */
+    codingJobId?: string | null;
 }
 
 /**
@@ -584,6 +606,26 @@ export interface NotificationLedger {
     ): AppNotification;
     /** One notification, or `null` when it is missing or another user's. */
     getNotification(userId: number, id: string): AppNotification | null;
+    /**
+     * Retires the unsettled question notifications linked to a coding job
+     * (#94), as `read`.
+     *
+     * The job resuming is what makes the question moot, and it may have been
+     * answered outside the REST route (a GitHub comment, the chat tool). The
+     * route's own row is excluded so it can keep the answer text.
+     *
+     * @param userId - The job's owner.
+     * @param codingJobId - The job that resumed.
+     * @param exceptId - A notification id to leave untouched, or `null`.
+     * @param at - The settlement instant.
+     * @returns How many rows changed.
+     */
+    settleCodingQuestionNotifications(
+        userId: number,
+        codingJobId: string,
+        exceptId: string | null,
+        at: string,
+    ): number;
     /**
      * A user's notifications, newest first. `limit` caps the page.
      *
@@ -1171,6 +1213,21 @@ export interface AppCodingJob {
     /** The agent's plan, posted with the questions or carried into the PR. */
     plan: string | null;
     /**
+     * The chat session that started this job (#94), when a chat tool did.
+     *
+     * The in-session ask relay reads it: a parked job's questions are only
+     * relevant to the conversation that asked for the work. A job started from
+     * the API or a scheduler has no session, and its questions reach the user
+     * through the notification instead.
+     */
+    sessionId: string | null;
+    /**
+     * The questions the agent is parked on (#94), or `null` when it is not
+     * awaiting an answer. Stored at park time because the workspace may be
+     * swept and the relay must not read a job's files on every turn.
+     */
+    questions: string[] | null;
+    /**
      * The newest comment this job has accounted for (#94).
      *
      * For an awaiting job it is the question comment; for a PR follow-up it is
@@ -1211,6 +1268,11 @@ export interface CreateCodingJobInput {
     lastSeenCommentId?: number | null;
     /** Omitted means `prune` — the column's default, made explicit here. */
     crashPolicy?: CodingJobCrashPolicy;
+    /**
+     * The chat session that asked for the job (#94), when a chat tool did.
+     * The in-session ask relay keys on it.
+     */
+    sessionId?: string | null;
 }
 
 /** What a settled coding job records beyond its state. */
@@ -1309,6 +1371,30 @@ export interface CodingJobLedger {
     ): AppCodingJob | null;
     /** Every `awaiting-answer` job across users — the poller's feed. */
     listAwaitingCodingJobs(limit: number): AppCodingJob[];
+    /**
+     * The parked jobs started from one chat session (#94), oldest first.
+     *
+     * The in-session ask relay reads this before a turn: only the conversation
+     * that asked for the work is told the job is waiting.
+     *
+     * @param userId - The session's owner; a foreign session matches nothing.
+     * @param sessionId - The chat session (the graph's thread id).
+     * @param limit - A bound on how many parked jobs one turn is told about.
+     * @returns The rows, each with its stored `questions`.
+     */
+    listAwaitingCodingJobsBySession(
+        userId: number,
+        sessionId: string,
+        limit: number,
+    ): AppCodingJob[];
+    /**
+     * Records the questions a job parked on (#94).
+     *
+     * @param id - The job.
+     * @param questions - The agent's questions, already bounded by the
+     * supervisor's artifact reader.
+     */
+    setCodingJobQuestions(id: string, questions: readonly string[]): void;
     /**
      * Recent jobs that name a pull request, newest first — the PR-feedback
      * feed (#94). The caller dedupes by URL: the first row for a PR is its
@@ -1483,6 +1569,7 @@ interface NotificationRow {
     dedupeKey: string | null;
     answer: string | null;
     jobId: string | null;
+    codingJobId: string | null;
     createdAt: string;
     deliveredAt: string | null;
     settledAt: string | null;
@@ -1492,7 +1579,7 @@ interface NotificationRow {
  * The notification SELECT list, shared by every read so a new column cannot
  * reach one query and miss another (`mapNotification` is the other half).
  */
-const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, job_id AS jobId, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, job_id AS jobId, coding_job_id AS codingJobId, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
 
 /** A `jobs` table row as the SELECTs alias it (see {@link mapJob}). */
 interface JobRow {
@@ -1561,10 +1648,12 @@ interface CodingJobRow {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    sessionId: string | null;
+    questionsJson: string | null;
 }
 
 /** The coding-job SELECT list (`mapCodingJob` is the other half). */
-const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, model, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, issue_number AS issueNumber, question_comment_id AS questionCommentId, plan, last_seen_comment_id AS lastSeenCommentId, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt FROM coding_jobs`;
+const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, model, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, issue_number AS issueNumber, question_comment_id AS questionCommentId, plan, last_seen_comment_id AS lastSeenCommentId, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, session_id AS sessionId, questions_json AS questionsJson FROM coding_jobs`;
 
 /** The states a coding job never returns from. */
 const SETTLED_CODING_JOB_STATES = `('ok', 'failed', 'cancelled')`;
@@ -1634,6 +1723,7 @@ function mapNotification(row: NotificationRow): AppNotification {
         dedupeKey: row.dedupeKey,
         answer: row.answer,
         jobId: row.jobId,
+        codingJobId: row.codingJobId,
         createdAt: row.createdAt,
         deliveredAt: row.deliveredAt,
         settledAt: row.settledAt,
@@ -1702,6 +1792,35 @@ function mapJobRun(row: JobRunRow): AppJobRun {
     };
 }
 
+/**
+ * Parses a coding job's stored questions (#94).
+ *
+ * A row is written only from a validated artifact, so the array is the normal
+ * shape. A corrupt value degrades to `null` (not `[]`) — "the questions are
+ * unreadable" is different from "there were none", and the relay must not tell
+ * the agent a job is waiting on nothing.
+ *
+ * @param value - The stored JSON, or `null`.
+ * @returns The question strings, or `null` when there is no readable list.
+ */
+function parseQuestions(value: string | null): string[] | null {
+    if (value === null) {
+        return null;
+    }
+    try {
+        const parsed: unknown = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+            return null;
+        }
+        const questions = parsed.filter(
+            (entry): entry is string => typeof entry === "string",
+        );
+        return questions.length > 0 ? questions : null;
+    } catch {
+        return null;
+    }
+}
+
 /** Maps a `coding_jobs` row onto the ledger's public shape. */
 function mapCodingJob(row: CodingJobRow): AppCodingJob {
     return {
@@ -1727,6 +1846,8 @@ function mapCodingJob(row: CodingJobRow): AppCodingJob {
         createdAt: row.createdAt,
         startedAt: row.startedAt,
         finishedAt: row.finishedAt,
+        sessionId: row.sessionId,
+        questions: parseQuestions(row.questionsJson),
     };
 }
 
@@ -2252,7 +2373,12 @@ ${JOB_INDEXES}`);
             // outcome this step must not produce.
             const rebuild = db.transaction((): void => {
                 report = repairNotificationReferences(db);
-                db.exec(`${notificationsTable("notifications_v12")};
+                db.exec(`${notificationsTable("notifications_v12", {
+                    // v12 predates coding_jobs (#94): a FK to a table that
+                    // does not exist yet makes the copy fail under
+                    // `foreign_keys=ON`. v20 adds the column once it does.
+                    codingJobLink: false,
+                })};
 INSERT INTO notifications_v12 (
     id, user_id, kind, class, priority, title, body, state, requires_answer,
     dedupe_key, answer, created_at, delivered_at, settled_at, job_id
@@ -2406,7 +2532,9 @@ CREATE INDEX IF NOT EXISTS idx_job_runs_job
             };
             const rebuild = db.transaction((): void => {
                 report = purgeDismissedNotifications(db);
-                db.exec(`${notificationsTable("notifications_v16")};
+                db.exec(`${notificationsTable("notifications_v16", {
+                    codingJobLink: false,
+                })};
 INSERT INTO notifications_v16 (
     id, user_id, kind, class, priority, title, body, state, requires_answer,
     dedupe_key, answer, created_at, delivered_at, settled_at, job_id
@@ -2484,6 +2612,26 @@ ${CODING_JOB_INDEXES}`);
         }
         db.pragma("user_version = 19");
     }
+
+    if (version < 20) {
+        // v20: the answerable ask (#94). A notification that asks a question
+        // names the coding job the answer resumes, and a job remembers the
+        // chat session that asked for it plus the questions it parked on.
+        // Additive like the other ALTERs — every existing row means "no link",
+        // which is exactly true.
+        if (!hasColumn(db, "notifications", "coding_job_id")) {
+            db.exec(
+                "ALTER TABLE notifications ADD COLUMN coding_job_id TEXT REFERENCES coding_jobs(id) ON DELETE SET NULL",
+            );
+        }
+        if (!hasColumn(db, "coding_jobs", "session_id")) {
+            db.exec("ALTER TABLE coding_jobs ADD COLUMN session_id TEXT");
+        }
+        if (!hasColumn(db, "coding_jobs", "questions_json")) {
+            db.exec("ALTER TABLE coding_jobs ADD COLUMN questions_json TEXT");
+        }
+        db.pragma("user_version = 20");
+    }
 }
 
 export function openAppDatabase(
@@ -2539,6 +2687,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectNotification: Database.Statement;
         selectNotifications: Database.Statement;
         deleteNotification: Database.Statement;
+        settleCodingQuestionNotifications: Database.Statement;
         selectNotificationsForJob: Database.Statement;
         countUnreadNotifications: Database.Statement;
         settleNotification: Database.Statement;
@@ -2573,9 +2722,11 @@ export class SqliteAppDatabase implements AppDatabase {
         selectCodingJobsWithSettled: Database.Statement;
         selectRunningCodingJobs: Database.Statement;
         selectAwaitingCodingJobs: Database.Statement;
+        selectAwaitingCodingJobsBySession: Database.Statement;
         selectCodingJobsWithPr: Database.Statement;
         awaitCodingJob: Database.Statement;
         reopenCodingJob: Database.Statement;
+        setCodingJobQuestions: Database.Statement;
         claimCodingJob: Database.Statement;
         settleCodingJob: Database.Statement;
         cancelCodingJob: Database.Statement;
@@ -2714,7 +2865,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
             insertNotification: db.prepare(
-                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, job_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, job_id, coding_job_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
             ),
             selectNotification: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -2726,6 +2877,12 @@ export class SqliteAppDatabase implements AppDatabase {
             // "include the dismissed ones" read: a row is either there or gone.
             deleteNotification: db.prepare(
                 "DELETE FROM notifications WHERE user_id = ? AND id = ?",
+            ),
+            // A coding job that resumed has moved past its question (#94).
+            // `exceptId` lets the REST answer keep its own row so the route can
+            // store the answer text on it.
+            settleCodingQuestionNotifications: db.prepare(
+                "UPDATE notifications SET state = 'read', settled_at = ? WHERE user_id = ? AND coding_job_id = ? AND requires_answer = 1 AND state IN ('pending', 'delivered') AND (? IS NULL OR id != ?)",
             ),
             // The announcements a job produced (#90 phase 6c). A job announces
             // once per run, so this is normally one row — but "normally one" is
@@ -2870,7 +3027,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 `DELETE FROM job_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM job_runs WHERE job_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?)`,
             ),
             insertCodingJob: db.prepare(
-                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, pr_url, issue_number, last_seen_comment_id, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO coding_jobs (id, user_id, repo, branch, prompt, state, crash_policy, workspace_path, model, pr_url, issue_number, last_seen_comment_id, created_at, session_id) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
             ),
             selectCodingJob: db.prepare(
                 `${CODING_JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -2895,6 +3052,11 @@ export class SqliteAppDatabase implements AppDatabase {
             selectAwaitingCodingJobs: db.prepare(
                 `${CODING_JOB_COLUMNS} WHERE state = 'awaiting-answer' ORDER BY created_at ASC, rowid ASC LIMIT ?`,
             ),
+            // The in-session ask relay (#94): the parked jobs that belong to
+            // this conversation, so a turn can carry their questions.
+            selectAwaitingCodingJobsBySession: db.prepare(
+                `${CODING_JOB_COLUMNS} WHERE user_id = ? AND session_id = ? AND state = 'awaiting-answer' ORDER BY created_at ASC, rowid ASC LIMIT ?`,
+            ),
             // The PR-feedback feed (#94): newest first, so the first row for a
             // URL is the latest attempt and its watermark is authoritative.
             selectCodingJobsWithPr: db.prepare(
@@ -2909,7 +3071,13 @@ export class SqliteAppDatabase implements AppDatabase {
             // the row out of `awaiting-answer`, and the next claim starts the
             // container. Clear the previous attempt's fields.
             reopenCodingJob: db.prepare(
-                "UPDATE coding_jobs SET state = 'queued', container_id = NULL, started_at = NULL, finished_at = NULL, last_error = NULL, last_seen_comment_id = COALESCE(?, last_seen_comment_id) WHERE id = ? AND state = 'awaiting-answer'",
+                "UPDATE coding_jobs SET state = 'queued', container_id = NULL, started_at = NULL, finished_at = NULL, last_error = NULL, last_seen_comment_id = COALESCE(?, last_seen_comment_id), questions_json = NULL WHERE id = ? AND state = 'awaiting-answer'",
+            ),
+            // The questions are stored when the job parks (#94): the workspace
+            // is the only other copy and the relay must not read files on a
+            // turn. Reopening clears them, so a stale set cannot be relayed.
+            setCodingJobQuestions: db.prepare(
+                "UPDATE coding_jobs SET questions_json = ? WHERE id = ?",
             ),
             // The claim *is* the transition, as for a scheduled job: `queued`
             // in the WHERE clause makes a second claimant touch no row. The
@@ -3295,6 +3463,7 @@ export class SqliteAppDatabase implements AppDatabase {
             input.requiresAnswer === true ? 1 : 0,
             input.dedupeKey ?? null,
             input.jobId ?? null,
+            input.codingJobId ?? null,
             input.createdAt,
         );
         // The row was just written, so a re-read cannot miss; the assertion
@@ -3310,6 +3479,21 @@ export class SqliteAppDatabase implements AppDatabase {
         const row = this.statements.selectNotification.get(userId, id) as
             NotificationRow | undefined;
         return row ? mapNotification(row) : null;
+    }
+
+    settleCodingQuestionNotifications(
+        userId: number,
+        codingJobId: string,
+        exceptId: string | null,
+        at: string,
+    ): number {
+        return this.statements.settleCodingQuestionNotifications.run(
+            at,
+            userId,
+            codingJobId,
+            exceptId,
+            exceptId,
+        ).changes;
     }
 
     listNotifications(
@@ -3583,6 +3767,7 @@ export class SqliteAppDatabase implements AppDatabase {
             input.issueNumber ?? null,
             input.lastSeenCommentId ?? null,
             input.createdAt,
+            input.sessionId ?? null,
         );
         // Just written, so a re-read cannot miss; the assertion documents that
         // rather than papering over a null with a fake row.
@@ -3629,6 +3814,26 @@ export class SqliteAppDatabase implements AppDatabase {
             Math.max(1, limit),
         ) as CodingJobRow[];
         return rows.map(mapCodingJob);
+    }
+
+    listAwaitingCodingJobsBySession(
+        userId: number,
+        sessionId: string,
+        limit: number,
+    ): AppCodingJob[] {
+        const rows = this.statements.selectAwaitingCodingJobsBySession.all(
+            userId,
+            sessionId,
+            Math.max(1, limit),
+        ) as CodingJobRow[];
+        return rows.map(mapCodingJob);
+    }
+
+    setCodingJobQuestions(id: string, questions: readonly string[]): void {
+        this.statements.setCodingJobQuestions.run(
+            questions.length > 0 ? JSON.stringify(questions) : null,
+            id,
+        );
     }
 
     listCodingJobsWithPr(limit: number): AppCodingJob[] {

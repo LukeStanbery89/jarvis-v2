@@ -46,10 +46,19 @@ const JOB: AppCodingJob = {
     createdAt: "2026-10-19T12:00:00.000Z",
     startedAt: "2026-10-19T12:00:01.000Z",
     finishedAt: null,
+    sessionId: null,
+    questions: null,
 };
 
 const OWNER_RUNTIME = {
-    configurable: { sessionId: "s1", clientIp: "10.0.0.1", userId: 7 },
+    configurable: {
+        sessionId: "s1",
+        // The graph's thread id is the chat session (#94); the tool forwards it
+        // so a parked job can relay its questions into the conversation.
+        thread_id: "ses_thread",
+        clientIp: "10.0.0.1",
+        userId: 7,
+    },
 };
 const GUEST_RUNTIME = {
     configurable: { sessionId: "s1", clientIp: "10.0.0.1" },
@@ -296,6 +305,7 @@ describe("startCodingJob", () => {
                 repo: "luke/app",
                 task: "Fix the login bug",
                 crashPolicy: "resume",
+                sessionId: "ses_thread",
             },
         ]);
     });
@@ -312,6 +322,7 @@ describe("startCodingJob", () => {
             repo: "luke/app",
             task: "Fix the login bug",
             pullRequest: 165,
+            sessionId: "ses_thread",
         });
     });
 
