@@ -152,7 +152,9 @@ labels** switch is the rail's own: off, the words are hidden and the column fall
 back to the 2.5 rem icon squares, while the bar's links (60–80 rem), the
 hamburger (under 60 rem) and the drawer keep their words — exactly one set of
 destinations is visible at every width, and only the wide-screen one responds to
-the switch.
+the switch. The switch itself follows the rail's breakpoint: below 80 rem, where
+the rail is absent, the settings panel hides it (`.settings-nav-labels`) rather
+than offering a control that changes nothing.
 
 The sign-in gate is the same box: `Login` renders it as `.app.gate` and reads
 this browser's appearance itself, so the field and the glass reach the first
@@ -742,7 +744,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/hooks/useJobs.ts` — the caller's jobs: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives. The read asks for settled rows too (`includeSettled`, the server's maximum page — its page is newest-created first, so a settled-only read is not expressible, and retention caps a user's table below the limit), and `jobs.ts`'s `splitJobs` divides it into what is owed and what is history, so a page gets both without a second request. The hook is also where a create or an edit happens (#90 phase 7): `create`/`update` return the server's `{job, quiet}` or its refusal in its own words, for the form that is still open behind the dialog.
 - `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and the hamburger drawer under 60rem — its own measured breakpoint, where the links and the gear become drawer items.
 - `src/views/app/IconRail.tsx` — the wide-screen navigation rail: the same destinations as a column from 80rem, each an icon beside its word (or the icon alone when **Navigation labels** is off), with the unread badge on the icon's corner and Admin past a hairline. Every item carries an `aria-label` and a `title` as well, so the icon-only mode is still named.
-- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which, and an **Appearance** group holding the three per-browser switches — background particles, frosted glass, and navigation labels. The gear in the bar opens it from any page (#90 phase 6d).
+- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which, and an **Appearance** group holding the three per-browser switches — background particles, frosted glass, and navigation labels (hidden below the rail's 80 rem breakpoint, where it would drive nothing). The gear in the bar opens it from any page (#90 phase 6d).
 - `src/views/app/TimerRing.tsx` — the ring a fired `timer` gets (#90 phase 4): a modal `<dialog>` with **Stop** as its one exit, so it covers anything else in the top layer without a z-index race.
 - `src/views/app/Toast.tsx` — the floating notification **stack** (up to `TOAST_LIMIT` cards, newest first): the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
 - `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app) whose colon blinks once a second (`clockParts` + a CSS animation, off under `prefers-reduced-motion`), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.

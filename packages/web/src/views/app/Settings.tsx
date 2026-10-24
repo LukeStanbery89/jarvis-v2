@@ -11,7 +11,9 @@
  * its own heading: "This browser" is about permissions and hardware, and
  * switches that change what the app looks like would be lost at the bottom of
  * it. Its hint still states the storage rule, because the group no longer sits
- * under a heading that implies it.
+ * under a heading that implies it. One of its switches — navigation labels —
+ * only means anything on a display wide enough for the left rail, so it is
+ * hidden below the rail's own breakpoint rather than offered as a dead control.
  *
  * Presentational, like `Sidebar.tsx`: state comes in as props, changes go out
  * as callbacks. The one exception is the quiet-hours fields, which are a draft
@@ -420,7 +422,11 @@ export function Settings(props: SettingsProps) {
                         : "Panes are solid — cheaper to draw on a slow machine."}
                 </p>
 
-                <label className="settings-row">
+                {/* The switch is the wide-screen rail's own, and the rail is
+                    `display: none` below 80 rem, so below that it would do
+                    nothing. The `settings-nav-labels` class on both the row and
+                    the note hides them at the rail's breakpoint. */}
+                <label className="settings-row settings-nav-labels">
                     <input
                         type="checkbox"
                         checked={navLabelsOn}
@@ -428,7 +434,7 @@ export function Settings(props: SettingsProps) {
                     />
                     <span>Navigation labels</span>
                 </label>
-                <p className="settings-note">
+                <p className="settings-note settings-nav-labels">
                     {navLabelsOn
                         ? "On wide screens, the left menu spells out its pages."
                         : "On wide screens, the left menu shows icons alone."}

@@ -538,6 +538,19 @@ textarea::placeholder {
 }
 
 /*
+ * The rail's own switch is hidden while the rail is (#177 review). Below 80 rem
+ * the rail is `display: none`, so the Navigation labels control would change
+ * nothing a user can see — a dead switch, which is worse than an absent one.
+ * This is the exact complement of the rail's `min-width: 80rem`, so the control
+ * and the rail appear and disappear together, with no gap or overlap at 80 rem.
+ */
+@media (max-width: 79.999rem) {
+    .settings-nav-labels {
+        display: none;
+    }
+}
+
+/*
  * The bar's own breakpoint (#146 phase D): measured, not inherited from the
  * shell's 48 rem.
  *

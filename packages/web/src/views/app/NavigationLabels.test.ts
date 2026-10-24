@@ -9,8 +9,9 @@
  * panel that never grows the switch.
  *
  * The stylesheet is the third leg — it hides only `.rail-link-label`, so the bar,
- * the drawer and the hamburger keep their words — and lives in `styles.css`
- * rather than here.
+ * the drawer and the hamburger keep their words, and hides `.settings-nav-labels`
+ * below the rail's own 80 rem breakpoint, so the switch is not offered where the
+ * rail it controls is absent. Both live in `styles.css` rather than here.
  */
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
@@ -150,5 +151,16 @@ describe("the Appearance settings", () => {
             createElement(Settings, settings({ navLabelsOn: false })),
         );
         expect(off).toContain("left menu shows icons alone");
+    });
+
+    it("marks the switch for hiding below the rail's breakpoint", () => {
+        // The rail is `display: none` below 80 rem, so the control is inert
+        // there (#177 review). Both the row and its note carry the class the
+        // stylesheet hides at that breakpoint; a node render cannot evaluate a
+        // media query, so this proves the hook the rule keys on.
+        const html = renderToStaticMarkup(createElement(Settings, settings()));
+
+        expect(html).toContain('class="settings-row settings-nav-labels"');
+        expect(html).toContain('class="settings-note settings-nav-labels"');
     });
 });
