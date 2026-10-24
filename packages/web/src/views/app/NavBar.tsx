@@ -26,28 +26,46 @@
  * a share that is not delivering, and a voice session that failed. Phase 6d
  * brought the last three here with the gear, because the microphone and the
  * location share are the app's now and every page is a place they can be live.
+ *
+ * The **Navigation labels** preference drops the words from the bar's links —
+ * the rail's own icon-only shape, in the bar — while `aria-label` and `title`
+ * keep every destination named for a screen reader and a pointer. The bar reads
+ * it as `data-nav-labels`, so the flip is one attribute the stylesheet reads;
+ * the rule is scoped to `.navbar-links`, so the drawer under 60 rem and the rail
+ * above 80 rem keep their words.
  */
 import { useEffect, useRef, useState } from "react";
 import {
+    Bell,
+    BellRing,
     ExternalLink,
     MapPin,
     Menu,
     MessagesSquare,
     Mic,
     Settings as SettingsIcon,
+    Timer,
     X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { AppLink } from "../../AppLink";
 import { useRoute } from "../../hooks/useRoute";
 import type { ChatStatus } from "../../ChatClient";
 import type { AppRoute } from "../../router";
 
+/** One bar destination: its route, its word, and its icon. */
+interface NavLink {
+    to: AppRoute;
+    label: string;
+    Icon: LucideIcon;
+}
+
 /** The pages the bar lists, in order (home is the wordmark). */
-const LINKS: { to: AppRoute; label: string }[] = [
-    { to: "chat", label: "Chat" },
-    { to: "timers", label: "Timers" },
-    { to: "reminders", label: "Reminders" },
-    { to: "notifications", label: "Notifications" },
+const LINKS: NavLink[] = [
+    { to: "chat", label: "Chat", Icon: MessagesSquare },
+    { to: "timers", label: "Timers", Icon: Timer },
+    { to: "reminders", label: "Reminders", Icon: BellRing },
+    { to: "notifications", label: "Notifications", Icon: Bell },
 ];
 
 /**
@@ -104,6 +122,8 @@ export interface NavBarProps {
     locationHint: string | null;
     /** The full sentence behind the hint (its tooltip). */
     locationSentence: string;
+    /** Whether the links show their text labels (the appearance switch). */
+    navLabels: boolean;
 }
 
 /**
@@ -228,6 +248,7 @@ export function NavBar({
     voiceError,
     locationHint,
     locationSentence,
+    navLabels,
 }: NavBarProps) {
     const route = useRoute();
     const [menuOpen, setMenuOpen] = useState(false);
@@ -266,16 +287,34 @@ export function NavBar({
         };
     }, [menuOpen]);
 
-    /** One page link, in whichever of the two lists is asking. */
-    function link(to: AppRoute, label: string, className: string) {
+    /**
+     * One page link, in whichever of the two lists is asking.
+     *
+     * The icon and the `aria-label`/`title` belong to the bar (`withIcon`): the
+     * bar is where CSS can hide the visible word, and a word hidden with
+     * `display: none` leaves the accessibility tree, so `aria-label` has to
+     * carry the destination's name. The drawer's rows stay plain text — the
+     * Navigation labels switch is the bar's alone.
+     */
+    function link(entry: NavLink, className: string, withIcon = false) {
+        const { to, label, Icon } = entry;
         return (
             <AppLink
                 key={to}
                 to={to}
                 className={className}
                 current={route === to}
+                label={withIcon ? label : undefined}
+                title={withIcon ? label : undefined}
             >
-                {label}
+                {withIcon && (
+                    <Icon
+                        size={16}
+                        className="navbar-link-icon"
+                        aria-hidden="true"
+                    />
+                )}
+                <span className="navbar-link-label">{label}</span>
                 {/* The count rides the Notifications link, wherever it shows.
                     While the drawer is open the hamburger's own badge is still
                     visible; that is the same number twice, not a second fact. */}
@@ -287,7 +326,11 @@ export function NavBar({
     }
 
     return (
-        <header className="navbar" ref={barRef}>
+        <header
+            className="navbar"
+            ref={barRef}
+            data-nav-labels={navLabels ? "on" : "off"}
+        >
             {/* The thread drawer's control (#146 phase D). It lives at the
                 bar's start, where the wordmark is on wide screens — the drawer
                 only exists under 48rem, so the button does too (the stylesheet
@@ -310,9 +353,7 @@ export function NavBar({
                 JARVIS
             </AppLink>
             <nav className="navbar-links" aria-label="Pages">
-                {LINKS.map((entry) =>
-                    link(entry.to, entry.label, "navbar-link"),
-                )}
+                {LINKS.map((entry) => link(entry, "navbar-link", true))}
                 {/* A hairline, because Admin is a different kind of
                     destination: everything above it swaps a view, this leaves
                     the app. */}
@@ -320,9 +361,10 @@ export function NavBar({
                 <a
                     className="navbar-link navbar-external"
                     href={ADMIN_HREF}
+                    aria-label="Admin"
                     title="Admin portal — a separate app"
                 >
-                    Admin
+                    <span className="navbar-link-label">Admin</span>
                     <ExternalLink size={11} aria-hidden="true" />
                 </a>
             </nav>
@@ -376,7 +418,7 @@ export function NavBar({
                     <p className="navbar-drawer-user">{username}</p>
                     <nav className="navbar-drawer-links" aria-label="Pages">
                         {LINKS.map((entry) =>
-                            link(entry.to, entry.label, "navbar-drawer-link"),
+                            link(entry, "navbar-drawer-link"),
                         )}
                     </nav>
                     {/* Settings is the bar's gear on wide screens; at this width

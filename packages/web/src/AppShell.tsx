@@ -127,9 +127,9 @@ export function AppShell({
     const threads = useThreads(credential.username);
     const audio = useAudio();
     /**
-     * This browser's visual preferences (#146 phase B2): whether the field is
-     * mounted, and whether the panes blur. Per browser rather than per account
-     * — see `appearance.ts` for why.
+     * This browser's visual preferences (#146 phases B2, D): whether the field
+     * is mounted, whether the panes blur, and whether the bar's links show their
+     * labels. Per browser rather than per account — see `appearance.ts` for why.
      */
     const appearance = useAppearance();
 
@@ -539,6 +539,7 @@ export function AppShell({
                 voiceError={voice.voiceErrorText}
                 locationHint={locationHint}
                 locationSentence={describeLocationState(location.locationState)}
+                navLabels={appearance.appearance.navLabels}
             />
             {/* The wide-screen rail (#146 phase D): the same destinations as the
                 bar's links, as a column, where the display has the width to
@@ -590,6 +591,10 @@ export function AppShell({
                 glassOn={appearance.appearance.glass}
                 onToggleGlass={() =>
                     appearance.setGlass(!appearance.appearance.glass)
+                }
+                navLabelsOn={appearance.appearance.navLabels}
+                onToggleNavLabels={() =>
+                    appearance.setNavLabels(!appearance.appearance.navLabels)
                 }
                 onSignOut={() => {
                     socket.client?.close();

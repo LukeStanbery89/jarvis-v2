@@ -1,5 +1,5 @@
 /**
- * The two appearance preferences this browser owns (#146 phase B2).
+ * The appearance preferences this browser owns (#146 phases B2, D).
  *
  * They are per-browser, not per-account: a busy background on a phone and a
  * quiet one on a wall display are facts about the device, and syncing them
@@ -9,18 +9,21 @@
  * throws leaves the default in place rather than breaking the panel).
  */
 
-/** The effects the settings panel can switch off. */
+/** The appearances the settings panel can switch. */
 export interface Appearance {
     /** The particle field behind the app. */
     particles: boolean;
     /** Frosted glass on panes; off leaves solid panes in the same layout. */
     glass: boolean;
+    /** Text labels on the top bar's links; off leaves the icons alone. */
+    navLabels: boolean;
 }
 
-/** Both effects on — the design as built. */
+/** Every effect on — the design as built. */
 export const DEFAULT_APPEARANCE: Appearance = {
     particles: true,
     glass: true,
+    navLabels: true,
 };
 
 /** The `localStorage` leaf; one key for the browser, not per user. */
@@ -65,6 +68,7 @@ export function parseAppearance(raw: string | null): Appearance {
         return {
             particles: flag(record, "particles"),
             glass: flag(record, "glass"),
+            navLabels: flag(record, "navLabels"),
         };
     } catch {
         return DEFAULT_APPEARANCE;
