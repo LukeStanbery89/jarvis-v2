@@ -266,6 +266,23 @@ describe("the broker", () => {
         expect(fixture.hits).toHaveLength(0);
     });
 
+    it("supplies the session header the Go endpoint requires when the job omits it", async () => {
+        const fixture = await makeProxy();
+        const token = deriveJobToken(SECRET, "job-1");
+
+        const response = await fetch(`${fixture.proxyUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${token}`,
+                "content-type": "application/json",
+            },
+            body: chatBody(),
+        });
+
+        expect(response.status).toBe(200);
+        expect(fixture.hits[0]?.headers["x-opencode-session"]).toBe("job-1");
+    });
+
     it("refuses a model the job was not given", async () => {
         const fixture = await makeProxy();
         const response = await chat(
