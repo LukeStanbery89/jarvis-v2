@@ -20,6 +20,11 @@ import { tool, type ToolRuntime } from "@langchain/core/tools";
 import type { AppCodingJob } from "@lukestanbery/jarvis-auth";
 import { z } from "zod";
 import { parseCommentRef } from "../../github/comment";
+import {
+    issueRefFromPrompt,
+    parseIssueRef,
+    type IssueRef,
+} from "../../github/issue";
 import { logger } from "../../logger";
 import type { CodingJobService } from "../../sandbox/service";
 import { requireSignedInUser } from "./metering";
@@ -51,15 +56,13 @@ const schema = z.object({
         .string()
         .optional()
         .describe(
-            "What to do, in the user's own words. The agent sees this sentence and works in a clone of the repository. Omit it when the request is simply to implement the issue named by `issue` or to address the review on `pullRequest`.",
+            "What to do, in the user's own words. The agent sees this sentence and works in a clone of the repository. Omit it when the request is simply to implement the issue named by `issue` or to address the review on `pullRequest`. Never paraphrase an issue into this field when the user shared or named one — pass `issue` instead.",
         ),
-    issue: z.coerce
-        .number()
-        .int()
-        .positive()
+    issue: z
+        .union([z.number().int().positive(), z.string().min(1)])
         .optional()
         .describe(
-            "Implement this GitHub issue: the job reads it and gives the agent its title, description and URL. Use it for 'implement issue #N' rather than pasting a long body into `task`. Do not also pass `pullRequest`.",
+            "Implement this GitHub issue: its number (`157`), `#157`, or its URL (`https://github.com/owner/name/issues/157`). The job reads it and gives the agent its title, description and URL, and the pull request closes it. Use it for a shared issue or 'implement issue #N' rather than pasting a summary into `task`. Do not also pass `pullRequest`.",
         ),
     replyTo: z
         .string()
@@ -176,6 +179,38 @@ function sessionIdFrom(runtime: ToolRuntime): string | null {
     return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/**
+ * The issue a message shared this turn (#140), when one was unambiguous.
+ *
+ * `agent.ts` writes this after reading the user's prompt; validating it here
+ * keeps a tool invoked outside the graph (a test, a future direct call) from
+ * trusting an arbitrary shape.
+ *
+ * @param runtime - The LangChain tool runtime.
+ * @returns The shared issue, or `null`.
+ */
+function sharedIssueFrom(runtime: ToolRuntime): IssueRef | null {
+    const configurable = runtime.configurable as
+        { sharedIssue?: unknown } | undefined;
+    const value = configurable?.sharedIssue;
+    if (typeof value !== "object" || value === null) {
+        return null;
+    }
+    const number = (value as { number?: unknown }).number;
+    const repo = (value as { repo?: unknown }).repo;
+    if (
+        typeof number !== "number" ||
+        !Number.isSafeInteger(number) ||
+        number <= 0
+    ) {
+        return null;
+    }
+    return {
+        number,
+        ...(typeof repo === "string" && repo.length > 0 ? { repo } : {}),
+    };
+}
+
 /** A pull request reference: always a number, plus the repo a URL named. */
 export interface PullRequestRef {
     number: number;
@@ -256,18 +291,53 @@ export function createCodingTool(deps: CodingToolDeps) {
             if (replyRef !== null && ref === null) {
                 return REFUSAL["reply-without-pull-request"];
             }
-            if (input.issue !== undefined && ref !== null) {
+            const explicitIssue =
+                input.issue === undefined ? null : parseIssueRef(input.issue);
+            if (input.issue !== undefined && explicitIssue === null) {
+                return "I could not read that issue reference; give me its number, `#157`, or its GitHub URL.";
+            }
+            if (explicitIssue !== null && ref !== null) {
                 return REFUSAL["issue-and-pull-request"];
             }
+            if (
+                explicitIssue?.repo !== undefined &&
+                input.repo !== undefined &&
+                input.repo.trim().length > 0 &&
+                input.repo.trim() !== explicitIssue.repo
+            ) {
+                return "The issue URL names a different repository than `repo`; pass the issue from the repository you are working in, or omit `repo`.";
+            }
+
             // "Implement issue #140" names no task; the issue is the task.
             // The service composes the prompt from it, so the relay model
             // never has to copy a long description into an argument.
             const requested = input.task?.trim() ?? "";
+            // A small relay sometimes summarizes a shared issue into `task`
+            // instead of passing it. The issue URL is still in that task or in
+            // the user's message, and those references keep the job's context
+            // and the pull request's closing link intact.
+            const fromTask = issueRefFromPrompt(requested);
+            const fromPrompt =
+                ref === null && explicitIssue === null
+                    ? (fromTask ?? sharedIssueFrom(runtime))
+                    : null;
+            const issue =
+                explicitIssue ??
+                (fromPrompt !== null &&
+                (input.repo === undefined ||
+                    input.repo.trim().length === 0 ||
+                    fromPrompt.repo === undefined ||
+                    input.repo.trim() === fromPrompt.repo)
+                    ? fromPrompt
+                    : null);
+            if (issue !== null && ref !== null) {
+                return REFUSAL["issue-and-pull-request"];
+            }
             const task =
                 requested.length > 0
                     ? requested
-                    : input.issue !== undefined
-                      ? `Implement issue #${input.issue}.`
+                    : issue !== null
+                      ? `Implement issue #${issue.number}.`
                       : ref !== null
                         ? "Address the review comments."
                         : "";
@@ -279,9 +349,11 @@ export function createCodingTool(deps: CodingToolDeps) {
                     ? input.repo.trim()
                     : ref?.repo !== undefined
                       ? ref.repo
-                      : deps.repos.length === 1
-                        ? deps.repos[0]
-                        : undefined;
+                      : issue?.repo !== undefined
+                        ? issue.repo
+                        : deps.repos.length === 1
+                          ? deps.repos[0]
+                          : undefined;
             if (repo === undefined) {
                 return deps.repos.length === 0
                     ? "No repository is allowed for coding jobs, so there is nowhere to work."
@@ -300,9 +372,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                         : {}),
                     ...(ref !== null ? { pullRequest: ref.number } : {}),
                     ...(replyRef !== null ? { replyTo: replyRef } : {}),
-                    ...(input.issue !== undefined
-                        ? { issue: input.issue }
-                        : {}),
+                    ...(issue !== null ? { issue: issue.number } : {}),
                 });
                 if (!result.ok) {
                     const allowed =
@@ -316,8 +386,8 @@ export function createCodingTool(deps: CodingToolDeps) {
                     `Started coding job ${result.job.id} in ${result.job.repo} on branch ${result.job.branch}${
                         ref !== null
                             ? ` (continuing pull request #${ref.number})`
-                            : input.issue !== undefined
-                              ? ` (implementing issue #${input.issue})`
+                            : issue !== null
+                              ? ` (implementing issue #${issue.number})`
                               : ""
                     }.`,
                     result.job.crashPolicy === "resume"
@@ -338,7 +408,7 @@ export function createCodingTool(deps: CodingToolDeps) {
                 "Start a sandboxed coding agent on an allowlisted repository. " +
                 "Use when the user asks for any change to the repository's files — code, documentation, comments, configuration, or assets — or explicitly asks to start a coding job; a one-line edit still counts. " +
                 "To continue an open pull request (address its review comments, revise it), pass `pullRequest`; the job works on that PR's branch and pushes back to it. " +
-                "To implement a GitHub issue, pass `issue` with its number; the job reads the issue itself, so do not paste its body into the task. " +
+                "To implement a GitHub issue, pass `issue` with its number or URL; the job reads the issue itself, so do not paste a summary into the task. A single issue URL shared in the user's message is attached even when the task is only a summary. " +
                 "It clones the repository, runs an agent in an isolated container for minutes to hours, and notifies the user when it ends. " +
                 "It does not return the work itself, so do not wait for it in the reply. " +
                 "`repo` may be omitted when the user did not name one and exactly one repository is allowed. " +

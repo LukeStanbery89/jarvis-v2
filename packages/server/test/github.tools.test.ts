@@ -360,6 +360,16 @@ describe("GitHub tracker tools", () => {
         expect(text).toContain("startCodingJob");
     });
 
+    it("tells the model how to implement an issue it just read", async () => {
+        const { invoke } = makeTools();
+
+        const text = await invoke("getGitHubIssue", { number: 140 });
+
+        expect(text).toContain("startCodingJob");
+        expect(text).toContain("issue: 140");
+        expect(text).toContain("the job reads this issue itself");
+    });
+
     it("shows a pull request's review comments, which the issue count hides", async () => {
         // The live bug: the issue endpoint said "0 comments" because the note
         // was an inline review comment, not a conversation message.

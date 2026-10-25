@@ -1248,6 +1248,39 @@ describe("starting a coding job", () => {
         );
     });
 
+    it("gives the publisher the issue number a job implements", async () => {
+        const root = tempDir("jarvis-issue-");
+        const workspace = fakeWorkspace({ root });
+        const publish = vi.fn(async () => ({
+            prUrl: "https://github.com/luke/app/pull/9",
+        }));
+        const { userId, runner, service } = makeService({
+            config: {
+                workspaceRoot: root,
+                workspaceHostRoot: path.join(root, "host"),
+            },
+            workspace,
+            publisher: { publish },
+            issues: async () => issueSnapshot({ number: 157 }),
+        });
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Build the thing",
+            issue: 157,
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        expect(publish).toHaveBeenCalledWith(
+            expect.objectContaining({ issueNumber: 157 }),
+        );
+    });
+
     it("names a failed repository check instead of a bare exit code", async () => {
         const { store, userId, runner, service } = makeService();
         const started = await service.start({

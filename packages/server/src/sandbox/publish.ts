@@ -32,6 +32,14 @@ export interface PublishInput {
     branch: string;
     /** The task the user gave, used as the title and the body's opening. */
     task: string;
+    /**
+     * The issue this job implements (#140).
+     *
+     * Present means the pull request body carries a standalone `Closes #n`,
+     * so merging links and closes the issue the job was started from. A
+     * follow-up push leaves the existing PR's body alone.
+     */
+    issueNumber?: number;
     /** `collect`'s summary, so the pull request says what changed. */
     diffSummary: string;
     /**
@@ -105,6 +113,9 @@ function bodyFor(input: PublishInput): string {
         "## Task",
         "",
         input.task.trim(),
+        ...(input.issueNumber !== undefined
+            ? ["", `Closes #${input.issueNumber}`]
+            : []),
         ...(plan.length > 0 ? ["", "## Plan", "", plan] : []),
         "",
         "## Change",

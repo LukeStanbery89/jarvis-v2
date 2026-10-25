@@ -161,6 +161,24 @@ describe("the GitHub publisher", () => {
         expect(body).toContain("1. Read the test.");
     });
 
+    it("closes the issue the job implements, on its own line", async () => {
+        const { publisher, createPullRequest } = makePublisher();
+
+        await publisher.publish({ ...INPUT, issueNumber: 157 });
+
+        const body = createPullRequest.mock.calls[0]?.[0].body ?? "";
+        expect(body).toMatch(/^Closes #157$/m);
+    });
+
+    it("does not invent a closing link without an issue", async () => {
+        const { publisher, createPullRequest } = makePublisher();
+
+        await publisher.publish(INPUT);
+
+        const body = createPullRequest.mock.calls[0]?.[0].body ?? "";
+        expect(body).not.toMatch(/^Closes #/m);
+    });
+
     it("asks the configured reviewer instead of the owner", async () => {
         const { publisher, requestReviewers } = makePublisher({
             reviewer: "luke-human",

@@ -82,7 +82,7 @@ async function invoke(
             task?: string;
             crashPolicy?: "prune" | "resume";
             pullRequest?: string;
-            issue?: number;
+            issue?: number | string;
             replyTo?: string;
         };
         /** Leave `repo` out of the call entirely, as a small model may. */
@@ -358,6 +358,104 @@ describe("startCodingJob", () => {
             task: "Implement issue #140.",
             issue: 140,
         });
+    });
+
+    it("accepts the issue URL the user shared, repo included", async () => {
+        const { text, calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                omitRepo: true,
+                omitTask: true,
+                repos: ["other/thing", "luke/app"],
+                input: {
+                    issue: "https://github.com/luke/app/issues/157",
+                },
+            },
+        );
+
+        expect(text).toContain("implementing issue #157");
+        expect(calls[0]).toMatchObject({
+            userId: 7,
+            repo: "luke/app",
+            task: "Implement issue #157.",
+            issue: 157,
+        });
+    });
+
+    it("attaches the issue a message shared when the model only passes a summary", async () => {
+        const { calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                runtime: {
+                    configurable: {
+                        ...OWNER_RUNTIME.configurable,
+                        sharedIssue: { number: 157, repo: "luke/app" },
+                    },
+                },
+                input: { task: "Build the confirmation modal" },
+            },
+        );
+
+        expect(calls[0]).toMatchObject({
+            task: "Build the confirmation modal",
+            issue: 157,
+        });
+    });
+
+    it("does not attach a shared issue from a different repository", async () => {
+        const { calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                runtime: {
+                    configurable: {
+                        ...OWNER_RUNTIME.configurable,
+                        sharedIssue: { number: 157, repo: "other/thing" },
+                    },
+                },
+                input: { task: "Fix the login bug" },
+            },
+        );
+
+        expect(calls[0]?.issue).toBeUndefined();
+    });
+
+    it("reads an issue URL that was pasted into the task", async () => {
+        const { calls } = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                omitRepo: true,
+                repos: ["other/thing", "luke/app"],
+                input: {
+                    task: "Implement https://github.com/luke/app/issues/157",
+                },
+            },
+        );
+
+        expect(calls[0]).toMatchObject({
+            repo: "luke/app",
+            issue: 157,
+        });
+    });
+
+    it("refuses an issue reference it cannot read, or a conflicting repo", async () => {
+        const bad = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            { input: { issue: "the thing" } },
+        );
+        expect(bad.text).toContain("could not read that issue reference");
+        expect(bad.calls).toHaveLength(0);
+
+        const conflict = await invoke(
+            { ok: true, job: JOB, done: Promise.resolve() },
+            {
+                input: {
+                    repo: "luke/app",
+                    issue: "https://github.com/other/thing/issues/157",
+                },
+            },
+        );
+        expect(conflict.text).toContain("different repository");
+        expect(conflict.calls).toHaveLength(0);
     });
 
     it("passes a comment URL to the job so it can reply", async () => {

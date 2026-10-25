@@ -1223,6 +1223,9 @@ export function createCodingJobService(options: {
                         task: job.prompt,
                         diffSummary: collected.diffSummary,
                         plan: artifacts.plan,
+                        ...(job.issueNumber !== null
+                            ? { issueNumber: job.issueNumber }
+                            : {}),
                         ...(job.prUrl !== null
                             ? { existing: { url: job.prUrl } }
                             : {}),

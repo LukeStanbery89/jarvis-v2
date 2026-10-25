@@ -23,6 +23,7 @@ import { createTools } from "./llm/tools";
 import type { ToolDeps } from "./llm/tools";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { getLlmConfig } from "./config";
+import { issueRefFromPrompt, type IssueRef } from "./github/issue";
 import { logger } from "./logger";
 import type { ChatMode, ClientCapability } from "@lukestanbery/jarvis-protocol";
 import {
@@ -326,10 +327,12 @@ const GITHUB_RULE =
     "listGitHubIssues when they ask what is open or what to work on; " +
     "createGitHubIssue only when they ask you to file or report an issue; " +
     "and commentOnGitHub only when they ask you to post a comment there. To " +
-    "implement an issue, pass its number as `issue` to startCodingJob rather " +
-    "than pasting its description; to act on a pull request's review, pass " +
-    "`pullRequest` — the job is given the comment thread. Never invent an " +
-    "issue number or a repository, and never comment on your own initiative.";
+    "implement an issue, pass its number or URL as `issue` to startCodingJob " +
+    "rather than pasting its description; when the user shares an issue link, " +
+    "pass that link itself and never summarize the issue into `task`. To act " +
+    "on a pull request's review, pass `pullRequest` — the job is given the " +
+    "comment thread. Never invent an issue number or a repository, and never " +
+    "comment on your own initiative.";
 
 const CODING_RULE =
     "You can start a coding job. When the user asks for any change to a " +
@@ -375,6 +378,35 @@ const VOICE_FORMAT_RULE =
     "reads it naturally (say 'degrees Fahrenheit', 'miles per hour', " +
     "'percent'), and keep the wording flowing like human speech. Begin " +
     "your response with a short sentence (under 10 words).";
+
+/**
+ * The per-turn rule for a message that shares a GitHub issue (#140).
+ *
+ * The standing `GITHUB_RULE` says to pass an issue's number; a shared link is
+ * still routinely paraphrased into `task` by a small relay model, which leaves
+ * the coding agent without the issue body and the pull request without a
+ * closing link. This rule is concrete — it names the issue and the exact
+ * argument — because the failure is a choice at the tool call, not a missing
+ * capability. `startCodingJob` also carries the same reference in
+ * `configurable.sharedIssue` as a deterministic fallback; the rule makes the
+ * explicit path the model's first choice.
+ *
+ * @param ref - The issue the user's message shares.
+ * @returns The paragraph appended to this turn's system prompt.
+ */
+export function sharedIssueRule(ref: IssueRef): string {
+    const where = ref.repo === undefined ? "" : ` in ${ref.repo}`;
+    const reference =
+        ref.repo === undefined
+            ? String(ref.number)
+            : `https://github.com/${ref.repo}/issues/${ref.number}`;
+    return (
+        `The user's message shares GitHub issue #${ref.number}${where}. ` +
+        `To implement it, call startCodingJob with \`issue: ${reference}\` ` +
+        "and omit `task`; the job reads the issue itself. Do not summarize " +
+        "the issue into `task`."
+    );
+}
 
 /**
  * Derives a system prompt that admits the formats a capable client renders.
@@ -570,6 +602,19 @@ export async function* runAgent(
         JSON.stringify({ prompt: markedPrompt, sessionId }),
     );
     const { systemPrompt, agentMaxTurns } = getLlmConfig();
+    // A message that shares exactly one issue URL is a task to implement. The
+    // reference rides into `configurable` so `startCodingJob` can attach the
+    // issue even when a small relay model paraphrases it into `task`.
+    const sharedIssue = issueRefFromPrompt(prompt);
+    const baseSystemPrompt = systemPromptForCapabilities(
+        systemPrompt,
+        options.capabilities ?? [],
+        options.mode,
+    );
+    const systemPromptForTurn =
+        sharedIssue === null
+            ? baseSystemPrompt
+            : `${baseSystemPrompt}\n\n${sharedIssueRule(sharedIssue)}`;
     // `sessionId` and `clientIp` are always stamped: they are what a guest
     // turn has instead of a `userId`, and tools that admit guests (#8) key
     // their budgets on them. Neither is new information — `sessionId` is
@@ -585,13 +630,10 @@ export async function* runAgent(
         ...(options.clientIp !== undefined
             ? { clientIp: options.clientIp }
             : {}),
+        ...(sharedIssue !== null ? { sharedIssue } : {}),
     };
     yield* streamAgentTurn(getAgentGraph(), markedPrompt, sessionId, {
-        systemPrompt: systemPromptForCapabilities(
-            systemPrompt,
-            options.capabilities ?? [],
-            options.mode,
-        ),
+        systemPrompt: systemPromptForTurn,
         recursionLimit: agentMaxTurns,
         configurable,
         signal: options.signal,
