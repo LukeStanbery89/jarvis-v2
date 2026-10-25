@@ -9,6 +9,7 @@
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { registerServiceWorker } from "./pwa";
 import "./styles.css";
 
 /** The dev-only replay harness, loaded only when its flag is set. */
@@ -47,3 +48,6 @@ createRoot(document.getElementById("root")!).render(
         <Surface />
     </StrictMode>,
 );
+
+// The installable app's offline shell (#189). Production only; see `pwa.ts`.
+registerServiceWorker();

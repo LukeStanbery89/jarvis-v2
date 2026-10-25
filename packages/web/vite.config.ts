@@ -1,6 +1,7 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import {
     copyVoiceAssets,
@@ -23,6 +24,36 @@ const OWW_SRC = path.join(
  * `packages/web`.
  */
 const PROTOCOL_SRC = path.resolve(CONFIG_DIR, "..", "protocol", "src");
+
+/**
+ * Stamps the service worker with this build's id (#189).
+ *
+ * `public/sw.js` is copied verbatim by Vite, so its `__JARVIS_BUILD__`
+ * placeholder has to be replaced in the output. A per-build cache name lets
+ * the worker delete the previous shell cache on activation instead of carrying
+ * every retired hashed asset forever. The replacement happens in
+ * `closeBundle`, after Vite has copied `public/` into `dist/`.
+ */
+function serviceWorkerBuildPlugin(): Plugin {
+    return {
+        name: "jarvis-service-worker-version",
+        apply: "build",
+        closeBundle() {
+            const file = path.join(CONFIG_DIR, "dist", "sw.js");
+            if (!existsSync(file)) {
+                return;
+            }
+            const source = readFileSync(file, "utf8");
+            if (!source.includes("__JARVIS_BUILD__")) {
+                return;
+            }
+            writeFileSync(
+                file,
+                source.split("__JARVIS_BUILD__").join(Date.now().toString(36)),
+            );
+        },
+    };
+}
 
 /**
  * Dev server for the web app.
@@ -62,6 +93,7 @@ export default defineConfig({
                 copyVoiceAssets();
             },
         },
+        serviceWorkerBuildPlugin(),
     ],
     base: "/",
     resolve: {

@@ -45,6 +45,63 @@ which renders the dashboard (an unknown path), so the link would look like it
 went nowhere while production was perfectly correct. Anything else under `/`
 is this app, on every path it names (Vite's SPA fallback).
 
+## Installable app (#189)
+
+The production build is a PWA. `public/manifest.webmanifest` names the app,
+starts it at `/` in `standalone` display, and ships the 192/512, maskable and
+SVG icons under `public/icons/`; `index.html` carries the matching manifest link,
+theme colour, and the iOS `apple-touch-icon` / `apple-mobile-web-app-*` metadata
+Safari reads from the document.
+
+`public/sw.js` is a deliberately small service worker: it precaches the shell,
+the manifest, the icons and the hashed entry assets, then serves navigations
+network-first (so a deploy is picked up on the next load) and static assets
+cache-first. It never handles `/api`, `/ws`, `/health`, or `/admin` — live data,
+the socket, the machine health endpoint, and the separate admin SPA all stay
+outside the app's cache. It also adds no push handler: OS notifications remain
+the page's existing `Notification` path, so permission and behaviour are
+unchanged.
+
+Registration lives in `src/pwa.ts`, which registers only in a production build
+and only in a secure context. `vite.config.ts` stamps the worker with a
+per-build version (`serviceWorkerBuildPlugin`) so old caches are retired on
+activation. The worker does not call `skipWaiting()`: an open tab keeps its old
+worker and cache until it closes, which keeps a lazy-loaded chunk from vanishing
+during an update; `clients.claim()` still gives the first installed worker
+control of the page that installed it.
+
+Installing needs HTTPS (or `localhost`), the same secure-context rule location
+and the microphone already follow — the server can serve TLS with
+`JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`, or sit behind a TLS reverse proxy. On Android,
+use the browser's **Install app** affordance; on iOS, use **Share → Add to Home
+Screen**. The app remains fully usable in a normal tab whether or not it is
+installed.
+
+A phone on the LAN cannot use `localhost`, and a plain self-signed certificate
+is not a secure context until the phone trusts its signer. For local testing,
+[`mkcert`](https://github.com/FiloSottile/mkcert) creates a private CA and a
+certificate for the Mac's LAN address:
+
+```sh
+brew install mkcert
+mkcert -install
+mkdir -p "$HOME/.jarvis/tls"
+mkcert \
+  -cert-file "$HOME/.jarvis/tls/jarvis.pem" \
+  -key-file "$HOME/.jarvis/tls/jarvis-key.pem" \
+  "$(ipconfig getifaddr en0)" localhost 127.0.0.1
+```
+
+Then point `JARVIS_TLS_CERT` / `JARVIS_TLS_KEY` at those files (absolute paths;
+`$HOME` is not expanded inside `.env`) and set `JARVIS_HTTP_REDIRECT_PORT` to a
+free port if the default `PORT + 1` is taken. Install the CA certificate at
+`"$(mkcert -CAROOT)/rootCA.pem"` on the phone — iOS: install the profile, then
+**Settings → General → About → Certificate Trust Settings** and enable full
+trust; Android: **Settings → Security → Encryption & credentials → Install a
+certificate → CA certificate** (menu names vary) — and open
+`https://<LAN-IP>:54321`. Regenerate the certificate if the Mac's address
+changes.
+
 ## Pages
 
 Real paths, not hash routes (#90 phase 6a): the server's SPA fallback replays
