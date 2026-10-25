@@ -58,6 +58,14 @@ export interface NotificationsState {
     acceptFrame(frame: NotificationFrame["notification"]): void;
     /** Marks one read, optimistically. */
     markRead(id: string): void;
+    /**
+     * Answers an answerable notification (#94).
+     *
+     * Rejects when the server refuses: a coding job that could not be resumed
+     * leaves the row answerable, so the form stays put and can retry. No
+     * optimistic settle — "answered" is only true once the job is running.
+     */
+    answer(id: string, answer: string): Promise<void>;
     /** Dismisses one, optimistically. */
     dismiss(id: string): void;
     /**
@@ -255,6 +263,32 @@ export function useNotifications(options: {
         [apply, token],
     );
 
+    /**
+     * Answers one notification (#94).
+     *
+     * Unlike {@link markRead}, this does not settle locally first: the server
+     * resumes the linked job before it marks the row `answered`, so the record
+     * it returns is the first moment the answer is true. A rejection is
+     * rethrown for the form to show — the global `error` line is for loads and
+     * list actions, not for a field the user is looking at.
+     */
+    const answer = useCallback(
+        async (id: string, text: string): Promise<void> => {
+            debugLog("notify", `answer id=${id}`);
+            try {
+                const record = await api.answerNotification(token, id, text);
+                setNotifications((current) =>
+                    mergeNotification(current, fromRecord(record)),
+                );
+            } catch (err: unknown) {
+                throw err instanceof Error
+                    ? err
+                    : new Error("could not send the answer");
+            }
+        },
+        [token],
+    );
+
     const dismiss = useCallback(
         (id: string) => {
             // A dismissal deletes the row (#90 phase 9c), so the optimistic change
@@ -338,6 +372,7 @@ export function useNotifications(options: {
         error,
         acceptFrame,
         markRead,
+        answer,
         dismiss,
         markSnoozed,
         refresh,

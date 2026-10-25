@@ -27,6 +27,8 @@
  * class here is fixed — `notification` — because a page that could write any of
  * the three would be a way to turn a reminder into a timer.
  */
+import { useId, useState } from "react";
+import type { FormEvent } from "react";
 import { debugEnabled } from "../../debug";
 import { describeSnooze, snoozeUntil, upcomingJobs } from "../../jobs";
 import { snoozeReminder, snoozeRequestFor } from "../../snooze";
@@ -71,6 +73,69 @@ interface NotificationRowProps {
     onMarkRead(id: string): void;
     onDismiss(id: string): void;
     onSnooze(item: ClientNotification, minutes: number): void;
+    onAnswer(id: string, answer: string): Promise<void>;
+}
+
+/**
+ * The answer box for an answerable notification (#94).
+ *
+ * Kept local to the row rather than in the server-driven list state: the text
+ * is a draft, and a failed resume must leave it in place so the user can retry.
+ * The row only settles when the server says `answered`, which is after the
+ * coding job behind it actually resumed.
+ */
+function AnswerForm({ onAnswer }: { onAnswer(answer: string): Promise<void> }) {
+    const inputId = useId();
+    const [text, setText] = useState("");
+    const [sending, setSending] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const submit = (event: FormEvent<HTMLFormElement>): void => {
+        event.preventDefault();
+        const answer = text.trim();
+        if (answer.length === 0 || sending) {
+            return;
+        }
+        setSending(true);
+        setError(null);
+        onAnswer(answer)
+            .then(() => setText(""))
+            .catch((err: unknown) => {
+                setError(
+                    err instanceof Error
+                        ? err.message
+                        : "could not send the answer",
+                );
+            })
+            .finally(() => setSending(false));
+    };
+
+    return (
+        <form className="notification-answer" onSubmit={submit}>
+            <label htmlFor={inputId}>Answer this question</label>
+            <textarea
+                id={inputId}
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                placeholder="Type your answer…"
+                rows={2}
+                disabled={sending}
+            />
+            <div className="notification-answer-actions">
+                <button
+                    type="submit"
+                    disabled={sending || text.trim().length === 0}
+                >
+                    {sending ? "Sending…" : "Send answer"}
+                </button>
+                {error !== null && (
+                    <p className="notification-answer-error" role="alert">
+                        {error}
+                    </p>
+                )}
+            </div>
+        </form>
+    );
 }
 
 /**
@@ -90,8 +155,12 @@ function NotificationRow({
     onMarkRead,
     onDismiss,
     onSnooze,
+    onAnswer,
 }: NotificationRowProps) {
     const settled = isSettled(item.state);
+    // An answerable row is settled by its answer, not by being read, so it
+    // offers no "Mark read": reading a question does not retire it.
+    const answerable = !settled && item.requiresAnswer === true;
     // The state column holds a sentence for a snoozed row, because "snoozed"
     // alone is the half of it the user did not ask about.
     const state =
@@ -109,6 +178,13 @@ function NotificationRow({
                     <JobRuns token={token} jobId={item.jobId} />
                 ) : undefined
             }
+            footer={
+                answerable ? (
+                    <AnswerForm
+                        onAnswer={(answer) => onAnswer(item.id, answer)}
+                    />
+                ) : undefined
+            }
             actions={
                 <>
                     {!settled &&
@@ -123,10 +199,15 @@ function NotificationRow({
                             settled
                                 ? []
                                 : [
-                                      {
-                                          label: "Mark read",
-                                          onClick: () => onMarkRead(item.id),
-                                      },
+                                      ...(answerable
+                                          ? []
+                                          : [
+                                                {
+                                                    label: "Mark read",
+                                                    onClick: () =>
+                                                        onMarkRead(item.id),
+                                                },
+                                            ]),
                                       {
                                           label: "Dismiss",
                                           onClick: () => onDismiss(item.id),
@@ -174,6 +255,7 @@ function RecordedList({
                     onMarkRead={notifications.markRead}
                     onDismiss={notifications.dismiss}
                     onSnooze={onSnooze}
+                    onAnswer={notifications.answer}
                 />
             ))}
         </ul>

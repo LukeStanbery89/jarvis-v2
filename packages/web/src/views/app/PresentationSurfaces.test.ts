@@ -158,6 +158,57 @@ describe("the notifications page renders through the shared cards", () => {
         expect(html).toContain("Dismiss");
     });
 
+    it("offers an answer box for a question (#94)", () => {
+        const html = renderToStaticMarkup(
+            createElement(NotificationsPage, {
+                notifications: notificationsState([
+                    record({
+                        id: "q1",
+                        kind: "agent.request",
+                        class: "notification",
+                        title: "Which database?",
+                        requiresAnswer: true,
+                        codingJobId: "c1",
+                        jobId: undefined,
+                    }),
+                ]),
+                jobs: jobsState([]),
+                token: "device-token",
+            }),
+        );
+
+        expect(html).toContain("notification-answer");
+        expect(html).toContain("Answer this question");
+        expect(html).toContain("Send answer");
+        // Reading is not answering: the row must not offer a settle that would
+        // retire the question without resuming the job.
+        expect(html).not.toContain("Mark read");
+    });
+
+    it("shows the answer once the record is answered (#94)", () => {
+        const html = renderToStaticMarkup(
+            createElement(NotificationsPage, {
+                notifications: notificationsState([
+                    record({
+                        id: "q1",
+                        kind: "agent.request",
+                        class: "notification",
+                        state: "answered",
+                        requiresAnswer: true,
+                        codingJobId: "c1",
+                        answer: "Postgres",
+                        jobId: undefined,
+                    }),
+                ]),
+                jobs: jobsState([]),
+                token: "device-token",
+            }),
+        );
+
+        expect(html).toContain("You answered: Postgres");
+        expect(html).not.toContain("Send answer");
+    });
+
     it("renders a settled record without the settle actions", () => {
         const html = renderToStaticMarkup(
             createElement(NotificationsPage, {
@@ -187,6 +238,31 @@ describe("the toast renders the class chip and the primary fact", () => {
         expect(html).toContain("class-chip");
         expect(html).toContain("Take meds");
         expect(html).toContain("Take meds now");
+    });
+
+    it("sends an answerable notification to its answer box (#94)", () => {
+        const html = renderToStaticMarkup(
+            createElement(ToastStack, {
+                toasts: [
+                    record({
+                        id: "q1",
+                        kind: "agent.request",
+                        class: "notification",
+                        requiresAnswer: true,
+                        codingJobId: "c1",
+                        jobId: undefined,
+                    }),
+                ],
+                onMarkRead: () => undefined,
+                onDismiss: () => undefined,
+                onSnooze: () => undefined,
+            }),
+        );
+
+        // Reading a question does not retire it; the card leads to the answer
+        // box rather than offering a settle that would leave the job parked.
+        expect(html).toContain("Answer");
+        expect(html).not.toContain("Mark read");
     });
 });
 

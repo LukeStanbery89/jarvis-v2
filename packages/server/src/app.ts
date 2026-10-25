@@ -16,6 +16,7 @@ import {
 import { createCorsMiddleware } from "./http/cors";
 import { createAttachmentRouter } from "./http/attachmentRoutes";
 import { createNotificationRouter } from "./notify/http";
+import type { NotificationAnswerHandler } from "./notify/http";
 import { createJobRouter } from "./scheduler/http";
 import { createCodingLogRouter, type CodingLogSource } from "./sandbox/http";
 import type { JobCreator } from "./scheduler/create";
@@ -99,6 +100,12 @@ export function createApp(
     jobs?: JobCreator,
     codingLogs?: CodingLogSource,
     internal?: InternalRoutesOptions,
+    /**
+     * Runs before an answerable notification settles (#94). The coding
+     * composition supplies it; a deployment without the sandbox leaves it out,
+     * and the answer is only recorded.
+     */
+    onNotificationAnswer?: NotificationAnswerHandler,
 ) {
     const app = express();
 
@@ -191,7 +198,12 @@ export function createApp(
     if (notifications) {
         app.use(
             "/api",
-            createNotificationRouter(store, notifications, appConfig),
+            createNotificationRouter(
+                store,
+                notifications,
+                appConfig,
+                onNotificationAnswer,
+            ),
         );
     }
 

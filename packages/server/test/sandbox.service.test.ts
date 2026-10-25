@@ -204,8 +204,12 @@ function fakeWorkspace(
 }
 
 /** A notification service spy; the outcome itself is not under test. */
-function notifications(): Pick<NotificationService, "notify"> & {
+function notifications(): Pick<
+    NotificationService,
+    "notify" | "settleCodingQuestion"
+> & {
     notify: ReturnType<typeof vi.fn>;
+    settleCodingQuestion: ReturnType<typeof vi.fn>;
 } {
     return {
         notify: vi.fn(async () => ({
@@ -213,8 +217,13 @@ function notifications(): Pick<NotificationService, "notify"> & {
             delivered: 1,
             suppressed: null,
         })),
-    } as unknown as Pick<NotificationService, "notify"> & {
+        settleCodingQuestion: vi.fn(() => 0),
+    } as unknown as Pick<
+        NotificationService,
+        "notify" | "settleCodingQuestion"
+    > & {
         notify: ReturnType<typeof vi.fn>;
+        settleCodingQuestion: ReturnType<typeof vi.fn>;
     };
 }
 
@@ -900,6 +909,7 @@ describe("starting a coding job", () => {
             repo: "luke/app",
             task: "Build the thing",
             issue: 12,
+            sessionId: "ses_chat",
         });
         if (!started.ok) {
             throw new Error(`refused: ${started.reason}`);
@@ -927,6 +937,8 @@ describe("starting a coding job", () => {
             lastSeenCommentId: 77,
             plan: "Plan: use Postgres.",
             finishedAt: null,
+            sessionId: "ses_chat",
+            questions: ["Which database?", "Which port?"],
         });
         expect(comments).toHaveLength(1);
         expect(comments[0]?.number).toBe(12);
@@ -943,17 +955,35 @@ describe("starting a coding job", () => {
         expect(existsSync(path.join(workspacePath, ".jarvis"))).toBe(false);
         expect(notify.notify).toHaveBeenCalledWith(
             userId,
-            expect.objectContaining({ kind: "coding.question" }),
+            expect.objectContaining({
+                kind: "coding.question",
+                // The answer resumes the job, so the record must ask for one
+                // and name where it goes (#94).
+                requiresAnswer: true,
+                codingJobId: started.job.id,
+            }),
         );
         expect(store.listAwaitingCodingJobs(10).map((job) => job.id)).toEqual([
             started.job.id,
+        ]);
+        // The in-session relay's feed: only the conversation that asked sees
+        // the questions, and the row carries them without the workspace.
+        expect(
+            store
+                .listAwaitingCodingJobsBySession(userId, "ses_chat", 5)
+                .map((job) => ({ id: job.id, questions: job.questions })),
+        ).toEqual([
+            {
+                id: started.job.id,
+                questions: ["Which database?", "Which port?"],
+            },
         ]);
     });
 
     it("resumes the same workspace and prompt with the answers", async () => {
         const root = tempDir("jarvis-resume-");
         const workspace = fakeWorkspace({ root });
-        const { userId, runner, service, store } = makeService({
+        const { userId, runner, service, store, notify } = makeService({
             config: {
                 workspaceRoot: root,
                 workspaceHostRoot: path.join(root, "host"),
@@ -988,6 +1018,7 @@ describe("starting a coding job", () => {
             userId,
             started.job.id,
             "Use Postgres on 5432.",
+            { notificationId: "n1" },
         );
         if (!resumed.ok) {
             throw new Error(`refused: ${resumed.reason}`);
@@ -1007,6 +1038,13 @@ describe("starting a coding job", () => {
         expect(prompt).toContain("Use Postgres on 5432.");
         expect(prompt).toContain("Your previous plan");
         expect(prompt).toContain("Plan: use Postgres.");
+        // The resume retires the question rows it did not come through: the
+        // route's own row is excluded so it can carry the answer text (#94).
+        expect(notify.settleCodingQuestion).toHaveBeenCalledWith(
+            userId,
+            started.job.id,
+            { exceptId: "n1" },
+        );
 
         runner.exit(resumed.job.containerId ?? "", 0);
         await resumed.done;

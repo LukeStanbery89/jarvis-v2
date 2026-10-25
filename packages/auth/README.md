@@ -186,7 +186,8 @@ router and middleware span every ledger and therefore take the full
   — the reserved home for the per-user integration state the web portal (#24)
   manages, from a consumer (v4 schema, planning-complete) onward.
 - `notifications` — one row per notification (#139, v7; `class` added in v9,
-  `job_id` in v11, the state CHECK widened in v12 — both #90): producer `kind` +
+  `job_id` in v11, the state CHECK widened in v12 — both #90; `coding_job_id`
+  in v20 — #94): producer `kind` +
   `class` (the delivery policy — a `timer` pierces quiet hours, everything else
   waits) + `priority` (display
   emphasis only), the
@@ -206,9 +207,13 @@ router and middleware span every ledger and therefore take the full
   row when the snooze lands — `listNotificationsForJob` is how the server finds
   it without guessing an id), and it is the one
   link a notification needs, because everything else it says is already
-  rendered into its text. Jobs are pruned as history while a notification the
-  user was already shown stays true, so the prune clears the link and keeps the
-  row.
+  rendered into its text. `coding_job_id` (nullable, `ON DELETE SET NULL`) is
+  the same idea for the sandbox ledger (#94): an answerable notification raised
+  by a parked coding job names it, and answering the row resumes that job
+  before the row settles. The two links are separate because their ids live in
+  different tables; a notification is never about both. Jobs are pruned as
+  history while a notification the user was already shown stays true, so the
+  prune clears the link and keeps the row.
 - `jobs` — one row per scheduled job (#90, v8; rebuilt in v10 for `class` and
   the `message` payload): `label`, `class` (the delivery class its announcement
   carries — `notification`/`reminder`/`timer`), `kind` (`prompt`/`tool`/
@@ -250,7 +255,8 @@ router and middleware span every ledger and therefore take the full
   thread that never enters the `sessions` ledger, which is what keeps a job's
   runs out of the chat-thread list.
 - `coding_jobs` — one row per coding-agent job (#141, v17; `model` in v18;
-  `awaiting-answer` and the SDLC columns in v19), deliberately not a
+  `awaiting-answer` and the SDLC columns in v19; `session_id` and
+  `questions_json` in v20 — #94), deliberately not a
   `kind` on `jobs`: a scheduled job is a moment the scheduler fires and settles,
   while a coding job is a workspace, a container and a branch whose lifecycle
   outlives the process watching it. Columns: `repo` / `branch` / `prompt` (the
@@ -258,7 +264,9 @@ router and middleware span every ledger and therefore take the full
   `queued` again, or `ok`/`failed`/`cancelled`),
   `crash_policy` (`prune` default | `resume`, chosen per job), `model` (the id
   the run was told to use — recorded rather than inferred, because the config
-  changes between runs), `issue_number` / `question_comment_id` / `plan` /
+  can change between runs), `session_id` (the chat that asked, for the in-session
+  ask relay), `questions_json` (the parked questions, written at park time and
+  cleared by the reopen that answers them), `issue_number` / `question_comment_id` / `plan` /
   `last_seen_comment_id` (the SDLC loop: where the questions were posted, what
   the agent planned, and the newest comment accounted for), `container_id`
   (written at claim time — `resume` needs it after a crash), `workspace_path`,
@@ -267,7 +275,10 @@ router and middleware span every ledger and therefore take the full
 DESC)` for the owner's list and on `(state) WHERE state = 'running'` — the
   recovery feed, which only ever scans work in flight. `pruneCodingJobs` keeps
   the newest _settled_ rows, so a run in flight never counts against a user's
-  history budget.
+  history budget. The ask relay adds `setCodingJobQuestions` (the parked
+  questions, written once) and `listAwaitingCodingJobsBySession` (the session-
+  and owner-scoped feed the chat path reads); reopening clears the questions in
+  the same transition that claims the answer.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's
