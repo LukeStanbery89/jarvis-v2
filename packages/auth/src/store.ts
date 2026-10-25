@@ -312,7 +312,8 @@ function codingJobsTable(name: string): string {
     started_at           TEXT,
     finished_at          TEXT,
     session_id           TEXT,
-    questions_json       TEXT
+    questions_json       TEXT,
+    pr_state             TEXT CHECK (pr_state IN ('closed', 'merged'))
 )`;
 }
 
@@ -1540,11 +1541,31 @@ export interface CodingJobLedger {
         at: string,
     ): void;
     /**
-     * Recent jobs that name a pull request, newest first — the PR-feedback
-     * feed (#94). The caller dedupes by URL: the first row for a PR is its
-     * latest attempt and carries the watermark.
+     * Recent jobs that name a **still-pollable** pull request, newest first —
+     * the PR-feedback feed (#94). The caller dedupes by URL: the first row for
+     * a PR is its latest attempt and carries the watermark.
+     *
+     * Rows whose PR was observed closed or merged are excluded: a terminal PR
+     * has nothing left to review, and re-reading it every tick was exhausting
+     * GitHub's installation quota (#192).
      */
     listCodingJobsWithPr(limit: number): AppCodingJob[];
+    /**
+     * Records a terminal pull-request observation on every job that names it.
+     *
+     * The coding watch calls this after the one read that establishes the PR is
+     * closed or merged. `listCodingJobsWithPr` then omits every row for that
+     * URL, so the next tick costs no GitHub request. Only rows with no recorded
+     * state change, which makes a duplicate observation idempotent.
+     *
+     * @param prUrl - The browser URL shared by the jobs.
+     * @param state - What GitHub reported.
+     * @returns The number of rows that learned the state.
+     */
+    markCodingJobsWithPrTerminal(
+        prUrl: string,
+        state: "closed" | "merged",
+    ): number;
     /**
      * Claims a `queued` job for this process: `queued` → `running`, recording
      * the container and counting the attempt.
@@ -2882,6 +2903,21 @@ ${CODING_JOB_INDEXES}`);
         db.exec(PUSH_SUBSCRIPTIONS_SCHEMA);
         db.pragma("user_version = 22");
     }
+
+    if (version < 23) {
+        // v23: the coding watch's terminal-PR memory (#192). `NULL` means "not
+        // known to be terminal", which is every existing row: the watch reads
+        // each candidate once, then records `closed`/`merged` here so future
+        // ticks can skip it without another GitHub request. Additive and
+        // guarded like the other ALTERs; a fresh database already has it from
+        // `codingJobsTable`.
+        if (!hasColumn(db, "coding_jobs", "pr_state")) {
+            db.exec(
+                "ALTER TABLE coding_jobs ADD COLUMN pr_state TEXT CHECK (pr_state IN ('closed', 'merged'))",
+            );
+        }
+        db.pragma("user_version = 23");
+    }
 }
 
 export function openAppDatabase(
@@ -2977,6 +3013,7 @@ export class SqliteAppDatabase implements AppDatabase {
         selectAwaitingCodingJobs: Database.Statement;
         selectAwaitingCodingJobsBySession: Database.Statement;
         selectCodingJobsWithPr: Database.Statement;
+        markCodingJobsWithPrTerminal: Database.Statement;
         awaitCodingJob: Database.Statement;
         reopenCodingJob: Database.Statement;
         setCodingJobQuestions: Database.Statement;
@@ -3325,8 +3362,13 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             // The PR-feedback feed (#94): newest first, so the first row for a
             // URL is the latest attempt and its watermark is authoritative.
+            // A terminal observation is durable: the row drops out of the
+            // feed, so a merged/closed PR is never re-read (#192).
             selectCodingJobsWithPr: db.prepare(
-                `${CODING_JOB_COLUMNS} WHERE pr_url IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+                `${CODING_JOB_COLUMNS} WHERE pr_url IS NOT NULL AND pr_state IS NULL ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            markCodingJobsWithPrTerminal: db.prepare(
+                "UPDATE coding_jobs SET pr_state = ? WHERE pr_url = ? AND pr_state IS NULL",
             ),
             // The question was posted: settle the non-terminal waiting state.
             // `running` in the WHERE clause makes a duplicate a no-op.
@@ -4210,6 +4252,14 @@ export class SqliteAppDatabase implements AppDatabase {
             Math.max(1, limit),
         ) as CodingJobRow[];
         return rows.map(mapCodingJob);
+    }
+
+    markCodingJobsWithPrTerminal(
+        prUrl: string,
+        state: "closed" | "merged",
+    ): number {
+        return this.statements.markCodingJobsWithPrTerminal.run(state, prUrl)
+            .changes;
     }
 
     awaitCodingJob(

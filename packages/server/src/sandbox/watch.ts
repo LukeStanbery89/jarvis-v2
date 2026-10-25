@@ -11,6 +11,10 @@
  * One in-process interval, an overlap guard, and a per-tick cap. Every GitHub
  * read is per awaiting job or per JARVIS PR, and comments by the App itself
  * (its questions, replies, and PR bodies) are never treated as input.
+ *
+ * A terminal pull request is read once: its `closed`/`merged` state is recorded
+ * on the rows so the feed no longer selects it (#192). A rate-limit answer ends
+ * the pass after one warning; the next pass retries rather than staying off.
  */
 import type { AppCodingJob, CodingJobLedger } from "@lukestanbery/jarvis-auth";
 import { parseCommentRef } from "../github/comment";
@@ -31,11 +35,32 @@ const FIRST_TICK_MS = 5_000;
 /** The most issue feedback one follow-up prompt carries. */
 const MAX_ISSUE_FEEDBACK_CHARS = 4_000;
 
+/**
+ * GitHub's rate-limit answer.
+ *
+ * The client keeps the status and GitHub's own message in one `Error`, so the
+ * watcher can distinguish a quota exhaustion from a permission problem without
+ * treating every failed read as a reason to stop. Secondary-limit and abuse
+ * bodies count too; a 429 is a rate limit even when the body is terse.
+ *
+ * @param err - A rejected GitHub call.
+ * @returns True when the failure means "stop asking GitHub for now".
+ */
+export function isRateLimitError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return (
+        /\b429\b/.test(message) ||
+        (/\b403\b/.test(message) && /rate limit|abuse detection/i.test(message))
+    );
+}
+
 /** The seams the watcher needs; a test supplies fakes for all three. */
 export interface CodingWatchOptions {
     ledger: Pick<
         CodingJobLedger,
-        "listAwaitingCodingJobs" | "listCodingJobsWithPr"
+        | "listAwaitingCodingJobs"
+        | "listCodingJobsWithPr"
+        | "markCodingJobsWithPrTerminal"
     >;
     github: Pick<
         GitHubClient,
@@ -117,6 +142,31 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
     const limit = Math.max(1, options.limit ?? DEFAULT_LIMIT);
     let running = false;
     let stopped = false;
+    /**
+     * Set by the first rate-limit failure in a pass. The rest of that pass
+     * stops, so an exhausted installation quota costs one warning and one
+     * failed call rather than one failure per tracked PR (#192).
+     */
+    let rateLimited = false;
+
+    /**
+     * Stops the current pass on a rate-limit failure.
+     *
+     * @param err - The caught failure.
+     * @returns True when the caller must stop walking its queue.
+     */
+    function noteRateLimit(err: unknown): boolean {
+        if (!isRateLimitError(err)) {
+            return false;
+        }
+        if (!rateLimited) {
+            rateLimited = true;
+            logger.warn(
+                "coding watch: GitHub rate limit reached; skipping the rest of this pass",
+            );
+        }
+        return true;
+    }
 
     /**
      * Answers on an awaiting job's issue.
@@ -175,7 +225,13 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                         parts.name,
                         job.questionCommentId,
                     )
-                    .catch(() => null);
+                    .catch((err: unknown) => {
+                        noteRateLimit(err);
+                        return null;
+                    });
+                if (rateLimited) {
+                    break;
+                }
                 const text = [
                     question === null
                         ? ""
@@ -204,6 +260,9 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                     );
                 }
             } catch (err) {
+                if (noteRateLimit(err)) {
+                    break;
+                }
                 logger.warn(
                     `coding watch: thread #${thread} failed: ${
                         err instanceof Error ? err.message : String(err)
@@ -266,6 +325,14 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                     number,
                 );
                 if (pull.state !== "open") {
+                    // Record the one terminal observation so this URL leaves
+                    // the feed: a merged or closed PR has no feedback left to
+                    // follow, and re-reading it forever exhausted the
+                    // installation quota (#192).
+                    options.ledger.markCodingJobsWithPrTerminal(
+                        job.prUrl,
+                        pull.state,
+                    );
                     continue;
                 }
                 const human = pull.comments.filter(
@@ -294,6 +361,9 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                                 Date.parse(comment.createdAt) > sinceMs,
                         );
                     } catch (err) {
+                        if (noteRateLimit(err)) {
+                            break;
+                        }
                         logger.warn(
                             `coding watch: issue #${issueNumber} comments failed: ${
                                 err instanceof Error ? err.message : String(err)
@@ -359,6 +429,9 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                                 "eyes",
                             )
                             .catch((err: unknown) => {
+                                if (noteRateLimit(err)) {
+                                    return;
+                                }
                                 logger.warn(
                                     `coding watch: could not react to ${reply.kind} comment ${reply.id}: ${
                                         err instanceof Error
@@ -367,6 +440,9 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                                     }`,
                                 );
                             });
+                        if (rateLimited) {
+                            break;
+                        }
                     }
                 } else {
                     logger.warn(
@@ -374,6 +450,9 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                     );
                 }
             } catch (err) {
+                if (noteRateLimit(err)) {
+                    break;
+                }
                 logger.warn(
                     `coding watch: PR #${number} failed: ${
                         err instanceof Error ? err.message : String(err)
@@ -392,22 +471,29 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
             return;
         }
         running = true;
+        // A new pass gets a fresh chance: the reset is what lets the watch
+        // recover once GitHub's window rolls over (#192).
+        rateLimited = false;
         try {
             const bot = await options.github
                 .botLogin()
                 .catch((err: unknown) => {
-                    logger.warn(
-                        `coding watch: could not read the App login: ${
-                            err instanceof Error ? err.message : String(err)
-                        }`,
-                    );
+                    if (!noteRateLimit(err)) {
+                        logger.warn(
+                            `coding watch: could not read the App login: ${
+                                err instanceof Error ? err.message : String(err)
+                            }`,
+                        );
+                    }
                     return null;
                 });
             if (bot === null) {
                 return;
             }
             await watchIssues(bot);
-            await watchPulls(bot);
+            if (!rateLimited) {
+                await watchPulls(bot);
+            }
         } finally {
             running = false;
         }
