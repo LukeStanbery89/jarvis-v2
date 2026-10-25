@@ -584,6 +584,7 @@ const webApp = createApp(
     codingJobs,
     internalRoutes,
     onNotificationAnswer,
+    weatherDeps,
 );
 
 const { server } = createJarvisServer(webApp, {

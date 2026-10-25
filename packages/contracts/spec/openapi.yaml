@@ -74,6 +74,10 @@ tags:
           (`GET /api/stt/model`, issue #84 phase 3b).
     - name: Users
       description: Account management (owner-only read/write).
+    - name: Weather
+      description: >-
+          Current conditions for the dashboard weather widget (#186), from the
+          same OpenWeather provider the `getWeather` tool uses.
     - name: Wake
       description: >-
           The local wake-word model files served to browser clients
@@ -976,6 +980,90 @@ paths:
                                 $ref: "#/components/schemas/Error"
                 "403":
                     description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/weather:
+        get:
+            operationId: weatherNow
+            summary: Current weather for device coordinates
+            description: >-
+                The dashboard widget's current conditions for the device's
+                reported location. The browser obtains the position through its
+                own geolocation permission prompt, rounds it, and sends the
+                coordinates here; the server calls the configured OpenWeather
+                provider. Metered per user through the same budget as the
+                `getWeather` tool. A deployment without `OPENWEATHER_API_KEY`
+                answers 503.
+            tags: [Weather]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - name: lat
+                  in: query
+                  required: true
+                  description: Latitude in decimal degrees (-90 to 90).
+                  schema:
+                      type: number
+                      minimum: -90
+                      maximum: 90
+                - name: lon
+                  in: query
+                  required: true
+                  description: Longitude in decimal degrees (-180 to 180).
+                  schema:
+                      type: number
+                      minimum: -180
+                      maximum: 180
+            responses:
+                "200":
+                    description: Current conditions at the supplied coordinates.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/WeatherNow"
+                "400":
+                    description: >-
+                        Missing, non-numeric, or out-of-range `lat`/`lon`.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "429":
+                    description: >-
+                        The caller's weather budget is exhausted; the
+                        `Retry-After` header says when it renews.
+                    headers:
+                        Retry-After:
+                            description: Seconds until the budget renews.
+                            schema:
+                                type: integer
+                                minimum: 1
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "502":
+                    description: >-
+                        The weather provider failed or returned an unusable
+                        answer. The body is generic; provider internals stay in
+                        the server log.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: >-
+                        Weather is not configured on this server (no
+                        `OPENWEATHER_API_KEY`).
                     content:
                         application/json:
                             schema:
@@ -1953,6 +2041,71 @@ components:
             properties:
                 error:
                     type: string
+        WeatherNow:
+            type: object
+            description: >-
+                Current conditions for the dashboard widget (#186), normalized
+                from the configured provider.
+            required:
+                - location
+                - temp
+                - feelsLike
+                - description
+                - condition
+                - windSpeed
+                - observedAt
+                - timezoneOffsetSeconds
+                - units
+            properties:
+                location:
+                    type: object
+                    required: [name]
+                    properties:
+                        name:
+                            type: string
+                            description: The provider's resolved place name.
+                        country:
+                            type: string
+                            description: ISO 3166 country code, when reported.
+                temp:
+                    type: number
+                    description: Current temperature in `units`.
+                feelsLike:
+                    type: number
+                    description: Perceived temperature in `units`.
+                description:
+                    type: string
+                    description: Human-readable condition ("light rain").
+                condition:
+                    type: string
+                    description: Grouped condition ("Rain", "Clouds").
+                conditionId:
+                    type: integer
+                    description: >-
+                        OpenWeather's numeric condition code, for the widget's
+                        condition graphic.
+                windSpeed:
+                    type: number
+                    description: Wind speed in mph under imperial, m/s under metric.
+                windDeg:
+                    type: number
+                    description: Wind direction in degrees, when reported.
+                observedAt:
+                    type: integer
+                    description: Unix (UTC) seconds of the observation.
+                timezoneOffsetSeconds:
+                    type: integer
+                    description: The location's UTC offset in seconds.
+                sunrise:
+                    type: integer
+                    description: Unix (UTC) seconds of sunrise, when reported.
+                sunset:
+                    type: integer
+                    description: Unix (UTC) seconds of sunset, when reported.
+                units:
+                    type: string
+                    enum: [imperial, metric]
+                    description: The unit system used by the numeric fields.
         User:
             type: object
             description: Public account row as exposed by the `/api` routes.

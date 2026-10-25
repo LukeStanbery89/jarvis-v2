@@ -106,6 +106,13 @@ export type NotificationInput = components["schemas"]["NotificationInput"];
  */
 export type Prefs = components["schemas"]["Prefs"];
 
+/**
+ * Current conditions at the device's coordinates (#186), as `GET
+ * /api/weather` exposes them: one normalized OpenWeather reading, never a
+ * vendor payload.
+ */
+export type WeatherNow = components["schemas"]["WeatherNow"];
+
 /** REST failure carrying the server's `{ error }` message on a non-2xx body. */
 export class ApiError extends Error {
     constructor(
@@ -355,6 +362,28 @@ export function createApi(
          */
         setPrefs(token: string, patch: Prefs): Promise<Prefs> {
             return request("PUT", "/api/prefs", { token, body: patch });
+        },
+        /**
+         * Reads current weather for the device's coordinates (#186).
+         *
+         * The coordinates are the already-rounded fix the location share sends
+         * over `/ws`; the server owns the OpenWeather key and the per-user
+         * weather budget. Rejects with {@link ApiError}: 429 when the budget is
+         * exhausted, 502 when the provider is unavailable, 503 when the server
+         * has no weather key configured.
+         */
+        getWeather(
+            token: string,
+            lat: number,
+            lon: number,
+        ): Promise<WeatherNow> {
+            const params = new URLSearchParams({
+                lat: String(lat),
+                lon: String(lon),
+            });
+            return request("GET", `/api/weather?${params.toString()}`, {
+                token,
+            });
         },
         /**
          * Lists the caller's scheduled jobs (#90).

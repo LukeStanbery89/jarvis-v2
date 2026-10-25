@@ -17,6 +17,7 @@ import { Dashboard } from "./Dashboard";
 import { NotificationsPage } from "./NotificationsPage";
 import { ToastStack } from "./Toast";
 import { TimerRing } from "./TimerRing";
+import type { UseLocationSharingResult } from "../../hooks/useLocationSharing";
 import type { JobsState } from "../../hooks/useJobs";
 import type { NotificationsState } from "../../hooks/useNotifications";
 import type { ClientNotification } from "../../notifications";
@@ -93,6 +94,20 @@ function notificationsState(
     } as unknown as NotificationsState;
 }
 
+/** The shell's location share, in its opted-out state by default. */
+function locationState(
+    overrides: Partial<UseLocationSharingResult> = {},
+): UseLocationSharingResult {
+    return {
+        locationOn: false,
+        locationState: "off",
+        position: null,
+        toggleLocation: () => undefined,
+        shareLocation: () => undefined,
+        ...overrides,
+    };
+}
+
 describe("the dashboard renders the individual job widgets", () => {
     it("draws the same job pane the Timers and Reminders pages use", () => {
         const html = renderToStaticMarkup(
@@ -102,6 +117,7 @@ describe("the dashboard renders the individual job widgets", () => {
                 notifications: notificationsState([]),
                 token: "device-token",
                 unread: 0,
+                location: locationState(),
             }),
         );
 
@@ -112,6 +128,25 @@ describe("the dashboard renders the individual job widgets", () => {
         // The old compact one-line row is gone; the dashboard is the panes.
         expect(html).not.toContain("dashboard-class");
         expect(html).not.toContain("dashboard-label");
+    });
+
+    it("puts the weather widget beside the clock and prompts for location", () => {
+        const html = renderToStaticMarkup(
+            createElement(Dashboard, {
+                username: "luke",
+                jobs: jobsState([]),
+                notifications: notificationsState([]),
+                token: "device-token",
+                unread: 0,
+                location: locationState(),
+            }),
+        );
+
+        expect(html).toContain("dashboard-top");
+        expect(html).toContain("weather-card");
+        expect(html).toContain("Weather");
+        expect(html).toContain("Share your location");
+        expect(html).toContain("Share location");
     });
 });
 
