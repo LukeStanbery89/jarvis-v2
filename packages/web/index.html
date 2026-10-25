@@ -2,11 +2,82 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <!-- Phones are an app surface, not a document: no pinch-zoom or
+             double-tap zoom. The CSS mobile block also sets `touch-action` so
+             this holds where `user-scalable` is ignored. -->
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+        />
         <meta name="referrer" content="no-referrer" />
+        <meta
+            name="description"
+            content="J.A.R.V.I.S. — your personal assistant."
+        />
+        <meta name="theme-color" content="#000000" />
+        <!-- Installable app metadata (#189). The manifest owns the name, icons,
+             display mode and start URL; these are the iOS/legacy equivalents
+             that Safari still reads from the document. `black` keeps the
+             status bar out of the app's content rather than overlapping it. -->
+        <meta name="application-name" content="JARVIS" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-title" content="JARVIS" />
+        <!--
+            Deliberately no apple-mobile-web-app-status-bar-style. iOS 26.1+
+            paints a dark scrim over the page when that tag is present, and
+            Apple's fix is to omit it; the opaque status bar then takes the
+            page/theme colour and sits above the content. iOS reads this at
+            install time, so an existing Home Screen app must be removed and
+            added again to pick it up.
+        -->
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <!-- PNG favicons for browsers that do not render the SVG one (Safari
+             included). The Apple touch icon is deliberately a single 180x180
+             file at the root: iOS probes `/apple-touch-icon.png` itself even
+             when a link is present, and a missing file used to fall through to
+             the SPA and return `index.html`, which iOS rendered as a white
+             letter tile. -->
+        <link rel="icon" href="/favicon.ico" sizes="32x32" />
+        <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+        <link
+            rel="icon"
+            type="image/png"
+            sizes="32x32"
+            href="/icons/icon-32.png"
+        />
+        <link
+            rel="icon"
+            type="image/png"
+            sizes="16x16"
+            href="/icons/icon-16.png"
+        />
+        <!--
+            iOS fetches the Home Screen icon through a system service that
+            rejects a private-CA HTTPS certificate even when Safari trusts that
+            same CA for the page. With the local mkcert cert that produced a
+            generated white "J" tile. Serve the touch icon from a publicly
+            trusted HTTPS URL (this commit-pinned copy in the public repo is the
+            same arc-reactor bytes as the local `-1b1be9ec` file) so the Web
+            Clip service can fetch it. The local root copies remain for HTTP
+            deployments and other browsers.
+        -->
+        <link
+            rel="apple-touch-icon"
+            sizes="180x180"
+            href="https://raw.githubusercontent.com/LukeStanbery89/jarvis-v2/4e50942c372060de96eca72e3e01f5461c3ff2fc/packages/web/public/icons/apple-touch-icon.png"
+        />
+        <link
+            rel="apple-touch-icon-precomposed"
+            href="https://raw.githubusercontent.com/LukeStanbery89/jarvis-v2/4e50942c372060de96eca72e3e01f5461c3ff2fc/packages/web/public/icons/apple-touch-icon.png"
+        />
         <title>JARVIS Web</title>
     </head>
     <body>
+        <!-- iOS 27's installed-PWA blur samples a fixed, solid element within
+             a few pixels of the top edge. Without one it draws the black scrim
+             over the nav; this strip gives it a solid black source. -->
+        <div class="status-bar-backdrop" aria-hidden="true"></div>
         <div id="root"></div>
         <script type="module" src="/src/main.tsx"></script>
     </body>

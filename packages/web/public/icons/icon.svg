@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="JARVIS">
+    <rect width="512" height="512" fill="#000000" />
+    <circle cx="256" cy="256" r="154" fill="none" stroke="#00ddff" stroke-width="16" />
+    <circle cx="256" cy="256" r="98" fill="none" stroke="#00ddff" stroke-width="8" opacity="0.85" />
+    <g stroke="#00ddff" stroke-width="16" stroke-linecap="round">
+        <line x1="256" y1="112" x2="256" y2="136" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(45 256 256)" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(90 256 256)" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(135 256 256)" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(180 256 256)" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(225 256 256)" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(270 256 256)" />
+        <line x1="256" y1="112" x2="256" y2="136" transform="rotate(315 256 256)" />
+    </g>
+    <circle cx="256" cy="256" r="46" fill="#00ddff" />
+    <circle cx="256" cy="256" r="23" fill="#000000" />
+</svg>

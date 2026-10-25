@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 21;
+const LATEST_VERSION = 22;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -494,6 +494,52 @@ describe("prefs", () => {
         ]);
         store.deletePrefKeys(user.id, ["a", "c"]);
         expect(store.getPrefs(user.id)).toEqual({ b: 2 });
+    });
+});
+
+describe("push subscriptions", () => {
+    it("registers, lists, and removes one browser per endpoint", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        const first = store.upsertPushSubscription(user.id, {
+            endpoint: "https://push.example/a",
+            p256dh: "public-a",
+            auth: "auth-a",
+        });
+        expect(first.endpoint).toBe("https://push.example/a");
+        expect(store.listPushSubscriptions(user.id)).toEqual([first]);
+
+        const refreshed = store.upsertPushSubscription(user.id, {
+            endpoint: "https://push.example/a",
+            p256dh: "public-b",
+            auth: "auth-b",
+        });
+        expect(refreshed.p256dh).toBe("public-b");
+        expect(store.listPushSubscriptions(user.id)).toHaveLength(1);
+
+        expect(store.deletePushSubscription(user.id, first.endpoint)).toBe(
+            true,
+        );
+        expect(store.listPushSubscriptions(user.id)).toEqual([]);
+        expect(store.deletePushSubscription(user.id, first.endpoint)).toBe(
+            false,
+        );
+    });
+
+    it("keeps subscriptions per user and moves a re-subscribed endpoint", () => {
+        const a = store.createUser("luke", "hash", "owner");
+        const b = store.createUser("zoe", "hash", "user");
+        store.upsertPushSubscription(a.id, {
+            endpoint: "https://push.example/shared",
+            p256dh: "a-key",
+            auth: "a-auth",
+        });
+        store.upsertPushSubscription(b.id, {
+            endpoint: "https://push.example/shared",
+            p256dh: "b-key",
+            auth: "b-auth",
+        });
+        expect(store.listPushSubscriptions(a.id)).toEqual([]);
+        expect(store.listPushSubscriptions(b.id)).toHaveLength(1);
     });
 });
 

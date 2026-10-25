@@ -44,6 +44,9 @@ afterEach(() => {
     delete process.env.JARVIS_HOST;
     delete process.env.JARVIS_TLS_CERT;
     delete process.env.JARVIS_TLS_KEY;
+    delete process.env.JARVIS_VAPID_PUBLIC_KEY;
+    delete process.env.JARVIS_VAPID_PRIVATE_KEY;
+    delete process.env.JARVIS_VAPID_SUBJECT;
     delete process.env.JARVIS_RATE_WINDOW_MS;
     delete process.env.JARVIS_RATE_MAX_FAILURES;
     delete process.env.JARVIS_RATE_LOCKOUT_MS;
@@ -163,6 +166,22 @@ describe("getAppConfig", () => {
             tlsCertPath: "/run/jarvis/fullchain.pem",
             tlsKeyPath: "/run/jarvis/privkey.pem",
         });
+    });
+
+    it("enables Web Push only when the VAPID pair is complete", () => {
+        expect(getAppConfig().push).toBeUndefined();
+        process.env.JARVIS_VAPID_PUBLIC_KEY = "public";
+        expect(getAppConfig().push).toBeUndefined();
+        process.env.JARVIS_VAPID_PRIVATE_KEY = "private";
+        expect(getAppConfig().push).toEqual({
+            publicKey: "public",
+            privateKey: "private",
+            subject: "mailto:jarvis@localhost",
+        });
+        process.env.JARVIS_VAPID_SUBJECT = "https://jarvis.example/contact";
+        expect(getAppConfig().push?.subject).toBe(
+            "https://jarvis.example/contact",
+        );
     });
 
     it("reads rate-limit knobs and defaults to LAN values", () => {

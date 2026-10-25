@@ -133,6 +133,17 @@ export interface NotificationChannelCapabilities {
     canAcceptReply: boolean;
     /** Belongs to one device (so it can be addressed) rather than a user. */
     isAddressable: boolean;
+    /**
+     * Needs a live in-app socket to deliver. The in-app channel does; a push
+     * or email channel does not.
+     */
+    requiresPresence: boolean;
+    /**
+     * Only delivers when the user has **no** live socket. Web Push uses this
+     * to avoid a second OS banner for a page that is already open; when the
+     * socket is absent, the push is the only channel that can reach the phone.
+     */
+    onlyWhenAbsent: boolean;
 }
 
 /** One way of reaching the user. */

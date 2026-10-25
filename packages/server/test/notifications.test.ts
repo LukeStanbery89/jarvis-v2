@@ -33,6 +33,7 @@ import type { HubSocket, NotificationHub } from "../src/notify/hub";
 import { createInAppChannel } from "../src/notify/channels/inApp";
 import { createNotificationService } from "../src/notify/service";
 import type { NotificationService } from "../src/notify/service";
+import type { NotificationChannel } from "../src/notify/types";
 import { assertKnownPrefs } from "../src/prefs/known";
 
 /** A socket double that records what the hub pushed to it. */
@@ -362,6 +363,82 @@ describe("notification service policy (#139)", () => {
         // Still readable: the durable half is the point (#139).
         expect(service.list(userId).notifications).toHaveLength(1);
         expect(service.list(userId).unread).toBe(1);
+    });
+
+    it("uses an absent-capable channel when no socket is present", async () => {
+        const store = createInMemoryAppDatabase();
+        const userId = makeUser(store);
+        const hub = createNotificationHub();
+        const push: NotificationChannel = {
+            id: "test-push",
+            capabilities: {
+                canSpeak: false,
+                canShowText: true,
+                canShowImage: false,
+                canAcceptReply: false,
+                isAddressable: true,
+                requiresPresence: false,
+                onlyWhenAbsent: true,
+            },
+            deliver: vi.fn(() => 1),
+        };
+        const service = createNotificationService({
+            store,
+            hub,
+            channels: [createInAppChannel(hub), push],
+            maxPerUser: 200,
+            deliveriesPerWindow: 20,
+            now: () => new Date("2026-10-15T18:00:00.000Z"),
+        });
+
+        const outcome = await service.notify(userId, {
+            kind: "job.finished",
+            class: "timer",
+            title: "Tea is ready",
+        });
+        expect(outcome.delivered).toBe(1);
+        expect(outcome.suppressed).toBeNull();
+        expect(outcome.notification.state).toBe("delivered");
+        expect(push.deliver).toHaveBeenCalledOnce();
+        store.close();
+    });
+
+    it("prefers the in-app channel while a socket is present", async () => {
+        const store = createInMemoryAppDatabase();
+        const hub = createNotificationHub();
+        const socket = fakeSocket();
+        const userId = makeUser(store);
+        hub.add(userId, socket);
+        const push: NotificationChannel = {
+            id: "test-push",
+            capabilities: {
+                canSpeak: false,
+                canShowText: true,
+                canShowImage: false,
+                canAcceptReply: false,
+                isAddressable: true,
+                requiresPresence: false,
+                onlyWhenAbsent: true,
+            },
+            deliver: vi.fn(() => 1),
+        };
+        const service = createNotificationService({
+            store,
+            hub,
+            channels: [createInAppChannel(hub), push],
+            maxPerUser: 200,
+            deliveriesPerWindow: 20,
+            now: () => new Date("2026-10-15T18:00:00.000Z"),
+        });
+
+        const outcome = await service.notify(userId, {
+            kind: "job.finished",
+            title: "Present",
+        });
+        expect(outcome.delivered).toBe(1);
+        expect(socket.frames).toHaveLength(1);
+        expect(push.deliver).not.toHaveBeenCalled();
+        store.close();
     });
 
     it("respects the user's own switch while still recording", async () => {

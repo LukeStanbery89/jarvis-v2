@@ -77,6 +77,26 @@ const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
 );`;
 
 /**
+ * Browser push endpoints (#189 follow-up), one row per device subscription.
+ *
+ * Web Push is addressed per browser, not per account: the endpoint and its
+ * p256dh/auth keys are the push service's handle for one installed PWA. The
+ * endpoint is globally unique, so re-subscribing the same browser replaces its
+ * keys and user instead of accumulating dead rows. The server never exposes
+ * these rows through the prefs API.
+ */
+const PUSH_SUBSCRIPTIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint   TEXT NOT NULL UNIQUE,
+    p256dh     TEXT NOT NULL,
+    auth       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
+    ON push_subscriptions (user_id, created_at DESC);`;
+
+/**
  * The scheduler's tables (#90): one row per scheduled job, one per run.
  *
  * A constant rather than an inline string because it is needed twice — by
@@ -371,6 +391,7 @@ ${JOBS_SCHEMA}
 ${CODING_JOBS_SCHEMA}
 ${CODING_JOB_QUESTIONS_SCHEMA}
 ${WEB_SESSIONS_SCHEMA}
+${PUSH_SUBSCRIPTIONS_SCHEMA}
 `;
 
 /**
@@ -478,6 +499,43 @@ export interface PrefLedger {
     setPrefs(userId: number, records: { key: string; value: unknown }[]): void;
     /** Delete the given keys for a user (missing keys are silently ignored). */
     deletePrefKeys(userId: number, keys: string[]): void;
+}
+
+/** One browser's Web Push subscription (#189 follow-up). */
+export interface AppPushSubscription {
+    /** The push service URL the browser minted. */
+    endpoint: string;
+    /** The P-256 Diffie-Hellman public key (`subscription.keys.p256dh`). */
+    p256dh: string;
+    /** The subscription's auth secret (`subscription.keys.auth`). */
+    auth: string;
+    /** When this device was first registered. */
+    createdAt: string;
+}
+
+/**
+ * Browser push-subscription ledger.
+ *
+ * Kept separate from prefs because these are device capabilities, not user
+ * preferences: the keys are used by the server to encrypt a push, and the
+ * endpoint identifies one browser. The auth storage owns the rows; the server's
+ * push channel is the only reader.
+ */
+export interface PushSubscriptionLedger {
+    /**
+     * Registers or refreshes one browser subscription for a user.
+     *
+     * The endpoint is unique across users, so a browser that signs into another
+     * account is moved to that account rather than left attached to both.
+     */
+    upsertPushSubscription(
+        userId: number,
+        subscription: { endpoint: string; p256dh: string; auth: string },
+    ): AppPushSubscription;
+    /** Every live browser subscription for one account, newest first. */
+    listPushSubscriptions(userId: number): AppPushSubscription[];
+    /** Removes one browser's subscription; returns whether a row was removed. */
+    deletePushSubscription(userId: number, endpoint: string): boolean;
 }
 
 /**
@@ -1590,6 +1648,7 @@ export type AppDatabase = UserLedger &
     DeviceLedger &
     WebSessionLedger &
     PrefLedger &
+    PushSubscriptionLedger &
     SessionLedger &
     NotificationLedger &
     JobLedger &
@@ -2815,6 +2874,14 @@ ${CODING_JOB_INDEXES}`);
         db.exec(CODING_JOB_QUESTIONS_SCHEMA);
         db.pragma("user_version = 21");
     }
+
+    if (version < 22) {
+        // v22: browser push subscriptions (#189 follow-up). A new table, so
+        // existing accounts keep their rows and simply have no push targets
+        // until a browser subscribes.
+        db.exec(PUSH_SUBSCRIPTIONS_SCHEMA);
+        db.pragma("user_version = 22");
+    }
 }
 
 export function openAppDatabase(
@@ -2863,6 +2930,9 @@ export class SqliteAppDatabase implements AppDatabase {
         deleteWebSession: Database.Statement;
         deleteWebSessionsForUser: Database.Statement;
         deleteExpiredWebSessions: Database.Statement;
+        upsertPushSubscription: Database.Statement;
+        selectPushSubscriptions: Database.Statement;
+        deletePushSubscription: Database.Statement;
         upsertPref: Database.Statement;
         selectPrefs: Database.Statement;
         deletePrefKey: Database.Statement;
@@ -3041,6 +3111,15 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             deleteExpiredWebSessions: db.prepare(
                 "DELETE FROM web_sessions WHERE expires_at <= ?",
+            ),
+            upsertPushSubscription: db.prepare(
+                "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at",
+            ),
+            selectPushSubscriptions: db.prepare(
+                "SELECT endpoint, p256dh, auth, created_at AS createdAt FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC",
+            ),
+            deletePushSubscription: db.prepare(
+                "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
             ),
             upsertPref: db.prepare(
                 "INSERT INTO prefs (user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
@@ -3531,6 +3610,45 @@ export class SqliteAppDatabase implements AppDatabase {
     deleteExpiredWebSessions(): number {
         const result = this.statements.deleteExpiredWebSessions.run(now());
         return result.changes;
+    }
+
+    upsertPushSubscription(
+        userId: number,
+        subscription: { endpoint: string; p256dh: string; auth: string },
+    ): AppPushSubscription {
+        this.statements.upsertPushSubscription.run(
+            userId,
+            subscription.endpoint,
+            subscription.p256dh,
+            subscription.auth,
+            now(),
+        );
+        const rows = this.statements.selectPushSubscriptions.all(
+            userId,
+        ) as AppPushSubscription[];
+        const stored = rows.find(
+            (row) => row.endpoint === subscription.endpoint,
+        );
+        if (stored === undefined) {
+            throw new AuthError(
+                "NOT_FOUND",
+                "push subscription vanished after upsert",
+            );
+        }
+        return stored;
+    }
+
+    listPushSubscriptions(userId: number): AppPushSubscription[] {
+        return this.statements.selectPushSubscriptions.all(
+            userId,
+        ) as AppPushSubscription[];
+    }
+
+    deletePushSubscription(userId: number, endpoint: string): boolean {
+        return (
+            this.statements.deletePushSubscription.run(userId, endpoint)
+                .changes > 0
+        );
     }
 
     getPrefs(userId: number): Record<string, unknown> {

@@ -218,6 +218,14 @@ describe("web app serving (/)", () => {
             path.join(webDir, "assets", "app.js"),
             "console.log('web')",
         );
+        writeFileSync(
+            path.join(webDir, "assets", "vosk.worker-AB12cd34.js"),
+            "self.onmessage = () => {};",
+        );
+        writeFileSync(
+            path.join(webDir, "assets", "index-OTHER123.js"),
+            "console.log('other')",
+        );
         webApp = createApp(store, {
             appDbPath: ":memory:",
             turnTimeoutMs: 30_000,
@@ -246,6 +254,15 @@ describe("web app serving (/)", () => {
         const res = await request(webApp).get("/chat");
         expect(res.status).toBe(200);
         expect(res.text).toContain("JARVIS Web");
+    });
+
+    it("does not answer a missing static file with the SPA shell", async () => {
+        // iOS probes icon paths directly; a 200 HTML body is an invalid icon
+        // and produces a letter tile on the Home Screen.
+        const icon = await request(webApp).get("/apple-touch-icon-180x180.png");
+        expect(icon.status).toBe(404);
+        const asset = await request(webApp).get("/icons/missing-1234.png");
+        expect(asset.status).toBe(404);
     });
 
     it("redirects the old /web address to /chat, keeping the query", async () => {

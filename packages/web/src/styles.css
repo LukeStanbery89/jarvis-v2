@@ -85,11 +85,35 @@
     box-sizing: border-box;
 }
 
+html {
+    /* Safari samples the root when it tints the status bar and overscroll
+       areas; without this it falls back to its own light/white. */
+    background: var(--bg);
+}
+
 body {
     margin: 0;
     background: var(--bg);
     min-height: 100dvh;
     color: var(--text);
+}
+
+/*
+ * iOS 27's installed-PWA top blur samples the nearest fixed element within a
+ * few pixels of the screen edge. A solid, full-width strip at least 6px high
+ * makes the status bar paint solid black instead of drawing the scrim over
+ * the nav (the workaround documented for iOS 27; iOS 26.1's letterboxed status
+ * bar is unaffected because the strip sits in the same black area).
+ */
+.status-bar-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: max(6px, env(safe-area-inset-top, 0px));
+    background: var(--bg);
+    pointer-events: none;
+    z-index: 2;
 }
 
 /* Placeholder text sits on the faintest rung of the hue's alpha ladder. */
@@ -105,7 +129,12 @@ textarea::placeholder {
    so the field and the glass reach the first screen as well. */
 .app.gate {
     display: flex;
-    padding: 1.25rem;
+    /* Preserve the gate's own breathing room while still clearing a phone's
+       status bar and home indicator (`.app` pads for both). */
+    padding: max(1.25rem, env(safe-area-inset-top, 0px))
+        max(1.25rem, env(safe-area-inset-right, 0px))
+        max(1.25rem, env(safe-area-inset-bottom, 0px))
+        max(1.25rem, env(safe-area-inset-left, 0px));
     /* A short window scrolls the card instead of clipping it. */
     overflow-y: auto;
 }
@@ -237,6 +266,12 @@ textarea::placeholder {
     margin-inline: auto;
     height: 100dvh;
     overflow: hidden;
+    /* Horizontal/notch insets belong to the shell. The bottom inset is
+       deliberately zero here: only the chat's composer needs that extra room,
+       and applying it to every page shortened the dashboard/list panes and
+       looked like a stray margin. The chat adds its own floor below. */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0
+        env(safe-area-inset-left, 0px);
 }
 
 .app-view {
@@ -254,6 +289,12 @@ textarea::placeholder {
     padding: 0.45rem 0.75rem;
     background: var(--panel);
     border-bottom: 1px solid var(--primary-border);
+    /* Clear the fixed status-bar strip when a phone reports a zero top inset
+       (Chrome iOS does even in standalone mode). The strip is exactly
+       `max(6px, env(safe-area-inset-top))` tall; without this margin it covers
+       the top of the hamburger's unread badge. When the inset is already
+       larger than 6px the margin is zero and the bar is unchanged. */
+    margin-top: max(0px, calc(6px - env(safe-area-inset-top, 0px)));
 }
 
 .navbar-brand {
@@ -747,10 +788,12 @@ textarea::placeholder {
  * timer that actually deletes cannot disagree.
  */
 .icon-btn.hold-to-delete {
-    /* Keep a scroll that starts on the button from turning into a stuck hold:
-       the browser reports it as `pointercancel`, which the component cancels.
+    /* A finger is allowed a little drift while holding: `none` stops the
+       browser from interpreting that drift as a pan and cancelling the
+       pointer. The trade is that a scroll started on the trash cannot scroll
+       the thread list, which is the right priority for a destructive hold.
        Also suppress the mobile long-press callout/selection. */
-    touch-action: manipulation;
+    touch-action: none;
     -webkit-touch-callout: none;
     user-select: none;
     -webkit-user-select: none;
@@ -758,6 +801,16 @@ textarea::placeholder {
     /* No square: the ring is the button. */
     background: transparent;
     border: 0;
+    border-radius: 50%;
+}
+
+/* The visible ring is 44px, but the finger target is deliberately larger.
+   This pseudo-element is part of the button, so a drift of a few millimetres
+   still stays inside the control without changing the row's layout. */
+.icon-btn.hold-to-delete::before {
+    content: "";
+    position: absolute;
+    inset: -0.75rem;
     border-radius: 50%;
 }
 
@@ -799,6 +852,70 @@ textarea::placeholder {
     transform: rotate(-90deg);
     transform-box: view-box;
     transform-origin: center;
+}
+
+/*
+ * The phone's ring, portalled to `<body>` by `HoldToDelete`.
+ *
+ * Fixed positioning and a stacking context above the app are the point: the
+ * chat list is an `overflow-y: auto` pane, so a ring drawn inside the row is
+ * clipped at the pane's edge. This copy is centred over the button but is
+ * larger than it and is free to paint over the pane, the bar, and the composer.
+ */
+.hold-to-delete-overlay {
+    position: fixed;
+    z-index: 100;
+    display: block;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    animation: hold-to-delete-grow 160ms ease-out both;
+}
+
+/* Cancel reverses the reveal: shrink back toward the 44px button and fade. */
+.hold-to-delete-overlay.leaving {
+    animation: hold-to-delete-shrink 150ms ease-in both;
+}
+
+@keyframes hold-to-delete-grow {
+    from {
+        transform: translate(-50%, -50%) scale(0.4);
+        opacity: 0.55;
+    }
+
+    to {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+    }
+}
+
+@keyframes hold-to-delete-shrink {
+    from {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+    }
+
+    to {
+        transform: translate(-50%, -50%) scale(0.4);
+        opacity: 0;
+    }
+}
+
+.hold-to-delete-overlay svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    transform: rotate(-90deg);
+    transform-box: view-box;
+    transform-origin: center;
+}
+
+.hold-to-delete-overlay .hold-to-delete-track,
+.hold-to-delete-overlay .hold-to-delete-fill {
+    stroke-width: 3;
+}
+
+.hold-to-delete-overlay .hold-to-delete-fill {
+    animation: hold-to-delete-fill var(--hold-duration, 3000ms) linear forwards;
 }
 
 .hold-to-delete-track,
@@ -932,17 +1049,26 @@ textarea::placeholder {
 
 .tool-call {
     align-self: flex-start;
-    max-width: 46rem;
+    /* A tool payload can be arbitrarily long. Cap it to the reading column and
+       let the `pre` wrap; the old max-content width pushed the whole transcript
+       sideways on a phone. */
+    max-width: min(46rem, 100%);
+    min-width: 0;
     font-size: 0.85rem;
     color: var(--primary-dim);
 }
 
 .tool-call summary {
     cursor: pointer;
+    overflow-wrap: anywhere;
 }
 
 .tool-call pre {
+    max-width: 100%;
     overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .composer {
@@ -974,8 +1100,11 @@ textarea::placeholder {
         grid-template-columns: 1fr;
         /* The composer carries no inline or bottom padding any more, so this is
            the whole gap between the controls and the edge of the screen: half
-           the pane era's, sideways and down. */
-        padding: 0.75rem 0.5rem 0.5rem;
+           the pane era's, sideways, and a real floor below. Chrome on iOS can
+           report a zero safe-area inset even inside the Home Screen app, and
+           the rounded corners would otherwise clip the two 44px buttons. This
+           is chat-only: the other pages keep their own natural bottom edge. */
+        padding: 0.75rem 0.5rem max(1.75rem, env(safe-area-inset-bottom, 0px));
     }
 
     .sidebar {
@@ -3199,6 +3328,13 @@ textarea::placeholder {
         padding: 0.6rem 0.5rem;
     }
 
+    /* The phone draws its larger ring in the body portal (see HoldToDelete),
+       so hide the in-button copy for the whole life of that overlay —
+       including the shrink-back after a cancel. */
+    .hold-to-delete[data-ring="true"] > .hold-to-delete-ring {
+        visibility: hidden;
+    }
+
     /* The composer: the send button and the box beside it agree on a height. */
     .composer button,
     .composer textarea {
@@ -3468,4 +3604,105 @@ textarea::placeholder {
     color: var(--primary);
     background: var(--primary-wash);
     border-color: var(--primary-border);
+}
+
+/*
+ * Phone gestures (#189 follow-up).
+ *
+ * The app is a fixed shell with its own scroll panes, so the document itself
+ * must not pan/zoom or rubber-band. `touch-action: pan-x pan-y` keeps one-finger
+ * scrolling and horizontal scrollers while removing pinch-zoom and double-tap
+ * zoom; the viewport tag covers Android and the browsers that honour it.
+ *
+ * Selection is enabled only where it is useful — the transcript, code, and form
+ * fields. A long-press/double-tap on the nav, a sidebar row, or a card should
+ * act on the control, not open iOS's Copy/Look Up menu. Scoping this to coarse
+ * pointers leaves desktop selection untouched.
+ */
+@media (hover: none) and (pointer: coarse) {
+    html,
+    body {
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+        touch-action: pan-x pan-y;
+    }
+
+    body {
+        -webkit-tap-highlight-color: transparent;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+    }
+
+    #root {
+        height: 100%;
+        overflow: hidden;
+    }
+
+    /* The scroll containers inside the shell must not hand their edge back to
+       the document (which is what iOS shows as the rubber-band bounce). */
+    .app,
+    .app-view,
+    .app.gate,
+    .transcript,
+    .sidebar,
+    .notification-list,
+    .toast-stack,
+    .settings,
+    .job-form,
+    .timer-ring,
+    .page {
+        overscroll-behavior: none;
+    }
+
+    /* Text worth copying stays selectable; the rest of the chrome does not. */
+    input,
+    textarea,
+    [contenteditable="true"],
+    pre,
+    code,
+    .msg,
+    .msg * {
+        user-select: text;
+        -webkit-user-select: text;
+        -webkit-touch-callout: default;
+    }
+}
+
+/*
+ * The invisible native switch a primary button uses on iOS (#189 follow-up).
+ * `opacity` — not `display`/`appearance` — is deliberate: iOS plays the Taptic
+ * tick only for a real switch, and hiding its appearance would disable it. The
+ * input fills the button's live rect, so a direct tap toggles it and the
+ * component's change handler runs the button's action. The parent span lets
+ * everything outside the button pass through.
+ */
+.haptic-switch-hit {
+    position: absolute;
+    z-index: 60;
+    pointer-events: none;
+}
+
+.haptic-switch-hit .haptic-switch {
+    display: block;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* Tool disclosures are debug detail, not prose: on a phone they read a step
+   down from the chat so a long JSON payload does not dominate the transcript. */
+@media (max-width: 48rem) {
+    .tool-call {
+        font-size: 0.78rem;
+    }
+
+    .tool-call pre {
+        font-size: 0.75rem;
+        line-height: 1.5;
+    }
 }

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { describeDue } from "../../notifications";
 import type { ClientNotification } from "../../notifications";
 import { presentNotification } from "../../presentation";
+import { HapticButton } from "./HapticButton";
 import { ClassChip } from "./Row/ClassChip";
 
 /** Props for {@link TimerRing}. */
@@ -76,14 +77,13 @@ export function TimerRing({ timer, onStop }: TimerRingProps) {
                 <p className="timer-ring-body">{timer.body}</p>
             )}
             <p className="timer-ring-when">{dueLine}</p>
-            <button
+            <HapticButton
                 ref={stopRef}
-                type="button"
                 className="timer-ring-stop"
                 onClick={() => onStop(timer.id)}
             >
                 Stop
-            </button>
+            </HapticButton>
         </dialog>
     );
 }

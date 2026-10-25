@@ -608,6 +608,9 @@ fail silently either:
 | `JARVIS_NOTIFY`                          | (unset)                                                                         | `off` removes the notification surface entirely (#139) — no `/api/notifications` routes and no delivery wiring                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `JARVIS_NOTIFY_DELIVERIES_PER_MIN`       | `20`                                                                            | Pushes allowed per user per minute; over budget a notification is still recorded and listed, just not pushed                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `JARVIS_NOTIFY_MAX_PER_USER`             | `200`                                                                           | Notifications kept per user; settled rows are evicted first, then the oldest survivor, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                                                                                       |
+| `JARVIS_VAPID_PUBLIC_KEY`                | unset                                                                           | Web Push public key; set with the private half to deliver timers to a backgrounded PWA                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `JARVIS_VAPID_PRIVATE_KEY`               | unset                                                                           | Matching VAPID private key; never sent to clients                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `JARVIS_VAPID_SUBJECT`                   | `mailto:jarvis@localhost`                                                       | Contact URI push services may use (`mailto:` or `https:`)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `JARVIS_SCHEDULER`                       | (unset)                                                                         | `off` removes the scheduler entirely (#90) — no tick loop, no `jobs` tool (phase 3); `JARVIS_NOTIFY=off` removes it too, since a run's outcome is announced through the notification service                                                                                                                                                                                                                                                                                                                    |
 | `JARVIS_JOB_TICK_MS`                     | `5000`                                                                          | How often the scheduler scans for due jobs; coarse on purpose, so a job can start up to one tick late and a restart has nothing to rebuild                                                                                                                                                                                                                                                                                                                                                                      |
 | `JARVIS_JOB_MAX_PER_USER`                | `50`                                                                            | Jobs kept per user; settled rows are evicted first, then the oldest pending one, so the ceiling holds for the table                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -971,9 +974,11 @@ is what keeps a misbehaving producer from turning a chat client into a
 firehose without ever losing the message.
 
 Two properties make it behave unlike the tables above. The budget is only
-charged when there is somebody to interrupt: a notification raised while the
-user has no live socket is left `pending` and spends nothing. And a suppressed
-notification is not an error the caller has to handle — `POST
+charged when there is somebody to interrupt: with no live socket and no Web Push
+subscription, a notification is left `pending` and spends nothing. (With Web
+Push configured, an absent socket is no longer absent _delivery_: the push
+channel can still reach the phone, so that attempt spends a token.) And a
+suppressed notification is not an error the caller has to handle — `POST
 /api/notifications` answers 201 with `suppressed: "cap"` (or `"disabled"`,
 `"quiet-hours"`, `"absent"`), so the producer learns what happened without a
 failure. Quiet hours come from the user's `notify.quietHours` pref and are evaluated
@@ -995,6 +1000,26 @@ Retention is the other half: `JARVIS_NOTIFY_MAX_PER_USER` (default 200) trims on
 every insert, evicting settled rows first — an undelivered notification is the
 last thing a prune takes, but it is not exempt, because the rows that pile up
 most easily are precisely the `pending` ones nobody was online to receive.
+
+### Web Push — `src/notify/channels/webPush.ts`
+
+The in-app socket only reaches an open page. An installed PWA whose JavaScript
+is suspended (the normal state when a phone is locked or the app is in the
+switcher) needs Web Push: the server encrypts a small payload to each browser
+subscription, and the service worker's `push` handler raises the system
+notification. Configure the VAPID pair with
+`npx web-push generate-vapid-keys` and set `JARVIS_VAPID_PUBLIC_KEY` +
+`JARVIS_VAPID_PRIVATE_KEY` (and a real `JARVIS_VAPID_SUBJECT`); without both the
+routes answer `503` and the client keeps the page-only path.
+
+Subscriptions are per browser, stored in `push_subscriptions` and registered via
+`GET /api/push/key`, `POST /api/push/subscribe`, and
+`POST /api/push/unsubscribe`. The push channel is `onlyWhenAbsent`: when an
+in-app socket is present the page already owns the ring and banner, while an
+absent socket is exactly when push is the only path left. Answerable
+notifications are not pushed because a push cannot collect the reply. A push
+service's `404`/`410` deletes the dead endpoint; other provider failures are
+logged and leave the durable notification untouched.
 
 **A dismissal deletes the row** (#90 phase 9c), which is the one lifecycle
 decision this section owns. `dismissed` used to be a terminal state a row sat in

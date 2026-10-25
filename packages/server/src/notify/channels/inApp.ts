@@ -36,6 +36,8 @@ export const IN_APP_CAPABILITIES: NotificationChannelCapabilities = {
     canShowImage: false,
     canAcceptReply: true,
     isAddressable: false,
+    requiresPresence: true,
+    onlyWhenAbsent: false,
 };
 
 /** Maps a stored notification onto its wire frame. */

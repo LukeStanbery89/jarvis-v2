@@ -19,10 +19,27 @@ import type {
     KeyboardEvent as ReactKeyboardEvent,
     PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { Trash2 } from "lucide-react";
 
 /** How long the delete button must be held, in milliseconds. */
 export const HOLD_TO_DELETE_MS = 3000;
+
+/**
+ * How much larger the phone ring is than the button it belongs to.
+ *
+ * A 44 px button is exactly thumb-sized, so the ring has to grow past the
+ * finger to stay visible. The overlay is also a little larger than the first
+ * two-times attempt, with a heavier stroke (see `.hold-to-delete-overlay`).
+ */
+const PHONE_RING_SCALE = 2.5;
+
+/** Where the phone's portal ring is centred, in viewport pixels. */
+interface RingAt {
+    left: number;
+    top: number;
+    size: number;
+}
 
 /** A live hold that a caller can abandon before it completes. */
 export interface HoldHandle {
@@ -93,7 +110,18 @@ export function HoldToDelete({
     className,
 }: HoldToDeleteProps) {
     const [holding, setHolding] = useState(false);
+    /**
+     * The portalled phone ring's centre, or `null` on desktop (where the ring
+     * stays inside the button). Keeping it in the body's stacking context is
+     * what lets it draw above the sidebar instead of being clipped by that
+     * pane's scroll box.
+     */
+    const [ringAt, setRingAt] = useState<RingAt | null>(null);
+    /** Whether the portalled ring is playing its shrink-back animation. */
+    const [ringLeaving, setRingLeaving] = useState(false);
     const holdRef = useRef<HoldHandle | null>(null);
+    /** The short exit timer, so a quick re-press can cancel the shrink. */
+    const exitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // A row can be removed (or the drawer closed) mid-hold; a timer that
     // survived the unmount would delete a conversation the user can no longer
@@ -102,27 +130,76 @@ export function HoldToDelete({
         return () => {
             holdRef.current?.cancel();
             holdRef.current = null;
+            if (exitRef.current !== null) {
+                clearTimeout(exitRef.current);
+                exitRef.current = null;
+            }
         };
     }, []);
 
+    /** Stops a pending shrink-back, if there is one. */
+    function stopExit(): void {
+        if (exitRef.current !== null) {
+            clearTimeout(exitRef.current);
+            exitRef.current = null;
+        }
+    }
+
     /** Starts the hold, unless one is already running. */
-    function begin(): void {
+    function begin(target: HTMLButtonElement): void {
         if (holdRef.current !== null) {
             return;
         }
+        stopExit();
+        setRingLeaving(false);
         setHolding(true);
+        const phone =
+            typeof window !== "undefined" &&
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(max-width: 48rem)").matches;
+        if (phone) {
+            const rect = target.getBoundingClientRect();
+            const size = Math.max(rect.width, rect.height) * PHONE_RING_SCALE;
+            setRingAt({
+                left: rect.left + rect.width / 2,
+                top: rect.top + rect.height / 2,
+                size,
+            });
+        } else {
+            setRingAt(null);
+        }
         holdRef.current = scheduleHold(durationMs, () => {
             holdRef.current = null;
+            stopExit();
             setHolding(false);
+            setRingAt(null);
+            setRingLeaving(false);
             onDelete();
         });
     }
 
-    /** Abandons a live hold and snaps the ring back to empty. */
+    /**
+     * Abandons a live hold.
+     *
+     * The phone's portal ring shrinks back into the button instead of vanishing
+     * on the next frame; the row stays mounted, so the short exit animation can
+     * finish without holding up the pointer gesture.
+     */
     function cancel(): void {
         holdRef.current?.cancel();
         holdRef.current = null;
         setHolding(false);
+        if (ringAt !== null) {
+            stopExit();
+            setRingLeaving(true);
+            exitRef.current = setTimeout(() => {
+                exitRef.current = null;
+                setRingAt(null);
+                setRingLeaving(false);
+            }, 160);
+        } else {
+            setRingLeaving(false);
+        }
     }
 
     /** A left press starts the hold and captures the pointer. */
@@ -137,7 +214,7 @@ export function HoldToDelete({
         } catch {
             // Capture is a convenience; the end handlers still cancel the hold.
         }
-        begin();
+        begin(event.currentTarget);
     }
 
     /** A key press starts the hold; repeat events must not stack timers. */
@@ -151,7 +228,7 @@ export function HoldToDelete({
         // Space would scroll the page, and the native click would otherwise
         // fire on release; the gesture is the hold, not the click.
         event.preventDefault();
-        begin();
+        begin(event.currentTarget);
     }
 
     /** A key release cancels the hold, exactly as a pointer release does. */
@@ -173,47 +250,94 @@ export function HoldToDelete({
         .join(" ");
 
     return (
-        <button
-            type="button"
-            className={classes}
-            style={
-                {
-                    "--hold-duration": `${durationMs}ms`,
-                } as CSSProperties
-            }
-            aria-label={`Hold to delete ${label}`}
-            title={`Press and hold to delete ${label}`}
-            data-hold-ms={durationMs}
-            data-holding={holding ? "true" : "false"}
-            onPointerDown={handlePointerDown}
-            onPointerUp={cancel}
-            onPointerLeave={cancel}
-            onPointerCancel={cancel}
-            onLostPointerCapture={cancel}
-            onKeyDown={handleKeyDown}
-            onKeyUp={handleKeyUp}
-            onBlur={cancel}
-            onContextMenu={(event) => event.preventDefault()}
-        >
-            <span className="hold-to-delete-ring" aria-hidden="true">
-                <svg viewBox="0 0 40 40" focusable="false">
-                    <circle
-                        className="hold-to-delete-track"
-                        cx="20"
-                        cy="20"
-                        r="17"
-                        pathLength={100}
-                    />
-                    <circle
-                        className="hold-to-delete-fill"
-                        cx="20"
-                        cy="20"
-                        r="17"
-                        pathLength={100}
-                    />
-                </svg>
-            </span>
-            <Trash2 size={16} aria-hidden="true" />
-        </button>
+        <>
+            <button
+                type="button"
+                className={classes}
+                style={
+                    {
+                        "--hold-duration": `${durationMs}ms`,
+                    } as CSSProperties
+                }
+                aria-label={`Hold to delete ${label}`}
+                title={`Press and hold to delete ${label}`}
+                data-hold-ms={durationMs}
+                data-holding={holding ? "true" : "false"}
+                data-ring={ringAt !== null ? "true" : "false"}
+                onPointerDown={handlePointerDown}
+                onPointerUp={cancel}
+                onPointerCancel={cancel}
+                onLostPointerCapture={cancel}
+                onKeyDown={handleKeyDown}
+                onKeyUp={handleKeyUp}
+                onBlur={cancel}
+                onContextMenu={(event) => event.preventDefault()}
+            >
+                <span className="hold-to-delete-ring" aria-hidden="true">
+                    <svg viewBox="0 0 40 40" focusable="false">
+                        <circle
+                            className="hold-to-delete-track"
+                            cx="20"
+                            cy="20"
+                            r="17"
+                            pathLength={100}
+                        />
+                        <circle
+                            className="hold-to-delete-fill"
+                            cx="20"
+                            cy="20"
+                            r="17"
+                            pathLength={100}
+                        />
+                    </svg>
+                </span>
+                <Trash2 size={16} aria-hidden="true" />
+            </button>
+            {/*
+             * The phone ring is portalled to `document.body`: the sidebar is a
+             * scroll container (`overflow-y: auto`), so a ring drawn inside the
+             * button is clipped by the chat list's pane exactly where the user
+             * needs to see it. At the body's level it can paint over the pane
+             * and every other page control.
+             */}
+            {ringAt !== null &&
+                createPortal(
+                    <span
+                        className={
+                            ringLeaving
+                                ? "hold-to-delete-overlay leaving"
+                                : "hold-to-delete-overlay"
+                        }
+                        aria-hidden="true"
+                        style={
+                            {
+                                left: ringAt.left,
+                                top: ringAt.top,
+                                width: ringAt.size,
+                                height: ringAt.size,
+                                "--hold-duration": `${durationMs}ms`,
+                            } as CSSProperties
+                        }
+                    >
+                        <svg viewBox="0 0 40 40" focusable="false">
+                            <circle
+                                className="hold-to-delete-track"
+                                cx="20"
+                                cy="20"
+                                r="17"
+                                pathLength={100}
+                            />
+                            <circle
+                                className="hold-to-delete-fill"
+                                cx="20"
+                                cy="20"
+                                r="17"
+                                pathLength={100}
+                            />
+                        </svg>
+                    </span>,
+                    document.body,
+                )}
+        </>
     );
 }

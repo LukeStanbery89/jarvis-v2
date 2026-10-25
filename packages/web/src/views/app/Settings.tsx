@@ -84,6 +84,12 @@ export interface SettingsProps {
     locationState: LocationUiState;
     /** Flips location sharing. */
     onToggleLocation(): void;
+    /** This browser can produce haptic feedback. */
+    hapticsAvailable: boolean;
+    /** The browser-local haptic-feedback preference. */
+    hapticsOn: boolean;
+    /** Flips the haptic-feedback preference. */
+    onToggleHaptics(): void;
     /** The particle field behind the app is showing (#146). */
     particlesOn: boolean;
     /** Flips the particle field. */
@@ -131,6 +137,9 @@ export function Settings(props: SettingsProps) {
         locationOn,
         locationState,
         onToggleLocation,
+        hapticsAvailable,
+        hapticsOn,
+        onToggleHaptics,
         particlesOn,
         onToggleParticles,
         glassOn,
@@ -346,7 +355,7 @@ export function Settings(props: SettingsProps) {
                         disabled={!browserNotifyAvailable}
                         onChange={onToggleBrowserNotify}
                     />
-                    <span>Desktop notifications</span>
+                    <span>System notifications</span>
                 </label>
                 <p className="settings-note">{browserNotifyLabel}</p>
 
@@ -380,6 +389,23 @@ export function Settings(props: SettingsProps) {
                     role="status"
                 >
                     {describeLocationState(locationState)}
+                </p>
+
+                <label className="settings-row">
+                    <input
+                        type="checkbox"
+                        checked={hapticsOn}
+                        disabled={!hapticsAvailable}
+                        onChange={onToggleHaptics}
+                    />
+                    <span>Haptic feedback</span>
+                </label>
+                <p className="settings-note">
+                    {hapticsAvailable
+                        ? hapticsOn
+                            ? "Primary buttons give a short tick."
+                            : "Primary buttons stay silent."
+                        : "This browser does not expose haptic feedback."}
                 </p>
             </section>
 

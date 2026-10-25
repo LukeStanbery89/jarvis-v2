@@ -551,6 +551,20 @@ function spaFallback(indexHtml: string, skipPrefix: string | null = null) {
             next();
             return;
         }
+        // A missing static file must be a 404, never the SPA shell. iOS probes
+        // `/apple-touch-icon…png` itself, and a 200 HTML response there is
+        // treated as a broken icon: the add-to-home-screen sheet falls back to
+        // a generated letter tile. The same applies to any hashed asset that
+        // goes missing after a deploy.
+        if (
+            path.extname(req.path) !== "" ||
+            req.path.startsWith("/icons/") ||
+            req.path.startsWith("/assets/") ||
+            req.path.startsWith("/ort/")
+        ) {
+            next();
+            return;
+        }
         if (
             skipPrefix &&
             (req.path === skipPrefix || req.path.startsWith(`${skipPrefix}/`))

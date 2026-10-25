@@ -38,9 +38,9 @@ validate representative real frames against each message payload.
 
 ## REST spec inventory (`spec/openapi.yaml`)
 
-39 operations: `GET /health` and 38 routes under `/api` (account management,
-notifications, scheduled jobs, coding jobs, weather, the attachment upload, and
-the public model-file routes). The management routes mirror the handlers in
+42 operations: `GET /health` and 41 routes under `/api` (account management,
+notifications, Web Push subscriptions, scheduled jobs, coding jobs, weather, the
+attachment upload, and the public model-file routes). The management routes mirror the handlers in
 `packages/server/src/http/authRoutes.ts`; the attachment route is owned by
 `packages/server/src/http/attachmentRoutes.ts`:
 
@@ -55,6 +55,7 @@ the public model-file routes). The management routes mirror the handlers in
 | `Devices`        | `POST /api/devices`, `PATCH`/`DELETE /api/devices/{id}`, `GET /api/users/{id}/devices`      |
 | `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                            |
 | `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`                 |
+| `Push`           | `GET /api/push/key`, `POST /api/push/{subscribe,unsubscribe}`                               |
 | `Weather`        | `GET /api/weather` (`weatherNow`)                                                           |
 | `ChatSessions`   | `GET /api/sessions`, `DELETE /api/sessions/{threadId}`                                      |
 | `Notifications`  | `GET`/`POST /api/notifications`, `POST /api/notifications/{id}/{read,dismiss,answer}`       |
@@ -69,7 +70,8 @@ login), `Session` (optional `csrfToken` for cookie vs bearer), `SessionLogin`,
 `MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `WeatherNow` (the
 dashboard widget's normalized reading), `Error`, plus the
 attachment trio (`AttachmentUpload` with its deliberate no-`pattern` base64
-field, `AttachmentCreated`, `AttachmentTooLarge`), and the notification set
+field, `AttachmentCreated`, `AttachmentTooLarge`), the Web Push pair
+(`PushKey`, `PushSubscriptionInput`), and the notification set
 (`NotificationInput`, `Notification`, `NotificationList`,
 `NotificationSettlement`, `NotificationDelivery` — the last carrying the
 `delivered` count and the `suppressed` gate, #139). Auth is a

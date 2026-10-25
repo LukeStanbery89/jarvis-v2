@@ -296,6 +296,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/push/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the Web Push VAPID public key
+         * @description The key a browser passes to `PushManager.subscribe`. Public by design (it is not the private VAPID half), but still behind the normal account auth gate. A deployment without a VAPID pair answers 503 rather than handing out an unusable key.
+         */
+        get: operations["pushKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/push/subscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register this browser for Web Push
+         * @description Persists the browser's push endpoint and its p256dh/auth keys for the authenticated account. Re-registering the same endpoint updates its keys and owner. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        post: operations["pushSubscribe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/push/unsubscribe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove this browser's Web Push registration
+         * @description Deletes the subscription for the given endpoint, if it belongs to the caller. Idempotent. Cookie-authenticated callers must send `x-csrf-token`.
+         */
+        post: operations["pushUnsubscribe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/weather": {
         parameters: {
             query?: never;
@@ -759,6 +819,32 @@ export interface components {
         /** @description Free-form per-user integration preferences: a map of string keys (1–256 chars, at most 64 entries) to any JSON value. PUT bodies must contain at least one key (server-enforced); a store may be empty when read. Keys the server itself reads — today `notify.enabled` (boolean or null) and `notify.quietHours` (`{ start, end }` `"HH:MM"` times, or null for off) — are validated on write, so a malformed value is a 400 rather than a setting that saves and then does nothing. Other keys are free-form. */
         Prefs: {
             [key: string]: unknown;
+        };
+        /** @description The VAPID public key for `PushManager.subscribe`. */
+        PushKey: {
+            publicKey: string;
+        };
+        /** @description The browser-generated encryption keys for one push subscription. */
+        PushSubscriptionKeys: {
+            p256dh: string;
+            auth: string;
+        };
+        /** @description One browser's push registration. */
+        PushSubscriptionInput: {
+            /**
+             * Format: uri
+             * @description Must be an HTTPS push-service endpoint.
+             */
+            endpoint: string;
+            keys: components["schemas"]["PushSubscriptionKeys"];
+        };
+        /** @description Identifies one browser subscription to remove. */
+        PushEndpointInput: {
+            /**
+             * Format: uri
+             * @description Must be an HTTPS push-service endpoint.
+             */
+            endpoint: string;
         };
         /** @description Credentials for cookie login (`POST /api/session`). */
         UsernamePassword: {
@@ -2223,6 +2309,166 @@ export interface operations {
             };
             /** @description Missing or invalid `x-csrf-token` for a cookie-authenticated request. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    pushKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The VAPID public key. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushKey"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Web Push is not configured on this server. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    pushSubscribe: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
+                "x-csrf-token"?: components["parameters"]["XCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushSubscriptionInput"];
+            };
+        };
+        responses: {
+            /** @description Subscription stored. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed subscription body or a non-HTTPS endpoint. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid `x-csrf-token` for a cookie-authenticated request. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Web Push is not configured on this server. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    pushUnsubscribe: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required on cookie-authenticated state-changing requests — echo the `csrfToken` from the session response. Bearer-token callers omit it. */
+                "x-csrf-token"?: components["parameters"]["XCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushEndpointInput"];
+            };
+        };
+        responses: {
+            /** @description Subscription removed (or already absent). */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed endpoint body. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid `x-csrf-token` for a cookie-authenticated request. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Web Push is not configured on this server. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

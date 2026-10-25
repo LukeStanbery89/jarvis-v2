@@ -56,6 +56,7 @@ describe("HoldToDelete", () => {
 
     it("starts empty, with both ring halves in the markup", () => {
         expect(attr(buttonTag, "data-holding")).toBe("false");
+        expect(attr(buttonTag, "data-ring")).toBe("false");
         expect(html).toContain('class="hold-to-delete-ring"');
         expect(html).toContain('class="hold-to-delete-track"');
         expect(html).toContain('class="hold-to-delete-fill"');
@@ -117,6 +118,28 @@ describe("the hold control's shape", () => {
         // this rule has to out-specify it, so the selector names both classes.
         expect(block(".icon-btn.hold-to-delete:hover")).toContain(
             "background: transparent;",
+        );
+    });
+
+    it("draws the phone ring above the page with a heavier stroke", () => {
+        const overlay = block(".hold-to-delete-overlay");
+        expect(overlay).toContain("position: fixed;");
+        expect(overlay).toContain("z-index: 100;");
+        expect(overlay).toContain("hold-to-delete-grow");
+        expect(block(".hold-to-delete-overlay.leaving")).toContain(
+            "hold-to-delete-shrink",
+        );
+        expect(sheet).toMatch(
+            /\.hold-to-delete-overlay \.hold-to-delete-track,[\s\S]*?stroke-width: 3;/,
+        );
+    });
+
+    it("enlarges the hold target beyond the drawn 44px button", () => {
+        expect(block(".icon-btn.hold-to-delete")).toContain(
+            "touch-action: none;",
+        );
+        expect(block(".icon-btn.hold-to-delete::before")).toContain(
+            "inset: -0.75rem;",
         );
     });
 });

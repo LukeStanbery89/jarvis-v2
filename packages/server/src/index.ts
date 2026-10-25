@@ -39,6 +39,7 @@ import { FixedWindowQuota } from "./rate/fixedWindowQuota";
 import { KokoroTtsProvider } from "./tts/kokoro";
 import { createNotificationHub } from "./notify/hub";
 import { createInAppChannel } from "./notify/channels/inApp";
+import { createWebPushChannel } from "./notify/channels/webPush";
 import { createNotificationService } from "./notify/service";
 import { createJobCreator } from "./scheduler/create";
 import { createJobRunner } from "./scheduler/runner";
@@ -257,7 +258,17 @@ const notifications =
         ? createNotificationService({
               store,
               hub: notificationHub,
-              channels: [createInAppChannel(notificationHub)],
+              channels: [
+                  createInAppChannel(notificationHub),
+                  ...(appConfig.push
+                      ? [
+                            createWebPushChannel({
+                                store,
+                                vapid: appConfig.push,
+                            }),
+                        ]
+                      : []),
+              ],
               maxPerUser: notifyConfig.maxPerUser,
               deliveriesPerWindow: notifyConfig.deliveriesPerMin,
           })
