@@ -103,14 +103,17 @@ with the last word instead of holding the peak. A context without
 `prefers-reduced-motion: reduce` draws a single static frame; the media query is
 watched, so toggling the OS setting takes effect without a reload.
 
-Both appearance effects are switches in the settings panel's **Appearance**
-group (`src/appearance.ts`, `localStorage` key `jarvis.appearance`). They are
-per-browser, not per-account: a busy background on a phone and a quiet one on a
-wall display are facts about the device. Turning the field off **unmounts** the
-canvas, so its loop stops rather than drawing into something invisible; turning
-the glass off sets `data-glass="off"` on `.app`, which flattens the composed
-`--glass-filter` to `none` and darkens the tint. The layout is identical either
-way — the switch is about the surface, not the shape.
+All three appearance preferences are switches in the settings panel's
+**Appearance** group (`src/appearance.ts`, `localStorage` key
+`jarvis.appearance`). They are per-browser, not per-account: a busy background on
+a phone and a quiet one on a wall display are facts about the device. Turning the
+field off **unmounts** the canvas, so its loop stops rather than drawing into
+something invisible; turning the glass off sets `data-glass="off"` on `.app`,
+which flattens the composed `--glass-filter` to `none` and darkens the tint; and
+**Navigation labels** off sets `data-nav-labels="off"` on the wide-screen left
+menu, which hides its words and leaves their icons, with each item's
+`aria-label`/`title` still naming it. The layout is otherwise identical — a
+switch is about the surface, not the shape.
 
 ## Responsive layout (#146 phase D)
 
@@ -141,12 +144,17 @@ the gear to a **Settings** item in it, with Admin below a hairline under them �
 the wordmark's centring stays at 48 rem because it belongs to the thread
 toggle, which follows the chat's breakpoint.
 
-The **rail** takes over at **80 rem**: the bar's links step aside for a 2.5 rem
-column of icons on the left — dashboard, chat, timers, reminders, notifications,
-then Admin past a hairline — each carrying an `aria-label` and a `title`, since
-an icon is not a word. Below that the bar keeps the links (from 60 rem) and the
-hamburger carries them (under 60 rem), so exactly one set of destinations is
-visible at every width.
+The **rail** takes over at **80 rem**: the bar's links step aside for a column on
+the left — dashboard, chat, timers, reminders, notifications, then Admin past a
+hairline — each item its icon beside its word, and each carrying an `aria-label`
+and a `title` as well, so an icon alone still names itself. The **Navigation
+labels** switch is the rail's own: off, the words are hidden and the column falls
+back to the 2.5 rem icon squares, while the bar's links (60–80 rem), the
+hamburger (under 60 rem) and the drawer keep their words — exactly one set of
+destinations is visible at every width, and only the wide-screen one responds to
+the switch. The switch itself follows the rail's breakpoint: below 80 rem, where
+the rail is absent, the settings panel hides it (`.settings-nav-labels`) rather
+than offering a control that changes nothing.
 
 The sign-in gate is the same box: `Login` renders it as `.app.gate` and reads
 this browser's appearance itself, so the field and the glass reach the first
@@ -734,9 +742,9 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/clock.ts` — `clockText` / `formatDate` / `weekdayText` / `describeSpan`: time in the words a person reads, hand-rolled so the tests are exact and shared so a reminder and a job cannot disagree.
 - `src/jobs.ts` — the repeat control's logic (#90 phase 8e): `RepeatDraft` + `repeatDraftToRule` (the form's choices turned into the rule, anchored at the moment the picker holds) + `repeatDraftFromRule` (a stored rule read back into the controls, so opening an edit cannot change it) + `checkRepeatDraft` + `repeatText` (the row's clause, the protocol's words verbatim) + `nextRepeatAt` (the live preview, through the server's own `nextOccurrence`). Beside them, the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM"; `formatCountdown`: a timer's remaining time as `hh:mm:ss`; `runDuration`: a single attempt's length in ms / seconds / the usual span, since a tool job's run is not measurable in whole minutes).
 - `src/hooks/useJobs.ts` — the caller's jobs: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives. The read asks for settled rows too (`includeSettled`, the server's maximum page — its page is newest-created first, so a settled-only read is not expressible, and retention caps a user's table below the limit), and `jobs.ts`'s `splitJobs` divides it into what is owed and what is history, so a page gets both without a second request. The hook is also where a create or an edit happens (#90 phase 7): `create`/`update` return the server's `{job, quiet}` or its refusal in its own words, for the form that is still open behind the dialog.
-- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and and the hamburger drawer under 60rem — its own measured breakpoint, where the links and the gear become drawer items.
-- `src/views/app/IconRail.tsx` — the wide-screen navigation rail: the same destinations as a column of icons from 80rem, with the unread badge on its corner and Admin past a hairline. Icon-only, so every item carries an `aria-label` and a `title`.
-- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which. The gear in the bar opens it from any page (#90 phase 6d).
+- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and the hamburger drawer under 60rem — its own measured breakpoint, where the links and the gear become drawer items.
+- `src/views/app/IconRail.tsx` — the wide-screen navigation rail: the same destinations as a column from 80rem, each an icon beside its word (or the icon alone when **Navigation labels** is off), with the unread badge on the icon's corner and Admin past a hairline. Every item carries an `aria-label` and a `title` as well, so the icon-only mode is still named.
+- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which, and an **Appearance** group holding the three per-browser switches — background particles, frosted glass, and navigation labels (hidden below the rail's 80 rem breakpoint, where it would drive nothing). The gear in the bar opens it from any page (#90 phase 6d).
 - `src/views/app/TimerRing.tsx` — the ring a fired `timer` gets (#90 phase 4): a modal `<dialog>` with **Stop** as its one exit, so it covers anything else in the top layer without a z-index race.
 - `src/views/app/Toast.tsx` — the floating notification **stack** (up to `TOAST_LIMIT` cards, newest first): the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
 - `src/views/app/Dashboard.tsx` — the page at `/`: a ticking clock (a leaf, so 1 Hz never re-renders the app) whose colon blinks once a second (`clockParts` + a CSS animation, off under `prefers-reduced-motion`), "coming up" from `useJobs`, and the unread count. Links into the pages that manage each.

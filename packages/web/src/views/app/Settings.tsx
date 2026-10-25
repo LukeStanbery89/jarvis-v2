@@ -8,10 +8,12 @@
  * microphone, a location) cannot be synced without lying — so the panel says
  * which is which rather than presenting one flat list of switches.
  * **Appearance** (#146) is browser-local like that second group, but it gets
- * its own heading: "This browser" is about permissions and hardware, and two
+ * its own heading: "This browser" is about permissions and hardware, and
  * switches that change what the app looks like would be lost at the bottom of
  * it. Its hint still states the storage rule, because the group no longer sits
- * under a heading that implies it.
+ * under a heading that implies it. One of its switches — navigation labels —
+ * only means anything on a display wide enough for the left rail, so it is
+ * hidden below the rail's own breakpoint rather than offered as a dead control.
  *
  * Presentational, like `Sidebar.tsx`: state comes in as props, changes go out
  * as callbacks. The one exception is the quiet-hours fields, which are a draft
@@ -90,6 +92,10 @@ export interface SettingsProps {
     glassOn: boolean;
     /** Flips the frosted glass (off = solid panes, same layout). */
     onToggleGlass(): void;
+    /** The wide-screen left menu shows its text labels (#146 phase D). */
+    navLabelsOn: boolean;
+    /** Flips the left menu's labels (off = icons alone). */
+    onToggleNavLabels(): void;
 
     /** Signs out of this browser. */
     onSignOut(): void;
@@ -129,6 +135,8 @@ export function Settings(props: SettingsProps) {
         onToggleParticles,
         glassOn,
         onToggleGlass,
+        navLabelsOn,
+        onToggleNavLabels,
         onSignOut,
     } = props;
 
@@ -376,10 +384,12 @@ export function Settings(props: SettingsProps) {
             </section>
 
             {/* Appearance (#146 phase B2) is its own group rather than a corner
-                of "This browser": these two switches change what the app looks
-                like, and they are the only ones that do. They are still stored
-                in this browser, so the hint says so — the group no longer sits
-                under a heading that implies it. */}
+                of "This browser": these switches change what the app looks
+                like, and they are the only ones that do — the particle field,
+                the frosted glass, and whether the wide-screen left menu spells
+                out its pages. They are still stored in this browser, so the hint
+                says so — the group no longer sits under a heading that implies
+                it. */}
             <section className="settings-group">
                 <h3>Appearance</h3>
                 <p className="settings-hint">
@@ -410,6 +420,24 @@ export function Settings(props: SettingsProps) {
                     {glassOn
                         ? "Panes blur what is behind them."
                         : "Panes are solid — cheaper to draw on a slow machine."}
+                </p>
+
+                {/* The switch is the wide-screen rail's own, and the rail is
+                    `display: none` below 80 rem, so below that it would do
+                    nothing. The `settings-nav-labels` class on both the row and
+                    the note hides them at the rail's breakpoint. */}
+                <label className="settings-row settings-nav-labels">
+                    <input
+                        type="checkbox"
+                        checked={navLabelsOn}
+                        onChange={onToggleNavLabels}
+                    />
+                    <span>Navigation labels</span>
+                </label>
+                <p className="settings-note settings-nav-labels">
+                    {navLabelsOn
+                        ? "On wide screens, the left menu spells out its pages."
+                        : "On wide screens, the left menu shows icons alone."}
                 </p>
             </section>
 
