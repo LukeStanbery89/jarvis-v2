@@ -24,8 +24,11 @@ import { open } from "node:fs/promises";
 import path from "node:path";
 import type {
     AppCodingJob,
+    CodingAnswer,
     CodingJobCrashPolicy,
     CodingJobLedger,
+    CodingJobQuestion,
+    CodingQuestion,
 } from "@lukestanbery/jarvis-auth";
 import {
     MAX_NOTIFICATION_BODY_LENGTH,
@@ -63,6 +66,7 @@ import {
     type PreparedWorkspace,
     type WorkspaceManager,
 } from "./workspace";
+import { pullNumberFromUrl } from "./watch";
 
 /** How much of a job's output is kept on its row (the tail, not the whole log). */
 const LOG_TAIL_BYTES = 16 * 1024;
@@ -122,6 +126,244 @@ function resumeTask(job: AppCodingJob, answers: string): string {
     );
 }
 
+/** Longest one answer (or one Other note) may be. */
+const MAX_CODING_ANSWER_CHARS = 4000;
+
+/** How many answers one submission may carry. */
+const MAX_CODING_ANSWERS = 20;
+
+/**
+ * Validates a structured answer set against the job's questions (#180).
+ *
+ * The caller persists only after this passes. Required questions must have a
+ * non-empty answer; single/multi values must name real choices, unless the
+ * question allows **Other** and the answer carries its text.
+ *
+ * @param questions - The stored question set, in order.
+ * @param answers - The user's answers.
+ * @returns `{ ok: true }`, or the first refusal.
+ */
+function validateCodingAnswers(
+    questions: readonly CodingJobQuestion[],
+    answers: readonly CodingAnswer[],
+): { ok: true } | { ok: false; reason: string } {
+    if (answers.length > MAX_CODING_ANSWERS) {
+        return {
+            ok: false,
+            reason: `At most ${MAX_CODING_ANSWERS} answers may be sent.`,
+        };
+    }
+    const known = new Set(questions.map((question) => question.id));
+    const byId = new Map<string, CodingAnswer>();
+    for (const answer of answers) {
+        if (!known.has(answer.questionId)) {
+            return {
+                ok: false,
+                reason: `Question ${answer.questionId} is not part of this job.`,
+            };
+        }
+        if (byId.has(answer.questionId)) {
+            return {
+                ok: false,
+                reason: `Question ${answer.questionId} was answered twice.`,
+            };
+        }
+        if (typeof answer.value === "string") {
+            if (answer.value.length > MAX_CODING_ANSWER_CHARS) {
+                return {
+                    ok: false,
+                    reason: `An answer is longer than ${MAX_CODING_ANSWER_CHARS} characters.`,
+                };
+            }
+        } else {
+            if (answer.value.length > MAX_CODING_ANSWERS) {
+                return {
+                    ok: false,
+                    reason: `Too many choices for ${answer.questionId}.`,
+                };
+            }
+            for (const value of answer.value) {
+                if (value.length > MAX_CODING_ANSWER_CHARS) {
+                    return {
+                        ok: false,
+                        reason: `An answer is longer than ${MAX_CODING_ANSWER_CHARS} characters.`,
+                    };
+                }
+            }
+        }
+        if (
+            answer.other !== undefined &&
+            answer.other.length > MAX_CODING_ANSWER_CHARS
+        ) {
+            return {
+                ok: false,
+                reason: `The Other answer is longer than ${MAX_CODING_ANSWER_CHARS} characters.`,
+            };
+        }
+        byId.set(answer.questionId, answer);
+    }
+
+    for (const question of questions) {
+        const answer = byId.get(question.id);
+        if (answer === undefined) {
+            if (question.required) {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} is required.`,
+                };
+            }
+            continue;
+        }
+        const other = answer.other?.trim() ?? "";
+        if (question.kind === "text") {
+            if (typeof answer.value !== "string") {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} needs a text answer.`,
+                };
+            }
+            if (other.length > 0) {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} does not allow Other.`,
+                };
+            }
+            if (question.required && answer.value.trim().length === 0) {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} is required.`,
+                };
+            }
+            continue;
+        }
+        const options = new Set(question.options.map((option) => option.id));
+        if (question.kind === "single") {
+            if (typeof answer.value !== "string") {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} needs one choice.`,
+                };
+            }
+            const value = answer.value.trim();
+            if (other.length > 0 && !question.allowOther) {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} does not allow Other.`,
+                };
+            }
+            if (options.has(value)) {
+                if (other.length > 0) {
+                    return {
+                        ok: false,
+                        reason: `Question ${question.id} chose Other without selecting it.`,
+                    };
+                }
+                continue;
+            }
+            if (question.allowOther && value === "other" && other.length > 0) {
+                continue;
+            }
+            return {
+                ok: false,
+                reason: `Question ${question.id} has an unknown choice.`,
+            };
+        }
+        if (!Array.isArray(answer.value)) {
+            return {
+                ok: false,
+                reason: `Question ${question.id} needs a list of choices.`,
+            };
+        }
+        if (other.length > 0 && !question.allowOther) {
+            return {
+                ok: false,
+                reason: `Question ${question.id} does not allow Other.`,
+            };
+        }
+        const values = answer.value
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0);
+        for (const value of values) {
+            if (!options.has(value)) {
+                return {
+                    ok: false,
+                    reason: `Question ${question.id} has an unknown choice.`,
+                };
+            }
+        }
+        if (
+            values.length === 0 &&
+            !(question.allowOther && other.length > 0) &&
+            question.required
+        ) {
+            return {
+                ok: false,
+                reason: `Question ${question.id} is required.`,
+            };
+        }
+    }
+    return { ok: true };
+}
+
+/**
+ * Renders the structured answers as the Q/A block the agent reads (#180).
+ *
+ * @param questions - The stored question set, in order.
+ * @param answers - The validated answers.
+ * @returns The block, one Q/A pair per question.
+ */
+function renderCodingAnswers(
+    questions: readonly CodingJobQuestion[],
+    answers: readonly CodingAnswer[],
+): string {
+    const byId = new Map(answers.map((answer) => [answer.questionId, answer]));
+    return questions
+        .map((question, index) => {
+            const answer = byId.get(question.id);
+            const lines = [`Q${index + 1} (${question.id}): ${question.text}`];
+            if (answer === undefined) {
+                lines.push(`A${index + 1}: (not answered)`);
+            } else if (question.kind === "text") {
+                lines.push(
+                    `A${index + 1}: ${
+                        typeof answer.value === "string"
+                            ? answer.value.trim()
+                            : ""
+                    }`,
+                );
+            } else if (question.kind === "single") {
+                const value =
+                    typeof answer.value === "string" ? answer.value : "";
+                const option = question.options.find(
+                    (entry) => entry.id === value,
+                );
+                const label =
+                    option?.label ?? (value === "other" ? "Other" : value);
+                const other =
+                    answer.other !== undefined && answer.other.trim().length > 0
+                        ? ` — ${answer.other.trim()}`
+                        : "";
+                lines.push(`A${index + 1}: ${label}${other}`);
+            } else {
+                const values = Array.isArray(answer.value) ? answer.value : [];
+                const labels = values.map(
+                    (value) =>
+                        question.options.find((entry) => entry.id === value)
+                            ?.label ?? value,
+                );
+                const other =
+                    answer.other !== undefined && answer.other.trim().length > 0
+                        ? ` — Other: ${answer.other.trim()}`
+                        : "";
+                lines.push(
+                    `A${index + 1}: ${labels.join(", ") || "(none)"}${other}`,
+                );
+            }
+            return lines.join("\n");
+        })
+        .join("\n\n");
+}
+
 /**
  * The issue comment that carries a job's plan and questions (#94).
  *
@@ -134,7 +376,10 @@ function resumeTask(job: AppCodingJob, answers: string): string {
  */
 function questionCommentBody(
     job: AppCodingJob,
-    artifacts: { plan: string | null; questions: readonly string[] },
+    artifacts: {
+        plan: string | null;
+        structuredQuestions: readonly CodingQuestion[];
+    },
 ): string {
     const lines = [
         "### JARVIS — questions before I continue",
@@ -145,10 +390,25 @@ function questionCommentBody(
         lines.push("**Plan**", "", artifacts.plan.trim(), "");
     }
     lines.push("**Questions**", "");
-    artifacts.questions.forEach((question, index) => {
-        lines.push(`${index + 1}. ${question}`);
+    artifacts.structuredQuestions.forEach((question, index) => {
+        lines.push(
+            `${index + 1}. ${question.text}${
+                question.required ? "" : " (optional)"
+            }`,
+        );
+        if (question.kind !== "text") {
+            for (const option of question.options) {
+                lines.push(`    - ${option.label}`);
+            }
+            if (question.allowOther) {
+                lines.push("    - Other (write your answer)");
+            }
+        }
     });
-    lines.push("", "Answer here and I will continue from the same workspace.");
+    lines.push(
+        "",
+        "Answer here and I will continue from the same workspace. For a multiple-choice question, the app or chat can answer each option.",
+    );
     const body = lines.join("\n");
     return body.length > QUESTION_COMMENT_MAX_CHARS
         ? `${body.slice(0, QUESTION_COMMENT_MAX_CHARS - 1)}…`
@@ -202,6 +462,14 @@ export type StartCodingJobResult =
 export type ResumeCodingJobResult =
     | { ok: true; job: AppCodingJob; done: Promise<void> }
     | { ok: false; reason: string };
+
+/** The options a resume shares between its text and structured paths. */
+export interface ResumeCodingJobOptions {
+    /** The newest GitHub comment this resume accounts for. */
+    lastSeenCommentId?: number;
+    /** The REST answer's own notification, left for the route to settle. */
+    notificationId?: string;
+}
 
 /** The supervisor's public surface. */
 export interface CodingJobService {
@@ -291,16 +559,26 @@ export interface CodingJobService {
         userId: number,
         jobId: string,
         answers: string,
-        options?: {
-            lastSeenCommentId?: number;
-            /**
-             * The answerable notification the user is replying through (#94),
-             * when the resume came from the notifications page. Other rows
-             * linked to the job are settled by the resume; this one is left
-             * for the route, which settles it with the answer text.
-             */
-            notificationId?: string;
-        },
+        options?: ResumeCodingJobOptions,
+    ): Promise<ResumeCodingJobResult>;
+    /**
+     * Answers a parked job's structured questions (#180).
+     *
+     * The answers are validated against the stored question set, persisted on
+     * the job, rendered into a Q/A block, and then handed to the same resume
+     * path as a free-text answer. A required question left unanswered refuses
+     * the whole submission; an optional one is rendered as "(not answered)".
+     *
+     * @param userId - The owner.
+     * @param jobId - The parked job.
+     * @param answers - One answer per question the user answered.
+     * @returns The running job, or a sentence explaining why it did not resume.
+     */
+    answer(
+        userId: number,
+        jobId: string,
+        answers: readonly CodingAnswer[],
+        options?: ResumeCodingJobOptions,
     ): Promise<ResumeCodingJobResult>;
     /**
      * One of the caller's own jobs, or `null` for a foreign or missing id.
@@ -631,9 +909,17 @@ export function createCodingJobService(options: {
      */
     async function postQuestions(
         job: AppCodingJob,
-        artifacts: { plan: string | null; questions: readonly string[] },
+        artifacts: {
+            plan: string | null;
+            structuredQuestions: readonly CodingQuestion[];
+        },
     ): Promise<{ id: number; url: string } | null> {
-        if (job.issueNumber === null) {
+        // A PR follow-up has no issue, but GitHub's issue-comment API works on
+        // a pull request too — the PR is the durable thread in that case.
+        const thread =
+            job.issueNumber ??
+            (job.prUrl !== null ? pullNumberFromUrl(job.prUrl) : null);
+        if (thread === null) {
             return null;
         }
         if (commentOnIssue === undefined) {
@@ -650,7 +936,7 @@ export function createCodingJobService(options: {
             return await commentOnIssue({
                 owner,
                 repo: name,
-                number: job.issueNumber,
+                number: thread,
                 body: questionCommentBody(job, artifacts),
             });
         } catch (err) {
@@ -674,20 +960,28 @@ export function createCodingJobService(options: {
      */
     async function announceQuestions(
         job: AppCodingJob,
-        questions: readonly string[],
+        questions: readonly CodingQuestion[],
         commentUrl: string | null,
     ): Promise<void> {
         if (notifications === undefined) {
             return;
         }
-        const first =
-            questions[0] ?? "I need more information before I can continue.";
-        const more =
-            questions.length > 1 ? ` (+${questions.length - 1} more)` : "";
+        const list =
+            questions.length === 0
+                ? ["I need more information before I can continue."]
+                : questions.map((question, index) => {
+                      const choices =
+                          question.kind === "text"
+                              ? ""
+                              : ` (${question.options
+                                    .map((option) => option.label)
+                                    .join(" / ")})`;
+                      return `${index + 1}. ${question.text}${choices}`;
+                  });
         const where =
             commentUrl !== null
-                ? `\n\nI asked on the issue: ${commentUrl}\nYou can also answer here or in the chat that asked for this job.`
-                : "\n\nAnswer here, or reply in the chat that asked for this job.";
+                ? `\n\nI asked on GitHub: ${commentUrl}\nYou can answer here or in the app.`
+                : "\n\nOpen the job to answer all questions, or reply in the chat that asked for this job.";
         try {
             await notifications.notify(job.userId, {
                 kind: "coding.question",
@@ -698,7 +992,7 @@ export function createCodingJobService(options: {
                     MAX_NOTIFICATION_TITLE_LENGTH,
                 ),
                 body: clamp(
-                    `${first}${more}${where}`,
+                    `${list.join("\n")}${where}`,
                     MAX_NOTIFICATION_BODY_LENGTH,
                 ),
                 dedupeKey: `coding.questions:${job.id}`,
@@ -841,7 +1135,11 @@ export function createCodingJobService(options: {
             // completed run's plan belongs in the pull request body.
             const artifacts = ok
                 ? await readJobArtifacts(job.workspacePath)
-                : { plan: null, questions: [] as readonly string[] };
+                : {
+                      plan: null,
+                      questions: [] as readonly string[],
+                      structuredQuestions: [] as readonly CodingQuestion[],
+                  };
             if (ok && artifacts.questions.length > 0) {
                 await clearJobArtifacts(job.workspacePath);
                 const comment = await postQuestions(job, artifacts);
@@ -857,10 +1155,14 @@ export function createCodingJobService(options: {
                         awaited.id,
                         artifacts.questions,
                     );
+                    ledger.setCodingJobQuestionSet(
+                        awaited.id,
+                        artifacts.structuredQuestions,
+                    );
                 }
                 await announceQuestions(
                     awaited ?? job,
-                    artifacts.questions,
+                    artifacts.structuredQuestions,
                     comment?.url ?? null,
                 );
                 // The `finally` below removes the container. The workspace
@@ -1145,6 +1447,120 @@ export function createCodingJobService(options: {
             ...(config.network.length > 0 ? { network: config.network } : {}),
             extraHosts: config.extraHosts,
         };
+    }
+
+    /**
+     * Reopens a parked job with the answers, whichever path produced them.
+     *
+     * The structured path renders its Q/A block and calls this; the chat and
+     * GitHub paths pass their text directly.
+     */
+    async function resumeJob(
+        userId: number,
+        jobId: string,
+        answers: string,
+        options?: ResumeCodingJobOptions,
+    ): Promise<ResumeCodingJobResult> {
+        const text = answers.trim();
+        if (text.length === 0) {
+            return {
+                ok: false,
+                reason: "The answers were empty; tell me what to do next.",
+            };
+        }
+        const job = ledger.getCodingJob(userId, jobId);
+        if (job === null) {
+            return {
+                ok: false,
+                reason: `No coding job ${jobId} belongs to you.`,
+            };
+        }
+        if (job.state !== "awaiting-answer") {
+            return {
+                ok: false,
+                reason: `Coding job ${job.id} is ${job.state}, not waiting for answers.`,
+            };
+        }
+        if (
+            ledger.listRunningCodingJobs(config.maxJobs).length >=
+            config.maxJobs
+        ) {
+            return {
+                ok: false,
+                reason: `${config.maxJobs} coding job(s) are already running; try again when one finishes.`,
+            };
+        }
+        // The transition is the claim: two callers (the chat tool and the
+        // poller) cannot both reopen the same parked row.
+        const reopened = ledger.reopenCodingJob(
+            job.id,
+            options?.lastSeenCommentId ?? job.lastSeenCommentId ?? null,
+        );
+        if (reopened === null || reopened.state !== "queued") {
+            return {
+                ok: false,
+                reason: `Coding job ${job.id} could not be reopened; it may have been cancelled.`,
+            };
+        }
+        const prepared: PreparedWorkspace = {
+            path: job.workspacePath,
+            hostPath: hostPathFor(job.workspacePath),
+        };
+        try {
+            const handle = await runner.start(
+                specFor(reopened, prepared, resumeTask(job, text)),
+            );
+            const claimed = ledger.claimCodingJob(
+                job.id,
+                handle.containerId,
+                nowIso(),
+            );
+            if (claimed === null) {
+                await handle.remove();
+                return {
+                    ok: false,
+                    reason: `Coding job ${job.id} was already claimed; try again.`,
+                };
+            }
+            logger.info(
+                `coding job ${claimed.id} resumed with answers: repo=${claimed.repo}, container=${handle.containerId}`,
+            );
+            // The job is running, so the question is settled whichever
+            // channel answered it (GitHub, the chat tool, or the REST
+            // answer). The REST route's own row is excluded: it settles
+            // that one with the answer text it collected.
+            try {
+                notifications?.settleCodingQuestion(
+                    claimed.userId,
+                    claimed.id,
+                    {
+                        ...(options?.notificationId !== undefined
+                            ? { exceptId: options.notificationId }
+                            : {}),
+                    },
+                );
+            } catch (err) {
+                // A courtesy settle must never fail a running job.
+                logger.warn(
+                    `coding job ${claimed.id}: could not settle its question notification: ${describe(err)}`,
+                );
+            }
+            return {
+                ok: true,
+                job: claimed,
+                done: supervise(claimed, handle),
+            };
+        } catch (err) {
+            // A container that never started must not leave the row
+            // queued forever; the parked workspace is kept for a retry.
+            ledger.settleCodingJob(
+                job.id,
+                "failed",
+                { error: describe(err) },
+                nowIso(),
+            );
+            throw err;
+        }
     }
 
     return {
@@ -1441,19 +1857,14 @@ export function createCodingJobService(options: {
             }
         },
 
-        async resume(
+        resume: resumeJob,
+
+        async answer(
             userId,
             jobId,
             answers,
             options,
         ): Promise<ResumeCodingJobResult> {
-            const text = answers.trim();
-            if (text.length === 0) {
-                return {
-                    ok: false,
-                    reason: "The answers were empty; tell me what to do next.",
-                };
-            }
             const job = ledger.getCodingJob(userId, jobId);
             if (job === null) {
                 return {
@@ -1467,86 +1878,24 @@ export function createCodingJobService(options: {
                     reason: `Coding job ${job.id} is ${job.state}, not waiting for answers.`,
                 };
             }
-            if (
-                ledger.listRunningCodingJobs(config.maxJobs).length >=
-                config.maxJobs
-            ) {
+            const questions = ledger.getCodingJobQuestions(jobId);
+            if (questions.length === 0) {
                 return {
                     ok: false,
-                    reason: `${config.maxJobs} coding job(s) are already running; try again when one finishes.`,
+                    reason: `Coding job ${job.id} has no structured questions; answer it with resumeCodingJob.`,
                 };
             }
-            // The transition is the claim: two callers (the chat tool and the
-            // poller) cannot both reopen the same parked row.
-            const reopened = ledger.reopenCodingJob(
-                job.id,
-                options?.lastSeenCommentId ?? job.lastSeenCommentId ?? null,
+            const validation = validateCodingAnswers(questions, answers);
+            if (!validation.ok) {
+                return { ok: false, reason: validation.reason };
+            }
+            ledger.answerCodingJobQuestions(jobId, answers, "app", nowIso());
+            return resumeJob(
+                userId,
+                jobId,
+                renderCodingAnswers(questions, answers),
+                options,
             );
-            if (reopened === null || reopened.state !== "queued") {
-                return {
-                    ok: false,
-                    reason: `Coding job ${job.id} could not be reopened; it may have been cancelled.`,
-                };
-            }
-            const prepared: PreparedWorkspace = {
-                path: job.workspacePath,
-                hostPath: hostPathFor(job.workspacePath),
-            };
-            try {
-                const handle = await runner.start(
-                    specFor(reopened, prepared, resumeTask(job, text)),
-                );
-                const claimed = ledger.claimCodingJob(
-                    job.id,
-                    handle.containerId,
-                    nowIso(),
-                );
-                if (claimed === null) {
-                    await handle.remove();
-                    return {
-                        ok: false,
-                        reason: `Coding job ${job.id} was already claimed; try again.`,
-                    };
-                }
-                logger.info(
-                    `coding job ${claimed.id} resumed with answers: repo=${claimed.repo}, container=${handle.containerId}`,
-                );
-                // The job is running, so the question is settled whichever
-                // channel answered it (GitHub, the chat tool, or the REST
-                // answer). The REST route's own row is excluded: it settles
-                // that one with the answer text it collected.
-                try {
-                    notifications?.settleCodingQuestion(
-                        claimed.userId,
-                        claimed.id,
-                        {
-                            ...(options?.notificationId !== undefined
-                                ? { exceptId: options.notificationId }
-                                : {}),
-                        },
-                    );
-                } catch (err) {
-                    // A courtesy settle must never fail a running job.
-                    logger.warn(
-                        `coding job ${claimed.id}: could not settle its question notification: ${describe(err)}`,
-                    );
-                }
-                return {
-                    ok: true,
-                    job: claimed,
-                    done: supervise(claimed, handle),
-                };
-            } catch (err) {
-                // A container that never started must not leave the row
-                // queued forever; the parked workspace is kept for a retry.
-                ledger.settleCodingJob(
-                    job.id,
-                    "failed",
-                    { error: describe(err) },
-                    nowIso(),
-                );
-                throw err;
-            }
         },
 
         async recover(): Promise<RecoverySummary> {

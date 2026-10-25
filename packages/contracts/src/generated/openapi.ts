@@ -487,6 +487,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coding-jobs/{id}/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a coding job's questions and answers
+         * @description The structured questions a parked job asked (#180), with the user's answers when they exist. Owner-scoped: a job that belongs to another account is 404, the same as one that does not exist. The app uses this to render one control per question; the notification carries only the job link and a compact summary.
+         */
+        get: operations["codingJobQuestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs": {
         parameters: {
             query?: never;
@@ -790,6 +813,48 @@ export interface components {
             delivered: number;
             /** @description `null` when it was delivered, otherwise the reason nothing was pushed: `disabled`, `quiet-hours`, `absent` (no live socket), or `cap`. */
             suppressed: ("disabled" | "quiet-hours" | "absent" | "cap") | null;
+        };
+        /** @description One choice in a single- or multiple-choice question (#180). */
+        CodingQuestionOption: {
+            id: string;
+            label: string;
+        };
+        /** @description One question a coding job asked (#180). */
+        CodingQuestion: {
+            id: string;
+            text: string;
+            /** @enum {string} */
+            kind: "text" | "single" | "multi";
+            options: components["schemas"]["CodingQuestionOption"][];
+            required: boolean;
+            allowOther: boolean;
+        };
+        /** @description One answer to one coding question (#180). */
+        CodingAnswer: {
+            questionId: string;
+            value: string | string[];
+            /** @description Free text for an **Other** choice, when the question allows it. */
+            other?: string;
+        };
+        /** @description A stored question, with its answer when one exists (#180). */
+        CodingJobQuestion: components["schemas"]["CodingQuestion"] & {
+            position: number;
+            answer: components["schemas"]["CodingAnswer"] | null;
+            answeredAt: string | null;
+            answerSource: string | null;
+        };
+        /** @description Body of `GET /api/coding-jobs/{id}/questions` (#180). */
+        CodingJobQuestions: {
+            job: {
+                id: string;
+                /** @enum {string} */
+                state: "queued" | "running" | "awaiting-answer" | "ok" | "failed" | "cancelled";
+                repo: string;
+                branch: string;
+                prUrl?: string | null;
+                plan?: string | null;
+            };
+            questions: components["schemas"]["CodingJobQuestion"][];
         };
         /** @description Body of `POST /api/jobs`. A page-created job is always a `message` job: text with nothing to run, which is all a timer or a reminder needs. Scheduling a *tool* or a *prompt* stays with the model's tools, where the allowlist and the target tool's own schema are checked before the row is written. */
         JobCreateRequest: {
@@ -2487,8 +2552,10 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    answer: string;
-                };
+                    answer?: string;
+                    /** @description One answer per question (#180). The coding service validates required questions, option ids, and Other. */
+                    answers?: components["schemas"]["CodingAnswer"][];
+                } | unknown | unknown;
             };
         };
         responses: {
@@ -2558,6 +2625,47 @@ export interface operations {
                 };
                 content: {
                     "application/x-ndjson": string;
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such coding job for this account. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    codingJobQuestions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The job's opaque id, as returned by the list route. Ids belong to one account: an id owned by somebody else is answered 404, the same as one that does not exist. */
+                id: components["parameters"]["PathJobId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The job's questions and answers, in order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodingJobQuestions"];
                 };
             };
             /** @description Missing or invalid credentials. */

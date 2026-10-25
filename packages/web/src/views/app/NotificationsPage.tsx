@@ -27,8 +27,9 @@
  * class here is fixed — `notification` — because a page that could write any of
  * the three would be a way to turn a reminder into a timer.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
+import { api } from "../../api";
 import { debugEnabled } from "../../debug";
 import { describeSnooze, snoozeUntil, upcomingJobs } from "../../jobs";
 import { snoozeReminder, snoozeRequestFor } from "../../snooze";
@@ -39,9 +40,15 @@ import {
     describeNotificationState,
     isSettled,
 } from "../../notifications";
-import type { ClientNotification } from "../../notifications";
+import type {
+    ClientNotification,
+    CodingAnswer,
+    CodingJobQuestion,
+} from "../../notifications";
 import type { JobsState } from "../../hooks/useJobs";
 import type { NotificationsState } from "../../hooks/useNotifications";
+import { CodingQuestionForm } from "./CodingQuestionForm";
+import { CodingQuestions } from "./CodingQuestions";
 import { JobForm } from "./JobForm";
 import { JobRow } from "./JobRow";
 import { JobRuns } from "./JobRuns";
@@ -73,18 +80,26 @@ interface NotificationRowProps {
     onMarkRead(id: string): void;
     onDismiss(id: string): void;
     onSnooze(item: ClientNotification, minutes: number): void;
-    onAnswer(id: string, answer: string): Promise<void>;
+    onAnswer(
+        id: string,
+        answer: string | readonly CodingAnswer[],
+    ): Promise<void>;
 }
 
 /**
- * The answer box for an answerable notification (#94).
+ * The free-text answer box (#94), used for a notification with no structured
+ * questions and as the fallback when the question view cannot be loaded.
  *
  * Kept local to the row rather than in the server-driven list state: the text
  * is a draft, and a failed resume must leave it in place so the user can retry.
  * The row only settles when the server says `answered`, which is after the
  * coding job behind it actually resumed.
  */
-function AnswerForm({ onAnswer }: { onAnswer(answer: string): Promise<void> }) {
+function TextAnswerForm({
+    onAnswer,
+}: {
+    onAnswer(answer: string): Promise<void>;
+}) {
     const inputId = useId();
     const [text, setText] = useState("");
     const [sending, setSending] = useState(false);
@@ -139,6 +154,98 @@ function AnswerForm({ onAnswer }: { onAnswer(answer: string): Promise<void> }) {
 }
 
 /**
+ * The answer surface for an answerable notification (#94, #180).
+ *
+ * When the record names a coding job, the card fetches that job's structured
+ * questions and renders one control per question; a job with no structured
+ * questions (or a fetch that fails, after a retry) falls back to the free-text
+ * box. The request itself stays with the page, so a failed resume leaves the
+ * draft in place.
+ */
+function AnswerForm({
+    token,
+    codingJobId,
+    onAnswer,
+}: {
+    token: string;
+    codingJobId?: string;
+    onAnswer(answer: string | readonly CodingAnswer[]): Promise<void>;
+}) {
+    const [questions, setQuestions] = useState<CodingJobQuestion[] | null>(
+        null,
+    );
+    const [loading, setLoading] = useState(codingJobId !== undefined);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [attempt, setAttempt] = useState(0);
+
+    useEffect(() => {
+        if (codingJobId === undefined) {
+            setQuestions(null);
+            setLoading(false);
+            return;
+        }
+        let cancelled = false;
+        setLoading(true);
+        setLoadError(null);
+        api.getCodingJobQuestions(token, codingJobId)
+            .then((result) => {
+                if (!cancelled) {
+                    setQuestions(result.questions);
+                    setLoading(false);
+                }
+            })
+            .catch((err: unknown) => {
+                if (!cancelled) {
+                    setLoadError(
+                        err instanceof Error
+                            ? err.message
+                            : "could not load the questions",
+                    );
+                    setLoading(false);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [token, codingJobId, attempt]);
+
+    if (codingJobId === undefined) {
+        return <TextAnswerForm onAnswer={onAnswer} />;
+    }
+    if (loading) {
+        return (
+            <p className="notification-answer-loading" role="status">
+                Loading questions…
+            </p>
+        );
+    }
+    if (loadError !== null) {
+        return (
+            <div className="notification-answer">
+                <p className="notification-answer-error" role="alert">
+                    {loadError}
+                </p>
+                <div className="notification-answer-actions">
+                    <button
+                        type="button"
+                        onClick={() => setAttempt((value) => value + 1)}
+                    >
+                        Retry
+                    </button>
+                    <button type="button" onClick={() => setQuestions([])}>
+                        Answer in words
+                    </button>
+                </div>
+            </div>
+        );
+    }
+    if (questions === null || questions.length === 0) {
+        return <TextAnswerForm onAnswer={onAnswer} />;
+    }
+    return <CodingQuestionForm questions={questions} onSubmit={onAnswer} />;
+}
+
+/**
  * One notification, with the actions its state and class allow.
  *
  * A settled row offers nothing but its runs: read, answered, dismissed and
@@ -181,8 +288,12 @@ function NotificationRow({
             footer={
                 answerable ? (
                     <AnswerForm
+                        token={token}
+                        codingJobId={item.codingJobId}
                         onAnswer={(answer) => onAnswer(item.id, answer)}
                     />
+                ) : item.codingJobId !== undefined ? (
+                    <CodingQuestions token={token} jobId={item.codingJobId} />
                 ) : undefined
             }
             actions={

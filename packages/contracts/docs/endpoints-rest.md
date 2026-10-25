@@ -36,6 +36,7 @@ Source of truth: `spec/openapi.yaml` (regenerate with
 | `POST` | `/api/notifications/{id}/dismiss` | device token or web session | Dismiss a notification |
 | `POST` | `/api/notifications/{id}/answer` | device token or web session | Answer a notification that asked a question |
 | `GET` | `/api/coding-jobs/{id}/logs` | device token or web session | Follow one coding job's log |
+| `GET` | `/api/coding-jobs/{id}/questions` | device token or web session | Read a coding job's questions and answers |
 | `GET` | `/api/jobs` | device token or web session | List the caller's scheduled jobs |
 | `POST` | `/api/jobs` | device token or web session | Schedule a job for the caller |
 | `GET` | `/api/jobs/{id}` | device token or web session | One job and its run history |

@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 20;
+const LATEST_VERSION = 21;
 
 let store: AppDatabase;
 let db: Database.Database;

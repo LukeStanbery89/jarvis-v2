@@ -13,6 +13,12 @@
  * secrets never touch the database.
  */
 import Database from "better-sqlite3";
+import type {
+    CodingAnswer,
+    CodingQuestion,
+    CodingQuestionKind,
+    CodingQuestionOption,
+} from "./codingQuestions";
 import { ensurePrivateFile, ensurePrivateStorage } from "./fs";
 import { AuthError } from "./errors";
 import type {
@@ -301,6 +307,29 @@ CREATE INDEX IF NOT EXISTS idx_coding_jobs_awaiting
 const CODING_JOBS_SCHEMA = `${codingJobsTable("coding_jobs")};
 ${CODING_JOB_INDEXES}`;
 
+/**
+ * The structured questions a parked coding job asks (#180).
+ *
+ * One row per question, kept with the job rather than only on the notification:
+ * the app needs the full set after the job resumes, and the answers are part of
+ * the job's record. `answer_json` holds a {@link CodingAnswer}; the row is
+ * written by the answer route and read by the job's question view.
+ */
+const CODING_JOB_QUESTIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS coding_job_questions (
+    job_id        TEXT NOT NULL REFERENCES coding_jobs(id) ON DELETE CASCADE,
+    question_id   TEXT NOT NULL,
+    position      INTEGER NOT NULL,
+    text          TEXT NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('text', 'single', 'multi')),
+    options_json  TEXT NOT NULL DEFAULT '[]',
+    required      INTEGER NOT NULL DEFAULT 1,
+    allow_other   INTEGER NOT NULL DEFAULT 0,
+    answer_json   TEXT,
+    answered_at   TEXT,
+    answer_source TEXT,
+    PRIMARY KEY (job_id, question_id)
+);`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -340,6 +369,7 @@ ${notificationsTable("notifications")};
 ${NOTIFICATION_INDEXES}
 ${JOBS_SCHEMA}
 ${CODING_JOBS_SCHEMA}
+${CODING_JOB_QUESTIONS_SCHEMA}
 ${WEB_SESSIONS_SCHEMA}
 `;
 
@@ -1172,6 +1202,24 @@ export const CODING_JOB_CRASH_POLICIES = ["prune", "resume"] as const;
 /** The per-job crash policy (see {@link CODING_JOB_CRASH_POLICIES}). */
 export type CodingJobCrashPolicy = (typeof CODING_JOB_CRASH_POLICIES)[number];
 
+/** The structured questions a parked job carries (#180). */
+export type CodingJobQuestionSet = CodingQuestion[];
+
+/** The structured answers a resumed job carries (#180). */
+export type CodingJobAnswerSet = CodingAnswer[];
+
+/** One stored question, with its answer when one exists (#180). */
+export interface CodingJobQuestion extends CodingQuestion {
+    /** Its order in the set, oldest first. */
+    position: number;
+    /** The user's answer, or `null` while the question is unanswered. */
+    answer: CodingAnswer | null;
+    /** When the answer was recorded, or `null`. */
+    answeredAt: string | null;
+    /** Which surface answered it (`app`, `chat`, `github`), or `null`. */
+    answerSource: string | null;
+}
+
 /** One coding job, as the store returns it. */
 export interface AppCodingJob {
     id: string;
@@ -1395,6 +1443,44 @@ export interface CodingJobLedger {
      * supervisor's artifact reader.
      */
     setCodingJobQuestions(id: string, questions: readonly string[]): void;
+    /**
+     * Replaces a job's structured question set (#180).
+     *
+     * Called once, when the job parks. The rows stay through a resume so the
+     * app can show the questions and the answers after the job continues; they
+     * are removed with the job by the foreign key.
+     *
+     * @param id - The job.
+     * @param questions - The normalized, bounded questions.
+     */
+    setCodingJobQuestionSet(
+        id: string,
+        questions: readonly CodingQuestion[],
+    ): void;
+    /**
+     * A job's structured questions and answers, in order (#180).
+     *
+     * @param jobId - The job.
+     * @returns The rows; empty when the job asked none.
+     */
+    getCodingJobQuestions(jobId: string): CodingJobQuestion[];
+    /**
+     * Records the user's answers to a job's questions (#180).
+     *
+     * The caller validates the answers against the question set; this only
+     * persists them. A missing question id updates no row.
+     *
+     * @param jobId - The job.
+     * @param answers - The answers, one per answered question.
+     * @param source - Which surface answered (`app`, `chat`, `github`).
+     * @param at - The answer instant (ISO-8601).
+     */
+    answerCodingJobQuestions(
+        jobId: string,
+        answers: readonly CodingAnswer[],
+        source: string,
+        at: string,
+    ): void;
     /**
      * Recent jobs that name a pull request, newest first — the PR-feedback
      * feed (#94). The caller dedupes by URL: the first row for a PR is its
@@ -1652,6 +1738,21 @@ interface CodingJobRow {
     questionsJson: string | null;
 }
 
+/** A `coding_job_questions` row as the SELECT aliases it (#180). */
+interface CodingJobQuestionRow {
+    jobId: string;
+    questionId: string;
+    position: number;
+    text: string;
+    kind: CodingQuestionKind;
+    optionsJson: string;
+    required: number;
+    allowOther: number;
+    answerJson: string | null;
+    answeredAt: string | null;
+    answerSource: string | null;
+}
+
 /** The coding-job SELECT list (`mapCodingJob` is the other half). */
 const CODING_JOB_COLUMNS = `SELECT id, user_id AS userId, repo, branch, prompt, state, crash_policy AS crashPolicy, model, container_id AS containerId, workspace_path AS workspacePath, log_tail AS logTail, diff_summary AS diffSummary, pr_url AS prUrl, issue_number AS issueNumber, question_comment_id AS questionCommentId, plan, last_seen_comment_id AS lastSeenCommentId, attempts, last_error AS lastError, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt, session_id AS sessionId, questions_json AS questionsJson FROM coding_jobs`;
 
@@ -1822,6 +1923,79 @@ function parseQuestions(value: string | null): string[] | null {
 }
 
 /** Maps a `coding_jobs` row onto the ledger's public shape. */
+/** Parses a stored options array, dropping anything that is not an option. */
+function parseQuestionOptions(raw: string): CodingQuestionOption[] {
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed.filter(
+            (entry): entry is CodingQuestionOption =>
+                typeof entry === "object" &&
+                entry !== null &&
+                typeof (entry as { id?: unknown }).id === "string" &&
+                typeof (entry as { label?: unknown }).label === "string",
+        );
+    } catch {
+        return [];
+    }
+}
+
+/** Parses a stored answer, or `null` when the row has none. */
+function parseCodingAnswer(raw: string | null): CodingAnswer | null {
+    if (raw === null) {
+        return null;
+    }
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== "object" || parsed === null) {
+            return null;
+        }
+        const record = parsed as {
+            questionId?: unknown;
+            value?: unknown;
+            other?: unknown;
+        };
+        if (typeof record.questionId !== "string") {
+            return null;
+        }
+        const value = record.value;
+        const valid =
+            typeof value === "string" ||
+            (Array.isArray(value) &&
+                value.every((entry) => typeof entry === "string"));
+        if (!valid) {
+            return null;
+        }
+        return {
+            questionId: record.questionId,
+            value: value as string | string[],
+            ...(typeof record.other === "string"
+                ? { other: record.other }
+                : {}),
+        };
+    } catch {
+        return null;
+    }
+}
+
+/** Maps one stored question row. */
+function mapCodingJobQuestion(row: CodingJobQuestionRow): CodingJobQuestion {
+    return {
+        id: row.questionId,
+        text: row.text,
+        kind: row.kind,
+        options: parseQuestionOptions(row.optionsJson),
+        required: row.required === 1,
+        allowOther: row.allowOther === 1,
+        position: row.position,
+        answer: parseCodingAnswer(row.answerJson),
+        answeredAt: row.answeredAt,
+        answerSource: row.answerSource,
+    };
+}
+
 function mapCodingJob(row: CodingJobRow): AppCodingJob {
     return {
         id: row.id,
@@ -2632,6 +2806,15 @@ ${CODING_JOB_INDEXES}`);
         }
         db.pragma("user_version = 20");
     }
+
+    if (version < 21) {
+        // v21: the structured question set a parked coding job asks (#180).
+        // New table, not a rebuild: existing jobs simply have no rows, which
+        // means "the old text-only ask", and the legacy questions_json cache
+        // still carries those.
+        db.exec(CODING_JOB_QUESTIONS_SCHEMA);
+        db.pragma("user_version = 21");
+    }
 }
 
 export function openAppDatabase(
@@ -2727,6 +2910,10 @@ export class SqliteAppDatabase implements AppDatabase {
         awaitCodingJob: Database.Statement;
         reopenCodingJob: Database.Statement;
         setCodingJobQuestions: Database.Statement;
+        deleteCodingJobQuestions: Database.Statement;
+        insertCodingJobQuestion: Database.Statement;
+        selectCodingJobQuestions: Database.Statement;
+        updateCodingJobQuestionAnswer: Database.Statement;
         claimCodingJob: Database.Statement;
         settleCodingJob: Database.Statement;
         cancelCodingJob: Database.Statement;
@@ -3069,15 +3256,30 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             // The reopen *is* the claim for an answer: only one poller can move
             // the row out of `awaiting-answer`, and the next claim starts the
-            // container. Clear the previous attempt's fields.
+            // container. Clear the previous attempt's fields. The questions
+            // stay: the app shows the answered set after the resume, and the
+            // in-session relay only reads rows still in `awaiting-answer`.
             reopenCodingJob: db.prepare(
-                "UPDATE coding_jobs SET state = 'queued', container_id = NULL, started_at = NULL, finished_at = NULL, last_error = NULL, last_seen_comment_id = COALESCE(?, last_seen_comment_id), questions_json = NULL WHERE id = ? AND state = 'awaiting-answer'",
+                "UPDATE coding_jobs SET state = 'queued', container_id = NULL, started_at = NULL, finished_at = NULL, last_error = NULL, last_seen_comment_id = COALESCE(?, last_seen_comment_id) WHERE id = ? AND state = 'awaiting-answer'",
             ),
             // The questions are stored when the job parks (#94): the workspace
             // is the only other copy and the relay must not read files on a
-            // turn. Reopening clears them, so a stale set cannot be relayed.
+            // turn. The structured rows are the app's source (#180); this text
+            // cache is the relay's.
             setCodingJobQuestions: db.prepare(
                 "UPDATE coding_jobs SET questions_json = ? WHERE id = ?",
+            ),
+            deleteCodingJobQuestions: db.prepare(
+                "DELETE FROM coding_job_questions WHERE job_id = ?",
+            ),
+            insertCodingJobQuestion: db.prepare(
+                "INSERT INTO coding_job_questions (job_id, question_id, position, text, kind, options_json, required, allow_other) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ),
+            selectCodingJobQuestions: db.prepare(
+                "SELECT job_id AS jobId, question_id AS questionId, position, text, kind, options_json AS optionsJson, required, allow_other AS allowOther, answer_json AS answerJson, answered_at AS answeredAt, answer_source AS answerSource FROM coding_job_questions WHERE job_id = ? ORDER BY position ASC, rowid ASC",
+            ),
+            updateCodingJobQuestionAnswer: db.prepare(
+                "UPDATE coding_job_questions SET answer_json = ?, answered_at = ?, answer_source = ? WHERE job_id = ? AND question_id = ?",
             ),
             // The claim *is* the transition, as for a scheduled job: `queued`
             // in the WHERE clause makes a second claimant touch no row. The
@@ -3834,6 +4036,55 @@ export class SqliteAppDatabase implements AppDatabase {
             questions.length > 0 ? JSON.stringify(questions) : null,
             id,
         );
+    }
+
+    setCodingJobQuestionSet(
+        id: string,
+        questions: readonly CodingQuestion[],
+    ): void {
+        const insert = this.statements.insertCodingJobQuestion;
+        this.db.transaction(() => {
+            this.statements.deleteCodingJobQuestions.run(id);
+            questions.forEach((question, position) => {
+                insert.run(
+                    id,
+                    question.id,
+                    position,
+                    question.text,
+                    question.kind,
+                    JSON.stringify(question.options),
+                    question.required ? 1 : 0,
+                    question.allowOther ? 1 : 0,
+                );
+            });
+        })();
+    }
+
+    getCodingJobQuestions(jobId: string): CodingJobQuestion[] {
+        const rows = this.statements.selectCodingJobQuestions.all(
+            jobId,
+        ) as CodingJobQuestionRow[];
+        return rows.map(mapCodingJobQuestion);
+    }
+
+    answerCodingJobQuestions(
+        jobId: string,
+        answers: readonly CodingAnswer[],
+        source: string,
+        at: string,
+    ): void {
+        const update = this.statements.updateCodingJobQuestionAnswer;
+        this.db.transaction(() => {
+            for (const answer of answers) {
+                update.run(
+                    JSON.stringify(answer),
+                    at,
+                    source,
+                    jobId,
+                    answer.questionId,
+                );
+            }
+        })();
     }
 
     listCodingJobsWithPr(limit: number): AppCodingJob[] {

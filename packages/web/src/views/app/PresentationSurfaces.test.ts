@@ -158,7 +158,7 @@ describe("the notifications page renders through the shared cards", () => {
         expect(html).toContain("Dismiss");
     });
 
-    it("offers an answer box for a question (#94)", () => {
+    it("offers the question surface for an answerable notification (#94, #180)", () => {
         const html = renderToStaticMarkup(
             createElement(NotificationsPage, {
                 notifications: notificationsState([
@@ -178,10 +178,35 @@ describe("the notifications page renders through the shared cards", () => {
         );
 
         expect(html).toContain("notification-answer");
-        expect(html).toContain("Answer this question");
-        expect(html).toContain("Send answer");
+        // The static render has not run the fetch effect; the browser replaces
+        // this with the per-question form once the job's questions land.
+        expect(html).toContain("Loading questions…");
         // Reading is not answering: the row must not offer a settle that would
         // retire the question without resuming the job.
+        expect(html).not.toContain("Mark read");
+    });
+
+    it("keeps the free-text box for an answerable notification with no job link (#94)", () => {
+        const html = renderToStaticMarkup(
+            createElement(NotificationsPage, {
+                notifications: notificationsState([
+                    record({
+                        id: "q2",
+                        kind: "agent.request",
+                        class: "notification",
+                        title: "Which database?",
+                        requiresAnswer: true,
+                        jobId: undefined,
+                    }),
+                ]),
+                jobs: jobsState([]),
+                token: "device-token",
+            }),
+        );
+
+        expect(html).toContain("notification-answer");
+        expect(html).toContain("Answer this question");
+        expect(html).toContain("Send answer");
         expect(html).not.toContain("Mark read");
     });
 

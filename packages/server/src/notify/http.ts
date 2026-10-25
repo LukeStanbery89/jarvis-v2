@@ -25,14 +25,23 @@ import {
     NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
 } from "@lukestanbery/jarvis-auth";
-import type { AppDatabase, AppNotification } from "@lukestanbery/jarvis-auth";
+import type {
+    AppDatabase,
+    AppNotification,
+    CodingAnswer,
+} from "@lukestanbery/jarvis-auth";
 import { MAX_NOTIFICATION_ID_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { authed, requireAuth, requireCsrf } from "../http/middleware";
 import { parseLimit } from "../http/params";
 import { sessionCookieName } from "../http/cookies";
 import { logger } from "../logger";
 import type { AppConfig } from "../config";
-import { NotificationInputError, validateAnswer } from "./types";
+import {
+    describeCodingAnswers,
+    NotificationInputError,
+    validateAnswer,
+    validateStructuredAnswers,
+} from "./types";
 import type { NotificationService, SettlementResult } from "./service";
 
 /**
@@ -45,10 +54,14 @@ import type { NotificationService, SettlementResult } from "./service";
  * "answered" over a job that is still parked. The route knows nothing about
  * coding jobs; the composition root supplies this.
  */
+export type NotificationAnswer =
+    | { kind: "text"; text: string }
+    | { kind: "structured"; answers: readonly CodingAnswer[] };
+
 export type NotificationAnswerHandler = (
     userId: number,
     notification: AppNotification,
-    answer: string,
+    answer: NotificationAnswer,
 ) =>
     | { ok: true }
     | { ok: false; reason: string }
@@ -243,9 +256,18 @@ export function createNotificationRouter(
         route(async (req, res) => {
             const jarv = authed(req).jarv;
             const id = notificationId(req.params.id);
-            const answer = validateAnswer(
-                (req.body as { answer?: unknown } | undefined)?.answer,
-            );
+            const body = req.body as
+                { answer?: unknown; answers?: unknown } | undefined;
+            const answer: NotificationAnswer = Array.isArray(body?.answers)
+                ? {
+                      kind: "structured",
+                      answers: validateStructuredAnswers(body.answers),
+                  }
+                : { kind: "text", text: validateAnswer(body?.answer) };
+            const answerText =
+                answer.kind === "structured"
+                    ? describeCodingAnswers(answer.answers)
+                    : answer.text;
             const existing = service.get(jarv.user.id, id);
             if (existing === null) {
                 res.status(404).json({ error: "notification not found" });
@@ -273,7 +295,7 @@ export function createNotificationRouter(
                     return;
                 }
             }
-            sendSettlement(res, service.answer(jarv.user.id, id, answer));
+            sendSettlement(res, service.answer(jarv.user.id, id, answerText));
         }),
     );
 

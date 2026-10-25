@@ -622,3 +622,50 @@ function byNewest(a: ClientNotification, b: ClientNotification): number {
     }
     return right - left;
 }
+
+/** The kinds of question a coding job may ask (#180). */
+export type CodingQuestionKind = "text" | "single" | "multi";
+
+/** One choice in a single- or multiple-choice question. */
+export interface CodingQuestionOption {
+    id: string;
+    label: string;
+}
+
+/** One question a coding job asked (#180). */
+export interface CodingQuestion {
+    id: string;
+    text: string;
+    kind: CodingQuestionKind;
+    options: CodingQuestionOption[];
+    required: boolean;
+    allowOther: boolean;
+}
+
+/** One stored question, with its answer when one exists. */
+export interface CodingJobQuestion extends CodingQuestion {
+    position: number;
+    answer: CodingAnswer | null;
+    answeredAt: string | null;
+    answerSource: string | null;
+}
+
+/** One answer to one question, as the REST answer route accepts it. */
+export interface CodingAnswer {
+    questionId: string;
+    value: string | string[];
+    other?: string;
+}
+
+/** Body of `GET /api/coding-jobs/{id}/questions`. */
+export interface CodingJobQuestions {
+    job: {
+        id: string;
+        state: string;
+        repo: string;
+        branch: string;
+        prUrl: string | null;
+        plan: string | null;
+    };
+    questions: CodingJobQuestion[];
+}

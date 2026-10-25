@@ -34,6 +34,7 @@ import {
 } from "../notifications";
 import type {
     ClientNotification,
+    CodingAnswer,
     NotificationSuppression,
 } from "../notifications";
 import type { NotificationFrame } from "@lukestanbery/jarvis-protocol";
@@ -65,7 +66,7 @@ export interface NotificationsState {
      * leaves the row answerable, so the form stays put and can retry. No
      * optimistic settle — "answered" is only true once the job is running.
      */
-    answer(id: string, answer: string): Promise<void>;
+    answer(id: string, answer: string | readonly CodingAnswer[]): Promise<void>;
     /** Dismisses one, optimistically. */
     dismiss(id: string): void;
     /**
@@ -273,10 +274,13 @@ export function useNotifications(options: {
      * list actions, not for a field the user is looking at.
      */
     const answer = useCallback(
-        async (id: string, text: string): Promise<void> => {
+        async (
+            id: string,
+            answer: string | readonly CodingAnswer[],
+        ): Promise<void> => {
             debugLog("notify", `answer id=${id}`);
             try {
-                const record = await api.answerNotification(token, id, text);
+                const record = await api.answerNotification(token, id, answer);
                 setNotifications((current) =>
                     mergeNotification(current, fromRecord(record)),
                 );

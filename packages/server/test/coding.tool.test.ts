@@ -122,6 +122,9 @@ async function invoke(
         async resume() {
             return { ok: false, reason: "not used here" };
         },
+        async answer() {
+            return { ok: false, reason: "not used here" };
+        },
         get() {
             return null;
         },
@@ -483,6 +486,7 @@ function serviceWith(
         resume:
             overrides.resume ??
             (async () => ({ ok: false, reason: "not used here" })),
+        answer: async () => ({ ok: false, reason: "not used here" }),
         get: () => overrides.job ?? null,
         list: () => overrides.jobs ?? [],
         output: overrides.output ?? (async () => null),
