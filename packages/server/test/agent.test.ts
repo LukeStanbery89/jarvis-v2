@@ -8,7 +8,7 @@
  * otherwise only be observable under a live model.
  */
 import { describe, expect, it } from "vitest";
-import { systemPromptForCapabilities } from "../src/agent";
+import { sharedIssueRule, systemPromptForCapabilities } from "../src/agent";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/config";
 import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
 
@@ -120,5 +120,22 @@ describe("systemPromptForCapabilities", () => {
         // Voice scoping is per-turn: a text-mode turn on a voice thread
         // renders richly again.
         expect(text).toMatch(/Markdown is rendered/);
+    });
+});
+
+describe("sharedIssueRule", () => {
+    it("names the issue and the exact startCodingJob argument", () => {
+        const rule = sharedIssueRule({ number: 157, repo: "luke/app" });
+
+        expect(rule).toContain("issue #157 in luke/app");
+        expect(rule).toContain("issue: https://github.com/luke/app/issues/157");
+        expect(rule).toContain("Do not summarize the issue into `task`");
+    });
+
+    it("uses the number when the reference named no repository", () => {
+        const rule = sharedIssueRule({ number: 157 });
+
+        expect(rule).toContain("issue: 157");
+        expect(rule).not.toContain(" in ");
     });
 });

@@ -218,6 +218,10 @@ export function renderIssue(issue: IssueSnapshot): string {
         lines.push(
             "(This number is a pull request, not an issue; to continue its review, use startCodingJob with `pullRequest`.)",
         );
+    } else {
+        lines.push(
+            `To implement this issue, call startCodingJob with \`issue: ${issue.number}\` (or its URL); the job reads this issue itself.`,
+        );
     }
     lines.push(
         "",

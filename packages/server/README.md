@@ -243,10 +243,16 @@ the App is configured and `JARVIS_GITHUB_REPOS` (default:
 every call names an allowlisted repository (or falls back to the single one),
 and a failure quotes GitHub's message with the permission hint a 403 needs: the
 App must have **Issues: read & write** to read or write them. Creating a
-repository is deliberately not exposed. `startCodingJob` also takes `issue`: it
-reads the issue on the host and prepends its title, state, labels, URL and
-description to the task, so "implement issue #N" is one call instead of a body
-the relay model would have to paste. `getGitHubIssue` reads issues and
+repository is deliberately not exposed. `startCodingJob` also takes `issue` —
+its number, `#157`, or its URL — and reads the issue on the host, prepending its
+title, state, labels, URL and description to the task, so "implement issue #N"
+is one call instead of a body the relay model would have to paste. A single
+issue URL shared in the user's message is attached even when the relay
+summarizes it into `task`: the reference rides in the turn's `configurable`, and
+the tool resolves an explicit `issue` first, then an issue URL in the task, then
+that shared reference. A pull request the job opens carries a standalone
+`Closes #n`, so merging links and closes the issue. `getGitHubIssue` reads
+issues and
 `getGitHubPullRequest` reads pull requests, including their review comments and
 conversation: the issue endpoint's count covers the conversation only, so an
 inline review note would otherwise read as no comment at all. Each read points
