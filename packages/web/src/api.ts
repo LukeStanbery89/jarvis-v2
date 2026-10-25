@@ -17,6 +17,7 @@
  * screen, mirroring the portal's dead-session handling.
  */
 import type { components } from "@lukestanbery/jarvis-contracts";
+import type { CodingAnswer, CodingJobQuestions } from "./notifications";
 
 /** Account row as exposed by the REST API. */
 export type ApiUser = components["schemas"]["User"];
@@ -272,14 +273,35 @@ export function createApi(
         async answerNotification(
             token: string,
             id: string,
-            answer: string,
+            answer: string | readonly CodingAnswer[],
         ): Promise<Notification> {
             const result = await request<{ notification: Notification }>(
                 "POST",
                 `/api/notifications/${encodeURIComponent(id)}/answer`,
-                { token, body: { answer } },
+                {
+                    token,
+                    body:
+                        typeof answer === "string"
+                            ? { answer }
+                            : { answers: answer },
+                },
             );
             return result.notification;
+        },
+        /**
+         * A coding job's structured questions and answers (#180). The app
+         * fetches them when an answerable notification's card opens; the
+         * notification itself carries only the job link and a summary.
+         */
+        getCodingJobQuestions(
+            token: string,
+            jobId: string,
+        ): Promise<CodingJobQuestions> {
+            return request(
+                "GET",
+                `/api/coding-jobs/${encodeURIComponent(jobId)}/questions`,
+                { token },
+            );
         },
         /**
          * Raises a notification for the caller (#139) and reports what

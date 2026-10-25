@@ -24,7 +24,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createInMemoryAppDatabase } from "../src/testing";
 import { openAppDatabase } from "../src/store";
-import type { AppDatabase } from "../src";
+import type { AppDatabase, CodingQuestion } from "../src";
 
 /** A store with one owner and one plain user, plus their ids. */
 function makeStore(): {
@@ -442,9 +442,13 @@ describe("waiting for answers (#94)", () => {
             store.listAwaitingCodingJobsBySession(ownerId, "ses_other", 5),
         ).toEqual([]);
 
-        // Reopening is the answer: the stored questions must not be relayed
-        // again once the job is running.
-        expect(store.reopenCodingJob(job.id)?.questions).toBeNull();
+        // Reopening is the answer: the relay only reads `awaiting-answer`
+        // rows, so the text cache may stay for the app without being relayed
+        // again once the job is running (#180).
+        expect(store.reopenCodingJob(job.id)?.questions).toEqual([
+            "Postgres or SQLite?",
+            "Which branch?",
+        ]);
     });
 
     it("cancels a parked job only for its owner", () => {
@@ -573,5 +577,84 @@ describe("v19 migration", () => {
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+describe("structured questions (#180)", () => {
+    const dbQuestion: CodingQuestion = {
+        id: "db",
+        text: "Which database?",
+        kind: "single",
+        options: [
+            { id: "postgres", label: "Postgres" },
+            { id: "sqlite", label: "SQLite" },
+        ],
+        required: true,
+        allowOther: false,
+    };
+    const notesQuestion: CodingQuestion = {
+        id: "notes",
+        text: "Anything else?",
+        kind: "text",
+        options: [],
+        required: false,
+        allowOther: false,
+    };
+
+    it("stores, reads, and answers a question set", () => {
+        const { store, ownerId } = makeStore();
+        const job = store.createCodingJob(ownerId, codingJob());
+        store.claimCodingJob(job.id, "c1", "2026-10-19T12:01:00.000Z");
+        store.awaitCodingJob(job.id, { plan: "Plan." });
+
+        store.setCodingJobQuestionSet(job.id, [dbQuestion, notesQuestion]);
+        expect(store.getCodingJobQuestions(job.id)).toEqual([
+            {
+                ...dbQuestion,
+                position: 0,
+                answer: null,
+                answeredAt: null,
+                answerSource: null,
+            },
+            {
+                ...notesQuestion,
+                position: 1,
+                answer: null,
+                answeredAt: null,
+                answerSource: null,
+            },
+        ]);
+
+        store.answerCodingJobQuestions(
+            job.id,
+            [
+                { questionId: "db", value: "postgres" },
+                { questionId: "notes", value: "No." },
+            ],
+            "app",
+            "2026-10-19T12:02:00.000Z",
+        );
+        const answered = store.getCodingJobQuestions(job.id);
+        expect(answered[0]).toMatchObject({
+            answer: { questionId: "db", value: "postgres" },
+            answeredAt: "2026-10-19T12:02:00.000Z",
+            answerSource: "app",
+        });
+        expect(answered[1]).toMatchObject({
+            answer: { questionId: "notes", value: "No." },
+        });
+    });
+
+    it("replaces the set instead of appending to it", () => {
+        const { store, ownerId } = makeStore();
+        const job = store.createCodingJob(ownerId, codingJob());
+        store.claimCodingJob(job.id, "c1", "2026-10-19T12:01:00.000Z");
+        store.awaitCodingJob(job.id, { plan: "Plan." });
+
+        store.setCodingJobQuestionSet(job.id, [dbQuestion, notesQuestion]);
+        store.setCodingJobQuestionSet(job.id, [dbQuestion]);
+
+        expect(store.getCodingJobQuestions(job.id)).toHaveLength(1);
+        expect(store.getCodingJobQuestions(job.id)[0]?.id).toBe("db");
     });
 });

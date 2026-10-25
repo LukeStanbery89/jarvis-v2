@@ -1351,13 +1351,24 @@ paths:
                         schema:
                             type: object
                             additionalProperties: false
-                            required:
-                                - answer
+                            anyOf:
+                                - required: [answer]
+                                - required: [answers]
                             properties:
                                 answer:
                                     type: string
                                     minLength: 1
                                     maxLength: 2000
+                                answers:
+                                    type: array
+                                    description: >-
+                                        One answer per question (#180). The
+                                        coding service validates required
+                                        questions, option ids, and Other.
+                                    minItems: 1
+                                    maxItems: 20
+                                    items:
+                                        $ref: "#/components/schemas/CodingAnswer"
             responses:
                 "200":
                     description: The answered notification.
@@ -1418,6 +1429,41 @@ paths:
                         application/x-ndjson:
                             schema:
                                 type: string
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such coding job for this account.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/coding-jobs/{id}/questions:
+        parameters:
+            - $ref: "#/components/parameters/PathJobId"
+        get:
+            operationId: codingJobQuestions
+            summary: Read a coding job's questions and answers
+            description: >-
+                The structured questions a parked job asked (#180), with the
+                user's answers when they exist. Owner-scoped: a job that belongs
+                to another account is 404, the same as one that does not exist.
+                The app uses this to render one control per question; the
+                notification carries only the job link and a compact summary.
+            tags: [CodingJobs]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The job's questions and answers, in order.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/CodingJobQuestions"
                 "401":
                     description: Missing or invalid credentials.
                     content:
@@ -2350,6 +2396,132 @@ components:
                         - type: string
                           enum: [disabled, quiet-hours, absent, cap]
                         - type: "null"
+        CodingQuestionOption:
+            type: object
+            description: One choice in a single- or multiple-choice question (#180).
+            required: [id, label]
+            properties:
+                id:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                label:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+        CodingQuestion:
+            type: object
+            description: One question a coding job asked (#180).
+            required: [id, text, kind, options, required, allowOther]
+            properties:
+                id:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+                text:
+                    type: string
+                    minLength: 1
+                    maxLength: 2000
+                kind:
+                    type: string
+                    enum: [text, single, multi]
+                options:
+                    type: array
+                    maxItems: 20
+                    items:
+                        $ref: "#/components/schemas/CodingQuestionOption"
+                required:
+                    type: boolean
+                allowOther:
+                    type: boolean
+        CodingAnswer:
+            type: object
+            description: One answer to one coding question (#180).
+            required: [questionId, value]
+            properties:
+                questionId:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                value:
+                    oneOf:
+                        - type: string
+                          maxLength: 2000
+                        - type: array
+                          maxItems: 20
+                          items:
+                              type: string
+                              maxLength: 2000
+                other:
+                    type: string
+                    description: >-
+                        Free text for an **Other** choice, when the question
+                        allows it.
+                    maxLength: 2000
+        CodingJobQuestion:
+            description: A stored question, with its answer when one exists (#180).
+            allOf:
+                - $ref: "#/components/schemas/CodingQuestion"
+                - type: object
+                  required: [position, answer, answeredAt, answerSource]
+                  properties:
+                      position:
+                          type: integer
+                          minimum: 0
+                      answer:
+                          oneOf:
+                              - $ref: "#/components/schemas/CodingAnswer"
+                              - type: "null"
+                      answeredAt:
+                          oneOf:
+                              - type: string
+                                format: date-time
+                              - type: "null"
+                      answerSource:
+                          oneOf:
+                              - type: string
+                                maxLength: 64
+                              - type: "null"
+        CodingJobQuestions:
+            type: object
+            description: Body of `GET /api/coding-jobs/{id}/questions` (#180).
+            required: [job, questions]
+            properties:
+                job:
+                    type: object
+                    required: [id, state, repo, branch]
+                    properties:
+                        id:
+                            type: string
+                            minLength: 1
+                            maxLength: 64
+                        state:
+                            type: string
+                            enum:
+                                [
+                                    queued,
+                                    running,
+                                    awaiting-answer,
+                                    ok,
+                                    failed,
+                                    cancelled,
+                                ]
+                        repo:
+                            type: string
+                        branch:
+                            type: string
+                        prUrl:
+                            oneOf:
+                                - type: string
+                                - type: "null"
+                        plan:
+                            oneOf:
+                                - type: string
+                                - type: "null"
+                questions:
+                    type: array
+                    items:
+                        $ref: "#/components/schemas/CodingJobQuestion"
         JobCreateRequest:
             type: object
             description: >-

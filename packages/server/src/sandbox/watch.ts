@@ -125,7 +125,13 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
      */
     async function watchIssues(bot: string): Promise<void> {
         for (const job of options.ledger.listAwaitingCodingJobs(limit)) {
-            if (job.issueNumber === null || job.questionCommentId === null) {
+            // A PR follow-up has no issue, but its questions are posted on the
+            // pull request's own thread (GitHub's issue-comment API), so the
+            // same answer poller covers both.
+            const thread =
+                job.issueNumber ??
+                (job.prUrl !== null ? pullNumberFromUrl(job.prUrl) : null);
+            if (thread === null || job.questionCommentId === null) {
                 continue;
             }
             const parts = repoParts(job.repo);
@@ -136,21 +142,21 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                 const issue = await options.github.getIssue(
                     parts.owner,
                     parts.name,
-                    job.issueNumber,
+                    thread,
                 );
                 if (issue.state !== "open") {
-                    // The user closed the issue: there is nothing left to
+                    // The user closed the issue/PR: there is nothing left to
                     // continue, and the parked workspace is not a promise.
                     await options.service.stop(job.userId, job.id);
                     logger.info(
-                        `coding watch: issue #${job.issueNumber} closed; cancelled parked job ${job.id}`,
+                        `coding watch: thread #${thread} closed; cancelled parked job ${job.id}`,
                     );
                     continue;
                 }
                 const comments = await options.github.readIssueComments(
                     parts.owner,
                     parts.name,
-                    job.issueNumber,
+                    thread,
                     { since: job.startedAt ?? job.createdAt },
                 );
                 const answers = comments.filter(
@@ -190,7 +196,7 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                 );
                 if (resumed.ok) {
                     logger.info(
-                        `coding watch: resumed job ${job.id} from issue #${job.issueNumber}`,
+                        `coding watch: resumed job ${job.id} from thread #${thread}`,
                     );
                 } else {
                     logger.warn(
@@ -199,7 +205,7 @@ export function startCodingWatch(options: CodingWatchOptions): CodingWatch {
                 }
             } catch (err) {
                 logger.warn(
-                    `coding watch: issue #${job.issueNumber} failed: ${
+                    `coding watch: thread #${thread} failed: ${
                         err instanceof Error ? err.message : String(err)
                     }`,
                 );

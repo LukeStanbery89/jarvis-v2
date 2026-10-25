@@ -552,14 +552,23 @@ const onNotificationAnswer: NotificationAnswerHandler | undefined =
               if (notification.codingJobId === null) {
                   return { ok: true };
               }
-              const result = await codingForAnswers.resume(
-                  userId,
-                  notification.codingJobId,
-                  answer,
-                  // The route settles this row itself, with the answer text;
-                  // the resume settles any other question rows for the job.
-                  { notificationId: notification.id },
-              );
+              // The route settles this row itself, with the answer text; the
+              // resume settles any other question rows for the job.
+              const options = { notificationId: notification.id };
+              const result =
+                  answer.kind === "structured"
+                      ? await codingForAnswers.answer(
+                            userId,
+                            notification.codingJobId,
+                            answer.answers,
+                            options,
+                        )
+                      : await codingForAnswers.resume(
+                            userId,
+                            notification.codingJobId,
+                            answer.text,
+                            options,
+                        );
               return result.ok
                   ? { ok: true }
                   : { ok: false, reason: result.reason };

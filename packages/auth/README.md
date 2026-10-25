@@ -106,6 +106,10 @@ only the surface they call:
   (#94) adds `awaitCodingJob` (`running` → `awaiting-answer`) and
   `reopenCodingJob` (`awaiting-answer` → `queued`); the reopen is the claim,
   so the chat tool and the poller cannot start two runs from one answer.
+  The structured ask (#180) adds `setCodingJobQuestionSet` /
+  `getCodingJobQuestions` / `answerCodingJobQuestions`, backed by
+  `coding_job_questions` (v21); the set survives a reopen so the app can show
+  the answered questions after the job continues.
   The shape mirrors `JobLedger`'s two surfaces for the same reason: a job
   belongs to one user, but the boot reaper finds a container by its
   `jarvis.job` label — with no owner to scope by — and the supervisor settles a
@@ -265,8 +269,9 @@ router and middleware span every ledger and therefore take the full
   `crash_policy` (`prune` default | `resume`, chosen per job), `model` (the id
   the run was told to use — recorded rather than inferred, because the config
   can change between runs), `session_id` (the chat that asked, for the in-session
-  ask relay), `questions_json` (the parked questions, written at park time and
-  cleared by the reopen that answers them), `issue_number` / `question_comment_id` / `plan` /
+  ask relay), `questions_json` (the text cache for the in-session relay, written
+  at park time; the structured set in `coding_job_questions` is the app's
+  source and survives the reopen), `issue_number` / `question_comment_id` / `plan` /
   `last_seen_comment_id` (the SDLC loop: where the questions were posted, what
   the agent planned, and the newest comment accounted for), `container_id`
   (written at claim time — `resume` needs it after a crash), `workspace_path`,
@@ -277,8 +282,15 @@ DESC)` for the owner's list and on `(state) WHERE state = 'running'` — the
   the newest _settled_ rows, so a run in flight never counts against a user's
   history budget. The ask relay adds `setCodingJobQuestions` (the parked
   questions, written once) and `listAwaitingCodingJobsBySession` (the session-
-  and owner-scoped feed the chat path reads); reopening clears the questions in
-  the same transition that claims the answer.
+  and owner-scoped feed the chat path reads); reopening keeps both forms (the
+  relay only reads rows still in `awaiting-answer`) so the app can show the
+  answered set after the job continues.
+- `coding_job_questions` — one row per structured question (#180, v21):
+  `job_id` / `question_id` / `position`, `text`, `kind` (`text` | `single` |
+  `multi`), `options_json`, `required`, `allow_other`, and the answer columns
+  (`answer_json`, `answered_at`, `answer_source`). It cascades with the job and
+  is read by `GET /api/coding-jobs/{id}/questions`; the answer route writes it
+  before the job resumes.
 
 `openAppDatabase(path)` creates + pre-narrows the file's directory (via
 `fs.ts`) before SQLite touches it, so the world-readable window SQLite's

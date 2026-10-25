@@ -860,11 +860,72 @@ describe("notification routes (#139)", () => {
         expect(resume).toHaveBeenCalledWith(
             userId,
             expect.objectContaining({ codingJobId: job.id }),
-            "Postgres",
+            { kind: "text", text: "Postgres" },
         );
         expect(answered.body.notification).toMatchObject({
             state: "answered",
             answer: "Postgres",
+        });
+    });
+
+    it("accepts a structured answer and passes it to the coding service (#180)", async () => {
+        const job = store.createCodingJob(userId, {
+            id: "c1-structured",
+            repo: "luke/app",
+            branch: "jarvis/structured",
+            prompt: "Fix it.",
+            workspacePath: "/jobs/c1-structured/repo",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+        const created = await request(buildApp())
+            .post("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                kind: "coding.question",
+                title: "Which database?",
+                requiresAnswer: true,
+                codingJobId: job.id,
+            })
+            .expect(201);
+        const id = created.body.notification.id as string;
+        const resume = vi.fn(async () => ({ ok: true as const }));
+        const app = createApp(
+            store,
+            appConfig,
+            undefined,
+            undefined,
+            service,
+            undefined,
+            undefined,
+            undefined,
+            resume,
+        );
+
+        const answered = await request(app)
+            .post(`/api/notifications/${id}/answer`)
+            .set("authorization", `Bearer ${token}`)
+            .send({
+                answers: [
+                    { questionId: "db", value: "postgres" },
+                    { questionId: "surfaces", value: ["rail"] },
+                ],
+            })
+            .expect(200);
+
+        expect(resume).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({ codingJobId: job.id }),
+            {
+                kind: "structured",
+                answers: [
+                    { questionId: "db", value: "postgres" },
+                    { questionId: "surfaces", value: ["rail"] },
+                ],
+            },
+        );
+        expect(answered.body.notification).toMatchObject({
+            state: "answered",
+            answer: "db: postgres\nsurfaces: rail",
         });
     });
 

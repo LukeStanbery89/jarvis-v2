@@ -36,14 +36,24 @@ export {
     NOTIFICATION_STATES,
     NOTIFICATION_TERMINAL_STATES,
 } from "./store";
+export { CODING_QUESTION_KINDS } from "./codingQuestions";
+export type {
+    CodingAnswer,
+    CodingQuestion,
+    CodingQuestionKind,
+    CodingQuestionOption,
+} from "./codingQuestions";
 export type {
     AppCodingJob,
     AppDatabase,
     AppJob,
     AppJobRun,
     AppNotification,
+    CodingJobAnswerSet,
     CodingJobCrashPolicy,
     CodingJobLedger,
+    CodingJobQuestion,
+    CodingJobQuestionSet,
     CodingJobState,
     CreateCodingJobInput,
     CreateJobInput,

@@ -1051,6 +1051,132 @@ describe("starting a coding job", () => {
         expect(store.getCodingJobById(started.job.id)?.state).toBe("ok");
     });
 
+    it("stores structured questions and resumes with the rendered Q/A block", async () => {
+        const root = tempDir("jarvis-structured-");
+        const workspace = fakeWorkspace({ root });
+        const comments: Array<{
+            owner: string;
+            repo: string;
+            number: number;
+            body: string;
+        }> = [];
+        const { userId, runner, service, store, notify } = makeService({
+            config: {
+                workspaceRoot: root,
+                workspaceHostRoot: path.join(root, "host"),
+            },
+            workspace,
+            issues: async () => issueSnapshot({ number: 12 }),
+            commentOnIssue: async (input) => {
+                comments.push(input);
+                return {
+                    id: 77,
+                    url: "https://github.com/luke/app/issues/12#issuecomment-77",
+                };
+            },
+        });
+
+        const started = await service.start({
+            userId,
+            repo: "luke/app",
+            task: "Build the thing",
+            issue: 12,
+        });
+        if (!started.ok) {
+            throw new Error(`refused: ${started.reason}`);
+        }
+        const workspacePath = started.job.workspacePath;
+        mkdirSync(path.join(workspacePath, ".jarvis"), { recursive: true });
+        writeFileSync(
+            path.join(workspacePath, ".jarvis", "questions.json"),
+            JSON.stringify({
+                questions: [
+                    {
+                        id: "db",
+                        text: "Which database?",
+                        kind: "single",
+                        options: [
+                            { id: "postgres", label: "Postgres" },
+                            { id: "sqlite", label: "SQLite" },
+                        ],
+                        required: true,
+                    },
+                    {
+                        id: "surfaces",
+                        text: "Which surfaces?",
+                        kind: "multi",
+                        options: [
+                            { id: "rail", label: "Wide-screen rail" },
+                            { id: "bar", label: "Top bar" },
+                        ],
+                        required: true,
+                    },
+                    {
+                        id: "notes",
+                        text: "Anything else?",
+                        kind: "text",
+                        required: false,
+                    },
+                ],
+            }),
+        );
+        runner.exit(started.job.containerId ?? "", 0);
+        await started.done;
+
+        const stored = store.getCodingJobQuestions(started.job.id);
+        expect(stored.map((question) => question.id)).toEqual([
+            "db",
+            "surfaces",
+            "notes",
+        ]);
+        expect(stored[0]?.options).toEqual([
+            { id: "postgres", label: "Postgres" },
+            { id: "sqlite", label: "SQLite" },
+        ]);
+        expect(comments[0]?.body).toContain("Postgres");
+        expect(comments[0]?.body).toContain("Which surfaces?");
+        expect(notify.notify).toHaveBeenCalledWith(
+            userId,
+            expect.objectContaining({
+                body: expect.stringContaining("Which surfaces?"),
+            }),
+        );
+
+        // A required question missing is refused, and the job stays parked.
+        const refused = await service.answer(userId, started.job.id, [
+            { questionId: "db", value: "postgres" },
+        ]);
+        expect(refused.ok).toBe(false);
+        if (!refused.ok) {
+            expect(refused.reason).toContain("required");
+        }
+        expect(store.getCodingJobById(started.job.id)?.state).toBe(
+            "awaiting-answer",
+        );
+
+        const resumed = await service.answer(userId, started.job.id, [
+            { questionId: "db", value: "postgres" },
+            { questionId: "surfaces", value: ["rail"] },
+            { questionId: "notes", value: "Keep Admin." },
+        ]);
+        if (!resumed.ok) {
+            throw new Error(`refused: ${resumed.reason}`);
+        }
+        const prompt = runner.started[1]?.env.JARVIS_JOB_PROMPT ?? "";
+        expect(prompt).toContain("Q1 (db): Which database?");
+        expect(prompt).toContain("A1: Postgres");
+        expect(prompt).toContain("Q2 (surfaces): Which surfaces?");
+        expect(prompt).toContain("A2: Wide-screen rail");
+        expect(prompt).toContain("A3: Keep Admin.");
+        expect(store.getCodingJobQuestions(started.job.id)[0]).toMatchObject({
+            answer: { questionId: "db", value: "postgres" },
+            answerSource: "app",
+        });
+
+        runner.exit(resumed.job.containerId ?? "", 0);
+        await resumed.done;
+    });
+
     it("cancels a parked job and removes its workspace", async () => {
         const root = tempDir("jarvis-cancel-await-");
         const workspace = fakeWorkspace({ root });

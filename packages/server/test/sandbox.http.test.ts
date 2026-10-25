@@ -238,3 +238,71 @@ describe("coding job log endpoint", () => {
         expect(await response.text()).toBe("");
     });
 });
+
+describe("coding job questions (#180)", () => {
+    it("serves the structured questions and answers", async () => {
+        const fixture = await makeFixture();
+        fixtures.push(fixture);
+        seedJob(fixture, "job-questions", "ok");
+        fixture.store.setCodingJobQuestionSet("job-questions", [
+            {
+                id: "db",
+                text: "Which database?",
+                kind: "single",
+                options: [
+                    { id: "postgres", label: "Postgres" },
+                    { id: "sqlite", label: "SQLite" },
+                ],
+                required: true,
+                allowOther: false,
+            },
+        ]);
+
+        const response = await fetch(
+            fixture.url("job-questions").replace("/logs", "/questions"),
+            { headers: { authorization: `Bearer ${fixture.token}` } },
+        );
+
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+            job: Record<string, unknown>;
+            questions: Array<Record<string, unknown>>;
+        };
+        expect(body.job).toMatchObject({
+            id: "job-questions",
+            state: "ok",
+            repo: "luke/app",
+        });
+        expect(body.questions).toHaveLength(1);
+        expect(body.questions[0]).toMatchObject({
+            id: "db",
+            text: "Which database?",
+            kind: "single",
+            position: 0,
+            answer: null,
+            answeredAt: null,
+            answerSource: null,
+        });
+    });
+
+    it("answers 404 for another account's job", async () => {
+        const fixture = await makeFixture();
+        fixtures.push(fixture);
+        seedJob(fixture, "job-private", "ok");
+        const other = fixture.store.createUser("sam", "hash", "user");
+        const material = generateDeviceToken();
+        fixture.store.createDevice(
+            other.id,
+            "other",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const response = await fetch(
+            fixture.url("job-private").replace("/logs", "/questions"),
+            { headers: { authorization: `Bearer ${material.token}` } },
+        );
+
+        expect(response.status).toBe(404);
+    });
+});

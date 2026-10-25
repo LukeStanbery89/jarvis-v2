@@ -213,6 +213,47 @@ describe("coding watch", () => {
         expect(fixture.stop).not.toHaveBeenCalled();
     });
 
+    it("resumes a parked PR follow-up from the pull request's thread", async () => {
+        const fixture = makeWatch({
+            awaiting: [
+                job({
+                    state: "awaiting-answer",
+                    issueNumber: null,
+                    prUrl: "https://github.com/luke/app/pull/9",
+                    questionCommentId: 77,
+                    lastSeenCommentId: 77,
+                }),
+            ],
+            issueComments: [
+                {
+                    id: 78,
+                    author: "luke",
+                    body: "Use the rail.",
+                    createdAt: START,
+                    url: "https://github.com/luke/app/pull/9#issuecomment-78",
+                },
+            ],
+        });
+
+        await tick(fixture);
+
+        expect(fixture.resume).toHaveBeenCalledTimes(1);
+        const [userId, jobId, answers, options] =
+            fixture.resume.mock.calls[0] ?? [];
+        expect(userId).toBe(7);
+        expect(jobId).toBe("job-1");
+        expect(answers).toContain("Use the rail.");
+        expect(options).toEqual({ lastSeenCommentId: 78 });
+        // The poller read the PR's thread, not a phantom issue.
+        expect(fixture.github.getIssue).toHaveBeenCalledWith("luke", "app", 9);
+        expect(fixture.github.readIssueComments).toHaveBeenCalledWith(
+            "luke",
+            "app",
+            9,
+            expect.anything(),
+        );
+    });
+
     it("does not treat the App's own comment as an answer", async () => {
         const fixture = makeWatch({
             awaiting: [

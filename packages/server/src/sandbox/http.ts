@@ -140,5 +140,31 @@ export function createCodingLogRouter(
         },
     );
 
+    router.get(
+        "/coding-jobs/:id/questions",
+        authenticated,
+        (req: Request, res: Response) => {
+            const jarv = authed(req).jarv;
+            const raw = req.params.id;
+            const id = Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "");
+            const job = store.getCodingJob(jarv.user.id, id);
+            if (job === null) {
+                res.status(404).json({ error: "coding job not found" });
+                return;
+            }
+            res.json({
+                job: {
+                    id: job.id,
+                    state: job.state,
+                    repo: job.repo,
+                    branch: job.branch,
+                    prUrl: job.prUrl,
+                    plan: job.plan,
+                },
+                questions: store.getCodingJobQuestions(job.id),
+            });
+        },
+    );
+
     return router;
 }

@@ -17,6 +17,7 @@
  */
 import type {
     AppNotification,
+    CodingAnswer,
     NotificationPriority,
 } from "@lukestanbery/jarvis-auth";
 import {
@@ -266,4 +267,140 @@ export function validateAnswer(answer: unknown): string {
         );
     }
     return trimmed;
+}
+
+/** The most structured answers one submission may carry (#180). */
+const MAX_STRUCTURED_ANSWERS = 20;
+
+/** The most choices one multiple-choice answer may carry. */
+const MAX_STRUCTURED_VALUES = 20;
+
+/** Longest question id accepted from a client. */
+const MAX_QUESTION_ID_LENGTH = 128;
+
+/**
+ * Validates the structured answer half of an answer request (#180).
+ *
+ * Shape and bounds only: whether a question is required, whether an option id
+ * exists, and whether **Other** is allowed are the coding service's checks,
+ * because only it has the stored question set. A malformed body is a 400 here.
+ *
+ * @param answers - The `answers` array from the request.
+ * @returns The normalized answers.
+ */
+export function validateStructuredAnswers(answers: unknown): CodingAnswer[] {
+    if (!Array.isArray(answers) || answers.length === 0) {
+        throw new NotificationInputError("answers must be a non-empty array");
+    }
+    if (answers.length > MAX_STRUCTURED_ANSWERS) {
+        throw new NotificationInputError(
+            `answers must have at most ${MAX_STRUCTURED_ANSWERS} entries`,
+        );
+    }
+    return answers.map((entry, index) => {
+        if (typeof entry !== "object" || entry === null) {
+            throw new NotificationInputError(
+                `answers[${index}] must be an object`,
+            );
+        }
+        const record = entry as {
+            questionId?: unknown;
+            value?: unknown;
+            other?: unknown;
+        };
+        if (
+            typeof record.questionId !== "string" ||
+            record.questionId.trim().length === 0
+        ) {
+            throw new NotificationInputError(
+                `answers[${index}].questionId must be a non-empty string`,
+            );
+        }
+        const questionId = record.questionId.trim();
+        if (questionId.length > MAX_QUESTION_ID_LENGTH) {
+            throw new NotificationInputError(
+                `answers[${index}].questionId is too long`,
+            );
+        }
+        let value: string | string[];
+        if (typeof record.value === "string") {
+            if (record.value.length > MAX_NOTIFICATION_ANSWER_LENGTH) {
+                throw new NotificationInputError(
+                    `answers[${index}].value is too long`,
+                );
+            }
+            value = record.value.trim();
+        } else if (Array.isArray(record.value)) {
+            if (record.value.length > MAX_STRUCTURED_VALUES) {
+                throw new NotificationInputError(
+                    `answers[${index}].value has too many choices`,
+                );
+            }
+            value = record.value.map((choice, position) => {
+                if (typeof choice !== "string") {
+                    throw new NotificationInputError(
+                        `answers[${index}].value[${position}] must be a string`,
+                    );
+                }
+                if (choice.length > MAX_NOTIFICATION_ANSWER_LENGTH) {
+                    throw new NotificationInputError(
+                        `answers[${index}].value[${position}] is too long`,
+                    );
+                }
+                return choice.trim();
+            });
+        } else {
+            throw new NotificationInputError(
+                `answers[${index}].value must be a string or an array of strings`,
+            );
+        }
+        if (record.other !== undefined && typeof record.other !== "string") {
+            throw new NotificationInputError(
+                `answers[${index}].other must be a string`,
+            );
+        }
+        if (
+            typeof record.other === "string" &&
+            record.other.length > MAX_NOTIFICATION_ANSWER_LENGTH
+        ) {
+            throw new NotificationInputError(
+                `answers[${index}].other is too long`,
+            );
+        }
+        return {
+            questionId,
+            value,
+            ...(typeof record.other === "string"
+                ? { other: record.other.trim() }
+                : {}),
+        };
+    });
+}
+
+/**
+ * Renders structured answers as the notification's short reply summary (#180).
+ *
+ * The full Q/A block lives on the job's question view; this is only what the
+ * notification row keeps in its single `answer` field, so it is clamped to the
+ * protocol's answer length.
+ *
+ * @param answers - The validated answers.
+ * @returns One `questionId: value` line per answer, bounded.
+ */
+export function describeCodingAnswers(
+    answers: readonly CodingAnswer[],
+): string {
+    return answers
+        .map((answer) => {
+            const value = Array.isArray(answer.value)
+                ? answer.value.join(", ")
+                : answer.value;
+            const other =
+                answer.other !== undefined && answer.other.trim().length > 0
+                    ? ` (${answer.other.trim()})`
+                    : "";
+            return `${answer.questionId}: ${value}${other}`;
+        })
+        .join("\n")
+        .slice(0, MAX_NOTIFICATION_ANSWER_LENGTH);
 }
