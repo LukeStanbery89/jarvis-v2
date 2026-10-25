@@ -533,22 +533,12 @@ export const MAX_TIMER_MINUTES = 1440;
 /** How far ahead a job may be set, in days (mirrors `JARVIS_JOB_MAX_HORIZON_DAYS`). */
 export const HORIZON_DAYS = 366;
 
-/** A unit of a countdown, as the timer form offers them. */
-export type DurationUnit = "seconds" | "minutes" | "hours";
-
-/** Milliseconds in each unit the timer form offers. */
-const UNIT_MS: Record<DurationUnit, number> = {
-    seconds: 1_000,
-    minutes: 60_000,
-    hours: 3_600_000,
-};
-
 /**
  * The lengths worth one click, in the order a person reaches for them.
  *
  * In minutes because that is the unit the server's own bound is expressed in —
- * the form maps these onto its amount/unit fields, so a preset and a typed
- * duration go down one path.
+ * the form maps these onto its hours/minutes/seconds fields, so a preset and a
+ * typed duration go down one path.
  */
 export const DURATION_PRESETS: { label: string; minutes: number }[] = [
     { label: "5 minutes", minutes: 5 },
@@ -557,25 +547,91 @@ export const DURATION_PRESETS: { label: string; minutes: number }[] = [
     { label: "1 hour", minutes: 60 },
 ];
 
+/** A countdown split into the timer form's three fields. */
+export interface DurationParts {
+    /** Whole hours. */
+    hours: number;
+    /** Whole minutes, 0..59. */
+    minutes: number;
+    /** Whole seconds, 0..59. */
+    seconds: number;
+}
+
+/** The timer form's fallback when a stored job has no usable length. */
+const DEFAULT_DURATION: DurationParts = { hours: 0, minutes: 10, seconds: 0 };
+
 /**
- * The moment `amount` of `unit` from now, or `null` when that is not a length.
+ * The instant `parts` from now, or `null` when that is not a positive length.
  *
- * Seconds are offered because a countdown has no floor beyond what the clock can
- * express (phase 4 learned this the hard way: the half-minute floor turned "set
- * a timer for ten seconds" into a refusal).
+ * The form's three boxes are one duration: hours, minutes and seconds are added
+ * before the clock is moved, so 0h 1m 30s and 90s are the same request.
  *
  * @param now - The clock to count from.
- * @param duration - An amount and its unit.
- * @returns The instant, or `null` for a zero, negative or unreadable amount.
+ * @param parts - The hours, minutes and seconds fields.
+ * @returns The instant, or `null` for a zero, negative or unreadable total.
  */
-export function instantFromDuration(
-    now: Date,
-    duration: { amount: number; unit: DurationUnit },
-): Date | null {
-    if (!Number.isFinite(duration.amount) || duration.amount <= 0) {
+export function instantFromParts(now: Date, parts: DurationParts): Date | null {
+    const totalSeconds =
+        parts.hours * 3_600 + parts.minutes * 60 + parts.seconds;
+    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
         return null;
     }
-    return new Date(now.getTime() + duration.amount * UNIT_MS[duration.unit]);
+    return new Date(now.getTime() + totalSeconds * 1_000);
+}
+
+/**
+ * A countdown split into hours, minutes and seconds for the form's fields.
+ *
+ * A timer stores its fire time, but the form edits the length (#177 follow-up).
+ * The span is rounded to the nearest second first: a timer created at
+ * 12:00:00.123 for ten minutes is 600.123 s, and the old amount/unit control
+ * called that "600 seconds"; the three boxes read 0 h 10 m 0 s instead.
+ *
+ * @param spanMs - The length in milliseconds.
+ * @returns The parts, or the form's 10-minute default when the span is not a
+ *   positive number.
+ */
+export function durationDraftFromSpan(spanMs: number): DurationParts {
+    if (!Number.isFinite(spanMs) || spanMs <= 0) {
+        return { ...DEFAULT_DURATION };
+    }
+    const totalSeconds = Math.max(1, Math.round(spanMs / 1_000));
+    return {
+        hours: Math.floor(totalSeconds / 3_600),
+        minutes: Math.floor((totalSeconds % 3_600) / 60),
+        seconds: totalSeconds % 60,
+    };
+}
+
+/**
+ * The length a stored timer was set with, for its edit form (#157 follow-up).
+ *
+ * `runAt - createdAt` is the length the timer was created with; the remaining
+ * span is deliberately not the answer, because opening the form two minutes
+ * later must not silently shorten a ten-minute timer — or make "save without
+ * touching the length" a no-op. When those timestamps are unreadable, the
+ * remaining time is the best fallback, and when even that has passed the form
+ * starts at its usual ten minutes.
+ *
+ * @param job - The timer's stored `runAt` and `createdAt`.
+ * @param now - The clock for the remaining-time fallback.
+ * @returns The hours/minutes/seconds the duration control opens with.
+ */
+export function durationDraftFor(
+    job: Pick<Job, "runAt" | "createdAt">,
+    now: Date,
+): DurationParts {
+    const runAt = Date.parse(job.runAt);
+    const createdAt = Date.parse(job.createdAt);
+    const createdSpan = runAt - createdAt;
+    if (Number.isFinite(createdSpan) && createdSpan > 0) {
+        return durationDraftFromSpan(createdSpan);
+    }
+    const remaining = runAt - now.getTime();
+    if (Number.isFinite(remaining) && remaining > 0) {
+        return durationDraftFromSpan(remaining);
+    }
+    return { ...DEFAULT_DURATION };
 }
 
 /**

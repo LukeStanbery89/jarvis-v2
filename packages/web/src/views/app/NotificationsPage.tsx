@@ -414,7 +414,7 @@ export function NotificationsPage({
 
     return (
         <>
-            <main className="page page-rows">
+            <main className="page page-rows notifications-page">
                 <header className="page-head">
                     <div>
                         <h1>Notifications</h1>

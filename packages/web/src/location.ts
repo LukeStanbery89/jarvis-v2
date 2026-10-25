@@ -148,8 +148,8 @@ export type LocationUiState =
  * A short inline note for a location state, or `null` when there is nothing
  * worth saying.
  *
- * The sidebar shows this beside the settings gear now that the pin itself lives
- * in the panel (#143): turning sharing on and then hearing nothing must not be a
+ * The bar shows this beside the Settings item now that the pin itself lives in
+ * the panel (#143): turning sharing on and then hearing nothing must not be a
  * mystery, and a permission prompt that was declined is exactly the kind of
  * silence that looks like a broken feature. `off` is the user's own choice and
  * `active` is the working case — neither needs a line. The full sentence stays

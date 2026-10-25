@@ -18,6 +18,10 @@
  * bar's own (`.navbar-badge`), moved onto the icon's corner
  * (`.rail-link-icon`) — the same number in the same place, whichever affordance
  * is showing it.
+ *
+ * Settings is the one item that is not a destination: it opens the panel and
+ * sits under Notifications, above the Admin hairline, exactly where the bar and
+ * the narrow-screen drawer put it (#177 follow-up).
  */
 import {
     Bell,
@@ -25,6 +29,7 @@ import {
     ExternalLink,
     House,
     MessagesSquare,
+    Settings as SettingsIcon,
     Timer,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -48,6 +53,10 @@ export interface IconRailProps {
     unread: number;
     /** Whether each item shows its word beside its icon (the appearance switch). */
     navLabels: boolean;
+    /** Whether the settings panel is showing (the Settings item's `aria-expanded`). */
+    settingsOpen: boolean;
+    /** Opens the settings panel (the Settings item, under Notifications). */
+    onOpenSettings(): void;
 }
 
 /**
@@ -60,7 +69,12 @@ export interface IconRailProps {
  *
  * @param props - See {@link IconRailProps}.
  */
-export function IconRail({ unread, navLabels }: IconRailProps) {
+export function IconRail({
+    unread,
+    navLabels,
+    settingsOpen,
+    onOpenSettings,
+}: IconRailProps) {
     const route = useRoute();
     return (
         <nav
@@ -88,6 +102,23 @@ export function IconRail({ unread, navLabels }: IconRailProps) {
                     <span className="rail-link-label">{label}</span>
                 </AppLink>
             ))}
+            {/* Settings is not a destination: it opens the panel and never
+                takes the page mark. It keeps the icon-and-label shape so the
+                labels switch treats it like every other row. */}
+            <button
+                type="button"
+                className="rail-link rail-action"
+                aria-label="Settings"
+                title="Settings"
+                aria-expanded={settingsOpen}
+                aria-controls="settings-panel"
+                onClick={onOpenSettings}
+            >
+                <span className="rail-link-icon">
+                    <SettingsIcon size={18} aria-hidden="true" />
+                </span>
+                <span className="rail-link-label">Settings</span>
+            </button>
             {/* Admin is not a page of this app (#146 phase C): it leaves for the
                 portal, so it sits past the same hairline the bar uses. */}
             <span className="rail-sep" aria-hidden="true" />

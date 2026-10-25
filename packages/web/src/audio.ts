@@ -80,6 +80,17 @@ export class AudioPlayer {
     private ringScheduledUntil = 0;
     /** Queued tones, so Stop silences the look-ahead as well as the loop. */
     private ringTones: OscillatorNode[] = [];
+    /**
+     * The alarm's own output bus (#177 follow-up: Stop must be immediate).
+     *
+     * Every chime is mixed through one gain, and Stop disconnects that gain
+     * from the destination. Stopping the oscillators alone can leave a tone
+     * audible on browsers that have already handed a scheduled source to the
+     * hardware; detaching the bus silences everything connected to it, queued
+     * or already sounding. A fresh bus is created on the next ring so a stale
+     * tone can never be unmuted by the next alarm.
+     */
+    private ringOutput: GainNode | null = null;
     private readonly listeners = new Set<() => void>();
     private speaking = false;
     /**
@@ -285,18 +296,36 @@ export class AudioPlayer {
             return;
         }
         this.ringScheduledUntil = 0;
-        this.scheduleRing();
+        this.ensureRingOutput();
+        // Arm the loop before the first schedule, so `scheduleRing` can treat
+        // a null timer as "stopped" and a queued top-up cannot revive a ring
+        // the user just dismissed.
         this.ringTimer = setInterval(() => this.scheduleRing(), RING_TOPUP_MS);
+        this.scheduleRing();
         // Node timers would otherwise hold a test process open; browsers have
         // no `unref`, so this is structural rather than a typed API.
         (this.ringTimer as { unref?: () => void }).unref?.();
     }
 
-    /** Stops the ring, including every tone already queued ahead. */
+    /**
+     * Stops the ring, including every tone already queued ahead.
+     *
+     * Muting the whole output bus is the load-bearing half: it silences a
+     * chime the hardware has already begun, even if stopping its oscillator
+     * does not. The bus is then disconnected so the next ring starts clean.
+     */
     stopRing(): void {
         if (this.ringTimer !== null) {
             clearInterval(this.ringTimer);
             this.ringTimer = null;
+        }
+        const ctx = this.ctx;
+        if (this.ringOutput !== null) {
+            if (ctx !== null) {
+                this.ringOutput.gain.setValueAtTime(0, ctx.currentTime);
+            }
+            this.ringOutput.disconnect();
+            this.ringOutput = null;
         }
         for (const tone of this.ringTones) {
             try {
@@ -310,10 +339,33 @@ export class AudioPlayer {
     }
 
     /**
+     * The gain every chime is mixed through, created on demand and connected
+     * to the speakers.
+     *
+     * @returns The alarm bus, or `null` when the runtime has no context.
+     */
+    private ensureRingOutput(): GainNode | null {
+        const ctx = this.ensureContext();
+        if (ctx === null) {
+            return null;
+        }
+        if (this.ringOutput === null) {
+            const output = ctx.createGain();
+            output.gain.setValueAtTime(1, ctx.currentTime);
+            output.connect(ctx.destination);
+            this.ringOutput = output;
+        }
+        return this.ringOutput;
+    }
+
+    /**
      * Queues the alarm pattern from where it left off to the look-ahead
      * horizon. Called on start and on every top-up tick.
      */
     private scheduleRing(): void {
+        if (this.ringTimer === null) {
+            return;
+        }
         const ctx = this.ensureContext();
         if (ctx === null || ctx.state === "suspended") {
             return;
@@ -338,6 +390,10 @@ export class AudioPlayer {
         if (ctx === null) {
             return;
         }
+        const output = this.ensureRingOutput();
+        if (output === null) {
+            return;
+        }
         [880, 660, 990].forEach((frequency, index) => {
             const at = start + index * 0.18;
             const osc = ctx.createOscillator();
@@ -347,7 +403,7 @@ export class AudioPlayer {
             gain.gain.setValueAtTime(0.22, at);
             gain.gain.exponentialRampToValueAtTime(0.001, at + 0.16);
             osc.connect(gain);
-            gain.connect(ctx.destination);
+            gain.connect(output);
             osc.start(at);
             osc.stop(at + 0.17);
             this.ringTones.push(osc);

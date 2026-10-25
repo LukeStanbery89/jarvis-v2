@@ -1,12 +1,12 @@
 /**
  * The chat sidebar: the new-chat button and the merged conversation list.
  *
- * Presentational — props in, events out. The settings gear moved to the top bar
- * in #90 phase 6d, along with the two state hints it used to carry: the
- * microphone and the location share belong to the app now, so *every* page has
- * to be able to say they are live, not just this column. What is left here is
- * what the sidebar is actually about — the conversations — which is why the
- * head it used to have is gone rather than empty.
+ * Presentational — props in, events out. The settings moved out of the sidebar
+ * to the app's own chrome in #90 phase 6d, along with the two state hints it
+ * used to carry: the microphone and the location share belong to the app now,
+ * so *every* page has to be able to say they are live, not just this column.
+ * What is left here is what the sidebar is actually about — the conversations —
+ * which is why the head it used to have is gone rather than empty.
  *
  * A row's delete is a hold-to-delete gesture (#157): the trash icon's ring
  * fills for three seconds and the conversation goes only if the hold completes.

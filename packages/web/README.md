@@ -54,7 +54,7 @@ portal is a different app at `/admin` and keeps its own hash router.
 
 | Path             | Today                                                                                                       |
 | ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `/`              | The dashboard: the clock, what is coming up, the unread count                                               |
+| `/`              | The dashboard: the clock, the individual coming-up job panes, the unread count                              |
 | `/chat`          | The conversation                                                                                            |
 | `/timers`        | The countdowns still running: New, Edit, Cancel, and a Recent history                                       |
 | `/reminders`     | What the assistant owes you: New, Edit, **Repeats**, Cancel, **Snooze**, Recent                             |
@@ -101,7 +101,12 @@ with the last word instead of holding the peak. A context without
 `createAnalyser` simply has no tap and a still field.
 
 `prefers-reduced-motion: reduce` draws a single static frame; the media query is
-watched, so toggling the OS setting takes effect without a reload.
+watched, so toggling the OS setting takes effect without a reload. A dropped
+socket is the second reason the field can be slow: `ParticleCanvas` keeps the
+loop running at a crawl and swaps the cyan sprite for a yellow one while the
+connection is reconnecting or closed, so the background carries the same fact
+as the connection chip. The initial handshake does not count, because it is not
+a drop.
 
 All three appearance preferences are switches in the settings panel's
 **Appearance** group (`src/appearance.ts`, `localStorage` key
@@ -122,9 +127,12 @@ monitor the particle field becomes the margin rather than stretching behind an
 ever-longer row of content. Inside it the list pages (`/timers`, `/reminders`,
 `/notifications`) hold a 64 rem measure — and subtract a 0.75 rem gutter from
 their own width, so the pane floats off the edge rather than touching it at
-exactly the widths a phone sits at — the dashboard holds 48 rem, and the
-transcript centres its turns in a 64 rem reading column **by padding** — a
-narrower scroller would have floated the scrollbar in the middle of the pane.
+exactly the widths a phone sits at — the dashboard holds 48 rem on a phone and
+72 rem from 64 rem, where each section spans the page: the coming-up job panes
+pair up in two columns and the notification card takes one half of a two-column
+bottom strip — and the transcript centres its turns in a 64 rem
+reading column **by padding** — a narrower scroller would have floated the
+scrollbar in the middle of the pane.
 
 Under 48 rem the chat is one column and the thread list becomes a drawer over
 the conversation: a scrim closes it, Escape closes it, and a pick closes it on
@@ -137,20 +145,22 @@ navigation. At that width the wordmark is pinned to the bar's true centre
 (the flanks differ in width, so flex-centring would sit it off-centre).
 
 The **bar** collapses at its own breakpoint, **60 rem**, not the shell's 48:
-with three state chips beside them, the wordmark, four links, Admin, the account
-name and the gear need just over 60 rem, and 50–55 rem was the band where the
-chips ran the links out of room. There the links hand over to the hamburger and
-the gear to a **Settings** item in it, with Admin below a hairline under them —
-the wordmark's centring stays at 48 rem because it belongs to the thread
+with three state chips beside them, the wordmark, the four links plus the
+Settings gear under Notifications, Admin, and the account name need just over
+60 rem, and 50–55 rem was the band where the chips ran the links out of room.
+There the links hand over to the hamburger, whose menu carries Settings under
+Notifications with Admin below a hairline, and the account name moves to its
+top — the wordmark's centring stays at 48 rem because it belongs to the thread
 toggle, which follows the chat's breakpoint.
 
 The **rail** takes over at **80 rem**: the bar's links step aside for a column on
-the left — dashboard, chat, timers, reminders, notifications, then Admin past a
-hairline — each item its icon beside its word, and each carrying an `aria-label`
-and a `title` as well, so an icon alone still names itself. The **Navigation
-labels** switch is the rail's own: off, the words are hidden and the column falls
-back to the 2.5 rem icon squares, while the bar's links (60–80 rem), the
-hamburger (under 60 rem) and the drawer keep their words — exactly one set of
+the left — dashboard, chat, timers, reminders, notifications, Settings, then
+Admin past a hairline — each item its icon beside its word, and each carrying an
+`aria-label` and a `title` as well, so an icon alone still names itself. The
+**Navigation labels** switch is the rail's own: off, the words are hidden and
+the column falls back to the 2.5 rem icon squares, while the bar's links (60–80
+rem), the hamburger (under 60 rem) and the drawer keep their words — and the
+drawer now shows the same icon beside each word — exactly one set of
 destinations is visible at every width, and only the wide-screen one responds to
 the switch. The switch itself follows the rail's breakpoint: below 80 rem, where
 the rail is absent, the settings panel hides it (`.settings-nav-labels`) rather
@@ -181,11 +191,19 @@ button.
 every row below it — jobs, settled rows and notification records alike, plus
 their empty states — become panes of their own, with more air between them. The
 page is the layout, not the window. The notification list's bordered scroll box
-became the gap between its panes, and a record's state moved to its header line
-beside the eyebrow, where a job's moment sits. From 64 rem the rows pair up in
-two columns of half the page each — a row at the measure spends most of its
-width empty — with `minmax(0, 1fr)` tracks so a long title cannot widen its
-column past its share.
+became the gap between its panes and, on the notifications page, the viewport's
+remaining height: the head and any Scheduled half keep their natural size and
+the recorded list scrolls in the rest instead of stopping at the old 40vh box.
+A record's state moved to its header line beside the eyebrow, where a job's
+moment sits. From 64 rem the **job** rows pair up in two columns of half the
+page each — a row at the measure spends most of its width empty — with
+`minmax(0, 1fr)` tracks so a long title cannot widen its column past its share.
+**Notification cards do not pair up that way**: their heights range from one
+line to a multi-paragraph answered question, so they flow into two balanced
+CSS columns, each at its own content height and with one uniform gap — a CSS-only
+masonry that avoids the row grid's stretched cards and empty bands. Its order
+runs down the first column and then the second, which is the trade for not
+measuring heights in JavaScript.
 
 That
 block sits last in `styles.css` on purpose: it overrides sizes declared above,
@@ -500,7 +518,7 @@ state; the record does).
 
 The surfaces are the notifications page at `/notifications`
 (`src/views/app/NotificationsPage.tsx`, where Mark read · Dismiss · Snooze live),
-the unread badge in the top bar, and — since #90 phase 6b — a floating toast in
+the unread red badge in the top bar, and — since #90 phase 6b — a floating toast in
 the shell (`src/views/app/Toast.tsx`) that reaches the user on **every** page,
 because a fired reminder arrives wherever they happen to be. Which rows reach
 the toast is `selectToasts`' decision (see the alert-classes section below), not
@@ -676,15 +694,17 @@ tab title, and the alarm; the OS card is best-effort.
 
 ## Settings panel (#143)
 
-A gear in the **top bar** opens a settings panel holding the controls that
-used to sit as four icon buttons beside the account name (location, wake word,
-desktop notifications, sign out). The gear moved there in #90 phase 6d: the
-microphone and the location share it governs are the app's, so the panel that
-holds their toggles has to be reachable from every page, not only while the
-chat is on screen. It is a native `<dialog showModal()>` — so
-Escape, the focus trap, and restoring focus to the gear are the platform's job
-rather than a hand-rolled key handler — and it is organized by **where a
-setting lives**, because that is the part a user has to know:
+A **Settings** item under **Notifications** opens a settings panel holding the
+controls that used to sit as four icon buttons beside the account name
+(location, wake word, desktop notifications, sign out). The panel moved there in
+#90 phase 6d (as a gear in the top bar) because the microphone and the location
+share it governs are the app's, so the panel that holds their toggles has to be
+reachable from every page, not only while the chat is on screen; #177's follow-up
+moved the entry itself into the menus, where the small-screen drawer already had
+it. It is a native `<dialog showModal()>` — so
+Escape, the focus trap, and restoring focus to the Settings item are the
+platform's job rather than a hand-rolled key handler — and it is organized by
+**where a setting lives**, because that is the part a user has to know:
 
 | Group            | Settings                                         | Stored in                                              |
 | ---------------- | ------------------------------------------------ | ------------------------------------------------------ |
@@ -765,11 +785,11 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/AppShell.tsx` — the signed-in app: the app-level state (socket, transcript, audio, notifications, prefs, jobs, and since 6d the microphone, the location share and the one turn runner both the composer and a wake match submit through), the settings panel, and the switch that renders the page the address names. Everything here has to outlive a route change, and the socket is the load-bearing example.
 - `src/appState.ts` — the type a view receives from the shell (types only, so a view never imports its own parent).
 - `src/clock.ts` — `clockText` / `formatDate` / `weekdayText` / `describeSpan`: time in the words a person reads, hand-rolled so the tests are exact and shared so a reminder and a job cannot disagree.
-- `src/jobs.ts` — the repeat control's logic (#90 phase 8e): `RepeatDraft` + `repeatDraftToRule` (the form's choices turned into the rule, anchored at the moment the picker holds) + `repeatDraftFromRule` (a stored rule read back into the controls, so opening an edit cannot change it) + `checkRepeatDraft` + `repeatText` (the row's clause, the protocol's words verbatim) + `nextRepeatAt` (the live preview, through the server's own `nextOccurrence`). Beside them, the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM"; `formatCountdown`: a timer's remaining time as `hh:mm:ss`; `runDuration`: a single attempt's length in ms / seconds / the usual span, since a tool job's run is not measurable in whole minutes).
+- `src/jobs.ts` — the repeat control's logic (#90 phase 8e): `RepeatDraft` + `repeatDraftToRule` (the form's choices turned into the rule, anchored at the moment the picker holds) + `repeatDraftFromRule` (a stored rule read back into the controls, so opening an edit cannot change it) + `checkRepeatDraft` + `repeatText` (the row's clause, the protocol's words verbatim) + `nextRepeatAt` (the live preview, through the server's own `nextOccurrence`). Beside them, the jobs list as the dashboard reads it (`upcomingJobs`: owed rows by `runAt`; `describeRunAt`: "in 4 minutes" / "at 8:00 AM" / "tomorrow at 8:00 AM"; `formatCountdown`: a timer's remaining time as `hh:mm:ss`; `durationDraftFor`: a timer edit's opening length; `runDuration`: a single attempt's length in ms / seconds / the usual span, since a tool job's run is not measurable in whole minutes).
 - `src/hooks/useJobs.ts` — the caller's jobs: one read for the app, polled while the tab is visible and re-read on becoming visible, plus a `refresh` the shell calls when a `jobId` frame arrives. The read asks for settled rows too (`includeSettled`, the server's maximum page — its page is newest-created first, so a settled-only read is not expressible, and retention caps a user's table below the limit), and `jobs.ts`'s `splitJobs` divides it into what is owed and what is history, so a page gets both without a second request. The hook is also where a create or an edit happens (#90 phase 7): `create`/`update` return the server's `{job, quiet}` or its refusal in its own words, for the form that is still open behind the dialog.
-- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), the settings gear, and the hamburger drawer under 60rem — its own measured breakpoint, where the links and the gear become drawer items.
-- `src/views/app/IconRail.tsx` — the wide-screen navigation rail: the same destinations as a column from 80rem, each an icon beside its word (or the icon alone when **Navigation labels** is off), with the unread badge on the icon's corner and Admin past a hairline. Every item carries an `aria-label` and a `title` as well, so the icon-only mode is still named.
-- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which, and an **Appearance** group holding the three per-browser switches — background particles, frosted glass, and navigation labels (hidden below the rail's 80 rem breakpoint, where it would drive nothing). The gear in the bar opens it from any page (#90 phase 6d).
+- `src/views/app/NavBar.tsx` — the top bar: wordmark (home), the four pages plus the Settings gear under Notifications, the unread badge (on whichever of the link and the hamburger is showing), the state chips — connection, microphone, location — each present only when it has something to say, the account name (in the corner on wide screens, at the top of the drawer on narrow ones), and the hamburger drawer under 60rem — its own measured breakpoint, where the links become icon-and-word drawer items and Settings sits under Notifications.
+- `src/views/app/IconRail.tsx` — the wide-screen navigation rail: the same destinations as a column from 80rem — dashboard, chat, timers, reminders, notifications, Settings, then Admin — each an icon beside its word (or the icon alone when **Navigation labels** is off), with the unread badge on the icon's corner and Admin past a hairline. Every item carries an `aria-label` and a `title` as well, so the icon-only mode is still named.
+- `src/views/app/Settings.tsx` — the settings panel (#143), a native modal `<dialog>`: the account's notification preferences beside this browser's own controls, saying which is which, and an **Appearance** group holding the three per-browser switches — background particles, frosted glass, and navigation labels (hidden below the rail's 80 rem breakpoint, where it would drive nothing). The Settings item under Notifications opens it from any page, in whichever menu is showing (#90 phase 6d).
 - `src/views/app/TimerRing.tsx` — the ring a fired `timer` gets (#90 phase 4): a modal `<dialog>` with **Stop** as its one exit, so it covers anything else in the top layer without a z-index race.
 - `src/views/app/HoldToDelete.tsx` — the press-and-hold destructive control (#157): a trash button whose red ring fills clockwise over three seconds and fires `onDelete` only when it closes; an early pointer/key release, a scroll (`pointercancel`), blur or unmount cancels. The circle is the whole control — `styles.css` clears the shared `.icon-btn` square chrome around it. `scheduleHold` is the cancellable timer the node-only suite tests, so the ring and the deletion cannot drift apart.
 - `src/views/app/Toast.tsx` — the floating notification **stack** (up to `TOAST_LIMIT` cards, newest first): the banner's words and actions, fixed in a corner on every page. The card reuses the banner's classes on purpose, so the two cannot drift apart.
@@ -778,9 +798,9 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/views/app/JobsPages.tsx` — `/timers` and `/reminders`: the same list twice, filtered by class, with New/Edit (the shared `JobForm`), Cancel, Snooze (a reminder's), the server's quiet-hours line after a save, and a collapsed **Recent** history of that class's settled rows — `cancelled` included, since a cancelled job leaves no notification record anywhere else. Both halves carry the row's own **Runs** disclosure (8f), which for a one-shot a gate declined is the only place its story exists. The row itself is `JobRow.tsx`.
 - `src/views/app/JobRuns.tsx` — a **Runs** disclosure (#90 phases 7d, 8f): what the job actually did, attempt by attempt (state, duration, the result text, or the error), mounted on the first open so a page of history costs one request per row the user asked about rather than per row on screen. Since 8f it hangs off the **job row as well as a recorded notification** — the job's own history is the only place a gated firing exists, because one whose check found nothing changed announces nothing — and a `skipped` attempt reads as just that with the gate's answer under it (`describeRun` in `src/jobs.ts`: "checked: front door: closed"), which is the reason it produced nothing. An empty list is a normal answer too (#90 phase 9b): a plain recurring reminder keeps no per-firing rows, so the disclosure reports the count the job row carries (`emptyRunsNote`) rather than claiming nothing was recorded.
 - `src/presentation.ts` — the unified presentation of a job or a notification (#156): one pure `Presented` shape (`kind`, `primary`, `title`, `body`, `details`, `countdown`) per class, so every surface reads the same hierarchy. A timer's primary fact is its remaining time (`formatCountdown`, `countdown: true`), a reminder's is its moment, a notification's message is its title with the body carried separately to render as Markdown. `presentJob`/`presentNotification` are the only place the "which fact leads" decision lives.
-- `src/views/app/Row/` — the shared row components that render `presentation.ts`: `JobCard.tsx` (the job pane, and the dashboard's compact line; the timer's countdown is its own half-width block), `NotificationCard.tsx` (a record, body through `Markdown`), `ClassChip.tsx` (the class eyebrow), `Countdown.tsx` (the timer's live `hh:mm:ss`, ticking via `useClock`), and `RowActions.tsx` (a row's actions folded into one `⋯` **popover**, so the primary fact keeps the width and nothing paints over the menu).
+- `src/views/app/Row/` — the shared row components that render `presentation.ts`: `JobCard.tsx` (the job pane, used by the list pages and the dashboard's coming-up stack; the timer's countdown is its own half-width block), `NotificationCard.tsx` (a record, body through `Markdown`), `ClassChip.tsx` (the class eyebrow), `Countdown.tsx` (the timer's live `hh:mm:ss`, ticking via `useClock`), and `RowActions.tsx` (a row's actions folded into one `⋯` **popover**, so the primary fact keeps the width and nothing paints over the menu).
 - `src/views/app/JobRow.tsx` — one owed job, as every page that lists them shows it: it renders `JobCard` (whose words and hierarchy are `presentation.ts`) and owns only what the job's state and class allow — the actions in a single `⋯` (`RowActions`) rather than a button bar, the Snooze menu when the caller passes `onSnooze`, and the job's own **Runs** disclosure (#90 phase 8f — a gated job's declined firings are visible nowhere else). Shared rather than copied so the Timers, Reminders and Notifications pages cannot disagree about what a job says.
-- `src/views/app/JobForm.tsx` — the create/edit form (#90 phases 7, 8e), a modal `<dialog>` mounted while it is open (so a fresh mount is a fresh form): a **Repeats** row (chips for Never/Daily/Weekdays/Weekly/Monthly, then the fields that choice needs — an interval, the weekday toggles, the monthly day-or-ordinal, an end by count or date — and a live line reading the cadence with when it next fires, both from the protocol's own `describeRepeat`/`nextOccurrence`, so the preview cannot disagree with the server), plus — a timer is created by a length, everything else by a moment, and an edit always by a moment. Its decisions — the duration↔instant maths, the `datetime-local` round trip, the bounds, and the "only send what moved" patch — all live in `src/jobs.ts` and are asserted there, because this package's suite renders no components.
+- `src/views/app/JobForm.tsx` — the create/edit form (#90 phases 7, 8e), a modal `<dialog>` mounted while it is open (so a fresh mount is a fresh form): a **Repeats** row (chips for Never/Daily/Weekdays/Weekly/Monthly, then the fields that choice needs — an interval, the weekday toggles, the monthly day-or-ordinal, an end by count or date — and a live line reading the cadence with when it next fires, both from the protocol's own `describeRepeat`/`nextOccurrence`, so the preview cannot disagree with the server), plus the class's time control: a timer is a length whether created or edited — three **hours / min / seconds** boxes, with the presets filling them (`durationDraftFor` opens the edit on the length the job was set with and rounds a sub-second timestamp offset into the same minute, and saving re-arms it from now) — while a reminder or notification is a moment. Its decisions — the duration↔instant maths, the `datetime-local` round trip, the bounds, and the "only send what moved" patch — all live in `src/jobs.ts` and are asserted there, because this package's suite renders no components.
 - `src/views/app/SnoozeMenu.tsx` — the snooze control: one button, and its three presets in a **popover** menu, placed through the shared `src/hooks/usePopoverMenu.ts`. A popover because the toast is a scrolling column and a menu inside it was clipped by the column's edge; the top layer cannot be clipped by an ancestor, and the platform brings Escape and light-dismiss with it — including the rule that the toggle's `popoverTarget` (not a handler calling `togglePopover`) is what lets a second press close it, since light dismiss fires on pointerdown. Since #156 the `⋯` row menu is a popover too, so the two close each other (one `popover="auto"` open at a time); both are rendered in this suite (`react-dom/server`, no DOM), because a missing `popover` or a missing invoker is invisible to a pure test and reports as "always open" or "does nothing".
 - `src/popover.ts` — where a floating menu hangs from its toggle: below it, right-aligned, flipped above when the room below is gone, clamped to the viewport. Pure and tested, because a popover is centred unless measured and every way this can be wrong is silent (off-screen on a short window, half over the edge on a narrow one).
 - `src/snooze.ts` — the client's half of a deferral: one job call (which settles the announcement server-side too), then the local settle plus a re-read of the list for the surfaces that never held the row.
@@ -798,7 +818,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/dev/VoiceHarness.tsx` — the offline replay harness (#121, `?voice-harness=1`), lazily imported.
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images.
-- `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` renders the conversation: its sidebar rows (`useSessions`), the transcript, the composer, and the error/wake/voice status lines — the turn itself is the shell's `runTurn`, and the gear and the panel it opens are the shell's too (#90 phase 6d).
+- `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` renders the conversation: its sidebar rows (`useSessions`), the transcript, the composer, and the error/wake/voice status lines — the turn itself is the shell's `runTurn`, and the Settings item and the panel it opens are the shell's too (#90 phase 6d).
 - `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx` (whose row delete is the `HoldToDelete` gesture, #157), `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
 - `src/hooks/useJobRuns.ts` — one job's attempts, read when a record asks (#90 phase 7d): `loaded` with the runs, `gone` for the 404 a _stale_ link gets (the schema nulls a record's `job_id` when its job is pruned, so only a list read before the prune can ask after something that is gone), `error` for anything else. Mounted only once a disclosure is open, because a `<details>` renders its children either way and a naive one would fire a request per record on every visit.
 - `src/hooks/useJobPage.ts` — a job page's form lifecycle (#90 phase 7): which object the form has open, the line the last save left (the server's quiet-hours forecast), and the transitions between them. One copy, because three pages open the same form and a second would be the place they disagreed about what "saved" means.

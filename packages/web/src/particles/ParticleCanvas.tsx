@@ -24,6 +24,12 @@
  * `prefers-reduced-motion: reduce` draws a single static frame: the field is
  * still there (it is the background), it just does not move. The media query
  * is watched, so toggling the OS setting takes effect without a reload.
+ *
+ * A disconnected socket (#177 follow-up) is the second reason the field can be
+ * slow: instead of freezing, the loop keeps running at a crawl and the cyan
+ * sprite is swapped for a yellow one, so the background says "JARVIS is not
+ * reachable" without going dead. Reconnecting and closed both count; the initial
+ * `connecting` handshake does not, because it is not a drop.
  */
 import { useEffect, useRef } from "react";
 import { createField, particleCount, project, step } from "./field";
@@ -63,6 +69,17 @@ const FIELD_RADIUS = 0.46;
  */
 const ENERGY_SMOOTHING = 0.1;
 
+/**
+ * How much of its normal motion the field keeps while disconnected.
+ *
+ * A dropped socket should not freeze the background: a barely turning disc
+ * still reads as alive, while a full-speed one would say nothing is wrong. At
+ * 0.2 the usual ~105-second turn becomes ~9 minutes, and the ~11-second
+ * breathe stretches to ~55 seconds. Reduced motion still wins and holds a
+ * single frame.
+ */
+const DISCONNECTED_SPEED = 0.2;
+
 /** Props for {@link ParticleCanvas}. */
 export interface ParticleCanvasProps {
     /**
@@ -72,6 +89,14 @@ export interface ParticleCanvasProps {
      * audio) means a field that only breathes on its own clock.
      */
     energy?: () => number;
+    /**
+     * Whether the chat socket has dropped (#177 follow-up).
+     *
+     * A disconnected field paints yellow and slows to a crawl, so the
+     * background carries the same fact as the connection chip. Absent means
+     * connected (the sign-in screen has no socket at all).
+     */
+    disconnected?: boolean;
 }
 
 /**
@@ -82,12 +107,28 @@ export interface ParticleCanvasProps {
  *
  * @param props - See {@link ParticleCanvasProps}.
  */
-export function ParticleCanvas({ energy }: ParticleCanvasProps) {
+export function ParticleCanvas({
+    energy,
+    disconnected = false,
+}: ParticleCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     // Read through a ref: the loop is set up once, and a caller may pass a new
     // function on any render without the field being torn down and re-seeded.
     const energyRef = useRef(energy);
     energyRef.current = energy;
+    // Same shape for the connection: the status can change without rebuilding
+    // the field, and the loop must see the current value between frames.
+    const disconnectedRef = useRef(disconnected);
+    disconnectedRef.current = disconnected;
+    /**
+     * The running renderer's controls, so the connection effect can stop or
+     * restart the loop without tearing the field down.
+     */
+    const rendererRef = useRef<{
+        draw(): void;
+        start(): void;
+        stop(): void;
+    } | null>(null);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -96,7 +137,8 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
             return;
         }
 
-        const sprite = createGlowSprite();
+        const sprite = createGlowSprite("cyan");
+        const disconnectedSprite = createGlowSprite("yellow");
         const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
         let field: Field | null = null;
@@ -113,6 +155,9 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
             if (field === null || width === 0 || height === 0) {
                 return;
             }
+            const active = disconnectedRef.current
+                ? disconnectedSprite
+                : sprite;
             context.clearRect(0, 0, width, height);
             project(field, width / 2, height / 2, radius, points);
             context.globalCompositeOperation = "lighter";
@@ -120,7 +165,7 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
                 const size = points[offset + 2] * GLOW_SCALE;
                 context.globalAlpha = points[offset + 3];
                 context.drawImage(
-                    sprite,
+                    active,
                     points[offset] - size / 2,
                     points[offset + 1] - size / 2,
                     size,
@@ -177,15 +222,23 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
             const delta = now - last;
             last = now;
             if (field !== null) {
-                const reading = energyRef.current?.() ?? 0;
-                loudness += (reading - loudness) * ENERGY_SMOOTHING;
-                step(field, delta, loudness);
+                if (disconnectedRef.current) {
+                    // Keep the disc alive, but at a crawl: the connection is
+                    // down, not the app. No voice energy is read while there is
+                    // no server to answer.
+                    loudness = 0;
+                    step(field, delta * DISCONNECTED_SPEED, 0);
+                } else {
+                    const reading = energyRef.current?.() ?? 0;
+                    loudness += (reading - loudness) * ENERGY_SMOOTHING;
+                    step(field, delta, loudness);
+                }
                 draw();
             }
         };
 
         const start = () => {
-            if (frame !== 0 || motion.matches) {
+            if (frame !== 0 || motion.matches || document.hidden) {
                 return;
             }
             last = performance.now();
@@ -223,6 +276,7 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
             }
         };
 
+        rendererRef.current = { draw, start, stop };
         measure();
         draw();
         start();
@@ -233,6 +287,7 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
         motion.addEventListener("change", onMotion);
 
         return () => {
+            rendererRef.current = null;
             stop();
             observer.disconnect();
             document.removeEventListener("visibilitychange", onVisibility);
@@ -240,27 +295,60 @@ export function ParticleCanvas({ energy }: ParticleCanvasProps) {
         };
     }, []);
 
+    // A connection change must take effect without re-seeding the field: repaint
+    // in the new tone and make sure the loop is running. The tick itself slows
+    // the motion while disconnected, so Stop is never the right move here.
+    useEffect(() => {
+        const control = rendererRef.current;
+        if (control === null) {
+            return;
+        }
+        control.draw();
+        control.start();
+    }, [disconnected]);
+
     return (
         <canvas ref={canvasRef} className="particle-field" aria-hidden="true" />
     );
 }
 
+/** The two palettes the glow sprite is built from. */
+type GlowTone = "cyan" | "yellow";
+
 /**
  * Builds the one glow sprite every particle is stamped from.
  *
  * A radial gradient is expensive to build and cheap to stamp, so it is built
- * once: white-hot at the core, `--primary` through the body, transparent at
- * the edge. `lighter` compositing then lets overlapping particles accumulate
+ * once: white-hot at the core, the tone through the body, transparent at the
+ * edge. `lighter` compositing then lets overlapping particles accumulate
  * brightness naturally, which is what makes the centre of the disc feel lit
- * rather than simply crowded.
+ * rather than simply crowded. The yellow sprite exists only for a dropped
+ * connection (#177 follow-up); the field's geometry is identical.
+ *
+ * @param tone - Cyan while connected, yellow while the socket is down.
+ * @returns The 32 px sprite the renderer stamps.
  */
-function createGlowSprite(): HTMLCanvasElement {
+function createGlowSprite(tone: GlowTone): HTMLCanvasElement {
     const sprite = document.createElement("canvas");
     sprite.width = SPRITE_PX;
     sprite.height = SPRITE_PX;
     const context = sprite.getContext("2d");
     if (context !== null) {
         const half = SPRITE_PX / 2;
+        const palette =
+            tone === "cyan"
+                ? {
+                      core: "rgba(160, 246, 255, 1)",
+                      body: "rgba(0, 221, 255, 0.75)",
+                      faint: "rgba(0, 221, 255, 0.18)",
+                      edge: "rgba(0, 221, 255, 0)",
+                  }
+                : {
+                      core: "rgba(255, 250, 190, 1)",
+                      body: "rgba(255, 221, 0, 0.82)",
+                      faint: "rgba(255, 221, 0, 0.22)",
+                      edge: "rgba(255, 221, 0, 0)",
+                  };
         const gradient = context.createRadialGradient(
             half,
             half,
@@ -269,10 +357,10 @@ function createGlowSprite(): HTMLCanvasElement {
             half,
             half,
         );
-        gradient.addColorStop(0, "rgba(160, 246, 255, 1)");
-        gradient.addColorStop(0.25, "rgba(0, 221, 255, 0.75)");
-        gradient.addColorStop(0.6, "rgba(0, 221, 255, 0.18)");
-        gradient.addColorStop(1, "rgba(0, 221, 255, 0)");
+        gradient.addColorStop(0, palette.core);
+        gradient.addColorStop(0.25, palette.body);
+        gradient.addColorStop(0.6, palette.faint);
+        gradient.addColorStop(1, palette.edge);
         context.fillStyle = gradient;
         context.fillRect(0, 0, SPRITE_PX, SPRITE_PX);
     }

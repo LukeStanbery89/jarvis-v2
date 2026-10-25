@@ -26,6 +26,7 @@ const RAIL_LABELS = [
     "Timers",
     "Reminders",
     "Notifications",
+    "Settings",
 ];
 
 /** The rail's props, complete enough to render, overridable per test. */
@@ -33,6 +34,8 @@ function rail(overrides: Partial<IconRailProps> = {}): IconRailProps {
     return {
         unread: 0,
         navLabels: true,
+        settingsOpen: false,
+        onOpenSettings: () => undefined,
         ...overrides,
     };
 }
@@ -84,7 +87,7 @@ describe("the wide-screen left menu", () => {
     it("gives every destination an icon and its own label span", () => {
         const html = renderToStaticMarkup(createElement(IconRail, rail()));
 
-        expect(html.match(/<span class="rail-link-icon">/g)).toHaveLength(6);
+        expect(html.match(/<span class="rail-link-icon">/g)).toHaveLength(7);
         for (const label of [...RAIL_LABELS, "Admin"]) {
             expect(html).toContain(
                 `<span class="rail-link-label">${label}</span>`,
@@ -131,6 +134,24 @@ describe("the wide-screen left menu", () => {
         expect(html).toContain("rail-link-icon");
         expect(html).toContain("rail-badge");
         expect(html).toContain(">3<");
+    });
+
+    it("puts Settings under Notifications and exposes the panel state", () => {
+        // Settings is a menu item, not a destination (#177 follow-up): it
+        // follows Notifications, stays above the Admin hairline, and reports
+        // whether the dialog it opens is showing.
+        const html = renderToStaticMarkup(
+            createElement(IconRail, rail({ settingsOpen: true })),
+        );
+
+        expect(html).toContain('aria-expanded="true"');
+        expect(html).toContain('aria-controls="settings-panel"');
+        expect(html.indexOf(">Notifications<")).toBeLessThan(
+            html.indexOf(">Settings<"),
+        );
+        expect(html.indexOf(">Settings<")).toBeLessThan(
+            html.indexOf("rail-sep"),
+        );
     });
 });
 

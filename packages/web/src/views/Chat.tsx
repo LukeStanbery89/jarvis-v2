@@ -7,8 +7,8 @@
  * hands them to a view as one {@link AppState}. Phase 6d added the microphone,
  * the location share and the settings panel to that list, so what is left here
  * is what the chat *shows*: `runTurn` is the shell's (a spoken turn can start
- * anywhere), the gear is in the top bar, and this view renders the transcript,
- * the sidebar's session rows and the composer.
+ * anywhere), Settings is an item under Notifications in the app's menus, and
+ * this view renders the transcript, the sidebar's session rows and the composer.
  *
  * The chat is the detailed view of a voice session — the live partial
  * transcript, the stage, and a failed session's reason — while the bar carries

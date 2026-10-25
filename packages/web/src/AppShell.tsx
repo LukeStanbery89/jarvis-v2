@@ -121,7 +121,7 @@ export function AppShell({
 
     /** Whether a turn is in flight, typed or spoken (the composer's state). */
     const [turning, setTurning] = useState(false);
-    /** Whether the settings panel is showing (the bar's gear owns it now). */
+    /** Whether the settings panel is showing (the Settings item owns it now). */
     const [settingsOpen, setSettingsOpen] = useState(false);
 
     const threads = useThreads(credential.username);
@@ -465,6 +465,8 @@ export function AppShell({
                 <Dashboard
                     username={credential.username}
                     jobs={jobs}
+                    notifications={notifications}
+                    token={credential.token}
                     unread={notifications.unread}
                 />
             );
@@ -521,7 +523,13 @@ export function AppShell({
                 switch is off also stops the loop, rather than hiding a canvas
                 that keeps drawing. */}
             {appearance.appearance.particles && (
-                <ParticleCanvas energy={audio.energy} />
+                <ParticleCanvas
+                    energy={audio.energy}
+                    disconnected={
+                        socket.status === "reconnecting" ||
+                        socket.status === "closed"
+                    }
+                />
             )}
             <NavBar
                 username={credential.username}
@@ -548,6 +556,8 @@ export function AppShell({
             <IconRail
                 unread={notifications.unread}
                 navLabels={appearance.appearance.navLabels}
+                settingsOpen={settingsOpen}
+                onOpenSettings={() => setSettingsOpen(true)}
             />
             <div className="app-view">{currentView()}</div>
             {toasts.length > 0 && (
@@ -567,8 +577,9 @@ export function AppShell({
                 <TimerRing timer={notifications.ring} onStop={stopTimer} />
             )}
             {/* The settings panel (#143) is the app's, not the chat's (#90 phase
-                6d): the gear lives in the bar, so the dialog it opens has to be
-                renderable from every page. */}
+                6d): Settings is an item under Notifications in whichever menu
+                is showing, so the dialog it opens has to be renderable from
+                every page. */}
             <Settings
                 open={settingsOpen}
                 onClose={() => setSettingsOpen(false)}
