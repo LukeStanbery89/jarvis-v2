@@ -6,10 +6,13 @@
  * timing rule is exercised through the exported `scheduleHold` under fake
  * timers. Between the two they cover what the gesture promises: the button is a
  * hold control (a ring and a duration, not a plain delete tap), a release before
- * the duration never fires, and a completed hold fires exactly once.
+ * the duration never fires, and a completed hold fires exactly once. A third
+ * group reads `styles.css`, because the control's shape is a stylesheet fact: the
+ * `.icon-btn` square is cleared so the circle stands alone (#157 review).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { HOLD_TO_DELETE_MS, HoldToDelete, scheduleHold } from "./HoldToDelete";
 
@@ -69,6 +72,51 @@ describe("HoldToDelete", () => {
 
         expect(placed).toContain(
             'class="icon-btn hold-to-delete thread-delete"',
+        );
+    });
+});
+
+/**
+ * The stylesheet the control's shape lives in (#157 review).
+ *
+ * The button is an `.icon-btn`, whose shared chrome is a rounded-square hairline
+ * border and a rounded hover wash — the square the reviewer asked to remove. The
+ * suite cannot evaluate CSS, so it reads the sheet and checks the declarations
+ * that keep the circle alone: no border, no background in either state, and a
+ * round radius so the focus outline traces the circle too.
+ */
+describe("the hold control's shape", () => {
+    const sheet = readFileSync(
+        new URL("../../styles.css", import.meta.url),
+        "utf8",
+    );
+
+    /**
+     * One rule's declarations, by exact selector.
+     *
+     * @param selector - The rule's selector, e.g. `.icon-btn.hold-to-delete`.
+     * @returns The text between its braces.
+     */
+    function block(selector: string): string {
+        const start = sheet.indexOf(`${selector} {`);
+        expect(start, `missing rule: ${selector}`).toBeGreaterThanOrEqual(0);
+        const close = sheet.indexOf("}", start);
+        return sheet.slice(start, close);
+    }
+
+    it("draws the circle alone, with no rounded-square chrome", () => {
+        const base = block(".icon-btn.hold-to-delete");
+
+        expect(base).toContain("border: 0;");
+        expect(base).toContain("background: transparent;");
+        expect(base).toContain("border-radius: 50%;");
+    });
+
+    it("keeps the square's hover wash off the circle", () => {
+        // `.icon-btn:hover` paints `--primary-wash` inside the rounded shape;
+        // this rule has to out-specify it, so the selector names both classes.
+        expect(block(".icon-btn.hold-to-delete:hover")).toContain(
+            "background: transparent;",
         );
     });
 });

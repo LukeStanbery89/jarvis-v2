@@ -702,8 +702,16 @@ textarea::placeholder {
  * A single tap used to delete a conversation. The trash button is now the hold
  * control: a red ring fills clockwise around the icon for three seconds, and the
  * conversation goes only if the ring closes. The ring is absolutely positioned
- * inside the existing square icon button, so the row's size — and the 44px phone
+ * inside the button's square hit area, so the row's size — and the 44px phone
  * target the `.icon-btn` rule gives it — do not change.
+ *
+ * The circle is the whole control: the rounded-square `.icon-btn` chrome (its
+ * hairline border and its hover wash) is deliberately cleared here, so nothing
+ * is drawn around the ring (#157 review). The rules are two classes deep because
+ * `.icon-btn` is declared *later* in the sheet at the same specificity — a bare
+ * `.hold-to-delete` rule loses that source-order tie, which is exactly how the
+ * square crept in. `border-radius: 50%` keeps what is left of the shape round:
+ * the focus outline follows the radius, so it traces the circle too.
  *
  * The fill is a keyframe, not a transition: removing `.holding` on an early
  * release drops the animation and the base `stroke-dashoffset` snaps the ring
@@ -711,7 +719,7 @@ textarea::placeholder {
  * duration arrives as `--hold-duration` from the component, so the ring and the
  * timer that actually deletes cannot disagree.
  */
-.hold-to-delete {
+.icon-btn.hold-to-delete {
     /* Keep a scroll that starts on the button from turning into a stuck hold:
        the browser reports it as `pointercancel`, which the component cancels.
        Also suppress the mobile long-press callout/selection. */
@@ -719,6 +727,23 @@ textarea::placeholder {
     -webkit-touch-callout: none;
     user-select: none;
     -webkit-user-select: none;
+
+    /* No square: the ring is the button. */
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+}
+
+/* The base `.icon-btn:hover` paints its rounded wash; the circle needs none.
+   The icon's own red tint (`.thread-delete:hover`) and the brightened track
+   below are the hover feedback instead. */
+.icon-btn.hold-to-delete:hover {
+    background: transparent;
+    border-color: transparent;
+}
+
+.icon-btn.hold-to-delete:hover .hold-to-delete-track {
+    stroke: var(--primary-dim);
 }
 
 .hold-to-delete:focus-visible {
