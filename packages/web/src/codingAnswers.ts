@@ -13,6 +13,38 @@ import type {
     CodingQuestion,
 } from "./notifications";
 
+/**
+ * Renders one stored question's answer for the settled question view (#180).
+ *
+ * @param question - The stored question, with its answer.
+ * @returns The answer in the user's terms, or "Not answered."
+ */
+export function describeCodingAnswer(question: CodingJobQuestion): string {
+    const answer = question.answer;
+    if (answer === null) {
+        return "Not answered.";
+    }
+    if (question.kind === "text") {
+        return typeof answer.value === "string" ? answer.value : "";
+    }
+    if (question.kind === "single") {
+        const value = typeof answer.value === "string" ? answer.value : "";
+        const option = question.options.find((entry) => entry.id === value);
+        const label = option?.label ?? (value === "other" ? "Other" : value);
+        const other = answer.other?.trim() ?? "";
+        return other.length > 0 ? `${label}: ${other}` : label;
+    }
+    const values = Array.isArray(answer.value) ? answer.value : [];
+    const labels = values.map(
+        (value) =>
+            question.options.find((entry) => entry.id === value)?.label ??
+            value,
+    );
+    const other = answer.other?.trim() ?? "";
+    const base = labels.join(", ") || "(none)";
+    return other.length > 0 ? `${base} — Other: ${other}` : base;
+}
+
 /** One question's draft. */
 export interface CodingDraftAnswer {
     /** A text answer, or the single-choice option id (including `"other"`). */

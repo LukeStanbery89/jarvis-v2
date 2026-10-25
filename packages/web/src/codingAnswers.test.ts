@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
     codingAnswersFromDraft,
     codingDraftComplete,
+    describeCodingAnswer,
     emptyCodingDraft,
 } from "./codingAnswers";
 import type { CodingJobQuestion } from "./notifications";
@@ -138,5 +139,51 @@ describe("structured answer drafts (#180)", () => {
                 other: "extra",
             },
         ]);
+    });
+
+    it("describes a stored answer in the question's own terms", () => {
+        const single = question({
+            id: "db",
+            kind: "single",
+            options: [
+                { id: "postgres", label: "Postgres" },
+                { id: "sqlite", label: "SQLite" },
+            ],
+            answer: { questionId: "db", value: "postgres" },
+        });
+        expect(describeCodingAnswer(single)).toBe("Postgres");
+
+        const other = question({
+            id: "db",
+            kind: "single",
+            options: [{ id: "postgres", label: "Postgres" }],
+            allowOther: true,
+            answer: {
+                questionId: "db",
+                value: "other",
+                other: "MySQL",
+            },
+        });
+        expect(describeCodingAnswer(other)).toBe("Other: MySQL");
+
+        const multi = question({
+            id: "surfaces",
+            kind: "multi",
+            options: [
+                { id: "rail", label: "Rail" },
+                { id: "bar", label: "Bar" },
+            ],
+            allowOther: true,
+            answer: {
+                questionId: "surfaces",
+                value: ["rail", "bar"],
+                other: "Drawer",
+            },
+        });
+        expect(describeCodingAnswer(multi)).toBe("Rail, Bar — Other: Drawer");
+
+        expect(describeCodingAnswer(question({ id: "notes" }))).toBe(
+            "Not answered.",
+        );
     });
 });

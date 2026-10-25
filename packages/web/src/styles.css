@@ -1463,6 +1463,44 @@ textarea::placeholder {
     outline-offset: 1px;
 }
 
+.notification-answer-loading {
+    margin: 0.35rem 0 0;
+    font-size: 0.8rem;
+    color: var(--primary-dim);
+}
+
+/* The settled Q/A disclosure (#180): the summary is the glance, the list is
+   the durable record the answer card links back to. */
+.coding-questions {
+    margin-top: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--primary-dim);
+}
+
+.coding-questions summary {
+    cursor: pointer;
+    color: var(--primary);
+}
+
+.coding-questions-list {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0.35rem 0 0;
+    padding-left: 1.1rem;
+}
+
+.coding-questions-text {
+    margin: 0;
+    line-height: 1.35;
+    color: var(--text);
+}
+
+.coding-questions-answer {
+    margin: 0.1rem 0 0;
+    line-height: 1.35;
+    white-space: pre-wrap;
+}
+
 .job-list {
     display: flex;
     flex-direction: column;

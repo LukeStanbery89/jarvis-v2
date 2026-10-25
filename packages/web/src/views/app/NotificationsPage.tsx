@@ -48,6 +48,7 @@ import type {
 import type { JobsState } from "../../hooks/useJobs";
 import type { NotificationsState } from "../../hooks/useNotifications";
 import { CodingQuestionForm } from "./CodingQuestionForm";
+import { CodingQuestions } from "./CodingQuestions";
 import { JobForm } from "./JobForm";
 import { JobRow } from "./JobRow";
 import { JobRuns } from "./JobRuns";
@@ -291,6 +292,8 @@ function NotificationRow({
                         codingJobId={item.codingJobId}
                         onAnswer={(answer) => onAnswer(item.id, answer)}
                     />
+                ) : item.codingJobId !== undefined ? (
+                    <CodingQuestions token={token} jobId={item.codingJobId} />
                 ) : undefined
             }
             actions={

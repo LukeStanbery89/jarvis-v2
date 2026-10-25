@@ -519,9 +519,11 @@ or a job that has no structured questions, keeps the free-text box and submits
 `{ answer }`. `POST /api/notifications/:id/answer` resumes the job behind the
 question _before_ it marks the row `answered`, so a refusal leaves the form (and
 the draft) in place with the server's reason, and the answered summary is shown
-on the settled row. The record carries the job's `codingJobId`, but the form
-never sends it: the server resolves the link, so a client cannot point an answer
-at a job it was not given.
+on the settled row. A settled row also offers a collapsed **Questions and
+answers** disclosure, which reads the same route so the full Q/A set stays
+visible after the job continues. The record carries the job's `codingJobId`, but
+the form never sends it: the server resolves the link, so a client cannot point
+an answer at a job it was not given.
 
 A **held-back** notification (quiet hours, the per-minute budget, the user's own
 switch) is pushed to nobody at all — the suppression gate returns before any
@@ -795,6 +797,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread. Since #180 it also carries the client-side `CodingQuestion` / `CodingJobQuestion` / `CodingAnswer` shapes the answer form reads.
 - `src/codingAnswers.ts` — the pure half of the structured answer form (#180): `emptyCodingDraft` prefills from recorded answers, `codingDraftComplete` enforces required questions and Other text, and `codingAnswersFromDraft` produces the `answers` payload.
 - `src/views/app/CodingQuestionForm.tsx` — the one-control-per-question form (#180): textarea, radio group, checkbox group, optional Other, and the **Send answers** submit; the page owns the request so a refusal keeps the draft.
+- `src/views/app/CodingQuestions.tsx` — the settled **Questions and answers** disclosure (#180): reads the job's question route and renders each question with its answer (option labels and Other text), so the record survives the answer summary.
 - `src/prefs.ts` — pure account-preference helpers (settings panel): read `notify.enabled`/`notify.quietHours` the way the server does (an unreadable stored value reads as not in effect, flagged rather than hidden), validate a typed window, and build the one-key patches the panel writes.
 - `src/browserNotify.ts` — pure desktop-notification rules (#139 phase 2): the announce decision (hidden tab, unsettled, not already announced, preference _and_ permission), the toggle's UI state, and this browser's stored preference.
 - `src/sidebar.ts` — sidebar-row merge (`mergeSessions`) + wake/location label helpers.
