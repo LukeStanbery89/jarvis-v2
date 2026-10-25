@@ -696,6 +696,115 @@ textarea::placeholder {
     color: var(--error);
 }
 
+/*
+ * The hold-to-delete gesture (#157).
+ *
+ * A single tap used to delete a conversation. The trash button is now the hold
+ * control: a red ring fills clockwise around the icon for three seconds, and the
+ * conversation goes only if the ring closes. The ring is absolutely positioned
+ * inside the button's square hit area, so the row's size — and the 44px phone
+ * target the `.icon-btn` rule gives it — do not change.
+ *
+ * The circle is the whole control: the rounded-square `.icon-btn` chrome (its
+ * hairline border and its hover wash) is deliberately cleared here, so nothing
+ * is drawn around the ring (#157 review). The rules are two classes deep because
+ * `.icon-btn` is declared *later* in the sheet at the same specificity — a bare
+ * `.hold-to-delete` rule loses that source-order tie, which is exactly how the
+ * square crept in. `border-radius: 50%` keeps what is left of the shape round:
+ * the focus outline follows the radius, so it traces the circle too.
+ *
+ * The fill is a keyframe, not a transition: removing `.holding` on an early
+ * release drops the animation and the base `stroke-dashoffset` snaps the ring
+ * back instantly, rather than animating a second three-second reset. The
+ * duration arrives as `--hold-duration` from the component, so the ring and the
+ * timer that actually deletes cannot disagree.
+ */
+.icon-btn.hold-to-delete {
+    /* Keep a scroll that starts on the button from turning into a stuck hold:
+       the browser reports it as `pointercancel`, which the component cancels.
+       Also suppress the mobile long-press callout/selection. */
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    user-select: none;
+    -webkit-user-select: none;
+
+    /* No square: the ring is the button. */
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+}
+
+/* The base `.icon-btn:hover` paints its rounded wash; the circle needs none.
+   The icon's own red tint (`.thread-delete:hover`) and the brightened track
+   below are the hover feedback instead. */
+.icon-btn.hold-to-delete:hover {
+    background: transparent;
+    border-color: transparent;
+}
+
+.icon-btn.hold-to-delete:hover .hold-to-delete-track {
+    stroke: var(--primary-dim);
+}
+
+.hold-to-delete:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.hold-to-delete.holding {
+    color: var(--error);
+}
+
+.hold-to-delete-ring {
+    position: absolute;
+    inset: 0;
+    display: block;
+    pointer-events: none;
+}
+
+.hold-to-delete-ring svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    /* The dash begins at 3 o'clock; -90° starts it at the top, and decreasing
+       the offset then fills clockwise. `transform-box` keeps that rotation
+       centred on the ring rather than on the SVG's top-left corner. */
+    transform: rotate(-90deg);
+    transform-box: view-box;
+    transform-origin: center;
+}
+
+.hold-to-delete-track,
+.hold-to-delete-fill {
+    fill: none;
+    stroke-width: 2;
+}
+
+.hold-to-delete-track {
+    stroke: var(--primary-border);
+}
+
+.hold-to-delete-fill {
+    stroke: var(--error);
+    stroke-linecap: round;
+    stroke-dasharray: 100;
+    stroke-dashoffset: 100;
+}
+
+.hold-to-delete.holding .hold-to-delete-fill {
+    animation: hold-to-delete-fill var(--hold-duration, 3000ms) linear forwards;
+}
+
+@keyframes hold-to-delete-fill {
+    from {
+        stroke-dashoffset: 100;
+    }
+
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+
 .new-chat {
     display: inline-flex;
     align-items: center;

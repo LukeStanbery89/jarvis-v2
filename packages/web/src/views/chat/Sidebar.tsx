@@ -7,9 +7,15 @@
  * to be able to say they are live, not just this column. What is left here is
  * what the sidebar is actually about — the conversations — which is why the
  * head it used to have is gone rather than empty.
+ *
+ * A row's delete is a hold-to-delete gesture (#157): the trash icon's ring
+ * fills for three seconds and the conversation goes only if the hold completes.
+ * The gesture is `HoldToDelete`; this component only supplies the row's name and
+ * the existing `onRemoveThread` callback.
  */
-import { SquarePen, Trash2 } from "lucide-react";
+import { SquarePen } from "lucide-react";
 import type { SidebarRow } from "../../sidebar";
+import { HoldToDelete } from "../app/HoldToDelete";
 
 /** Props for {@link Sidebar}. */
 export interface SidebarProps {
@@ -85,15 +91,11 @@ export function Sidebar({
                                 {entry.title}
                                 {entry.kind === "voice" ? " (voice)" : ""}
                             </button>
-                            <button
-                                type="button"
-                                className="thread-delete icon-btn"
-                                aria-label={`Delete ${entry.title}`}
-                                title={`Delete ${entry.title}`}
-                                onClick={() => onRemoveThread(entry.id)}
-                            >
-                                <Trash2 size={16} />
-                            </button>
+                            <HoldToDelete
+                                className="thread-delete"
+                                label={entry.title}
+                                onDelete={() => onRemoveThread(entry.id)}
+                            />
                         </div>
                     );
                 })}
