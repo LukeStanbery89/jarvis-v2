@@ -30,6 +30,11 @@ import {
 import type { BrowserNotifyUiState } from "../browserNotify";
 import type { ClientNotification } from "../notifications";
 import { debugLog } from "../debug";
+import {
+    ensurePushSubscription,
+    pushSupported,
+    removePushSubscription,
+} from "../push";
 
 /** What {@link useBrowserNotify} exposes to the view. */
 export interface BrowserNotifyState {
@@ -49,6 +54,8 @@ export interface BrowserNotifyState {
  * Owns the OS-notification preference and announcements.
  *
  * @param username - Whose preference to read/write (per-browser, per-user).
+ * @param token - The device token used to register/remove this browser's Web
+ *   Push subscription.
  * @param notifications - The merged list to watch for new arrivals.
  * @param loaded - Whether the first page load has completed.
  * @param masterEnabled - The account's `notify.enabled`: the server's kill
@@ -59,13 +66,15 @@ export interface BrowserNotifyState {
  */
 export function useBrowserNotify(options: {
     username: string;
+    token: string;
     notifications: ClientNotification[];
     /** Whether the first page load has completed (see `useNotifications`). */
     loaded: boolean;
     masterEnabled: boolean;
     onOpen(notification: ClientNotification): void;
 }): BrowserNotifyState {
-    const { username, notifications, loaded, masterEnabled, onOpen } = options;
+    const { username, token, notifications, loaded, masterEnabled, onOpen } =
+        options;
     const supported = supportsNotifications();
     const [enabled, setEnabled] = useState(false);
     const [permission, setPermission] = useState<string>(() =>
@@ -76,6 +85,9 @@ export function useBrowserNotify(options: {
     /** Latest `onOpen`, so the announcement effect needs no re-subscription. */
     const onOpenRef = useRef(onOpen);
     onOpenRef.current = onOpen;
+    /** Latest rows, for a service-worker click that names only an id. */
+    const notificationsRef = useRef(notifications);
+    notificationsRef.current = notifications;
     /** Whether the initial page has been folded into `announced`. */
     const seeded = useRef(false);
 
@@ -89,6 +101,66 @@ export function useBrowserNotify(options: {
         );
     }, [supported, username]);
 
+    // A service-worker notification has no page closure to call back into;
+    // `notificationclick` posts the tag (the notification id) here instead.
+    useEffect(() => {
+        if (
+            !supported ||
+            typeof navigator === "undefined" ||
+            !("serviceWorker" in navigator)
+        ) {
+            return;
+        }
+        const onMessage = (event: MessageEvent): void => {
+            const data = event.data as
+                { type?: unknown; id?: unknown } | null | undefined;
+            if (
+                data?.type !== "jarvis-notification-click" ||
+                typeof data.id !== "string"
+            ) {
+                return;
+            }
+            const notification = notificationsRef.current.find(
+                (row) => row.id === data.id,
+            );
+            if (notification !== undefined) {
+                onOpenRef.current(notification);
+            }
+        };
+        navigator.serviceWorker.addEventListener("message", onMessage);
+        return () => {
+            navigator.serviceWorker.removeEventListener("message", onMessage);
+        };
+    }, [supported]);
+
+    /**
+     * Registers the push endpoint on the first gesture after the preference is
+     * already on (the usual case for an account that enabled notifications
+     * before Web Push existed).
+     *
+     * The immediate attempt handles the desktop case, where a subscription can
+     * be created without a gesture; the pointerdown listener gives WebKit the
+     * gesture it insists on if that attempt fails.
+     */
+    useEffect(() => {
+        if (
+            !supported ||
+            !enabled ||
+            permission !== "granted" ||
+            !pushSupported()
+        ) {
+            return;
+        }
+        void ensurePushSubscription(token);
+        const onGesture = (): void => {
+            void ensurePushSubscription(token);
+        };
+        window.addEventListener("pointerdown", onGesture, { once: true });
+        return () => {
+            window.removeEventListener("pointerdown", onGesture);
+        };
+    }, [enabled, permission, supported, token]);
+
     const toggle = useCallback(() => {
         if (!supported) {
             return;
@@ -100,6 +172,9 @@ export function useBrowserNotify(options: {
             if (typeof localStorage !== "undefined") {
                 saveBrowserNotifyPref(localStorage, username, false);
             }
+            // The device token is still live here, so this is the last chance
+            // to remove the server-side endpoint before sign-out.
+            void removePushSubscription(token);
             return;
         }
         // Turning it on needs permission, and `requestPermission` only
@@ -107,6 +182,7 @@ export function useBrowserNotify(options: {
         if (Notification.permission === "granted") {
             setEnabled(true);
             saveBrowserNotifyPref(localStorage, username, true);
+            void ensurePushSubscription(token);
             return;
         }
         if (Notification.permission === "denied") {
@@ -119,9 +195,13 @@ export function useBrowserNotify(options: {
             if (result === "granted") {
                 setEnabled(true);
                 saveBrowserNotifyPref(localStorage, username, true);
+                // Still inside the promise of the original click gesture, so
+                // WebKit can accept `pushManager.subscribe` here; the app's
+                // first-gesture effect is the fallback if it does not.
+                void ensurePushSubscription(token);
             }
         });
-    }, [enabled, supported, username]);
+    }, [enabled, supported, token, username]);
 
     useEffect(() => {
         if (!supported || !enabled) {
@@ -217,6 +297,37 @@ function raise(notification: ClientNotification, onClick: () => void): void {
             raised.close();
         };
     } catch {
-        // See above: best-effort, never fatal.
+        // iOS only exposes notifications through a service worker. The page
+        // constructor is the desktop path; this fallback is what makes the
+        // installed PWA work without changing the caller.
+        void raiseWithServiceWorker(notification);
+    }
+}
+
+/**
+ * Shows one notification through the active service worker.
+ *
+ * `showNotification` is the only notification path on iOS Home Screen web
+ * apps. The click is delivered back to the page by the worker's
+ * `notificationclick` handler as a `jarvis-notification-click` message tagged
+ * with the notification id.
+ */
+async function raiseWithServiceWorker(
+    notification: ClientNotification,
+): Promise<void> {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+        return;
+    }
+    try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (registration === undefined) {
+            return;
+        }
+        await registration.showNotification(notification.title, {
+            ...notificationOptions(notification),
+            data: { id: notification.id },
+        });
+    } catch (error) {
+        debugLog("notify", "service-worker notification failed", error);
     }
 }

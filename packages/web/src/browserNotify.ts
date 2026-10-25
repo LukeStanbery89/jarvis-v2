@@ -25,8 +25,10 @@
  * The preference is per browser, not per account: the underlying permission is
  * granted by a browser to an origin and cannot be synced, so pretending
  * otherwise (a server pref that says "on" while this browser would refuse)
- * would be a lie in the UI. Web Push, which *does* need server-side state, is
- * phase 3 and brings its own per-device record.
+ * would be a lie in the UI. Web Push, which *does* need server-side state, lives
+ * in `push.ts` and the server's push-subscription ledger; it keeps the same
+ * per-browser preference and adds the subscription needed when the page itself
+ * is suspended.
  */
 import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
 import { describeBody } from "./notifications";
@@ -197,13 +199,13 @@ export function describeBrowserNotifyState(
 ): string {
     switch (state) {
         case "unsupported":
-            return "Desktop notifications unavailable in this browser";
+            return "System notifications unavailable in this browser";
         case "blocked":
-            return "Desktop notifications blocked — allow them in your browser settings";
+            return "System notifications blocked — allow them in your browser settings";
         case "off":
-            return "Desktop notifications for background tabs (off)";
+            return "System notifications for background tabs (off)";
         case "on":
-            return "Desktop notifications for background tabs (on)";
+            return "System notifications for background tabs (on)";
     }
 }
 

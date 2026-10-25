@@ -45,22 +45,48 @@ which renders the dashboard (an unknown path), so the link would look like it
 went nowhere while production was perfectly correct. Anything else under `/`
 is this app, on every path it names (Vite's SPA fallback).
 
+The Vite config reads the server's TLS paths from `packages/server/.env` (or
+the process environment). When they point at an existing pair, Vite serves
+`https://localhost:5173` with the same certificate and proxies to
+`https://localhost:54321`/`wss://localhost:54321`; otherwise it stays HTTP and
+proxies to the cleartext server. The proxy accepts the local CA without Node
+having to trust it system-wide. This is a secure origin for phone development
+(location/microphone), but the service worker only registers in a production
+build, so installability still needs the server-served `dist/`.
+
 ## Installable app (#189)
 
 The production build is a PWA. `public/manifest.webmanifest` names the app,
-starts it at `/` in `standalone` display, and ships the 192/512, maskable and
+starts it at `/` in `standalone` display, and ships the 180/192/512, maskable and
 SVG icons under `public/icons/`; `index.html` carries the matching manifest link,
 theme colour, and the iOS `apple-touch-icon` / `apple-mobile-web-app-*` metadata
-Safari reads from the document.
+Safari reads from the document. The touch icon also exists at the site root as
+`public/apple-touch-icon.png` plus `-180x180`, `-167x167`, `-152x152` and
+`-120x120` variants (and `favicon.ico`): iOS probes those paths itself, and
+without a real file the server's SPA fallback answered with `index.html`, which
+iOS rendered as a white letter tile. The server now refuses to answer a missing
+static path with the shell.
+
+The `apple-touch-icon` link itself points at a commit-pinned copy of the same
+PNG on the public GitHub repository, not at this origin. That is deliberate:
+the Add to Home Screen service refuses to fetch a touch icon over a **private
+CA** HTTPS certificate (mkcert included), even when Safari trusts that CA for
+the page, and generates a letter tile instead. A publicly trusted URL works;
+the local root copies remain the fallback for HTTP deployments. The durable
+alternative is a publicly trusted certificate and hostname for the whole app
+(Tailscale Serve, a real domain + Let's Encrypt, or a tunnel); the icon-only
+workaround keeps the LAN mkcert deployment usable until then.
 
 `public/sw.js` is a deliberately small service worker: it precaches the shell,
 the manifest, the icons and the hashed entry assets, then serves navigations
 network-first (so a deploy is picked up on the next load) and static assets
 cache-first. It never handles `/api`, `/ws`, `/health`, or `/admin` — live data,
 the socket, the machine health endpoint, and the separate admin SPA all stay
-outside the app's cache. It also adds no push handler: OS notifications remain
-the page's existing `Notification` path, so permission and behaviour are
-unchanged.
+outside the app's cache. Its `push` handler raises the system notification for
+a backgrounded/closed PWA, and `notificationclick` focuses the app (or opens it)
+and hands the notification id back to the page. The page's own `Notification`
+path remains for a visible tab; the server sends a push only when no in-app
+socket is present, so the page is not interrupted twice.
 
 Registration lives in `src/pwa.ts`, which registers only in a production build
 and only in a secure context. `vite.config.ts` stamps the worker with a
@@ -75,7 +101,22 @@ and the microphone already follow — the server can serve TLS with
 `JARVIS_TLS_CERT`/`JARVIS_TLS_KEY`, or sit behind a TLS reverse proxy. On Android,
 use the browser's **Install app** affordance; on iOS, use **Share → Add to Home
 Screen**. The app remains fully usable in a normal tab whether or not it is
-installed.
+installed. If a home-screen icon predates an icon change, remove the web app and
+add it again: iOS keeps the old bitmap until the app is reinstalled. iOS 26.1+
+draws a dark scrim over an installed app when
+`apple-mobile-web-app-status-bar-style` is present; we omit it, so the opaque
+status bar takes the page colour. That tag (like the icon) is read at install
+time, so an existing Home Screen app must be removed and added again to pick up
+both changes. On iOS 27 the installed-PWA status bar is a blur sampled from a
+fixed element near the top; `.status-bar-backdrop` in `index.html`/`styles.css`
+is that solid black source, which keeps the scrim off the nav. The shell uses
+`viewport-fit=cover`, keeps horizontal safe-area padding, and leaves the bottom
+inset to the chat's composer only — other pages keep their natural bottom edge.
+On coarse-pointer devices the page itself is locked (no pinch-zoom or
+double-tap zoom, no document rubber-band; inner panes keep one-finger
+scrolling), and selection is enabled only in the transcript, code blocks, and
+form fields so a long-press on chrome or a card does not open iOS's
+Copy/Look Up menu.
 
 A phone on the LAN cannot use `localhost`, and a plain self-signed certificate
 is not a secure context until the phone trusts its signer. For local testing,
@@ -628,10 +669,9 @@ a **turn** (a tool call is exactly how the assistant raises one) and the moment
 the **list is opened** (which is the user asking what is there). Silence is not
 a state the UI should be able to be in.
 
-**Desktop notifications (phase 2).** A switch in the settings panel (#143,
-"This browser") raises OS
-notifications through the `Notification` API, for the case where the user is
-not looking at this tab. The rules live in `src/browserNotify.ts` and are all
+**System notifications (phases 2–3).** A switch in the settings panel (#143,
+"This browser") raises OS notifications for the case where the user is not
+looking at this tab. The rules live in `src/browserNotify.ts` and are all
 refusals: only while the document is **hidden** (a visible tab already has the
 in-app banner, and an OS pop-up beside it is noise), only for a row the server
 **actually pushed** (`delivered` — a `pending` row is the server choosing not to
@@ -647,8 +687,18 @@ handler is where `requestPermission()` runs; a `denied` browser is reported as
 tooltip has to send the user to their settings. The preference is stored per
 browser _and_ per username (`jarvis.web.user.<name>.browserNotify`): the
 browser grants permission per origin, and it cannot be synced, so a server
-preference would let the UI claim "on" while that browser would refuse. Web
-Push — which genuinely needs server-side state — is phase 3.
+preference would let the UI claim "on" while that browser would refuse.
+
+Web Push (phase 3) is the half that survives a suspended page. With the toggle
+on and permission granted, `src/push.ts` fetches the server's VAPID public key,
+calls `PushManager.subscribe` from the toggle/first gesture, and posts the
+endpoint to `/api/push/subscribe`; sign-out unsubscribes and removes the server
+row. On iOS, the `Notification` constructor is not available, so a hidden page
+falls back to `ServiceWorkerRegistration.showNotification`; the worker's push
+handler does the same for a backgrounded/closed app. The server sends push only
+when no `/ws` socket is present, and the worker suppresses the sound of a push
+that somehow races a visible page. The notification's `notificationclick` is
+routed back to the existing read/Stop handler by id.
 
 **Testing it.** In a development build, with the `jarvis.debug` gate on, the
 expanded list shows a _Send a test notification_ button — it is behind
@@ -764,7 +814,7 @@ tab title, and the alarm; the OS card is best-effort.
 
 A **Settings** item under **Notifications** opens a settings panel holding the
 controls that used to sit as four icon buttons beside the account name
-(location, wake word, desktop notifications, sign out). The panel moved there in
+(location, wake word, system notifications, sign out). The panel moved there in
 #90 phase 6d (as a gear in the top bar) because the microphone and the location
 share it governs are the app's, so the panel that holds their toggles has to be
 reachable from every page, not only while the chat is on screen; #177's follow-up
@@ -774,16 +824,26 @@ Escape, the focus trap, and restoring focus to the Settings item are the
 platform's job rather than a hand-rolled key handler — and it is organized by
 **where a setting lives**, because that is the part a user has to know:
 
-| Group            | Settings                                         | Stored in                                              |
-| ---------------- | ------------------------------------------------ | ------------------------------------------------------ |
-| **Your account** | Notifications, quiet hours                       | `notify.*` in `/api/prefs` — applies on every device   |
-| **This browser** | Desktop notifications, wake word, share location | `localStorage` — a permission, a microphone, an engine |
+| Group            | Settings                                                         | Stored in                                                       |
+| ---------------- | ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Your account** | Notifications, quiet hours                                       | `notify.*` in `/api/prefs` — applies on every device            |
+| **This browser** | System notifications, haptic feedback, wake word, share location | `localStorage` — a permission, a motor, a microphone, an engine |
 
 The split is not cosmetic. The server is the one that decides whether to
 interrupt you (`notify.enabled`) and when it is quiet (`notify.quietHours`), so
 those must hold on every device — including the phone, which will never share a
-browser's notification permission. The browser-side three are per-device facts
+browser's notification permission. The browser-side four are per-device facts
 that cannot be synced without lying about them.
+
+**Haptic feedback** is a browser-local switch in that group. On Android/Chromium
+the primary buttons call `navigator.vibrate(10)` inside the tap. On iOS there is
+no Vibration API, so `HapticButton` positions a transparent native
+`<input type="checkbox" switch>` over the button: a direct tap on that switch is
+the only route to the Taptic Engine since iOS 26.5, and its change event runs the
+button's action. It gives one fixed tick, not patterns. The overlay is limited to
+simple primary controls — Send/Stop, New chat, Stop on a timer, and row-menu
+actions — and is excluded from hold-to-delete. The switch is off on desktops and
+unsupported browsers; `src/haptics.tsx` owns the preference and support checks.
 
 The account group renders what the system **does**, not what happens to be
 stored (`src/prefs.ts`): a well-formed pref shows the real controls, an absent

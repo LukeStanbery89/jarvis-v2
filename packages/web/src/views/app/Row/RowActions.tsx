@@ -17,6 +17,7 @@
  * `<details>` — it is inline content, not a floating menu.)
  */
 import { usePopoverMenu } from "../../../hooks/usePopoverMenu";
+import { HapticButton } from "../HapticButton";
 
 /** One action in a row's `⋯` menu. */
 export interface RowAction {
@@ -73,16 +74,15 @@ export function RowActions({ actions, className = "" }: RowActionsProps) {
                 onToggle={onToggle}
             >
                 {actions.map((action) => (
-                    <button
+                    <HapticButton
                         key={action.label}
-                        type="button"
                         onClick={() => {
                             menuRef.current?.hidePopover();
                             action.onClick();
                         }}
                     >
                         {action.label}
-                    </button>
+                    </HapticButton>
                 ))}
             </div>
         </span>

@@ -71,6 +71,8 @@ export type {
     NotificationState,
     NotificationTerminalState,
     PrefLedger,
+    PushSubscriptionLedger,
+    AppPushSubscription,
     SessionLedger,
     SettleCodingJobInput,
     UserLedger,

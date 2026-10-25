@@ -19,9 +19,10 @@
  *    evaluated in the **server's local time** — JARVIS is a home server that
  *    normally shares its user's clock — with a per-user timezone noted as
  *    future work.
- * 3. **Presence.** Nobody connected means nothing to push to, so the
- *    notification is left `pending` for the next list fetch and the delivery
- *    budget is not spent on it.
+ * 3. **Presence.** An in-app channel needs a live socket; a push channel does
+ *    not. With no eligible channel at all the notification is left `pending`
+ *    for the next list fetch. With Web Push configured, an absent socket still
+ *    has a channel — that is how a timer reaches a backgrounded phone.
  * 4. **The delivery budget.** A per-user, per-minute cap on pushes, so a
  *    broken producer cannot turn a chat client into a firehose. Over budget
  *    is again `pending`, not dropped: the record survives, the interruption
@@ -199,7 +200,24 @@ export function createNotificationService(
                 };
             }
 
-            if (!hub.isPresent(userId)) {
+            // Presence selects the channel, it no longer gates delivery: an
+            // in-app socket and a Web Push subscription answer different
+            // states of the same browser. `onlyWhenAbsent` keeps a push from
+            // duplicating the page's own interruption; `requiresPresence` keeps
+            // the in-app channel from pretending a closed socket delivered.
+            const present = hub.isPresent(userId);
+            const eligible = channels.filter((channel) => {
+                if (
+                    normalized.requiresAnswer &&
+                    !channel.capabilities.canAcceptReply
+                ) {
+                    return false;
+                }
+                return present
+                    ? !channel.capabilities.onlyWhenAbsent
+                    : !channel.capabilities.requiresPresence;
+            });
+            if (eligible.length === 0) {
                 return {
                     notification: record,
                     delivered: 0,
@@ -224,13 +242,7 @@ export function createNotificationService(
             }
 
             let delivered = 0;
-            for (const channel of channels) {
-                if (
-                    normalized.requiresAnswer &&
-                    !channel.capabilities.canAcceptReply
-                ) {
-                    continue;
-                }
+            for (const channel of eligible) {
                 delivered += await channel.deliver(record);
             }
             if (delivered === 0) {

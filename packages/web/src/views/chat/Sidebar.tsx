@@ -15,6 +15,7 @@
  */
 import { SquarePen } from "lucide-react";
 import type { SidebarRow } from "../../sidebar";
+import { HapticButton } from "../app/HapticButton";
 import { HoldToDelete } from "../app/HoldToDelete";
 
 /** Props for {@link Sidebar}. */
@@ -57,15 +58,14 @@ export function Sidebar({
             id="chat-threads"
             className={drawerOpen ? "sidebar drawer-open" : "sidebar"}
         >
-            <button
-                type="button"
+            <HapticButton
                 className="new-chat"
                 title="New chat"
                 onClick={onNewChat}
             >
                 <SquarePen size={16} />
                 New chat
-            </button>
+            </HapticButton>
             <nav>
                 {entries.map((entry) => {
                     const current = entry.id === activeId;

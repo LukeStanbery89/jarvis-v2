@@ -315,6 +315,27 @@ export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
 };
 
 /**
+ * Web Push settings (#189 follow-up).
+ *
+ * Optional and deliberately opt-in: without a VAPID pair the server has no
+ * identity to present to a push service, so the PWA falls back to the page's
+ * own OS notification path. Both keys are generated with
+ * `npx web-push generate-vapid-keys`; the subject is the contact URI push
+ * services may use, normally `mailto:` or an `https:` URL.
+ */
+export interface PushConfig {
+    /** VAPID public key (`JARVIS_VAPID_PUBLIC_KEY`), sent to browsers. */
+    readonly publicKey: string;
+    /** VAPID private key (`JARVIS_VAPID_PRIVATE_KEY`), never leaves the server. */
+    readonly privateKey: string;
+    /** VAPID subject (`JARVIS_VAPID_SUBJECT`). */
+    readonly subject: string;
+}
+
+/** Default VAPID contact; operators should set their own mailto/URL. */
+export const DEFAULT_VAPID_SUBJECT = "mailto:jarvis@localhost";
+
+/**
  * Scheduler settings (#90).
  *
  * The loop is on by default and switched off with `JARVIS_SCHEDULER=off` (the
@@ -1112,6 +1133,11 @@ export interface AppConfig {
      */
     readonly notify?: NotifyConfig;
     /**
+     * Web Push credentials (#189 follow-up). Undefined when either VAPID key is
+     * unset; the client then keeps using page-level notifications.
+     */
+    readonly push?: PushConfig;
+    /**
      * Scheduler settings (`JARVIS_JOB_*`); `undefined` disables the whole
      * surface (`JARVIS_SCHEDULER=off`), as `notify` does for notifications.
      */
@@ -1491,6 +1517,34 @@ function zeroOkOr(
     return fallback;
 }
 
+/**
+ * Resolves the optional VAPID pair.
+ *
+ * A half-set pair is a typo, not a request for insecure push; warn once and
+ * leave push off, the same posture the listener takes for a half-set TLS pair.
+ *
+ * @returns The push credentials, or `undefined` when unset/incomplete.
+ */
+function getPushConfig(): PushConfig | undefined {
+    const publicKey = process.env.JARVIS_VAPID_PUBLIC_KEY?.trim();
+    const privateKey = process.env.JARVIS_VAPID_PRIVATE_KEY?.trim();
+    if (!publicKey && !privateKey) {
+        return undefined;
+    }
+    if (!publicKey || !privateKey) {
+        logger.warn(
+            "JARVIS_VAPID_PUBLIC_KEY and JARVIS_VAPID_PRIVATE_KEY must both be set; Web Push is off",
+        );
+        return undefined;
+    }
+    return {
+        publicKey,
+        privateKey,
+        subject:
+            process.env.JARVIS_VAPID_SUBJECT?.trim() || DEFAULT_VAPID_SUBJECT,
+    };
+}
+
 export function getAppConfig(): AppConfig {
     // One root, two views: a container deployment passes the host path the
     // daemon resolves bind sources against, which is not the server's path.
@@ -1566,6 +1620,7 @@ export function getAppConfig(): AppConfig {
                           DEFAULT_NOTIFY_CONFIG.maxPerUser,
                       ),
                   },
+        push: process.env.JARVIS_NOTIFY === "off" ? undefined : getPushConfig(),
         scheduler:
             process.env.JARVIS_SCHEDULER === "off"
                 ? undefined

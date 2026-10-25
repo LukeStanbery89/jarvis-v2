@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import {
     copyVoiceAssets,
@@ -24,6 +24,43 @@ const OWW_SRC = path.join(
  * `packages/web`.
  */
 const PROTOCOL_SRC = path.resolve(CONFIG_DIR, "..", "protocol", "src");
+
+/**
+ * The server's local TLS settings, for the dev proxy.
+ *
+ * The JARVIS backend reads its own `packages/server/.env`; Vite does not, so a
+ * backend switched to HTTPS would otherwise leave the dev proxy talking
+ * cleartext to a TLS listener. Reading the same pair here keeps the proxy in
+ * step, and lets Vite itself serve HTTPS on the LAN: a phone gets a secure
+ * origin for geolocation/microphone development without building the app.
+ *
+ * Values may be relative to `packages/server` in a hand-written `.env`; resolve
+ * them there rather than against the web package's cwd.
+ */
+const SERVER_ENV_DIR = path.resolve(CONFIG_DIR, "..", "server");
+const serverEnv = loadEnv("development", SERVER_ENV_DIR, "");
+const tlsCertRaw = process.env.JARVIS_TLS_CERT || serverEnv.JARVIS_TLS_CERT;
+const tlsKeyRaw = process.env.JARVIS_TLS_KEY || serverEnv.JARVIS_TLS_KEY;
+const absoluteServerPath = (value: string): string =>
+    path.isAbsolute(value) ? value : path.resolve(SERVER_ENV_DIR, value);
+const tlsCertPath = tlsCertRaw ? absoluteServerPath(tlsCertRaw) : undefined;
+const tlsKeyPath = tlsKeyRaw ? absoluteServerPath(tlsKeyRaw) : undefined;
+const devHttps =
+    tlsCertPath &&
+    tlsKeyPath &&
+    existsSync(tlsCertPath) &&
+    existsSync(tlsKeyPath)
+        ? {
+              cert: readFileSync(tlsCertPath, "utf8"),
+              key: readFileSync(tlsKeyPath, "utf8"),
+          }
+        : undefined;
+const backendUrl = devHttps
+    ? "https://localhost:54321"
+    : "http://localhost:54321";
+const backendSocketUrl = devHttps
+    ? "wss://localhost:54321"
+    : "ws://localhost:54321";
 
 /**
  * Stamps the service worker with this build's id (#189).
@@ -144,14 +181,21 @@ export default defineConfig({
         ],
     },
     server: {
+        // When the backend uses TLS, use the same certificate for the dev
+        // server: a phone needs the secure origin for location/microphone, and
+        // HMR then upgrades its socket consistently. The proxy accepts the
+        // local CA without Node having to know about the system keychain.
+        https: devHttps,
         proxy: {
             "/api": {
-                target: "http://localhost:54321",
+                target: backendUrl,
                 changeOrigin: false,
+                secure: false,
             },
             "/ws": {
-                target: "ws://localhost:54321",
+                target: backendSocketUrl,
                 ws: true,
+                secure: false,
             },
             /**
              * The admin portal is a **different app** on the real server
@@ -163,8 +207,9 @@ export default defineConfig({
              * agreeing on every address the app links to.
              */
             "/admin": {
-                target: "http://localhost:54321",
+                target: backendUrl,
                 changeOrigin: false,
+                secure: false,
             },
         },
     },

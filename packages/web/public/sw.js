@@ -29,11 +29,20 @@ const CACHE = `jarvis-v${VERSION}`;
 const CORE = [
     "/",
     "/manifest.webmanifest",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/apple-touch-icon-180x180.png",
+    "/favicon.ico",
     "/icons/icon.svg",
+    "/icons/icon-16.png",
+    "/icons/icon-32.png",
     "/icons/icon-192.png",
     "/icons/icon-512.png",
     "/icons/icon-maskable-512.png",
-    "/icons/apple-touch-icon.png",
+    "/icons/apple-touch-icon-152.png",
+    "/icons/apple-touch-icon-167.png",
+    "/icons/apple-touch-icon-180.png",
+    "/icons/apple-touch-icon-180-1b1be9ec.png",
 ];
 
 /** Same-origin paths whose contents are static and safe to serve from cache. */
@@ -139,6 +148,99 @@ self.addEventListener("activate", (event) => {
                     .map((key) => caches.delete(key)),
             );
             await self.clients.claim();
+        })(),
+    );
+});
+
+/**
+ * A Web Push from the server (#189 follow-up).
+ *
+ * iOS suspends the installed app's JavaScript in the background, so this event
+ * is the only place a timer can become a system notification while the phone is
+ * locked or the app is in the app switcher. The payload is already the small
+ * normalized shape the server stored; the worker only has to present it.
+ */
+self.addEventListener("push", (event) => {
+    let payload = {};
+    try {
+        payload = event.data === null ? {} : event.data.json();
+    } catch {
+        // A malformed payload still gets a generic notification; swallowing
+        // the event would revoke the subscription on WebKit.
+    }
+    const title =
+        typeof payload.title === "string" && payload.title.length > 0
+            ? payload.title
+            : "JARVIS";
+    const id = typeof payload.id === "string" ? payload.id : undefined;
+    const options = {
+        body: typeof payload.body === "string" ? payload.body : undefined,
+        ...(id !== undefined ? { tag: id } : {}),
+        data: { id, url: typeof payload.url === "string" ? payload.url : "/" },
+        requireInteraction: payload.class === "timer",
+    };
+    event.waitUntil(
+        (async () => {
+            // A foreground page owns the in-app ring/sound. The push still has
+            // to be visible (Safari revokes a subscription whose push event is
+            // not shown), but it can be silent so the page is the interruption.
+            const clients = await self.clients.matchAll({
+                type: "window",
+                includeUncontrolled: true,
+            });
+            const visible = clients.some(
+                (client) =>
+                    "visibilityState" in client &&
+                    client.visibilityState === "visible",
+            );
+            await self.registration.showNotification(title, {
+                ...options,
+                ...(visible ? { silent: true } : {}),
+            });
+        })(),
+    );
+});
+
+/**
+ * Focuses the app when its notification is tapped and, if a page is already
+ * open, posts the notification id back so the page can mark it read (or stop a
+ * timer). A closed app simply opens at the URL in the payload; its normal
+ * unread/ring state then catches up through REST.
+ */
+self.addEventListener("notificationclick", (event) => {
+    event.notification.close();
+    const data = event.notification.data ?? {};
+    const id =
+        typeof data.id === "string"
+            ? data.id
+            : typeof event.notification.tag === "string"
+              ? event.notification.tag
+              : undefined;
+    event.waitUntil(
+        (async () => {
+            const windows = await self.clients.matchAll({
+                type: "window",
+                includeUncontrolled: true,
+            });
+            const client =
+                windows.find(
+                    (candidate) =>
+                        "visibilityState" in candidate &&
+                        candidate.visibilityState === "visible",
+                ) ?? windows[0];
+            if (client !== undefined) {
+                await client.focus();
+                if (id !== undefined) {
+                    client.postMessage({
+                        type: "jarvis-notification-click",
+                        id,
+                    });
+                }
+                return;
+            }
+            await self.clients.openWindow(
+                typeof data.url === "string" ? data.url : "/",
+            );
         })(),
     );
 });

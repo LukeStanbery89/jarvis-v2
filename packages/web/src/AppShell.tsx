@@ -46,6 +46,9 @@ import { useJobs } from "./hooks/useJobs";
 import { useVoiceSession, voiceStatusLine } from "./hooks/useVoiceSession";
 import { useLocationSharing } from "./hooks/useLocationSharing";
 import { useAppearance } from "./hooks/useAppearance";
+import { useHapticsPreference } from "./hooks/useHaptics";
+import { HapticsProvider } from "./haptics";
+import { removePushSubscription } from "./push";
 import type { AppState } from "./appState";
 import type { StoredCredential } from "./credentials";
 import { NavBar } from "./views/app/NavBar";
@@ -133,6 +136,8 @@ export function AppShell({
      * for why.
      */
     const appearance = useAppearance();
+    /** The primary-button tick, persisted in this browser (#189 follow-up). */
+    const haptics = useHapticsPreference();
 
     // The settings panel (#143) renders in a view's chrome, but the preference
     // *read* is the shell's: the notification hook's ring policy is gated by the
@@ -169,6 +174,7 @@ export function AppShell({
     // comes back here to mark it read.
     const browserNotify = useBrowserNotify({
         username: credential.username,
+        token: credential.token,
         notifications: notifications.notifications,
         loaded: notifications.loaded,
         masterEnabled: notificationsEnabled,
@@ -511,112 +517,135 @@ export function AppShell({
     }
 
     return (
-        <div
-            className="app"
-            /* The glass switch is a variable override in CSS (#146 phase B2),
+        <HapticsProvider
+            enabled={haptics.enabled}
+            supported={haptics.supported}
+        >
+            <div
+                className="app"
+                /* The glass switch is a variable override in CSS (#146 phase B2),
                so turning it off is one attribute rather than a second set of
                pane rules. */
-            data-glass={appearance.appearance.glass ? "on" : "off"}
-        >
-            {/* The background belongs to the app, not to a page (#146): it is
+                data-glass={appearance.appearance.glass ? "on" : "off"}
+            >
+                {/* The background belongs to the app, not to a page (#146): it is
                 fixed behind everything and survives every route change, so a
                 navigation does not restart the field. Unmounting it when the
                 switch is off also stops the loop, rather than hiding a canvas
                 that keeps drawing. */}
-            {appearance.appearance.particles && (
-                <ParticleCanvas
-                    energy={audio.energy}
-                    disconnected={
-                        socket.status === "reconnecting" ||
-                        socket.status === "closed"
-                    }
-                />
-            )}
-            <NavBar
-                username={credential.username}
-                unread={notifications.unread}
-                threadsOpen={threadsOpen}
-                onToggleThreads={() => setThreadsOpen((open) => !open)}
-                status={socket.status}
-                settingsOpen={settingsOpen}
-                onOpenSettings={() => setSettingsOpen(true)}
-                voiceStatus={voiceStatus}
-                voiceListening={voiceListening}
-                voiceLabel={describeWakeState(
-                    voice.wakeAvailable,
-                    voice.wakeArmed,
+                {appearance.appearance.particles && (
+                    <ParticleCanvas
+                        energy={audio.energy}
+                        disconnected={
+                            socket.status === "reconnecting" ||
+                            socket.status === "closed"
+                        }
+                    />
                 )}
-                voiceError={voice.voiceErrorText}
-                locationHint={locationHint}
-                locationSentence={describeLocationState(location.locationState)}
-            />
-            {/* The wide-screen rail (#146 phase D): the same destinations as the
+                <NavBar
+                    username={credential.username}
+                    unread={notifications.unread}
+                    threadsOpen={threadsOpen}
+                    onToggleThreads={() => setThreadsOpen((open) => !open)}
+                    status={socket.status}
+                    settingsOpen={settingsOpen}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                    voiceStatus={voiceStatus}
+                    voiceListening={voiceListening}
+                    voiceLabel={describeWakeState(
+                        voice.wakeAvailable,
+                        voice.wakeArmed,
+                    )}
+                    voiceError={voice.voiceErrorText}
+                    locationHint={locationHint}
+                    locationSentence={describeLocationState(
+                        location.locationState,
+                    )}
+                />
+                {/* The wide-screen rail (#146 phase D): the same destinations as the
                 bar's links, as a column, where the display has the width to
                 spend on one. Hidden by CSS below its breakpoint. It is the one
                 surface the **Navigation labels** switch reaches (#177). */}
-            <IconRail
-                unread={notifications.unread}
-                navLabels={appearance.appearance.navLabels}
-                settingsOpen={settingsOpen}
-                onOpenSettings={() => setSettingsOpen(true)}
-            />
-            <div className="app-view">{currentView()}</div>
-            {toasts.length > 0 && (
-                <ToastStack
-                    toasts={toasts}
-                    onMarkRead={notifications.markRead}
-                    onDismiss={notifications.dismiss}
-                    onSnooze={(notification, minutes) => {
-                        const request = snoozeRequestFor(notification, minutes);
-                        if (request !== null) {
-                            snoozeReminder({ notifications, jobs }, request);
-                        }
-                    }}
+                <IconRail
+                    unread={notifications.unread}
+                    navLabels={appearance.appearance.navLabels}
+                    settingsOpen={settingsOpen}
+                    onOpenSettings={() => setSettingsOpen(true)}
                 />
-            )}
-            {notifications.ring !== null && (
-                <TimerRing timer={notifications.ring} onStop={stopTimer} />
-            )}
-            {/* The settings panel (#143) is the app's, not the chat's (#90 phase
+                <div className="app-view">{currentView()}</div>
+                {toasts.length > 0 && (
+                    <ToastStack
+                        toasts={toasts}
+                        onMarkRead={notifications.markRead}
+                        onDismiss={notifications.dismiss}
+                        onSnooze={(notification, minutes) => {
+                            const request = snoozeRequestFor(
+                                notification,
+                                minutes,
+                            );
+                            if (request !== null) {
+                                snoozeReminder(
+                                    { notifications, jobs },
+                                    request,
+                                );
+                            }
+                        }}
+                    />
+                )}
+                {notifications.ring !== null && (
+                    <TimerRing timer={notifications.ring} onStop={stopTimer} />
+                )}
+                {/* The settings panel (#143) is the app's, not the chat's (#90 phase
                 6d): Settings is an item under Notifications in whichever menu
                 is showing, so the dialog it opens has to be renderable from
                 every page. */}
-            <Settings
-                open={settingsOpen}
-                onClose={() => setSettingsOpen(false)}
-                prefs={prefs.prefs}
-                prefsLoaded={prefs.loaded}
-                prefsSaving={prefs.saving}
-                prefsError={prefs.error}
-                onPatchPrefs={prefs.patch}
-                browserNotifyAvailable={browserNotify.available}
-                browserNotifyOn={browserNotify.enabled}
-                browserNotifyLabel={browserNotify.label}
-                onToggleBrowserNotify={browserNotify.toggle}
-                wakeAvailable={voice.wakeAvailable}
-                wakeOn={voice.wakeOn}
-                wakeArmed={voice.snapshot.wakeArmed}
-                onToggleWake={toggleWake}
-                locationOn={location.locationOn}
-                locationState={location.locationState}
-                onToggleLocation={location.toggleLocation}
-                particlesOn={appearance.appearance.particles}
-                onToggleParticles={() =>
-                    appearance.setParticles(!appearance.appearance.particles)
-                }
-                glassOn={appearance.appearance.glass}
-                onToggleGlass={() =>
-                    appearance.setGlass(!appearance.appearance.glass)
-                }
-                navLabelsOn={appearance.appearance.navLabels}
-                onToggleNavLabels={() =>
-                    appearance.setNavLabels(!appearance.appearance.navLabels)
-                }
-                onSignOut={() => {
-                    socket.client?.close();
-                    onSignedOut();
-                }}
-            />
-        </div>
+                <Settings
+                    open={settingsOpen}
+                    onClose={() => setSettingsOpen(false)}
+                    prefs={prefs.prefs}
+                    prefsLoaded={prefs.loaded}
+                    prefsSaving={prefs.saving}
+                    prefsError={prefs.error}
+                    onPatchPrefs={prefs.patch}
+                    browserNotifyAvailable={browserNotify.available}
+                    browserNotifyOn={browserNotify.enabled}
+                    browserNotifyLabel={browserNotify.label}
+                    onToggleBrowserNotify={browserNotify.toggle}
+                    wakeAvailable={voice.wakeAvailable}
+                    wakeOn={voice.wakeOn}
+                    wakeArmed={voice.snapshot.wakeArmed}
+                    onToggleWake={toggleWake}
+                    locationOn={location.locationOn}
+                    locationState={location.locationState}
+                    onToggleLocation={location.toggleLocation}
+                    hapticsAvailable={haptics.supported}
+                    hapticsOn={haptics.enabled}
+                    onToggleHaptics={haptics.toggle}
+                    particlesOn={appearance.appearance.particles}
+                    onToggleParticles={() =>
+                        appearance.setParticles(
+                            !appearance.appearance.particles,
+                        )
+                    }
+                    glassOn={appearance.appearance.glass}
+                    onToggleGlass={() =>
+                        appearance.setGlass(!appearance.appearance.glass)
+                    }
+                    navLabelsOn={appearance.appearance.navLabels}
+                    onToggleNavLabels={() =>
+                        appearance.setNavLabels(
+                            !appearance.appearance.navLabels,
+                        )
+                    }
+                    onSignOut={() => {
+                        // The token is about to be cleared, and this browser
+                        // should not keep receiving the old account's timers.
+                        void removePushSubscription(credential.token);
+                        socket.client?.close();
+                        onSignedOut();
+                    }}
+                />
+            </div>
+        </HapticsProvider>
     );
 }

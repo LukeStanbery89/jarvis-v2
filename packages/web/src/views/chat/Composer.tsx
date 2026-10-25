@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Paperclip, SendHorizontal, Square } from "lucide-react";
 import type { VoiceSnapshot } from "@lukestanbery/jarvis-voice";
 import type { PendingImage } from "../../attachments";
+import { HapticButton } from "../app/HapticButton";
 import { PendingAttachments } from "./PendingAttachments";
 
 /** Props for {@link Composer}. */
@@ -174,8 +175,7 @@ export function Composer({
                     }
                 }}
             />
-            <button
-                type="button"
+            <HapticButton
                 className={
                     streaming
                         ? "send stop"
@@ -199,7 +199,7 @@ export function Composer({
                 ) : (
                     <SendHorizontal size={18} />
                 )}
-            </button>
+            </HapticButton>
         </div>
     );
 }

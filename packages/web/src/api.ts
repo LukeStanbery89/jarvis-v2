@@ -113,6 +113,13 @@ export type Prefs = components["schemas"]["Prefs"];
  */
 export type WeatherNow = components["schemas"]["WeatherNow"];
 
+/** Body of `GET /api/push/key`: the VAPID public key. */
+export type PushKey = components["schemas"]["PushKey"];
+
+/** Browser registration posted to `POST /api/push/subscribe`. */
+export type PushSubscriptionInput =
+    components["schemas"]["PushSubscriptionInput"];
+
 /** REST failure carrying the server's `{ error }` message on a non-2xx body. */
 export class ApiError extends Error {
     constructor(
@@ -362,6 +369,32 @@ export function createApi(
          */
         setPrefs(token: string, patch: Prefs): Promise<Prefs> {
             return request("PUT", "/api/prefs", { token, body: patch });
+        },
+        /**
+         * Reads the VAPID public key for Web Push (#189 follow-up).
+         *
+         * A deployment without a VAPID pair answers 503; the caller treats
+         * that as "push unavailable" and keeps the page notification path.
+         */
+        getPushKey(token: string): Promise<PushKey> {
+            return request("GET", "/api/push/key", { token });
+        },
+        /** Registers this browser's push endpoint for the signed-in account. */
+        async subscribePush(
+            token: string,
+            subscription: PushSubscriptionInput,
+        ): Promise<void> {
+            await request("POST", "/api/push/subscribe", {
+                token,
+                body: subscription,
+            });
+        },
+        /** Removes one browser push endpoint; idempotent (204). */
+        async unsubscribePush(token: string, endpoint: string): Promise<void> {
+            await request("POST", "/api/push/unsubscribe", {
+                token,
+                body: { endpoint },
+            });
         },
         /**
          * Reads current weather for the device's coordinates (#186).

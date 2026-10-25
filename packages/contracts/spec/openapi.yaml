@@ -66,6 +66,11 @@ tags:
           settled here; pushed live over `/ws` as a `notification` frame.
     - name: Preferences
       description: Free-form per-user integration prefs.
+    - name: Push
+      description: >-
+          Browser Web Push subscriptions (#189 follow-up): the public VAPID key
+          and the per-browser registration that lets a backgrounded PWA receive
+          a notification.
     - name: Session
       description: The cookie login session lifecycle (`GET`/`DELETE /api/session`).
     - name: Stt
@@ -980,6 +985,133 @@ paths:
                                 $ref: "#/components/schemas/Error"
                 "403":
                     description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/push/key:
+        get:
+            operationId: pushKey
+            summary: Read the Web Push VAPID public key
+            description: >-
+                The key a browser passes to `PushManager.subscribe`. Public by
+                design (it is not the private VAPID half), but still behind the
+                normal account auth gate. A deployment without a VAPID pair
+                answers 503 rather than handing out an unusable key.
+            tags: [Push]
+            security:
+                - bearerToken: []
+                - session: []
+            responses:
+                "200":
+                    description: The VAPID public key.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/PushKey"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: Web Push is not configured on this server.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/push/subscribe:
+        post:
+            operationId: pushSubscribe
+            summary: Register this browser for Web Push
+            description: >-
+                Persists the browser's push endpoint and its p256dh/auth keys
+                for the authenticated account. Re-registering the same endpoint
+                updates its keys and owner. Cookie-authenticated callers must
+                send `x-csrf-token`.
+            tags: [Push]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/PushSubscriptionInput"
+            responses:
+                "204":
+                    description: Subscription stored.
+                "400":
+                    description: Malformed subscription body or a non-HTTPS endpoint.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: Web Push is not configured on this server.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+    /api/push/unsubscribe:
+        post:
+            operationId: pushUnsubscribe
+            summary: Remove this browser's Web Push registration
+            description: >-
+                Deletes the subscription for the given endpoint, if it belongs
+                to the caller. Idempotent. Cookie-authenticated callers must
+                send `x-csrf-token`.
+            tags: [Push]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/XCsrfToken"
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: "#/components/schemas/PushEndpointInput"
+            responses:
+                "204":
+                    description: Subscription removed (or already absent).
+                "400":
+                    description: Malformed endpoint body.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "403":
+                    description: Missing or invalid `x-csrf-token` for a cookie-authenticated request.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: Web Push is not configured on this server.
                     content:
                         application/json:
                             schema:
@@ -2283,6 +2415,51 @@ components:
                 minLength: 1
                 maxLength: 256
             additionalProperties: true
+        PushKey:
+            type: object
+            description: The VAPID public key for `PushManager.subscribe`.
+            required: [publicKey]
+            properties:
+                publicKey:
+                    type: string
+                    minLength: 1
+        PushSubscriptionKeys:
+            type: object
+            description: The browser-generated encryption keys for one push subscription.
+            required: [p256dh, auth]
+            properties:
+                p256dh:
+                    type: string
+                    minLength: 1
+                    maxLength: 512
+                auth:
+                    type: string
+                    minLength: 1
+                    maxLength: 512
+        PushSubscriptionInput:
+            type: object
+            description: One browser's push registration.
+            required: [endpoint, keys]
+            properties:
+                endpoint:
+                    type: string
+                    format: uri
+                    minLength: 1
+                    maxLength: 4096
+                    description: Must be an HTTPS push-service endpoint.
+                keys:
+                    $ref: "#/components/schemas/PushSubscriptionKeys"
+        PushEndpointInput:
+            type: object
+            description: Identifies one browser subscription to remove.
+            required: [endpoint]
+            properties:
+                endpoint:
+                    type: string
+                    format: uri
+                    minLength: 1
+                    maxLength: 4096
+                    description: Must be an HTTPS push-service endpoint.
         UsernamePassword:
             type: object
             description: Credentials for cookie login (`POST /api/session`).
