@@ -316,7 +316,9 @@ textarea::placeholder {
     min-width: 1.05rem;
     padding: 0 0.25rem;
     border-radius: 999px;
-    background: var(--primary);
+    /* The unread count is the app's one red badge (#177 follow-up): a number
+       the user owes attention to, deliberately not part of the cyan ladder. */
+    background: var(--error);
     color: var(--bg);
     font-size: 0.65rem;
     font-weight: 700;
@@ -348,6 +350,19 @@ textarea::placeholder {
     gap: 0.35rem;
     color: var(--primary-dim);
     font-size: 0.85rem;
+}
+
+/* A dropped connection is the same yellow as the particle field (#177
+   follow-up): the word and its dot are one warning, not another cyan state. */
+.navbar-status-reconnecting,
+.navbar-status-closed {
+    color: var(--attention);
+}
+
+.navbar-status-reconnecting .navbar-status-dot,
+.navbar-status-closed .navbar-status-dot {
+    background: var(--attention);
+    box-shadow: 0 0 6px var(--attention);
 }
 
 .navbar-status-dot {
@@ -406,9 +421,9 @@ textarea::placeholder {
     gap: 2px;
 }
 
-/* The drawer's one entry that is not a destination: Settings is the bar's gear
-   on wide screens and an item in the menu where the bar has no room for it
-   (#146 phase D). It borrows the link look and resets the button. */
+/* The drawer's one entry that is not a destination: Settings sits under
+   Notifications in every menu (#177 follow-up). It borrows the link look and
+   resets the button. */
 .navbar-drawer-action {
     width: 100%;
     font: inherit;
@@ -477,6 +492,18 @@ textarea::placeholder {
     display: none;
 }
 
+/* Settings is a button, not an `AppLink`; it borrows the rail row's shape. The
+   labels-off width rule above is more specific, so it still collapses to the
+   icon square when the words are hidden. */
+.rail-action {
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+
 .rail-link:hover,
 .rail-link[aria-current="page"] {
     color: var(--primary);
@@ -493,6 +520,13 @@ textarea::placeholder {
     height: 1px;
     margin: 0.25rem auto;
     background: var(--primary-border);
+}
+
+/* Labels on, every row is as wide as the rail, so the hairline follows the
+   rows instead of staying the icon-only stub (#177 follow-up). */
+.rail[data-nav-labels="on"] .rail-sep {
+    width: 100%;
+    margin: 0.25rem 0;
 }
 
 /* The bar's badge, moved onto the corner of an icon. */
@@ -554,14 +588,14 @@ textarea::placeholder {
  * The bar's own breakpoint (#146 phase D): measured, not inherited from the
  * shell's 48 rem.
  *
- * At its widest the bar holds the wordmark (~78px), the four links (~315px plus
- * an unread badge), Admin past its hairline (~73px), three state chips
- * (~245px), the account name (~80px) and the gear (36px), with a 1 rem gap
- * between groups and 0.75 rem of padding — a little over 60 rem. Without a chip
- * it needs ~45 rem and with only the connection chip ~50 rem, which is exactly
- * the stretch (50–55 rem) where three chips used to run the links out of room.
- * Collapsing here rather than at 48 rem is the difference between "the bar is
- * empty" and "the bar is overflowing".
+ * At its widest the bar holds the wordmark (~78px), the four links plus the
+ * Settings gear under Notifications (~351px plus an unread badge), Admin past
+ * its hairline (~73px), three state chips (~245px) and the account name
+ * (~80px), with a 1 rem gap between groups and 0.75 rem of padding — a little
+ * over 60 rem. Without a chip it needs ~45 rem and with only the connection
+ * chip ~50 rem, which is exactly the stretch (50–55 rem) where three chips
+ * used to run the links out of room. Collapsing here rather than at 48 rem is
+ * the difference between "the bar is empty" and "the bar is overflowing".
  */
 @media (max-width: 60rem) {
     .navbar-links,
@@ -571,13 +605,6 @@ textarea::placeholder {
 
     .navbar .navbar-menu {
         display: inline-flex;
-    }
-
-    /* The gear gives its place to the menu, which carries Settings itself
-       (#146 phase D). Two classes, for the same reason as the threads toggle
-       below: `.icon-btn` sets `display: inline-flex` further down the sheet. */
-    .icon-btn.navbar-settings {
-        display: none;
     }
 }
 
@@ -590,9 +617,9 @@ textarea::placeholder {
     }
 
     /* The wordmark centres between two flanks of different widths — the thread
-       toggle at the start, the gear and menu at the end — so it is taken out of
-       the flex flow and pinned to the bar's middle rather than centred in
-       whatever space is left over. */
+       toggle at the start, the menu at the end — so it is taken out of the flex
+       flow and pinned to the bar's middle rather than centred in whatever space
+       is left over. */
     .navbar-brand {
         position: absolute;
         left: 50%;
@@ -1408,7 +1435,10 @@ textarea::placeholder {
 
 .notification-item {
     display: flex;
-    align-items: center;
+    /* The class/state line is the row's anchor: when a two-column grid
+       stretches a short record to match a taller neighbour, the content starts
+       at the top instead of floating in the middle of the card. */
+    align-items: flex-start;
     gap: 0.75rem;
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--primary-wash);
@@ -1927,9 +1957,9 @@ textarea::placeholder {
 
 /* --- Settings panel (#143) --- */
 
-/* The unread count over the gear. The badge is an addition to the one on the
-   notification list, not a replacement: that one stays visible in the
-   conversation column, so nothing is lost if the gear is off screen. */
+/* The unread count over the menu button. The badge is an addition to the one
+   on the notification list, not a replacement: that one stays visible in the
+   conversation column, so nothing is lost if the menu is off screen. */
 .icon-badge {
     position: absolute;
     top: -0.35rem;
@@ -1937,7 +1967,7 @@ textarea::placeholder {
     min-width: 1.05rem;
     padding: 0 0.2rem;
     border-radius: 999px;
-    background: var(--primary);
+    background: var(--error);
     color: var(--bg);
     font-size: 0.65rem;
     font-weight: 700;
@@ -2185,13 +2215,28 @@ textarea::placeholder {
     background: var(--primary-wash);
 }
 
-.job-form-custom {
+.job-form-duration {
     display: flex;
-    gap: 0.4rem;
+    align-items: center;
+    gap: 0.35rem;
 }
 
-.job-form-custom input {
+.job-form-duration input {
     width: 5.5rem;
+    padding: 0.4rem 0.5rem;
+    font: inherit;
+    font-size: 1.05rem;
+    text-align: center;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--primary-border);
+    border-radius: 4px;
+}
+
+.job-form-duration-sep {
+    color: var(--primary-dim);
+    font-size: 1.25rem;
+    font-weight: 600;
 }
 
 .job-form-note {
@@ -2382,7 +2427,7 @@ textarea::placeholder {
    sheet of glass holding the head, the rows and the history; now the head keeps
    a pane of its own and every job below it is its own, so the list reads as a
    stack of windows on the field rather than one long sheet with items drawn on
-   it. */
+   it. The dashboard's coming-up stack uses the same panes. */
 .page-rows {
     padding: 0;
     background: none;
@@ -2403,7 +2448,8 @@ textarea::placeholder {
     -webkit-backdrop-filter: var(--glass-filter);
 }
 
-.page-rows .job-item {
+.page-rows .job-item,
+.dashboard-jobs .job-item {
     padding: 0.75rem;
     background: var(--glass);
     /* Only the three neutral sides are restated: `job-timer` and `job-reminder`
@@ -2418,8 +2464,40 @@ textarea::placeholder {
 }
 
 /* Panes need more air between them than rows on a sheet did. */
-.page-rows .job-list {
+.page-rows .job-list,
+.dashboard-jobs {
     gap: 0.6rem;
+}
+
+/*
+ * The notifications page uses the viewport's height, not a 40vh letterbox
+ * (#177 follow-up). The head and any Scheduled half keep their natural height;
+ * the recorded list takes what is left and scrolls inside it, so a long history
+ * fills the page instead of showing about half of it in a small box.
+ *
+ * The page is exactly the app-view's height less its own vertical margin; the
+ * list is the only flexible child. The `:last-child` case is the same list when
+ * Scheduled is present and the recorded half is one of two sections.
+ */
+.notifications-page {
+    height: calc(100% - 1.5rem);
+    min-height: 0;
+}
+
+.notifications-page > .notification-list,
+.notifications-page > .page-section:last-child {
+    flex: 1;
+    min-height: 0;
+}
+
+.notifications-page .notification-list {
+    max-height: none;
+    overflow-y: auto;
+}
+
+.notifications-page .page-section:last-child .notification-list {
+    flex: 1;
+    min-height: 0;
 }
 
 /* The empty state is the list's one row, so it is a pane too. */
@@ -2469,21 +2547,33 @@ textarea::placeholder {
 /*
  * Two columns of panes on a wide display (#146 phase D).
  *
- * A list page is capped at 64 rem, and a row at that width spends most of its
- * life empty: the class, the moment, the title and three buttons occupy the
- * first half, and the second is field. From the measure up, the rows pair up —
- * half the page each — so one glance reads twice as many jobs.
+ * Jobs pair up: a job row at the measure spends most of its width empty, so a
+ * grid of two columns reads twice as many at a glance.
  *
- * `minmax(0, 1fr)` rather than `1fr`: a grid track's default minimum is its
- * content's, so a long title would widen its column past its share and push the
- * pair off the page. Cards stretch to the taller of the two in a row, which is
- * what keeps the panes reading as a grid rather than a ragged column.
+ * Notifications do not pair up. Their cards range from a one-line READ to a
+ * multi-paragraph ANSWERED, so a row grid stretched every short card to its
+ * tallest neighbour and left a band of empty space before the next row. They
+ * flow into balanced columns instead: each card keeps its content height, the
+ * gaps stay uniform, and the columns fill the page's height without the grid's
+ * row bands. The order runs down the first column and then the second — the
+ * price of a CSS-only masonry; the feed's chronology is still top-to-bottom.
  */
 @media (min-width: 64rem) {
-    .page-rows .job-list,
-    .page-rows .notification-list {
+    .page-rows .job-list {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .page-rows .notification-list {
+        display: block;
+        columns: 2;
+        column-gap: 0.6rem;
+        column-fill: balance;
+    }
+
+    .page-rows .notification-item {
+        break-inside: avoid;
+        margin-bottom: 0.6rem;
     }
 
     /* The empty state is the list's one row: it spans the pair. */
@@ -2763,6 +2853,42 @@ textarea::placeholder {
     padding: 2.5rem 1.25rem;
 }
 
+/* Coming up is a stack of the same individual panes the list pages show, not a
+   card wrapping a compact list (#177 follow-up). */
+.dashboard-coming {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+/* On a display with room for it, each dashboard section spans the page and the
+   Coming up job panes pair up in two columns rather than a long single stack.
+   The bottom section is a two-column strip too: the notification card takes
+   one half, with room for a second widget beside it. */
+@media (min-width: 64rem) {
+    .dashboard {
+        max-width: 72rem;
+    }
+
+    .dashboard-jobs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* The bottom section is a two-column grid too; the notification card takes
+       the first column, half the page. The second is ready for its next widget. */
+    .dashboard-widgets {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1.25rem;
+        align-items: start;
+    }
+
+    .dashboard-widgets .dashboard-card {
+        min-width: 0;
+    }
+}
+
 /* The dashboard's "coming up" card is the pane; the clock above it stays on the
    field, which is what makes the glass read as a window rather than a panel. */
 .dashboard-card {
@@ -2850,49 +2976,7 @@ textarea::placeholder {
 }
 
 .dashboard-jobs {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-}
-
-.dashboard-job {
-    display: flex;
-    align-items: baseline;
     gap: 0.6rem;
-}
-
-.dashboard-class {
-    padding: 0.02rem 0.45rem;
-    color: var(--primary-dim);
-    border: 1px solid var(--primary-border);
-    border-radius: 999px;
-    font-size: 0.7rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-}
-
-/* The loud class stands out by a step, not a second hue: the theme is one
-   colour, and "timer" is the one that will interrupt. */
-.dashboard-class-timer {
-    color: var(--primary);
-    border-color: var(--primary-dim);
-}
-
-.dashboard-label {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.dashboard-when {
-    color: var(--primary-dim);
-    font-size: 0.85rem;
-    white-space: nowrap;
 }
 
 .dashboard-links {
@@ -3071,7 +3155,6 @@ textarea::placeholder {
 
 .countdown,
 .job-when,
-.dashboard-when,
 .job-primary {
     font-variant-numeric: tabular-nums;
     white-space: nowrap;

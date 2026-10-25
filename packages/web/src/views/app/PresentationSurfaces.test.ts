@@ -93,21 +93,25 @@ function notificationsState(
     } as unknown as NotificationsState;
 }
 
-describe("the dashboard renders through the shared job card", () => {
-    it("draws a compact row with the dashboard's own classes", () => {
+describe("the dashboard renders the individual job widgets", () => {
+    it("draws the same job pane the Timers and Reminders pages use", () => {
         const html = renderToStaticMarkup(
             createElement(Dashboard, {
                 username: "luke",
                 jobs: jobsState([job({ class: "timer", label: "Kettle" })]),
+                notifications: notificationsState([]),
+                token: "device-token",
                 unread: 0,
             }),
         );
 
-        expect(html).toContain("dashboard-job");
-        expect(html).toContain("dashboard-class");
-        expect(html).toContain("dashboard-label");
+        expect(html).toContain("job-item job-timer");
+        expect(html).toContain("job-countdown");
         expect(html).toContain("Kettle");
-        expect(html).toContain("dashboard-when");
+        expect(html).toContain("row-actions");
+        // The old compact one-line row is gone; the dashboard is the panes.
+        expect(html).not.toContain("dashboard-class");
+        expect(html).not.toContain("dashboard-label");
     });
 });
 

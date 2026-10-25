@@ -20,11 +20,12 @@ import {
     describeRunAt,
     describeRun,
     describeSnooze,
+    durationDraftFor,
     editPatchFor,
     emptyRunsNote,
     formatCountdown,
     gateText,
-    instantFromDuration,
+    instantFromParts,
     jobBody,
     momentInputValue,
     nextRepeatAt,
@@ -505,39 +506,100 @@ describe("splitJobs", () => {
     });
 });
 
-describe("instantFromDuration", () => {
+describe("instantFromParts", () => {
     const now = new Date(2026, 9, 18, 12, 0, 0);
 
-    it("adds seconds, minutes and hours", () => {
+    it("adds hours, minutes and seconds as one length", () => {
         expect(
-            instantFromDuration(now, {
-                amount: 30,
-                unit: "seconds",
-            })?.getTime(),
-        ).toBe(now.getTime() + 30_000);
-        expect(
-            instantFromDuration(now, {
-                amount: 10,
-                unit: "minutes",
+            instantFromParts(now, {
+                hours: 0,
+                minutes: 10,
+                seconds: 0,
             })?.getTime(),
         ).toBe(now.getTime() + 600_000);
         expect(
-            instantFromDuration(now, { amount: 2, unit: "hours" })?.getTime(),
-        ).toBe(now.getTime() + 7_200_000);
+            instantFromParts(now, {
+                hours: 1,
+                minutes: 1,
+                seconds: 1,
+            })?.getTime(),
+        ).toBe(now.getTime() + 3_661_000);
+        expect(
+            instantFromParts(now, {
+                hours: 0,
+                minutes: 0,
+                seconds: 30,
+            })?.getTime(),
+        ).toBe(now.getTime() + 30_000);
     });
 
-    it("refuses a length that is not one", () => {
-        // Zero and negative are what an emptied or hand-edited number field
-        // produces; the form turns a null into "give it a length".
+    it("refuses a total that is not a positive length", () => {
         expect(
-            instantFromDuration(now, { amount: 0, unit: "minutes" }),
+            instantFromParts(now, { hours: 0, minutes: 0, seconds: 0 }),
         ).toBeNull();
         expect(
-            instantFromDuration(now, { amount: -5, unit: "minutes" }),
+            instantFromParts(now, { hours: 0, minutes: -1, seconds: 0 }),
         ).toBeNull();
         expect(
-            instantFromDuration(now, { amount: NaN, unit: "minutes" }),
+            instantFromParts(now, {
+                hours: 0,
+                minutes: NaN,
+                seconds: 0,
+            }),
         ).toBeNull();
+    });
+});
+
+describe("durationDraftFor", () => {
+    const now = new Date(2026, 9, 18, 12, 0, 0);
+    const at = (offsetMs: number): string =>
+        new Date(now.getTime() + offsetMs).toISOString();
+
+    it("reads a timer's original length, not its remaining time", () => {
+        // Created ten minutes before it fires: opening the edit two minutes
+        // later must still say ten, or an untouched save would shorten it.
+        const target = {
+            createdAt: at(-10 * 60_000),
+            runAt: at(0),
+        };
+        expect(
+            durationDraftFor(target, new Date(now.getTime() + 2 * 60_000)),
+        ).toEqual({ hours: 0, minutes: 10, seconds: 0 });
+    });
+
+    it("splits the span into hours, minutes and seconds", () => {
+        expect(
+            durationDraftFor({ createdAt: at(-7_200_000), runAt: at(0) }, now),
+        ).toEqual({ hours: 2, minutes: 0, seconds: 0 });
+        expect(
+            durationDraftFor({ createdAt: at(-5_400_000), runAt: at(0) }, now),
+        ).toEqual({ hours: 1, minutes: 30, seconds: 0 });
+        expect(
+            durationDraftFor({ createdAt: at(-30_000), runAt: at(0) }, now),
+        ).toEqual({ hours: 0, minutes: 0, seconds: 30 });
+    });
+
+    it("rounds a sub-second remainder into the same minute", () => {
+        // 600.123 s is a ten-minute timer with a 123 ms timestamp offset; the
+        // old control called it "600 seconds" (#177 follow-up).
+        expect(
+            durationDraftFor({ createdAt: at(-600_123), runAt: at(0) }, now),
+        ).toEqual({ hours: 0, minutes: 10, seconds: 0 });
+    });
+
+    it("falls back to the remaining span, then to the form's default", () => {
+        expect(
+            durationDraftFor(
+                { createdAt: "not a timestamp", runAt: at(5 * 60_000) },
+                now,
+            ),
+        ).toEqual({ hours: 0, minutes: 5, seconds: 0 });
+        expect(
+            durationDraftFor(
+                { createdAt: "not a timestamp", runAt: at(-1_000) },
+                now,
+            ),
+        ).toEqual({ hours: 0, minutes: 10, seconds: 0 });
     });
 });
 

@@ -105,9 +105,9 @@ export interface SettingsProps {
  * The settings panel, as a native modal dialog.
  *
  * `<dialog showModal()>` is doing real work here: Escape-to-close, keeping
- * focus inside the panel while it is open, and restoring focus to the gear on
- * close are the platform's job, not a hand-rolled key handler's — and a trap
- * written by hand is the part of a dialog that usually rots.
+ * focus inside the panel while it is open, and restoring focus to the Settings
+ * item on close are the platform's job, not a hand-rolled key handler's — and a
+ * trap written by hand is the part of a dialog that usually rots.
  *
  * @param props - See {@link SettingsProps}.
  */

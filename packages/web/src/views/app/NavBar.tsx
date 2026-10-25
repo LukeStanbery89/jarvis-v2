@@ -1,7 +1,7 @@
 /**
- * The app's top bar (#90 phases 6b, 6d): the wordmark, the pages, the account,
- * and the state of the app — the connection, the microphone, the location share
- * — with the settings gear at the end of it.
+ * The app's top bar (#90 phases 6b, 6d): the wordmark, the pages (with Settings
+ * under Notifications), the account, and the state of the app — the connection,
+ * the microphone, the location share.
  *
  * The wordmark is the way home — it links to the dashboard — so the pages listed
  * here are the four destinations other than it. Under 60rem the links collapse
@@ -24,30 +24,40 @@
  * not a dashboard of healthy subsystems. What it does show is exactly the states
  * a user must not have to go looking for: a dropped socket, an open microphone,
  * a share that is not delivering, and a voice session that failed. Phase 6d
- * brought the last three here with the gear, because the microphone and the
+ * brought the last three here with Settings, because the microphone and the
  * location share are the app's now and every page is a place they can be live.
  */
 import { useEffect, useRef, useState } from "react";
 import {
+    Bell,
+    BellRing,
     ExternalLink,
     MapPin,
     Menu,
     MessagesSquare,
     Mic,
     Settings as SettingsIcon,
+    Timer,
     X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { AppLink } from "../../AppLink";
 import { useRoute } from "../../hooks/useRoute";
 import type { ChatStatus } from "../../ChatClient";
 import type { AppRoute } from "../../router";
 
-/** The pages the bar lists, in order (home is the wordmark). */
-const LINKS: { to: AppRoute; label: string }[] = [
-    { to: "chat", label: "Chat" },
-    { to: "timers", label: "Timers" },
-    { to: "reminders", label: "Reminders" },
-    { to: "notifications", label: "Notifications" },
+/**
+ * The pages the bar lists, in order (home is the wordmark).
+ *
+ * The icon is the drawer's, not the bar's: the bar's links are words at every
+ * width it shows, while the narrow-screen drawer puts the same icon the rail
+ * uses beside each word (#177 follow-up).
+ */
+const LINKS: { to: AppRoute; label: string; Icon: LucideIcon }[] = [
+    { to: "chat", label: "Chat", Icon: MessagesSquare },
+    { to: "timers", label: "Timers", Icon: Timer },
+    { to: "reminders", label: "Reminders", Icon: BellRing },
+    { to: "notifications", label: "Notifications", Icon: Bell },
 ];
 
 /**
@@ -88,9 +98,9 @@ export interface NavBarProps {
     onToggleThreads(): void;
     /** The socket's lifecycle, for the connection chip. */
     status: ChatStatus;
-    /** Whether the settings panel is showing (the gear's `aria-expanded`). */
+    /** Whether the settings panel is showing (the Settings item's `aria-expanded`). */
     settingsOpen: boolean;
-    /** Opens the settings panel (the gear, wherever it is being rendered). */
+    /** Opens the settings panel (the Settings item, wherever it is rendered). */
     onOpenSettings(): void;
     /** The voice session's status line, or `null` when there is nothing to say. */
     voiceStatus: string | null;
@@ -118,7 +128,7 @@ function ConnectionChip({ status }: { status: ChatStatus }) {
     }
     return (
         <span
-            className="navbar-status"
+            className={`navbar-status navbar-status-${status}`}
             role="status"
             title={STATUS_SENTENCE[status]}
             aria-label={STATUS_SENTENCE[status]}
@@ -266,8 +276,19 @@ export function NavBar({
         };
     }, [menuOpen]);
 
-    /** One page link, in whichever of the two lists is asking. */
-    function link(to: AppRoute, label: string, className: string) {
+    /**
+     * One page link, in whichever of the two lists is asking.
+     *
+     * The drawer passes its destination's icon; the bar leaves it out, because
+     * the bar's links stay words and only the drawer mirrors the rail's
+     * icon-beside-the-word rows.
+     */
+    function link(
+        to: AppRoute,
+        label: string,
+        className: string,
+        Icon?: LucideIcon,
+    ) {
         return (
             <AppLink
                 key={to}
@@ -275,6 +296,7 @@ export function NavBar({
                 className={className}
                 current={route === to}
             >
+                {Icon !== undefined && <Icon size={16} aria-hidden="true" />}
                 {label}
                 {/* The count rides the Notifications link, wherever it shows.
                     While the drawer is open the hamburger's own badge is still
@@ -313,6 +335,22 @@ export function NavBar({
                 {LINKS.map((entry) =>
                     link(entry.to, entry.label, "navbar-link"),
                 )}
+                {/* Settings is a menu item, not a fifth page (#177 follow-up):
+                    it sits under Notifications everywhere the menu shows, the
+                    same place it has in the small-screen drawer. It is a gear
+                    here because the bar's links are words and the gear is the
+                    control that opened the panel before. */}
+                <button
+                    type="button"
+                    className="icon-btn navbar-settings"
+                    aria-expanded={settingsOpen}
+                    aria-controls="settings-panel"
+                    aria-label="Settings"
+                    title="Settings"
+                    onClick={onOpenSettings}
+                >
+                    <SettingsIcon size={16} aria-hidden="true" />
+                </button>
                 {/* A hairline, because Admin is a different kind of
                     destination: everything above it swaps a view, this leaves
                     the app. */}
@@ -341,17 +379,6 @@ export function NavBar({
                 <span className="navbar-user">{username}</span>
                 <button
                     type="button"
-                    className="icon-btn navbar-settings"
-                    aria-expanded={settingsOpen}
-                    aria-controls="settings-panel"
-                    aria-label="Settings"
-                    title="Settings"
-                    onClick={onOpenSettings}
-                >
-                    <SettingsIcon size={16} aria-hidden="true" />
-                </button>
-                <button
-                    type="button"
                     className="icon-btn navbar-menu"
                     aria-expanded={menuOpen}
                     aria-controls="navbar-drawer"
@@ -376,21 +403,31 @@ export function NavBar({
                     <p className="navbar-drawer-user">{username}</p>
                     <nav className="navbar-drawer-links" aria-label="Pages">
                         {LINKS.map((entry) =>
-                            link(entry.to, entry.label, "navbar-drawer-link"),
+                            link(
+                                entry.to,
+                                entry.label,
+                                "navbar-drawer-link",
+                                entry.Icon,
+                            ),
                         )}
                     </nav>
-                    {/* Settings is the bar's gear on wide screens; at this width
-                        the gear gives its place to the menu (#146 phase D), so
-                        the panel opens from here instead. The menu closes
-                        first, or it would sit behind the dialog. */}
+                    {/* Settings sits under Notifications in every menu (#177
+                        follow-up), so the drawer's copy is the same item the
+                        bar's links and the rail carry. The menu closes first,
+                        or it would sit behind the dialog. */}
                     <button
                         type="button"
                         className="navbar-drawer-link navbar-drawer-action"
+                        aria-expanded={settingsOpen}
+                        aria-controls="settings-panel"
+                        aria-label="Settings"
+                        title="Settings"
                         onClick={() => {
                             setMenuOpen(false);
                             onOpenSettings();
                         }}
                     >
+                        <SettingsIcon size={16} aria-hidden="true" />
                         Settings
                     </button>
                     {/* Below the line, because Admin is not a page of this app:
@@ -402,8 +439,8 @@ export function NavBar({
                         href={ADMIN_HREF}
                         title="Admin portal — a separate app"
                     >
+                        <ExternalLink size={16} aria-hidden="true" />
                         Admin
-                        <ExternalLink size={11} aria-hidden="true" />
                     </a>
                 </div>
             )}

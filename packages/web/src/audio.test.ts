@@ -32,6 +32,8 @@ function makeFakeContext() {
     const sources: FakeSource[] = [];
     const oscillators: FakeOscillator[] = [];
     const copies: Float32Array[] = [];
+    /** Every gain node created, so a test can see the ring bus disconnected. */
+    const gains: { disconnected: boolean; values: number[] }[] = [];
     let currentTime = 0;
     let resumed = 0;
     let closed = 0;
@@ -85,13 +87,22 @@ function makeFakeContext() {
             oscillators.push(osc);
             return osc;
         },
-        createGain: () => ({
-            gain: {
-                setValueAtTime: () => {},
-                exponentialRampToValueAtTime: () => {},
-            },
-            connect: () => {},
-        }),
+        createGain: () => {
+            const record = { disconnected: false, values: [] as number[] };
+            gains.push(record);
+            return {
+                gain: {
+                    setValueAtTime: (value: number) => {
+                        record.values.push(value);
+                    },
+                    exponentialRampToValueAtTime: () => {},
+                },
+                connect: () => {},
+                disconnect: () => {
+                    record.disconnected = true;
+                },
+            };
+        },
         createAnalyser: () => ({
             fftSize: 0,
             smoothingTimeConstant: 1,
@@ -127,6 +138,7 @@ function makeFakeContext() {
         ctx: ctx as unknown as AudioContext,
         sources,
         oscillators,
+        gains,
         copies,
         advance: (seconds: number) => {
             currentTime += seconds;
@@ -426,6 +438,25 @@ describe("AudioPlayer: the timer ring (#90)", () => {
             expect(fake.oscillators).toHaveLength(queued);
             expect(fake.oscillators.every((o) => o.stopped)).toBe(true);
             expect(fake.closed).toBe(1);
+        }));
+
+    it("mutes and disconnects the ring bus as well as stopping its tones", () =>
+        withFakeTimers(() => {
+            const fake = makeFakeContext();
+            const player = new AudioPlayer({ createContext: () => fake.ctx });
+
+            player.startRing();
+            // The bus is created before the first chime's tone gains.
+            const bus = fake.gains[0];
+            expect(bus?.disconnected).toBe(false);
+
+            player.stopRing();
+
+            // Stopping a scheduled oscillator is not enough in every browser;
+            // detaching the shared output is what makes Stop immediate.
+            expect(bus?.values).toContain(1);
+            expect(bus?.values).toContain(0);
+            expect(bus?.disconnected).toBe(true);
         }));
 
     it("rings safely without a WebAudio runtime", () => {

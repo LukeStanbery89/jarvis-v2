@@ -2,13 +2,13 @@
  * The create/edit form for a scheduled job (#90 phase 7).
  *
  * One dialog for all three classes, because the differences are small and the
- * fields they share are load-bearing: a **timer** is created by a length (a
- * countdown is what it is, and ten seconds is a legitimate one), while a
- * **reminder** and a **notification** are created by a moment; an edit always
- * uses the moment, because "when this fires" is what is being changed and the
- * row already says it in clock time. The class itself is never a field — it is
- * the page's, since the class decides how loudly the user is interrupted, and a
- * control that could change it would be a way to turn a reminder into a timer.
+ * fields they share are load-bearing: a **timer** is a length — created or
+ * edited — while a **reminder** and a **notification** are a moment; an edit
+ * uses the field its class calls for, because a countdown is what a timer is
+ * and a clock time is what the other two are. The class itself is never a field
+ * — it is the page's, since the class decides how loudly the user is
+ * interrupted, and a control that could change it would be a way to turn a
+ * reminder into a timer.
  *
  * Mount it while it is open (the `TimerRing` shape), so a fresh mount *is* a
  * fresh form: the fields initialise from the job being edited, and a cancelled
@@ -27,8 +27,9 @@ import {
     checkJobInput,
     defaultMoment,
     describeMoment,
+    durationDraftFor,
     editPatchFor,
-    instantFromDuration,
+    instantFromParts,
     jobBody,
     momentInputValue,
     noRepeat,
@@ -42,13 +43,10 @@ import {
     REPEAT_CHOICES,
     WEEKDAY_CHIPS,
 } from "../../jobs";
-import type { DurationUnit, JobClass, RepeatDraft } from "../../jobs";
+import type { JobClass, RepeatDraft } from "../../jobs";
 import { describeRepeat, nextOccurrence } from "@lukestanbery/jarvis-protocol";
 import type { JobsState } from "../../hooks/useJobs";
 import type { Job, JobSaved } from "../../api";
-
-/** The units the countdown control offers, in the order it lists them. */
-const UNITS: DurationUnit[] = ["seconds", "minutes", "hours"];
 
 /** Props for {@link JobForm}. */
 export interface JobFormProps {
@@ -82,8 +80,8 @@ export function JobForm({
 }: JobFormProps) {
     /** The class the job will carry: an edit keeps the job's own. */
     const jobClassOf = editing?.class ?? jobClass;
-    /** A timer *created* by hand is a length; everything else is a moment. */
-    const byDuration = editing === null && jobClassOf === "timer";
+    /** A timer is a countdown whether it is being created or edited. */
+    const byDuration = jobClassOf === "timer";
     /**
      * Whether the detail field applies. A stored tool or prompt job has no text
      * to edit — the server refuses the field rather than ignoring it — so the
@@ -102,8 +100,26 @@ export function JobForm({
     const [message, setMessage] = useState(() =>
         editing === null ? "" : (jobBody(editing) ?? ""),
     );
-    const [amount, setAmount] = useState("10");
-    const [unit, setUnit] = useState<DurationUnit>("minutes");
+    /**
+     * The duration control's opening value. A timer edit opens on the length it
+     * was set with (`durationDraftFor`), not on the clock time it currently
+     * points at, so saving re-arms that same length from now.
+     */
+    function initialDuration() {
+        return editing !== null && jobClassOf === "timer"
+            ? durationDraftFor(editing, new Date())
+            : { hours: 0, minutes: 10, seconds: 0 };
+    }
+    const [hours, setHours] = useState(() => String(initialDuration().hours));
+    const [minutes, setMinutes] = useState(() =>
+        String(initialDuration().minutes),
+    );
+    const [seconds, setSeconds] = useState(() =>
+        String(initialDuration().seconds),
+    );
+    /** The current length in seconds, so the preset chips match the boxes. */
+    const durationSeconds =
+        Number(hours) * 3_600 + Number(minutes) * 60 + Number(seconds);
     const [moment, setMoment] = useState(() =>
         momentInputValue(
             editing === null
@@ -141,7 +157,11 @@ export function JobForm({
     /** The moment the form currently holds, or `null` when it cannot read one. */
     function momentOf(): Date | null {
         return byDuration
-            ? instantFromDuration(new Date(), { amount: Number(amount), unit })
+            ? instantFromParts(new Date(), {
+                  hours: Number(hours),
+                  minutes: Number(minutes),
+                  seconds: Number(seconds),
+              })
             : parseMomentInput(moment);
     }
 
@@ -308,54 +328,96 @@ export function JobForm({
                     />
                 </label>
                 {byDuration ? (
-                    <div className="job-form-row">
-                        <span>For</span>
-                        <div className="job-form-chips">
-                            {DURATION_PRESETS.map((preset) => (
-                                <button
-                                    key={preset.label}
-                                    type="button"
-                                    className={
-                                        unit === "minutes" &&
-                                        Number(amount) === preset.minutes
-                                            ? "job-form-chip current"
-                                            : "job-form-chip"
-                                    }
-                                    onClick={() => {
-                                        setAmount(String(preset.minutes));
-                                        setUnit("minutes");
-                                    }}
-                                >
-                                    {preset.label}
-                                </button>
-                            ))}
-                        </div>
-                        <div className="job-form-custom">
-                            <input
-                                type="number"
-                                min="1"
-                                step="1"
-                                value={amount}
-                                aria-label="How long"
-                                onChange={(event) =>
-                                    setAmount(event.target.value)
-                                }
-                            />
-                            <select
-                                value={unit}
-                                aria-label="Unit"
-                                onChange={(event) =>
-                                    setUnit(event.target.value as DurationUnit)
-                                }
-                            >
-                                {UNITS.map((value) => (
-                                    <option key={value} value={value}>
-                                        {value}
-                                    </option>
+                    <>
+                        <div className="job-form-row">
+                            <span>For</span>
+                            <div className="job-form-chips">
+                                {DURATION_PRESETS.map((preset) => (
+                                    <button
+                                        key={preset.label}
+                                        type="button"
+                                        className={
+                                            durationSeconds ===
+                                            preset.minutes * 60
+                                                ? "job-form-chip current"
+                                                : "job-form-chip"
+                                        }
+                                        onClick={() => {
+                                            setHours(
+                                                String(
+                                                    Math.floor(
+                                                        preset.minutes / 60,
+                                                    ),
+                                                ),
+                                            );
+                                            setMinutes(
+                                                String(preset.minutes % 60),
+                                            );
+                                            setSeconds("0");
+                                        }}
+                                    >
+                                        {preset.label}
+                                    </button>
                                 ))}
-                            </select>
+                            </div>
+                            <div
+                                className="job-form-duration"
+                                role="group"
+                                aria-label="Duration: hours, minutes and seconds"
+                            >
+                                <input
+                                    type="number"
+                                    min="0"
+                                    max="24"
+                                    step="1"
+                                    value={hours}
+                                    aria-label="Hours"
+                                    onChange={(event) =>
+                                        setHours(event.target.value)
+                                    }
+                                />
+                                <span
+                                    className="job-form-duration-sep"
+                                    aria-hidden="true"
+                                >
+                                    :
+                                </span>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    max="59"
+                                    step="1"
+                                    value={minutes}
+                                    aria-label="Minutes"
+                                    onChange={(event) =>
+                                        setMinutes(event.target.value)
+                                    }
+                                />
+                                <span
+                                    className="job-form-duration-sep"
+                                    aria-hidden="true"
+                                >
+                                    :
+                                </span>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    max="59"
+                                    step="1"
+                                    value={seconds}
+                                    aria-label="Seconds"
+                                    onChange={(event) =>
+                                        setSeconds(event.target.value)
+                                    }
+                                />
+                            </div>
                         </div>
-                    </div>
+                        {editing !== null && (
+                            <p className="job-form-note">
+                                Saving restarts the countdown from now.
+                            </p>
+                        )}
+                    </>
                 ) : (
                     <div className="job-form-row">
                         <span>When</span>
