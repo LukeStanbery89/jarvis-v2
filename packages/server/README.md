@@ -326,10 +326,13 @@ The default coding model is **OpenCode's `big-pickle`** at
 stealth model on the Console endpoint, and the job's own `opencode run` is the
 client the free tier admits. A Go-plan model works too — point
 `JARVIS_SANDBOX_LLM_BASE_URL` at `https://opencode.ai/inference/go/openai/v1`
-and name the Go id in the ladder. A local model works as well: point the URL at
-the host and the model at the local id, and leave the key empty; no key is
-required for a local endpoint, and a remote one without a key is refused before
-anything is cloned.
+and name the Go id in the ladder. The Go endpoint requires an
+`x-opencode-session` header for routing; the broker forwards the job's own value
+and supplies the job id when a custom OpenAI-compatible client omits it, so the
+coding agent does not fail with `MissingSessionID`. A local model works as well:
+point the URL at the host and the model at the local id, and leave the key empty;
+no key is required for a local endpoint, and a remote one without a key is
+refused before anything is cloned.
 
 `JARVIS_SANDBOX_MODELS` is a **fallback ladder**, not a single id:
 `big-pickle,deepseek-v4.1-flash@400k` starts on the free model and moves to

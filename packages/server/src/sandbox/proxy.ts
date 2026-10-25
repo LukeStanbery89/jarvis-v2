@@ -66,6 +66,9 @@ const FORWARDED_HEADERS = [
     "accept",
     "content-type",
     "user-agent",
+    // OpenCode Go routes on this header; a custom OpenAI-compatible client may
+    // omit it, so the broker fills the job id in when it is absent. The Console
+    // endpoint ignores it.
     "x-opencode-session",
 ] as const;
 
@@ -361,6 +364,13 @@ export function createSandboxProxy(options: SandboxProxyOptions): SandboxProxy {
             if (typeof value === "string" && value.length > 0) {
                 headers[name] = value;
             }
+        }
+        // The Go endpoint refuses a request without a session id. A client
+        // that does not send one (the job's custom OpenAI-compatible provider)
+        // still gets routed on the job id, which is stable for the run and
+        // distinct from every other job.
+        if (headers["x-opencode-session"] === undefined) {
+            headers["x-opencode-session"] = jobId;
         }
         if (options.apiKey.length > 0) {
             headers.authorization = `Bearer ${options.apiKey}`;
