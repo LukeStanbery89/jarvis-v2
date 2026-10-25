@@ -136,6 +136,37 @@ describe("createApi prefs", () => {
     });
 });
 
+describe("createApi weather", () => {
+    it("sends the coordinates and Bearer token for the current conditions", async () => {
+        const { fetch, calls } = fetchJson(200, {
+            location: { name: "Portland", country: "US" },
+            temp: 63,
+            feelsLike: 61,
+            description: "light rain",
+            condition: "Rain",
+            conditionId: 500,
+            windSpeed: 8,
+            windDeg: 200,
+            observedAt: 1_760_000_000,
+            timezoneOffsetSeconds: -25_200,
+            units: "imperial",
+        });
+        const weather = await createApi(fetch).getWeather(
+            "tok",
+            45.52,
+            -122.68,
+        );
+
+        expect(weather.location.name).toBe("Portland");
+        expect(weather.temp).toBe(63);
+        expect(calls[0].path).toBe("/api/weather?lat=45.52&lon=-122.68");
+        expect(calls[0].init.method).toBe("GET");
+        expect(
+            (calls[0].init.headers as Record<string, string>).authorization,
+        ).toBe("Bearer tok");
+    });
+});
+
 describe("createApi jobs", () => {
     it("asks for the settled rows too, in one bounded read", async () => {
         // The pages show pending and history from one call (see `useJobs`): the

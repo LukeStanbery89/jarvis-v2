@@ -19,6 +19,10 @@ import { createNotificationRouter } from "./notify/http";
 import type { NotificationAnswerHandler } from "./notify/http";
 import { createJobRouter } from "./scheduler/http";
 import { createCodingLogRouter, type CodingLogSource } from "./sandbox/http";
+import {
+    createWeatherRouter,
+    type WeatherRouteDeps,
+} from "./http/weatherRoutes";
 import type { JobCreator } from "./scheduler/create";
 import type { NotificationService } from "./notify/service";
 import type { AttachmentStore } from "./attachments/store";
@@ -106,6 +110,13 @@ export function createApp(
      * and the answer is only recorded.
      */
     onNotificationAnswer?: NotificationAnswerHandler,
+    /**
+     * Weather wiring for the dashboard widget (#186), present when
+     * `OPENWEATHER_API_KEY` is configured. The route is mounted either way so a
+     * page gets an honest 503 rather than a missing endpoint; the same
+     * provider/quota serves the `getWeather` tool.
+     */
+    weather?: WeatherRouteDeps,
 ) {
     const app = express();
 
@@ -223,6 +234,12 @@ export function createApp(
     if (codingLogs && appConfig.sandbox) {
         app.use("/api", createCodingLogRouter(store, codingLogs, appConfig));
     }
+
+    // The dashboard weather widget (#186): current conditions for the
+    // device-reported coordinates. Mounted even without a provider so the
+    // page can say "not configured" instead of treating a missing endpoint as
+    // a network failure; the provider/quota is the same one the tool uses.
+    app.use("/api", createWeatherRouter(store, appConfig, weather));
 
     // The local STT model route (#84 P3b): the client-side WASM engine's
     // archive, cached download-once under ~/.jarvis/stt when configured and

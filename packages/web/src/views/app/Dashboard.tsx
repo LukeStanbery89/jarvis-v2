@@ -1,10 +1,12 @@
 /**
- * The dashboard at `/` (#90 phase 6b): the clock, the work coming up, and what
- * is waiting to be read.
+ * The dashboard at `/` (#90 phase 6b): the clock and weather, the work coming
+ * up, and what is waiting to be read.
  *
  * The clock ticks **here** rather than in the shell: a 1 Hz state change in the
  * composition root would re-render the whole app every second, and keeping the
- * tick in the leaf is the whole reason the shell exists as a boundary.
+ * tick in the leaf is the whole reason the shell exists as a boundary. The
+ * weather widget sits beside it (#186) and reads the shell's location fix; it
+ * never requests a second permission of its own.
  *
  * Coming up is the same individual job widget the Timers and Reminders pages
  * use (`JobRow`), not the old compact one-line list inside a card: the dashboard
@@ -19,10 +21,12 @@ import { upcomingJobs } from "../../jobs";
 import { snoozeReminder } from "../../snooze";
 import { useClock } from "../../hooks/useClock";
 import { useJobPage } from "../../hooks/useJobPage";
+import type { UseLocationSharingResult } from "../../hooks/useLocationSharing";
 import type { JobsState } from "../../hooks/useJobs";
 import type { NotificationsState } from "../../hooks/useNotifications";
 import { JobForm } from "./JobForm";
 import { JobRow } from "./JobRow";
+import { WeatherWidget } from "./WeatherWidget";
 
 /** How many jobs "coming up" lists before the pages take over. */
 const UPCOMING_LIMIT = 5;
@@ -39,6 +43,8 @@ export interface DashboardProps {
     token: string;
     /** Notifications neither read nor dismissed. */
     unread: number;
+    /** The shell's location share, for the weather widget (#186). */
+    location: UseLocationSharingResult;
 }
 
 /**
@@ -52,6 +58,7 @@ export function Dashboard({
     notifications,
     token,
     unread,
+    location,
 }: DashboardProps) {
     const now = useClock();
     const page = useJobPage();
@@ -59,18 +66,21 @@ export function Dashboard({
     const at = clockParts(now);
     return (
         <main className="dashboard">
-            <header className="dashboard-head">
-                {/* The colon is its own span so it can blink (#90 phase 6b) —
-                    the classic clock face, and the reason this is drawn from
-                    `clockParts` rather than the joined string. */}
-                <p className="dashboard-time">
-                    {at.hour}
-                    <span className="clock-colon">:</span>
-                    {at.minute} {at.suffix}
-                </p>
-                <p className="dashboard-date">{formatDate(now)}</p>
-                <p className="dashboard-account">{username}</p>
-            </header>
+            <div className="dashboard-top">
+                <header className="dashboard-head">
+                    {/* The colon is its own span so it can blink (#90 phase 6b) —
+                        the classic clock face, and the reason this is drawn from
+                        `clockParts` rather than the joined string. */}
+                    <p className="dashboard-time">
+                        {at.hour}
+                        <span className="clock-colon">:</span>
+                        {at.minute} {at.suffix}
+                    </p>
+                    <p className="dashboard-date">{formatDate(now)}</p>
+                    <p className="dashboard-account">{username}</p>
+                </header>
+                <WeatherWidget token={token} location={location} />
+            </div>
             <section
                 className="dashboard-coming"
                 aria-labelledby="dashboard-upcoming"

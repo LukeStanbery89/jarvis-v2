@@ -1,5 +1,5 @@
 /**
- * Browser geolocation plumbing for the weather tool (#31).
+ * Browser geolocation plumbing for the weather tool and dashboard (#31, #186).
  *
  * Everything here is deliberately framework-free and DOM-thin so the
  * node-env vitest suite can drive the full decision tree with fakes (the
@@ -9,10 +9,11 @@
  * The flow is automatic (#31): on mount, a supported document requests a
  * position and ships it as a `location` frame; the browser's own permission
  * prompt is the consent gate, and the sidebar pin is the visible opt-out
- * (persisted in localStorage). A secure context is the hard floor —
- * `navigator.geolocation` exists only on HTTPS or localhost, so over plain
- * HTTP the pin reports "unsupported" and the server-side tool falls back to
- * asking for a city.
+ * (persisted in localStorage). The dashboard widget reads the same fix through
+ * `useLocationSharing` rather than asking again (#186). A secure context is the
+ * hard floor — `navigator.geolocation` exists only on HTTPS or localhost, so
+ * over plain HTTP the pin reports "unsupported" and the server-side tool falls
+ * back to asking for a city.
  *
  * Coordinates are rounded to four decimals (~11 m) before anything leaves
  * the device: weather does not need GPS-grade precision, and the browser is

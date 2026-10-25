@@ -2853,6 +2853,15 @@ textarea::placeholder {
     padding: 2.5rem 1.25rem;
 }
 
+/* The clock and the weather widget share the top row (#186): the clock is the
+   page's anchor, and the widget answers the one question a front door should
+   answer without a click. They stack under the wide-screen breakpoint. */
+.dashboard-top {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
 /* Coming up is a stack of the same individual panes the list pages show, not a
    card wrapping a compact list (#177 follow-up). */
 .dashboard-coming {
@@ -2868,6 +2877,16 @@ textarea::placeholder {
 @media (min-width: 64rem) {
     .dashboard {
         max-width: 72rem;
+    }
+
+    /* Weather to the right of the clock (#186). Equal columns rather than a
+       fixed widget width so the clock keeps its breathing room and the card
+       grows with the page. */
+    .dashboard-top {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1.25rem;
+        align-items: start;
     }
 
     .dashboard-jobs {
@@ -2952,6 +2971,155 @@ textarea::placeholder {
     font-size: 0.85rem;
 }
 
+/* The weather widget (#186): a reading, not a dashboard of its own. The
+   graphic carries the condition at a glance; the temperature is the one number
+   allowed to lead, and the rest explains it. */
+.weather-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+/* The heading is the card's label; the place is the fact that belongs at the
+   far edge, where a glance finds it without reading the reading (#186). */
+.weather-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+}
+
+/* Wins over `.dashboard-card h2` (same element, later rule, higher
+   specificity): the head owns the spacing between its two lines. */
+.weather-card .weather-head h2 {
+    margin: 0;
+}
+
+.weather-place {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.82rem;
+}
+
+/* Temperature and condition lead on the left; feels-like and wind sit beside
+   them rather than stacking under the number (#186). */
+.weather-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem 1rem;
+}
+
+.weather-primary {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.weather-details {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+}
+
+.weather-main {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    min-height: 4.2rem;
+}
+
+.weather-glyph {
+    flex: none;
+    color: var(--primary);
+}
+
+.weather-glyph-clear-night,
+.weather-glyph-partly-night {
+    color: var(--primary-dim);
+}
+
+.weather-temp {
+    margin: 0;
+    font-size: 3rem;
+    font-weight: 600;
+    line-height: 0.95;
+    letter-spacing: -0.03em;
+}
+
+.weather-unit {
+    margin-left: 0.15rem;
+    font-size: 1.15rem;
+    font-weight: 500;
+    color: var(--primary-dim);
+}
+
+.weather-feels {
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.86rem;
+}
+
+.weather-condition {
+    margin: 0.25rem 0 0;
+    color: var(--primary);
+    font-size: 1rem;
+}
+
+.weather-wind {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+    color: var(--primary-dim);
+    font-size: 0.84rem;
+}
+
+.weather-note,
+.weather-error {
+    margin: 0;
+    font-size: 0.86rem;
+    line-height: 1.4;
+}
+
+.weather-note {
+    color: var(--primary-dim);
+}
+
+.weather-error {
+    color: var(--error);
+}
+
+.weather-prompt {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+}
+
+.weather-action {
+    min-height: 2.5rem;
+    padding: 0.4rem 0.9rem;
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--primary);
+    background: transparent;
+    border: 1px solid var(--primary-border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.weather-action:hover {
+    background: var(--primary-wash);
+    border-color: var(--primary);
+}
+
 .dashboard-card {
     padding: 0.9rem 1rem;
     background: var(--primary-wash);
@@ -3020,6 +3188,7 @@ textarea::placeholder {
     .job-actions button,
     .snooze-options button,
     .job-form-actions button,
+    .weather-action,
     .settings-signout,
     .new-chat {
         min-height: 2.75rem;

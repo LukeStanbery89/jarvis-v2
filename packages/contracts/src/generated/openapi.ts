@@ -296,6 +296,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/weather": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current weather for device coordinates
+         * @description The dashboard widget's current conditions for the device's reported location. The browser obtains the position through its own geolocation permission prompt, rounds it, and sends the coordinates here; the server calls the configured OpenWeather provider. Metered per user through the same budget as the `getWeather` tool. A deployment without `OPENWEATHER_API_KEY` answers 503.
+         */
+        get: operations["weatherNow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions": {
         parameters: {
             query?: never;
@@ -616,6 +636,42 @@ export interface components {
         /** @description User-safe error envelope returned by the JSON error handler. */
         Error: {
             error: string;
+        };
+        /** @description Current conditions for the dashboard widget (#186), normalized from the configured provider. */
+        WeatherNow: {
+            location: {
+                /** @description The provider's resolved place name. */
+                name: string;
+                /** @description ISO 3166 country code, when reported. */
+                country?: string;
+            };
+            /** @description Current temperature in `units`. */
+            temp: number;
+            /** @description Perceived temperature in `units`. */
+            feelsLike: number;
+            /** @description Human-readable condition ("light rain"). */
+            description: string;
+            /** @description Grouped condition ("Rain", "Clouds"). */
+            condition: string;
+            /** @description OpenWeather's numeric condition code, for the widget's condition graphic. */
+            conditionId?: number;
+            /** @description Wind speed in mph under imperial, m/s under metric. */
+            windSpeed: number;
+            /** @description Wind direction in degrees, when reported. */
+            windDeg?: number;
+            /** @description Unix (UTC) seconds of the observation. */
+            observedAt: number;
+            /** @description The location's UTC offset in seconds. */
+            timezoneOffsetSeconds: number;
+            /** @description Unix (UTC) seconds of sunrise, when reported. */
+            sunrise?: number;
+            /** @description Unix (UTC) seconds of sunset, when reported. */
+            sunset?: number;
+            /**
+             * @description The unit system used by the numeric fields.
+             * @enum {string}
+             */
+            units: "imperial" | "metric";
         };
         /** @description Public account row as exposed by the `/api` routes. */
         User: {
@@ -2167,6 +2223,78 @@ export interface operations {
             };
             /** @description Missing or invalid `x-csrf-token` for a cookie-authenticated request. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    weatherNow: {
+        parameters: {
+            query: {
+                /** @description Latitude in decimal degrees (-90 to 90). */
+                lat: number;
+                /** @description Longitude in decimal degrees (-180 to 180). */
+                lon: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current conditions at the supplied coordinates. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WeatherNow"];
+                };
+            };
+            /** @description Missing, non-numeric, or out-of-range `lat`/`lon`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The caller's weather budget is exhausted; the `Retry-After` header says when it renews. */
+            429: {
+                headers: {
+                    /** @description Seconds until the budget renews. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The weather provider failed or returned an unusable answer. The body is generic; provider internals stay in the server log. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Weather is not configured on this server (no `OPENWEATHER_API_KEY`). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

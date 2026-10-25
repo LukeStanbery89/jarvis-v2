@@ -38,29 +38,36 @@ validate representative real frames against each message payload.
 
 ## REST spec inventory (`spec/openapi.yaml`)
 
-31 operations covering `GET /health`, the 30 `/api` management routes, and the
-`POST /api/attachments` upload route (#10). The management routes mirror the
-handlers in `packages/server/src/http/authRoutes.ts`; the attachment route is
-owned by `packages/server/src/http/attachmentRoutes.ts`:
+39 operations: `GET /health` and 38 routes under `/api` (account management,
+notifications, scheduled jobs, coding jobs, weather, the attachment upload, and
+the public model-file routes). The management routes mirror the handlers in
+`packages/server/src/http/authRoutes.ts`; the attachment route is owned by
+`packages/server/src/http/attachmentRoutes.ts`:
 
-| Tag              | Operations (operationId)                                                               |
-| ---------------- | -------------------------------------------------------------------------------------- |
-| `Health`         | `GET /health` (`healthCheck`)                                                          |
-| `Attachments`    | `POST /api/attachments` (`attachmentUpload`)                                           |
-| `Bootstrap`      | `POST /api/bootstrap` (`bootstrap`)                                                    |
-| `Authentication` | `POST /api/auth/login` (`authLogin`), `POST /api/session` (`sessionLogin`)             |
-| `Session`        | `GET`/`DELETE /api/session` (`sessionGet`/`sessionLogout`)                             |
-| `Account`        | `GET /api/me` (`meGet`)                                                                |
-| `Devices`        | `POST /api/devices`, `PATCH`/`DELETE /api/devices/{id}`, `GET /api/users/{id}/devices` |
-| `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                       |
-| `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`            |
-| `ChatSessions`   | `GET /api/sessions`, `DELETE /api/sessions/{threadId}`                                 |
-| `Notifications`  | `GET`/`POST /api/notifications`, `POST /api/notifications/{id}/{read,dismiss,answer}`  |
+| Tag              | Operations (operationId)                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| `Health`         | `GET /health` (`healthCheck`)                                                               |
+| `Attachments`    | `POST /api/attachments` (`attachmentUpload`)                                                |
+| `Bootstrap`      | `POST /api/bootstrap` (`bootstrap`)                                                         |
+| `Authentication` | `POST /api/auth/login` (`authLogin`), `POST /api/session` (`sessionLogin`)                  |
+| `Session`        | `GET`/`DELETE /api/session` (`sessionGet`/`sessionLogout`)                                  |
+| `Account`        | `GET /api/me` (`meGet`)                                                                     |
+| `Devices`        | `POST /api/devices`, `PATCH`/`DELETE /api/devices/{id}`, `GET /api/users/{id}/devices`      |
+| `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                            |
+| `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`                 |
+| `Weather`        | `GET /api/weather` (`weatherNow`)                                                           |
+| `ChatSessions`   | `GET /api/sessions`, `DELETE /api/sessions/{threadId}`                                      |
+| `Notifications`  | `GET`/`POST /api/notifications`, `POST /api/notifications/{id}/{read,dismiss,answer}`       |
+| `Jobs`           | `GET`/`POST /api/jobs`, `GET`/`PATCH`/`DELETE /api/jobs/{id}`, `POST /api/jobs/{id}/snooze` |
+| `CodingJobs`     | `GET /api/coding-jobs/{id}/logs`, `GET /api/coding-jobs/{id}/questions`                     |
+| `Stt`            | `GET /api/stt/model` (`sttModelGet`)                                                        |
+| `Wake`           | `GET /api/wake/model/{file}` (`wakeModelGet`)                                               |
 
 Key shapes in `components.schemas`: `User`, `Device` (nullable `lastSeenAt`),
 `IssuedDevice` (one-time `token`), `AuthResult` (shared by bootstrap + device
 login), `Session` (optional `csrfToken` for cookie vs bearer), `SessionLogin`,
-`MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `Error`, plus the
+`MeResult`, `SessionSummary` (nullable `userId`), `Prefs`, `WeatherNow` (the
+dashboard widget's normalized reading), `Error`, plus the
 attachment trio (`AttachmentUpload` with its deliberate no-`pattern` base64
 field, `AttachmentCreated`, `AttachmentTooLarge`), and the notification set
 (`NotificationInput`, `Notification`, `NotificationList`,

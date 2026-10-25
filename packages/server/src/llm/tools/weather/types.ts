@@ -38,6 +38,13 @@ export interface CurrentConditions {
     description: string;
     /** Grouped condition ("Rain", "Snow", "Clouds") for coarse logic. */
     condition: string;
+    /**
+     * OpenWeather's numeric condition code (`500` for light rain, `800` for a
+     * clear sky), when the provider reports one. The dashboard widget uses it
+     * to choose a condition graphic without parsing the description; absent
+     * for a provider that has no code, which falls back to the text.
+     */
+    conditionId?: number;
     /** Relative humidity, percent. */
     humidity: number;
     /** Wind speed — mph under imperial, m/s under metric. */
@@ -56,6 +63,15 @@ export interface CurrentConditions {
     observedAt: number;
     /** The location's UTC offset in seconds, for local display times. */
     timezoneOffsetSeconds: number;
+    /**
+     * Unix (UTC) seconds of sunrise at the location, when the provider
+     * reports it. Paired with {@link sunset}, this is how the dashboard knows
+     * whether to draw a sun or a moon; when either is absent it falls back to
+     * the observation's local clock.
+     */
+    sunrise?: number;
+    /** Unix (UTC) seconds of sunset, when the provider reports it. */
+    sunset?: number;
 }
 
 /** One aggregated forecast day (the provider's 3-hour steps, folded). */

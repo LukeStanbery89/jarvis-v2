@@ -100,6 +100,7 @@ describe("openweather current", () => {
             feelsLike: 61,
             description: "light rain",
             condition: "Rain",
+            conditionId: 500,
             humidity: 78,
             windSpeed: 8,
             windDeg: 200,
@@ -147,6 +148,27 @@ describe("openweather current", () => {
         expect(result.windDeg).toBeUndefined();
         expect(result.cloudCover).toBeUndefined();
         expect(result.country).toBeUndefined();
+        expect(result.conditionId).toBeUndefined();
+        expect(result.sunrise).toBeUndefined();
+        expect(result.sunset).toBeUndefined();
+    });
+
+    it("keeps the condition code and the sun times when the provider sends them", async () => {
+        const { fetch } = mockJsonFetch({
+            body: {
+                ...CURRENT_BODY,
+                sys: {
+                    country: "US",
+                    sunrise: 1_760_002_400,
+                    sunset: 1_760_040_000,
+                },
+            },
+        });
+        const client = createOpenWeatherClient({ ...OPTS, fetchImpl: fetch });
+        const result = await client.current({ query: "X" });
+        expect(result.conditionId).toBe(500);
+        expect(result.sunrise).toBe(1_760_002_400);
+        expect(result.sunset).toBe(1_760_040_000);
     });
 
     it("sums rain and snow into one precipitation figure", async () => {

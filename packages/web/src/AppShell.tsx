@@ -468,6 +468,7 @@ export function AppShell({
                     notifications={notifications}
                     token={credential.token}
                     unread={notifications.unread}
+                    location={location}
                 />
             );
         }

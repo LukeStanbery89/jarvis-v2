@@ -124,7 +124,11 @@ async function httpReason(response: Response, apiKey: string): Promise<string> {
 function normalizeCurrent(raw: unknown): CurrentConditions {
     const body = raw as {
         name?: unknown;
-        sys?: { country?: unknown };
+        sys?: {
+            country?: unknown;
+            sunrise?: unknown;
+            sunset?: unknown;
+        };
         main?: { temp?: unknown; feels_like?: unknown; humidity?: unknown };
         weather?: unknown;
         wind?: { speed?: unknown; deg?: unknown };
@@ -140,6 +144,7 @@ function normalizeCurrent(raw: unknown): CurrentConditions {
     }
     const weather = Array.isArray(body.weather) ? body.weather : [];
     const first = (weather[0] ?? {}) as {
+        id?: unknown;
         main?: unknown;
         description?: unknown;
     };
@@ -147,6 +152,7 @@ function normalizeCurrent(raw: unknown): CurrentConditions {
     if (description === "") {
         throw new WeatherError("openweather response missing condition text");
     }
+    const conditionId = asNumber(first.id);
     const name = asString(body.name);
     if (name === "") {
         throw new WeatherError("openweather response missing location name");
@@ -159,6 +165,8 @@ function normalizeCurrent(raw: unknown): CurrentConditions {
     }
     const windDeg = asNumber(body.wind?.deg);
     const cloudCover = asNumber(body.clouds?.all);
+    const sunrise = asNumber(body.sys?.sunrise);
+    const sunset = asNumber(body.sys?.sunset);
     return {
         provider: "openweather",
         name,
@@ -167,6 +175,7 @@ function normalizeCurrent(raw: unknown): CurrentConditions {
         feelsLike: asNumber(body.main?.feels_like),
         description,
         condition: asString(first.main) || description,
+        ...(Number.isNaN(conditionId) ? {} : { conditionId }),
         humidity: asNumber(body.main?.humidity),
         windSpeed,
         windDeg: Number.isNaN(windDeg) ? undefined : windDeg,
@@ -178,6 +187,8 @@ function normalizeCurrent(raw: unknown): CurrentConditions {
                   (Number.isNaN(snow) ? 0 : snow),
         observedAt: asNumber(body.dt),
         timezoneOffsetSeconds: asNumber(body.timezone),
+        ...(Number.isNaN(sunrise) ? {} : { sunrise }),
+        ...(Number.isNaN(sunset) ? {} : { sunset }),
     };
 }
 
