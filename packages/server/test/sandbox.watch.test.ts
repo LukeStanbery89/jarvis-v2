@@ -15,6 +15,7 @@ import type {
     PullRequestSnapshot,
 } from "../src/github/client";
 import type { CodingJobService } from "../src/sandbox/service";
+import { logger } from "../src/logger";
 import { startCodingWatch } from "../src/sandbox/watch";
 
 const START = "2026-10-19T12:00:00.000Z";
@@ -135,6 +136,12 @@ function makeWatch(
         done: Promise.resolve(),
     }));
     const stop = vi.fn(async () => job({ state: "cancelled" }));
+    const prs = [...(options.prs ?? [])];
+    const terminalPrs = new Set<string>();
+    const markPrTerminal = vi.fn((url: string) => {
+        terminalPrs.add(url);
+        return prs.filter((entry) => entry.prUrl === url).length;
+    });
     const github = {
         botLogin: vi.fn(async () => "jarvis[bot]"),
         readIssueComments: vi.fn(
@@ -157,7 +164,13 @@ function makeWatch(
     } as unknown as Pick<CodingJobService, "resume" | "start" | "stop">;
     const ledger = {
         listAwaitingCodingJobs: () => options.awaiting ?? [],
-        listCodingJobsWithPr: () => options.prs ?? [],
+        // Mirror the store: a terminal PR is no longer a candidate.
+        listCodingJobsWithPr: () =>
+            prs.filter(
+                (entry) =>
+                    entry.prUrl !== null && !terminalPrs.has(entry.prUrl),
+            ),
+        markCodingJobsWithPrTerminal: markPrTerminal,
     };
     const watch = startCodingWatch({
         ledger,
@@ -165,16 +178,34 @@ function makeWatch(
         service,
         intervalMs: 300_000,
     });
-    return { watch, resume, start, stop, github };
+    return {
+        watch,
+        resume,
+        start,
+        stop,
+        github,
+        markPrTerminal,
+        prs,
+    };
 }
 
-/** Runs one tick and always stops the timers. */
-async function tick(fixture: ReturnType<typeof makeWatch>): Promise<void> {
+/** Runs a given number of passes and always stops the timers. */
+async function ticks(
+    fixture: ReturnType<typeof makeWatch>,
+    passes = 1,
+): Promise<void> {
     try {
-        await fixture.watch.tick();
+        for (let pass = 0; pass < passes; pass += 1) {
+            await fixture.watch.tick();
+        }
     } finally {
         fixture.watch.stop();
     }
+}
+
+/** Runs one tick. */
+async function tick(fixture: ReturnType<typeof makeWatch>): Promise<void> {
+    await ticks(fixture);
 }
 
 describe("coding watch", () => {
@@ -491,6 +522,85 @@ describe("coding watch", () => {
 
         await tick(fixture);
 
+        expect(fixture.start).not.toHaveBeenCalled();
+        expect(fixture.markPrTerminal).toHaveBeenCalledWith(
+            "https://github.com/luke/app/pull/9",
+            "merged",
+        );
+    });
+
+    it("reads a terminal pull request once, then drops it from the feed", async () => {
+        const fixture = makeWatch({
+            prs: [
+                job({
+                    prUrl: "https://github.com/luke/app/pull/9",
+                    lastSeenCommentId: 5,
+                }),
+            ],
+            pull: { ...pull([comment(6, "One more thing.")]), state: "closed" },
+        });
+
+        await ticks(fixture, 2);
+
+        expect(fixture.github.readPullRequest).toHaveBeenCalledTimes(1);
+        expect(fixture.start).not.toHaveBeenCalled();
+    });
+
+    it("stops a pass at the first rate limit instead of failing every PR", async () => {
+        const fixture = makeWatch({
+            prs: [
+                job({
+                    id: "pr-9",
+                    prUrl: "https://github.com/luke/app/pull/9",
+                }),
+                job({
+                    id: "pr-10",
+                    prUrl: "https://github.com/luke/app/pull/10",
+                }),
+            ],
+        });
+        fixture.github.readPullRequest.mockRejectedValueOnce(
+            new Error(
+                "GitHub /repos/luke/app/pulls/9 failed: 403 API rate limit exceeded for installation ID 1.",
+            ),
+        );
+        const warn = vi
+            .spyOn(logger, "warn")
+            .mockImplementation(() => undefined);
+        let warnings: string[] = [];
+
+        try {
+            await tick(fixture);
+            // `mockRestore` clears the call list, so copy it before cleanup.
+            warnings = warn.mock.calls.map(([message]) => String(message));
+        } finally {
+            warn.mockRestore();
+        }
+
+        expect(fixture.github.readPullRequest).toHaveBeenCalledTimes(1);
+        expect(fixture.start).not.toHaveBeenCalled();
+        expect(
+            warnings.filter((message) => message.includes("rate limit")),
+        ).toHaveLength(1);
+    });
+
+    it("tries again on the next pass after a rate limit", async () => {
+        const fixture = makeWatch({
+            prs: [
+                job({
+                    prUrl: "https://github.com/luke/app/pull/9",
+                }),
+            ],
+        });
+        fixture.github.readPullRequest.mockRejectedValueOnce(
+            new Error(
+                "GitHub /repos/luke/app/pulls/9 failed: 403 API rate limit exceeded for installation ID 1.",
+            ),
+        );
+
+        await ticks(fixture, 2);
+
+        expect(fixture.github.readPullRequest).toHaveBeenCalledTimes(2);
         expect(fixture.start).not.toHaveBeenCalled();
     });
 

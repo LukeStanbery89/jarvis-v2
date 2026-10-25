@@ -496,6 +496,34 @@ describe("waiting for answers (#94)", () => {
         ]);
     });
 
+    it("drops every row for a terminal pull request from the watcher feed", () => {
+        const { store, ownerId } = makeStore();
+        const prUrl = "https://github.com/luke/app/pull/9";
+        store.createCodingJob(ownerId, {
+            ...codingJob({ id: "first" }),
+            prUrl,
+        });
+        store.createCodingJob(ownerId, {
+            ...codingJob({ id: "second" }),
+            prUrl,
+        });
+        store.createCodingJob(ownerId, {
+            ...codingJob({ id: "other" }),
+            prUrl: "https://github.com/luke/app/pull/10",
+        });
+
+        expect(store.markCodingJobsWithPrTerminal(prUrl, "merged")).toBe(2);
+        expect(store.listCodingJobsWithPr(10).map((job) => job.id)).toEqual([
+            "other",
+        ]);
+
+        // The observation is idempotent: a duplicate tick does not rewrite it.
+        expect(store.markCodingJobsWithPrTerminal(prUrl, "closed")).toBe(0);
+        expect(store.listCodingJobsWithPr(10).map((job) => job.id)).toEqual([
+            "other",
+        ]);
+    });
+
     it("records the issue and the watermark at creation", () => {
         const { store, ownerId } = makeStore();
         const created = store.createCodingJob(ownerId, {
@@ -564,6 +592,13 @@ describe("v19 migration", () => {
                 plan: null,
                 lastSeenCommentId: null,
             });
+            // v23's terminal-PR memory exists on the migrated table too.
+            expect(
+                migrated.markCodingJobsWithPrTerminal(
+                    "https://github.com/luke/app/pull/9",
+                    "closed",
+                ),
+            ).toBe(0);
 
             // The new state is accepted on the rebuilt table.
             const job = migrated.createCodingJob(owner.id, {

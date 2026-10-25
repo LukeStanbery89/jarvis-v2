@@ -101,8 +101,12 @@ only the surface they call:
   `createCodingJob` / `getCodingJob` / `listCodingJobs` / `cancelCodingJob` /
   `pruneCodingJobs`, plus a **process-scoped** half
   (`getCodingJobById` / `listRunningCodingJobs` / `listAwaitingCodingJobs` /
-  `listCodingJobsWithPr` / `claimCodingJob` / `settleCodingJob` /
-  `setCodingJobLogTail`) that no request handler reaches. The SDLC half
+  `listCodingJobsWithPr` / `markCodingJobsWithPrTerminal` / `claimCodingJob` /
+  `settleCodingJob` / `setCodingJobLogTail`) that no request handler reaches.
+  `listCodingJobsWithPr` omits a URL once `pr_state` records it as closed or
+  merged; `markCodingJobsWithPrTerminal` writes that observation across every
+  row for the URL, so the watch reads a terminal PR once rather than on every
+  tick (#192). The SDLC half
   (#94) adds `awaitCodingJob` (`running` → `awaiting-answer`) and
   `reopenCodingJob` (`awaiting-answer` → `queued`); the reopen is the claim,
   so the chat tool and the poller cannot start two runs from one answer.
@@ -260,7 +264,7 @@ router and middleware span every ledger and therefore take the full
   runs out of the chat-thread list.
 - `coding_jobs` — one row per coding-agent job (#141, v17; `model` in v18;
   `awaiting-answer` and the SDLC columns in v19; `session_id` and
-  `questions_json` in v20 — #94), deliberately not a
+  `questions_json` in v20 — #94; `pr_state` in v23 — #192), deliberately not a
   `kind` on `jobs`: a scheduled job is a moment the scheduler fires and settles,
   while a coding job is a workspace, a container and a branch whose lifecycle
   outlives the process watching it. Columns: `repo` / `branch` / `prompt` (the
@@ -275,8 +279,9 @@ router and middleware span every ledger and therefore take the full
   `last_seen_comment_id` (the SDLC loop: where the questions were posted, what
   the agent planned, and the newest comment accounted for), `container_id`
   (written at claim time — `resume` needs it after a crash), `workspace_path`,
-  `log_tail`, `diff_summary`, `pr_url`, `attempts`, `last_error`, and
-  `created_at`/`started_at`/`finished_at`. Indexed on `(user_id, created_at
+  `log_tail`, `diff_summary`, `pr_url`, `pr_state` (the terminal
+  `closed`/`merged` observation that retires a URL from the watch feed),
+  `attempts`, `last_error`, and `created_at`/`started_at`/`finished_at`. Indexed on `(user_id, created_at
 DESC)` for the owner's list and on `(state) WHERE state = 'running'` — the
   recovery feed, which only ever scans work in flight. `pruneCodingJobs` keeps
   the newest _settled_ rows, so a run in flight never counts against a user's
