@@ -3,6 +3,7 @@ import {
     AIMessage,
     AIMessageChunk,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
     type BaseMessage,
 } from "@langchain/core/messages";
@@ -417,6 +418,40 @@ describe("createAgentGraph", () => {
         expect(state[3].content).toBe("second prompt");
     });
 
+    it("starts the next prompt with a user turn after a tool-only clock turn", async () => {
+        const model = new ScriptedChatModel([
+            TOOL_CALL,
+            new AIMessage({ content: "" }),
+            new AIMessage({ content: "Taylor Swift is 36." }),
+        ]);
+        const graph = buildGraph(model);
+        await collect(
+            streamAgentTurn(graph, "What time is it?", "t-tool-only", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+        await collect(
+            streamAgentTurn(graph, "How old is Taylor Swift?", "t-tool-only", {
+                systemPrompt: SYSTEM_PROMPT,
+                recursionLimit: 10,
+            }),
+        );
+
+        const secondTurn = model.callInputs[2] ?? [];
+        expect(secondTurn[0]?._getType()).toBe("system");
+        expect(secondTurn[1]?._getType()).toBe("human");
+        expect(secondTurn[1]?.content).toBe("How old is Taylor Swift?");
+        expect(
+            secondTurn.some(
+                (message) =>
+                    message._getType() === "ai" &&
+                    typeof message.content === "string" &&
+                    message.content.trim() === "",
+            ),
+        ).toBe(false);
+    });
+
     it("does not re-prime an active thread with the system prompt", async () => {
         const model = new ScriptedChatModel([
             new AIMessage({ content: "One" }),
@@ -634,6 +669,41 @@ describe("prunedClockHistory", () => {
         const pruned = prunedClockHistory(history);
         expect(pruned).toEqual([
             new AIMessage({ content: "Unrelated reply." }),
+        ]);
+    });
+
+    it("drops the empty assistant ending a tool-only clock turn", () => {
+        const history: BaseMessage[] = [
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-1",
+                        name: "getCurrentTime",
+                        args: { question: "What time is it?" },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content: "7:17 PM",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+            }),
+            new AIMessage({ content: "" }),
+        ];
+        expect(prunedClockHistory(history)).toEqual([]);
+    });
+
+    it("repairs a history that already starts with an empty assistant", () => {
+        const system = new SystemMessage("System prompt.");
+        const history: BaseMessage[] = [
+            system,
+            new AIMessage({ content: "" }),
+            new HumanMessage("How old is Taylor Swift?"),
+        ];
+        expect(prunedClockHistory(history)).toEqual([
+            system,
+            new HumanMessage("How old is Taylor Swift?"),
         ]);
     });
 

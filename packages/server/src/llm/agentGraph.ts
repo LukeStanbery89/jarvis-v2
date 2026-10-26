@@ -236,11 +236,20 @@ function hasToolCalls(message: BaseMessage): boolean {
  * embedding the timestamp). A final answer that was produced after chained
  * further tool calls is left standing — rare for a time-only ask, and not
  * worth mis-pruning unrelated turns for.
+ *
+ * Empty assistant messages are dropped as noise. A tool-only turn ends with
+ * one (the model wrote no prose), and pruning its clock exchange would
+ * otherwise leave an assistant message as the first non-system turn. Qwen's
+ * chat templates reject that shape with "No user query found in messages",
+ * even though the next human message is present (#193 follow-up).
  */
 export function prunedClockHistory(history: BaseMessage[]): BaseMessage[] {
     const pruned: BaseMessage[] = [];
     for (let i = 0; i < history.length; i += 1) {
         const message = history[i];
+        if (isEmptyAssistant(message)) {
+            continue;
+        }
         if (message._getType() === "tool") {
             const tool = message as ToolMessage;
             if (tool.name === "getCurrentTime") {
@@ -287,6 +296,24 @@ function isClockInvocation(
     const ai = candidate as AIMessage;
     return (ai.tool_calls ?? []).some(
         (call) => call.id === result.tool_call_id,
+    );
+}
+
+/**
+ * True when `candidate` is an assistant message with neither prose nor tool
+ * calls — the ending a model leaves after a tool-only turn. It carries no
+ * context and can break strict chat templates when pruning strands it at the
+ * front of a history, so {@link prunedClockHistory} drops it.
+ */
+function isEmptyAssistant(candidate: BaseMessage): boolean {
+    if (candidate._getType() !== "ai") {
+        return false;
+    }
+    const ai = candidate as AIMessage;
+    return (
+        (ai.tool_calls?.length ?? 0) === 0 &&
+        typeof ai.content === "string" &&
+        ai.content.trim().length === 0
     );
 }
 

@@ -95,6 +95,79 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  */
 const MAX_SEND_BUFFER_BYTES = 1_048_576;
 
+/**
+ * Tools whose result is an action confirmation rather than the answer.
+ *
+ * A tool-only turn needs a fallback because a small model can spend its whole
+ * output budget on the call and write no prose. For these tools the client's
+ * tool card already carries the outcome (a timer, a job list, a published
+ * branch), so the generic confirmation stays honest. Read-only tools are
+ * deliberately absent: their result is what the user asked for.
+ */
+const ACTION_TOOL_NAMES = new Set([
+    "setTimer",
+    "remindMe",
+    "scheduleTask",
+    "schedulePrompt",
+    "listJobs",
+    "cancelJob",
+    "snoozeReminder",
+    "sendNotification",
+    "startCodingJob",
+    "cancelCodingJob",
+    "resumeCodingJob",
+    "createGitHubIssue",
+    "commentOnGitHub",
+    "homeAssistant",
+]);
+
+/** The Home Assistant actions that only read the house (#15). */
+const HOME_ASSISTANT_READ_ACTIONS = new Set([
+    "list",
+    "lights",
+    "switches",
+    "get",
+]);
+
+/**
+ * The answer to surface when a tool-only turn produced no prose.
+ *
+ * The model normally writes a sentence after a tool result. When it does not,
+ * an informational result is already the answer (`getCurrentTime` → `3:26 PM`)
+ * and must not be replaced by a generic "done" line. Action results keep the
+ * generic confirmation, as do non-string or empty payloads.
+ *
+ * @param name - The tool that produced the result.
+ * @param args - The call's arguments, needed to tell a Home Assistant read from
+ *   a write because one tool owns both.
+ * @param output - The result the tool returned.
+ * @returns The user-facing text, or `null` when the generic fallback belongs.
+ */
+function informationalToolText(
+    name: string,
+    args: unknown,
+    output: unknown,
+): string | null {
+    if (typeof output !== "string" || output.trim().length === 0) {
+        return null;
+    }
+    if (name === "homeAssistant") {
+        const action =
+            typeof args === "object" && args !== null
+                ? (args as { action?: unknown }).action
+                : undefined;
+        if (
+            typeof action !== "string" ||
+            !HOME_ASSISTANT_READ_ACTIONS.has(action)
+        ) {
+            return null;
+        }
+    } else if (ACTION_TOOL_NAMES.has(name)) {
+        return null;
+    }
+    return output.trim();
+}
+
 /** Per-connection auth + guest-ledger state. */
 interface ConnectionState {
     /** Whether the socket's opening slot has been consumed (hello/auth/prompt). */
@@ -885,6 +958,10 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
     // lines) and so a turn that produced no prose at all is detectable.
     let responseText = "";
     let toolCallCount = 0;
+    /** The most recent argument set per tool, so a result can be classified. */
+    const toolArgs = new Map<string, unknown>();
+    /** Informational results, in call order, for a no-prose turn. */
+    const toolAnswers: string[] = [];
     // Time-to-first-audio decomposition (#83 phase 6, #89): first LLM
     // token, first queued segment, first PCM delivered — deltas against
     // the turn's start, logged once when the stream completes.
@@ -949,6 +1026,17 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
                     speaking?.push(event.text);
                 } else if (event.type === "tool") {
                     toolCallCount += 1;
+                    toolArgs.set(event.name, event.args);
+                } else if (event.type === "toolResult") {
+                    const answer = informationalToolText(
+                        event.name,
+                        toolArgs.get(event.name),
+                        event.output,
+                    );
+                    if (answer !== null && !toolAnswers.includes(answer)) {
+                        toolAnswers.push(answer);
+                    }
+                    toolArgs.delete(event.name);
                 }
                 sendFrame(socket, toServerFrame(event));
             }
@@ -991,11 +1079,14 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
         if (responseText.trim() === "") {
             if (toolCallCount > 0) {
                 // The tool calls are the turn's output; models often return no
-                // prose after a tool-only turn. The client already has the
-                // cards, so finish with a short confirmation rather than a
-                // misleading "empty response" error.
+                // prose after a tool-only turn. An informational result is the
+                // answer, so surface it rather than replacing it with "done";
+                // action tools keep the short confirmation because their card
+                // already carries the outcome.
                 const confirmation =
-                    "Done — the requested tool calls completed.";
+                    toolAnswers.length > 0
+                        ? toolAnswers.join("\n\n")
+                        : "Done — the requested tool calls completed.";
                 responseText = confirmation;
                 if (socket.readyState === WebSocket.OPEN) {
                     firstTokenAt ??= Date.now();
