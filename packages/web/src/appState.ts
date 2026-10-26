@@ -56,6 +56,14 @@ export interface AppState {
     /** Whether a turn — typed or spoken — is in flight. */
     turning: boolean;
     /**
+     * The conversation the in-flight turn belongs to, or `null` when idle.
+     *
+     * The chat scopes its thinking indicator with this id: one turn is in
+     * flight at a time, and switching threads must not make an unrelated
+     * transcript look busy.
+     */
+    turnSessionId: string | null;
+    /**
      * Runs one turn on the active thread (minting one when nothing is open).
      *
      * Owned by the shell because a voice turn can start on any page; the typed

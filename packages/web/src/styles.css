@@ -1052,6 +1052,74 @@ textarea::placeholder {
     font-weight: 600;
 }
 
+/* The wait before the first streamed token: an assistant bubble with a small
+   three-dot pulse. It disappears as soon as the reply has visible words, so it
+   never reads as a second, still-pending speaker. `prefers-reduced-motion`
+   below leaves the dots in place as a static ellipsis. */
+.msg.thinking {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    color: var(--primary-dim);
+}
+
+/* The dots are the visible indicator; this label is for the live region. */
+.thinking-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.thinking-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.22rem;
+    height: 0.8rem;
+}
+
+.thinking-dots span {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+    animation: thinking-dot 1.2s ease-in-out infinite;
+}
+
+.thinking-dots span:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.thinking-dots span:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes thinking-dot {
+    0%,
+    60%,
+    100% {
+        opacity: 0.35;
+        transform: translateY(0);
+    }
+
+    30% {
+        opacity: 1;
+        transform: translateY(-0.2rem);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .thinking-dots span {
+        animation: none;
+    }
+}
+
 /* A GFM table gets its own horizontal scroll region (#147 follow-up). The
    bubble keeps its normal width; the table keeps its natural column widths and
    pans instead of squeezing every cell into the measure. `white-space: nowrap`

@@ -122,8 +122,15 @@ export function AppShell({
         return () => window.removeEventListener("keydown", onKey);
     }, [threadsOpen]);
 
-    /** Whether a turn is in flight, typed or spoken (the composer's state). */
-    const [turning, setTurning] = useState(false);
+    /**
+     * The conversation whose turn is in flight, typed or spoken.
+     *
+     * The id (rather than a boolean) lets the chat scope its thinking indicator
+     * to the right thread; `turning` below is the composer/sidebar view of the
+     * same fact.
+     */
+    const [turnSessionId, setTurnSessionId] = useState<string | null>(null);
+    const turning = turnSessionId !== null;
     /** Whether the settings panel is showing (the Settings item owns it now). */
     const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -355,11 +362,11 @@ export function AppShell({
             at: Date.now(),
             ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
         });
-        setTurning(true);
+        setTurnSessionId(sessionId);
         try {
             await socket.client?.prompt(text, sessionId, attachmentIds, mode);
         } finally {
-            setTurning(false);
+            setTurnSessionId(null);
             threads.persist();
             // A turn is where a tool can raise a notification, and a *held
             // back* one (quiet hours, the delivery budget, the user's switch
@@ -461,6 +468,7 @@ export function AppShell({
         voice,
         location,
         turning,
+        turnSessionId,
         runTurn,
     };
 
