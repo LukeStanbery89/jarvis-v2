@@ -221,6 +221,7 @@ describe("createAgentGraph", () => {
                         answer: null,
                         jobId: null,
                         codingJobId: null,
+                        targetDeviceId: null,
                         createdAt: "2026-10-16T12:00:00.000Z",
                         deliveredAt: null,
                         settledAt: null,

@@ -54,6 +54,7 @@ describe("jobs ledger", () => {
         expect(created).toEqual({
             id: "j1",
             userId,
+            originDeviceId: null,
             label: "Change the AC filter",
             class: "notification",
             kind: "prompt",

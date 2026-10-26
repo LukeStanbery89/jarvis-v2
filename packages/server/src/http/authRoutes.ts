@@ -572,7 +572,14 @@ export function createAuthRouter(
             }
             const jarv = authed(req).jarv;
             const subscription = pushSubscriptionFrom(req.body);
-            store.upsertPushSubscription(jarv.user.id, subscription);
+            // #194: remember which device this browser is, so a targeted
+            // timer can select this subscription and no other. A cookie
+            // session has no device; its row stays account-wide.
+            store.upsertPushSubscription(
+                jarv.user.id,
+                subscription,
+                jarv.kind === "authed" ? jarv.device.id : null,
+            );
             res.status(204).end();
         }),
     );

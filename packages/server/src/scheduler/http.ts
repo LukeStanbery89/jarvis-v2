@@ -205,6 +205,11 @@ function createStatus(code: CreateRefusal): number {
     if (code === "store-failed") {
         return 500;
     }
+    if (code === "timer-needs-device") {
+        // A credential capability, not a malformed field: the same request
+        // works from a device-token caller.
+        return 403;
+    }
     return 400;
 }
 
@@ -309,7 +314,15 @@ export function createJobRouter(
             const request = createRequestFrom(req.body);
             sendCreated(
                 res,
-                creator.create(jarv.user.id, request),
+                creator.create(jarv.user.id, {
+                    ...request,
+                    // #194: the signed-in device is the timer's target. A
+                    // cookie-session caller has no device and a timer create
+                    // is refused by the policy rather than broadcast.
+                    ...(jarv.kind === "authed"
+                        ? { originDeviceId: jarv.device.id }
+                        : {}),
+                }),
                 jarv.user.id,
             );
         }),

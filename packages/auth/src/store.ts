@@ -82,7 +82,10 @@ const WEB_SESSIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS web_sessions (
  * Web Push is addressed per browser, not per account: the endpoint and its
  * p256dh/auth keys are the push service's handle for one installed PWA. The
  * endpoint is globally unique, so re-subscribing the same browser replaces its
- * keys and user instead of accumulating dead rows. The server never exposes
+ * keys and user instead of accumulating dead rows. `device_id` (#194) records
+ * the device credential that registered the browser, so a targeted timer can
+ * select this row and no other; it is nullable because rows written before
+ * v24, and cookie-session callers, have no device. The server never exposes
  * these rows through the prefs API.
  */
 const PUSH_SUBSCRIPTIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -91,10 +94,13 @@ const PUSH_SUBSCRIPTIONS_SCHEMA = `CREATE TABLE IF NOT EXISTS push_subscriptions
     endpoint   TEXT NOT NULL UNIQUE,
     p256dh     TEXT NOT NULL,
     auth       TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    device_id  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
-    ON push_subscriptions (user_id, created_at DESC);`;
+    ON push_subscriptions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_device
+    ON push_subscriptions (user_id, device_id);`;
 
 /**
  * The scheduler's tables (#90): one row per scheduled job, one per run.
@@ -123,7 +129,11 @@ CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
  *
  * `class` is the delivery class the job's announcement will carry (2b);
  * `message` is the payload a reminder or timer actually needs — text with
- * nothing to run, neither a model nor a tool.
+ * nothing to run, neither a model nor a tool. `origin_device_id` (#194) is the
+ * device credential that created the job: a timer's announcement is addressed
+ * there, and a scheduled prompt carries it into the tools it runs. It has no
+ * foreign key on purpose — device ids are never reused, and a deleted device's
+ * timer must stay addressed to nothing rather than become account-wide.
  */
 function jobsTable(name: string): string {
     return `CREATE TABLE IF NOT EXISTS ${name} (
@@ -144,6 +154,7 @@ function jobsTable(name: string): string {
     last_error  TEXT,
     repeat      TEXT,
     gate        TEXT,
+    origin_device_id INTEGER,
     CHECK (
         (kind = 'prompt' AND prompt IS NOT NULL AND tool_name IS NULL AND message IS NULL) OR
         (kind = 'tool' AND tool_name IS NOT NULL AND prompt IS NULL AND message IS NULL) OR
@@ -160,10 +171,13 @@ function jobsTable(name: string): string {
  * 6c added `snoozed` to the state set — and the copy has to land in a table with
  * exactly this shape. Written once, both ask for it, so they cannot drift.
  *
- * `job_id` sits last because that is where the v11 `ALTER TABLE` put it: a
- * rebuilt table lists its columns in this order on the way in, so a migrated
- * database and a fresh one converge on the same shape rather than merely the
- * same columns.
+ * `job_id` sits before the two later links because that is the order the
+ * additive migrations give them: a rebuilt table lists its columns in this
+ * order on the way in, so a migrated database and a fresh one converge on the
+ * same shape rather than merely the same columns. `target_device_id` (#194)
+ * is a timer's delivery target, with no foreign key for the same reason
+ * `jobs.origin_device_id` has none: a deleted device must not turn a local
+ * alarm into an account-wide one.
  */
 function notificationsTable(
     name: string,
@@ -189,7 +203,8 @@ function notificationsTable(
             ? ""
             : `,
     coding_job_id   TEXT REFERENCES coding_jobs(id) ON DELETE SET NULL`
-    }
+    },
+    target_device_id INTEGER
 )`;
 }
 
@@ -512,6 +527,13 @@ export interface AppPushSubscription {
     auth: string;
     /** When this device was first registered. */
     createdAt: string;
+    /**
+     * The device credential that registered this browser, or `null` for a
+     * legacy row (or a cookie-session caller with no device). A targeted timer
+     * only pushes to subscriptions whose device matches; an account-wide
+     * notification still reaches every row.
+     */
+    deviceId: number | null;
 }
 
 /**
@@ -532,9 +554,19 @@ export interface PushSubscriptionLedger {
     upsertPushSubscription(
         userId: number,
         subscription: { endpoint: string; p256dh: string; auth: string },
+        deviceId?: number | null,
     ): AppPushSubscription;
-    /** Every live browser subscription for one account, newest first. */
-    listPushSubscriptions(userId: number): AppPushSubscription[];
+    /**
+     * Browser subscriptions for one account, newest first.
+     *
+     * @param deviceId - When given, only subscriptions registered by that
+     *   device (the targeted timer path). Omitted returns every subscription,
+     *   which is what an account-wide notification still uses.
+     */
+    listPushSubscriptions(
+        userId: number,
+        deviceId?: number | null,
+    ): AppPushSubscription[];
     /** Removes one browser's subscription; returns whether a row was removed. */
     deletePushSubscription(userId: number, endpoint: string): boolean;
 }
@@ -647,6 +679,13 @@ export interface AppNotification {
      * user received stays true.
      */
     codingJobId: string | null;
+    /**
+     * The device a timer announcement belongs to (#194), or `null` for every
+     * account-wide notification and for legacy timer rows. The delivery
+     * channels address only this device, and a list read from another device
+     * omits the row.
+     */
+    targetDeviceId: number | null;
     createdAt: string;
     deliveredAt: string | null;
     /** When the notification reached a terminal state. */
@@ -673,6 +712,12 @@ export interface CreateNotificationInput {
      * user a question. `jobId` is the scheduler's table; this is the sandbox's.
      */
     codingJobId?: string | null;
+    /**
+     * The one device this notification may interrupt (#194). Set for a new
+     * timer, whose whole point is that it is local to the device that set it;
+     * omitted for account-wide notifications and legacy timers.
+     */
+    targetDeviceId?: number | null;
 }
 
 /**
@@ -720,11 +765,23 @@ export interface NotificationLedger {
      *
      * There is no "include the dismissed ones" switch any more (#90 phase 9c):
      * dismissing deletes the row, so the list is simply what the user has.
+     * `deviceId` narrows the view for a browser (#194): a number returns
+     * account-wide rows plus that device's targeted timers, `null` returns
+     * only account-wide rows, and omitting it returns every row (the
+     * account-level view dedupe, retention and tests use).
      */
     listNotifications(
         userId: number,
-        options?: { limit?: number },
+        options?: { limit?: number; deviceId?: number | null },
     ): AppNotification[];
+    /**
+     * How many notifications are unsettled (the badge count).
+     *
+     * @param deviceId - When given, only account-wide rows and rows targeted at
+     *   that device count; `null` counts only account-wide rows. Omitted counts
+     *   every row, which is what retention and dedupe bookkeeping need.
+     */
+    countUnreadNotifications(userId: number, deviceId?: number | null): number;
     /**
      * A user's notifications about one job, newest first (#90 phase 6c).
      *
@@ -736,8 +793,6 @@ export interface NotificationLedger {
      * {@link setNotificationState}'s.
      */
     listNotificationsForJob(userId: number, jobId: string): AppNotification[];
-    /** How many of a user's notifications are unsettled (the badge count). */
-    countUnreadNotifications(userId: number): number;
     /**
      * Moves a notification to `state`, stamping `delivered_at` / `settled_at`
      * as that state implies, optionally recording the user's `answer`.
@@ -848,6 +903,13 @@ export type JobRunState = (typeof JOB_RUN_STATES)[number];
 export interface AppJob {
     id: string;
     userId: number;
+    /**
+     * The device that created this job (#194), or `null` for a legacy row or a
+     * cookie-session caller with no device. A timer's announcement targets this
+     * device; other classes ignore it. Not exposed on the REST surface — it is
+     * delivery bookkeeping, not something a page acts on.
+     */
+    originDeviceId: number | null;
     /** User-facing name ("AC filter"), used in the announcement. */
     label: string;
     /**
@@ -926,6 +988,12 @@ export interface AppJobRun {
 /** The producer-supplied half of a job; identity and times are the store's. */
 export interface CreateJobInput {
     label: string;
+    /**
+     * The device that asked for this job (#194). Stored for every class so a
+     * background prompt can attribute a timer it creates; only a timer uses it
+     * to address delivery. `null` is a legacy row or a caller with no device.
+     */
+    originDeviceId?: number | null;
     /** What kind of attention it asks for; the table's default is the quiet class. */
     class?: NotificationClass;
     kind: JobKind;
@@ -1000,7 +1068,8 @@ export interface JobLedger {
      *
      * The caller has already validated the payload; the table's CHECK rejects a
      * mismatched `kind`/`prompt`/`tool_name` combination rather than storing a
-     * job that could never run.
+     * job that could never run. `originDeviceId` (#194) records the device
+     * that asked; a timer needs one, the other classes may have none.
      */
     createJob(
         userId: number,
@@ -1736,6 +1805,7 @@ interface NotificationRow {
     answer: string | null;
     jobId: string | null;
     codingJobId: string | null;
+    targetDeviceId: number | null;
     createdAt: string;
     deliveredAt: string | null;
     settledAt: string | null;
@@ -1745,7 +1815,7 @@ interface NotificationRow {
  * The notification SELECT list, shared by every read so a new column cannot
  * reach one query and miss another (`mapNotification` is the other half).
  */
-const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, job_id AS jobId, coding_job_id AS codingJobId, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
+const NOTIFICATION_COLUMNS = `SELECT id, user_id AS userId, kind, class, priority, title, body, state, requires_answer AS requiresAnswer, dedupe_key AS dedupeKey, answer, job_id AS jobId, coding_job_id AS codingJobId, target_device_id AS targetDeviceId, created_at AS createdAt, delivered_at AS deliveredAt, settled_at AS settledAt FROM notifications`;
 
 /** A `jobs` table row as the SELECTs alias it (see {@link mapJob}). */
 interface JobRow {
@@ -1766,6 +1836,7 @@ interface JobRow {
     lastError: string | null;
     repeat: string | null;
     gate: string | null;
+    originDeviceId: number | null;
 }
 
 /** A `job_runs` table row (see {@link mapJobRun}). */
@@ -1782,7 +1853,7 @@ interface JobRunRow {
 }
 
 /** The job SELECT list, shared by every read (`mapJob` is the other half). */
-const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError, repeat, gate FROM jobs`;
+const JOB_COLUMNS = `SELECT id, user_id AS userId, label, class, kind, prompt, tool_name AS toolName, tool_args AS toolArgs, message, run_at AS runAt, state, attempts, created_at AS createdAt, settled_at AS settledAt, last_error AS lastError, repeat, gate, origin_device_id AS originDeviceId FROM jobs`;
 
 /** The run SELECT list (`mapJobRun` is the other half). */
 const JOB_RUN_COLUMNS = `SELECT id, job_id AS jobId, started_at AS startedAt, finished_at AS finishedAt, state, output, error, gate_output AS gateOutput, gate_key AS gateKey FROM job_runs`;
@@ -1905,6 +1976,7 @@ function mapNotification(row: NotificationRow): AppNotification {
         answer: row.answer,
         jobId: row.jobId,
         codingJobId: row.codingJobId,
+        targetDeviceId: row.targetDeviceId,
         createdAt: row.createdAt,
         deliveredAt: row.deliveredAt,
         settledAt: row.settledAt,
@@ -1940,6 +2012,7 @@ function mapJob(row: JobRow): AppJob {
     return {
         id: row.id,
         userId: row.userId,
+        originDeviceId: row.originDeviceId,
         label: row.label,
         class: row.class,
         kind: row.kind,
@@ -2918,6 +2991,36 @@ ${CODING_JOB_INDEXES}`);
         }
         db.pragma("user_version = 23");
     }
+
+    if (version < 24) {
+        // v24: device-scoped timers (#194). Three nullable integer columns,
+        // deliberately **without foreign keys**: device ids are never reused
+        // (AUTOINCREMENT), and a deleted device's timer must stay addressed to
+        // a device that no longer exists — not become an account-wide alarm
+        // because `ON DELETE SET NULL` rewrote its origin.
+        //
+        // `NULL` is the total default, so every existing job, notification and
+        // push subscription keeps its pre-#194 meaning: account-wide. New
+        // timers carry a device; legacy rows stay account-wide and are
+        // documented as such.
+        if (!hasColumn(db, "jobs", "origin_device_id")) {
+            db.exec("ALTER TABLE jobs ADD COLUMN origin_device_id INTEGER");
+        }
+        if (!hasColumn(db, "notifications", "target_device_id")) {
+            db.exec(
+                "ALTER TABLE notifications ADD COLUMN target_device_id INTEGER",
+            );
+        }
+        if (!hasColumn(db, "push_subscriptions", "device_id")) {
+            db.exec(
+                "ALTER TABLE push_subscriptions ADD COLUMN device_id INTEGER",
+            );
+        }
+        db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_device ON push_subscriptions (user_id, device_id)",
+        );
+        db.pragma("user_version = 24");
+    }
 }
 
 export function openAppDatabase(
@@ -2968,6 +3071,7 @@ export class SqliteAppDatabase implements AppDatabase {
         deleteExpiredWebSessions: Database.Statement;
         upsertPushSubscription: Database.Statement;
         selectPushSubscriptions: Database.Statement;
+        selectPushSubscriptionsForDevice: Database.Statement;
         deletePushSubscription: Database.Statement;
         upsertPref: Database.Statement;
         selectPrefs: Database.Statement;
@@ -2975,11 +3079,15 @@ export class SqliteAppDatabase implements AppDatabase {
         insertNotification: Database.Statement;
         selectNotification: Database.Statement;
         selectNotifications: Database.Statement;
+        selectNotificationsForDevice: Database.Statement;
+        selectNotificationsForNoDevice: Database.Statement;
         deleteNotification: Database.Statement;
         settleCodingQuestionNotifications: Database.Statement;
         selectNotificationsForJob: Database.Statement;
         countUnreadNotifications: Database.Statement;
         settleNotification: Database.Statement;
+        countUnreadNotificationsForDevice: Database.Statement;
+        countUnreadNotificationsForNoDevice: Database.Statement;
         pruneSettledNotifications: Database.Statement;
         pruneNotifications: Database.Statement;
         insertJob: Database.Statement;
@@ -3150,10 +3258,13 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM web_sessions WHERE expires_at <= ?",
             ),
             upsertPushSubscription: db.prepare(
-                "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at",
+                "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, device_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = excluded.created_at, device_id = excluded.device_id",
             ),
             selectPushSubscriptions: db.prepare(
-                "SELECT endpoint, p256dh, auth, created_at AS createdAt FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC",
+                "SELECT endpoint, p256dh, auth, created_at AS createdAt, device_id AS deviceId FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC",
+            ),
+            selectPushSubscriptionsForDevice: db.prepare(
+                "SELECT endpoint, p256dh, auth, created_at AS createdAt, device_id AS deviceId FROM push_subscriptions WHERE user_id = ? AND device_id = ? ORDER BY created_at DESC",
             ),
             deletePushSubscription: db.prepare(
                 "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
@@ -3168,13 +3279,19 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM prefs WHERE user_id = ? AND key = ?",
             ),
             insertNotification: db.prepare(
-                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, job_id, coding_job_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                "INSERT INTO notifications (id, user_id, kind, class, priority, title, body, state, requires_answer, dedupe_key, job_id, coding_job_id, target_device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
             ),
             selectNotification: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND id = ?`,
             ),
             selectNotifications: db.prepare(
                 `${NOTIFICATION_COLUMNS} WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            selectNotificationsForDevice: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND (target_device_id IS NULL OR target_device_id = ?) ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            ),
+            selectNotificationsForNoDevice: db.prepare(
+                `${NOTIFICATION_COLUMNS} WHERE user_id = ? AND target_device_id IS NULL ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             ),
             // Dismissal deletes the row (#90 phase 9c), so there is no second
             // "include the dismissed ones" read: a row is either there or gone.
@@ -3195,6 +3312,12 @@ export class SqliteAppDatabase implements AppDatabase {
             ),
             countUnreadNotifications: db.prepare(
                 `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
+            ),
+            countUnreadNotificationsForDevice: db.prepare(
+                `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND (target_device_id IS NULL OR target_device_id = ?) AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
+            ),
+            countUnreadNotificationsForNoDevice: db.prepare(
+                `SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND target_device_id IS NULL AND state NOT IN (${NOTIFICATION_TERMINAL_SQL})`,
             ),
             // One statement covers every transition: the terminal guard lives
             // in the WHERE clause, so a late duplicate ack touches no row and
@@ -3218,7 +3341,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "DELETE FROM notifications WHERE user_id = ? AND id NOT IN (SELECT id FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)",
             ),
             insertJob: db.prepare(
-                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at, repeat, gate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO jobs (id, user_id, label, class, kind, prompt, tool_name, tool_args, message, run_at, state, created_at, repeat, gate, origin_device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
             ),
             selectJob: db.prepare(
                 `${JOB_COLUMNS} WHERE user_id = ? AND id = ?`,
@@ -3657,6 +3780,7 @@ export class SqliteAppDatabase implements AppDatabase {
     upsertPushSubscription(
         userId: number,
         subscription: { endpoint: string; p256dh: string; auth: string },
+        deviceId: number | null = null,
     ): AppPushSubscription {
         this.statements.upsertPushSubscription.run(
             userId,
@@ -3664,6 +3788,7 @@ export class SqliteAppDatabase implements AppDatabase {
             subscription.p256dh,
             subscription.auth,
             now(),
+            deviceId,
         );
         const rows = this.statements.selectPushSubscriptions.all(
             userId,
@@ -3680,9 +3805,18 @@ export class SqliteAppDatabase implements AppDatabase {
         return stored;
     }
 
-    listPushSubscriptions(userId: number): AppPushSubscription[] {
-        return this.statements.selectPushSubscriptions.all(
+    listPushSubscriptions(
+        userId: number,
+        deviceId?: number | null,
+    ): AppPushSubscription[] {
+        if (deviceId === undefined || deviceId === null) {
+            return this.statements.selectPushSubscriptions.all(
+                userId,
+            ) as AppPushSubscription[];
+        }
+        return this.statements.selectPushSubscriptionsForDevice.all(
             userId,
+            deviceId,
         ) as AppPushSubscription[];
     }
 
@@ -3826,6 +3960,7 @@ export class SqliteAppDatabase implements AppDatabase {
             input.dedupeKey ?? null,
             input.jobId ?? null,
             input.codingJobId ?? null,
+            input.targetDeviceId ?? null,
             input.createdAt,
         );
         // The row was just written, so a re-read cannot miss; the assertion
@@ -3860,12 +3995,19 @@ export class SqliteAppDatabase implements AppDatabase {
 
     listNotifications(
         userId: number,
-        options: { limit?: number } = {},
+        options: { limit?: number; deviceId?: number | null } = {},
     ): AppNotification[] {
         const limit = Math.max(1, options.limit ?? DEFAULT_NOTIFICATION_PAGE);
-        const rows = this.statements.selectNotifications.all(
-            userId,
-            limit,
+        const statement =
+            options.deviceId === undefined
+                ? this.statements.selectNotifications
+                : options.deviceId === null
+                  ? this.statements.selectNotificationsForNoDevice
+                  : this.statements.selectNotificationsForDevice;
+        const rows = (
+            options.deviceId === undefined || options.deviceId === null
+                ? statement.all(userId, limit)
+                : statement.all(userId, options.deviceId, limit)
         ) as NotificationRow[];
         return rows.map(mapNotification);
     }
@@ -3894,10 +4036,18 @@ export class SqliteAppDatabase implements AppDatabase {
         return rows.map(mapNotification);
     }
 
-    countUnreadNotifications(userId: number): number {
-        const row = this.statements.countUnreadNotifications.get(userId) as {
-            n: number;
-        };
+    countUnreadNotifications(userId: number, deviceId?: number | null): number {
+        const statement =
+            deviceId === undefined
+                ? this.statements.countUnreadNotifications
+                : deviceId === null
+                  ? this.statements.countUnreadNotificationsForNoDevice
+                  : this.statements.countUnreadNotificationsForDevice;
+        const row = (
+            deviceId === undefined || deviceId === null
+                ? statement.get(userId)
+                : statement.get(userId, deviceId)
+        ) as { n: number };
         return row.n;
     }
 
@@ -3963,6 +4113,7 @@ export class SqliteAppDatabase implements AppDatabase {
             input.gate === undefined || input.gate === null
                 ? null
                 : JSON.stringify(input.gate),
+            input.originDeviceId ?? null,
         );
         // Just written, so a re-read cannot miss; the assertion documents that
         // rather than papering over a null with a fake row.

@@ -21,6 +21,8 @@ const NOW = new Date(2026, 0, 1, 19, 5, 0, 0);
 interface Harness {
     store: AppDatabase;
     userId: number;
+    /** The device credential a timer must be scoped to (#194). */
+    deviceId: number;
     creator: JobCreator;
     /** A message timer `minutes` from the fixed clock. */
     createTimer: (overrides?: {
@@ -36,6 +38,12 @@ function harness(
 ): Harness {
     const store = createInMemoryAppDatabase();
     const userId = store.createUser("luke", "hash", "owner").id;
+    const deviceId = store.createDevice(
+        userId,
+        "test-device",
+        "device-hash",
+        "test0001",
+    ).id;
     let idSeq = 0;
     const creator = createJobCreator({
         ledger: store,
@@ -52,10 +60,11 @@ function harness(
                 kind: "message",
                 message: overrides.message ?? overrides.label ?? "Kettle",
             },
+            originDeviceId: deviceId,
             runAt: new Date(NOW.getTime() + (overrides.minutes ?? 10) * 60_000),
             at: NOW,
         });
-    return { store, userId, creator, createTimer };
+    return { store, userId, deviceId, creator, createTimer };
 }
 
 describe("the creation policy", () => {
@@ -67,12 +76,34 @@ describe("the creation policy", () => {
             label: "Kettle",
             class: "timer",
             payload: { kind: "message", message: "Kettle" },
+            originDeviceId: h.deviceId,
             runAt: new Date(NOW.getTime() - 60_000),
             at: NOW,
         });
 
         expect(outcome).toMatchObject({ ok: false, code: "in-the-past" });
         expect(h.store.listJobs(h.userId)).toEqual([]);
+    });
+
+    it("requires a device for a timer, and stores the one that asked (#194)", () => {
+        const h = harness();
+        const noDevice = h.creator.create(h.userId, {
+            label: "Kettle",
+            class: "timer",
+            payload: { kind: "message", message: "Kettle" },
+            runAt: new Date(NOW.getTime() + 60_000),
+            at: NOW,
+        });
+        expect(noDevice).toMatchObject({
+            ok: false,
+            code: "timer-needs-device",
+        });
+
+        const created = h.createTimer();
+        if (!created.ok) {
+            throw new Error("the timer should have been created");
+        }
+        expect(created.job.originDeviceId).toBe(h.deviceId);
     });
 
     it("refuses a timer set beyond its day, whatever the horizon allows", () => {
@@ -83,6 +114,7 @@ describe("the creation policy", () => {
             label: "Kettle",
             class: "timer",
             payload: { kind: "message", message: "Kettle" },
+            originDeviceId: h.deviceId,
             runAt: new Date(NOW.getTime() + 26 * 3_600_000),
             at: NOW,
         });
@@ -406,6 +438,7 @@ describe("recurrence (#90 phase 8d)", () => {
             label: "Standup",
             class: cls,
             payload: { kind: "message", message: "Standup" },
+            originDeviceId: h.deviceId,
             runAt: new Date(NOW.getTime() + 10 * 60_000),
             repeat,
             at: NOW,

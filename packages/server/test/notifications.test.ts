@@ -768,6 +768,7 @@ describe("notification routes (#139)", () => {
     let socket: ReturnType<typeof fakeSocket>;
     let token: string;
     let userId: number;
+    let deviceId: number;
     let appConfig: AppConfig;
 
     beforeEach(() => {
@@ -782,12 +783,12 @@ describe("notification routes (#139)", () => {
         // reaches the database (or this test's fixtures).
         const material = generateDeviceToken();
         token = material.token;
-        store.createDevice(
+        deviceId = store.createDevice(
             userId,
             "web-test",
             material.tokenHash,
             material.prefix,
-        );
+        ).id;
         appConfig = {
             ...getAppConfig(),
             notify: { deliveriesPerMin: 20, maxPerUser: 200 },
@@ -827,6 +828,49 @@ describe("notification routes (#139)", () => {
             .set("authorization", `Bearer ${token}`)
             .expect(200);
         expect(after.body.unread).toBe(0);
+    });
+
+    it("shows a targeted timer only to the device it belongs to (#194)", async () => {
+        const otherMaterial = generateDeviceToken();
+        const otherDevice = store.createDevice(
+            userId,
+            "other-web",
+            otherMaterial.tokenHash,
+            otherMaterial.prefix,
+        );
+        for (const [id, target] of [
+            ["mine", deviceId],
+            ["theirs", otherDevice.id],
+            ["everyone", null],
+        ] as const) {
+            store.createNotification(userId, {
+                id,
+                kind: "job.finished",
+                class: "timer",
+                priority: "normal",
+                title: id,
+                targetDeviceId: target,
+                createdAt: "2026-10-15T12:00:00.000Z",
+            });
+        }
+
+        const mine = await request(buildApp())
+            .get("/api/notifications")
+            .set("authorization", `Bearer ${token}`)
+            .expect(200);
+        expect(
+            (mine.body.notifications as { id: string }[]).map((n) => n.id),
+        ).toEqual(["everyone", "mine"]);
+        expect(mine.body.unread).toBe(2);
+
+        const theirs = await request(buildApp())
+            .get("/api/notifications")
+            .set("authorization", `Bearer ${otherMaterial.token}`)
+            .expect(200);
+        expect(
+            (theirs.body.notifications as { id: string }[]).map((n) => n.id),
+        ).toEqual(["everyone", "theirs"]);
+        expect(theirs.body.unread).toBe(2);
     });
 
     it("honours limit from the query string, on a list dismissal removes from", async () => {
@@ -1259,6 +1303,99 @@ describe("notification push, end to end (#139)", () => {
     });
 });
 
+describe("notification targeting (#194)", () => {
+    it("delivers a timer only to its device and filters the other device's list", async () => {
+        const { store, hub, service } = makeService({});
+        const userId = makeUser(store);
+        const phone = fakeSocket();
+        const desktop = fakeSocket();
+        hub.add(userId, phone, 11);
+        hub.add(userId, desktop, 22);
+
+        const outcome = await service.notify(userId, {
+            kind: "job.finished",
+            class: "timer",
+            title: "Kettle",
+            targetDeviceId: 11,
+        });
+
+        expect(outcome.delivered).toBe(1);
+        expect(phone.frames).toHaveLength(1);
+        expect(desktop.frames).toEqual([]);
+        expect(
+            service.list(userId, { deviceId: 11 }).notifications,
+        ).toHaveLength(1);
+        expect(service.list(userId, { deviceId: 22 }).notifications).toEqual(
+            [],
+        );
+        expect(service.list(userId, { deviceId: null }).notifications).toEqual(
+            [],
+        );
+        // Internal bookkeeping still sees the row: dedupe and pruning operate
+        // on the account, not on one device's view.
+        expect(service.list(userId).notifications).toHaveLength(1);
+    });
+
+    it("falls through to push for the target device, not because another is open (#194)", async () => {
+        const store = createInMemoryAppDatabase();
+        const userId = makeUser(store);
+        const hub = createNotificationHub();
+        hub.add(userId, fakeSocket(), 22);
+        const delivered = vi.fn(() => 1);
+        const push: NotificationChannel = {
+            id: "push",
+            capabilities: {
+                canSpeak: false,
+                canShowText: true,
+                canShowImage: false,
+                canAcceptReply: false,
+                isAddressable: true,
+                requiresPresence: false,
+                onlyWhenAbsent: true,
+            },
+            deliver: delivered,
+        };
+        const service = createNotificationService({
+            store,
+            hub,
+            channels: [createInAppChannel(hub), push],
+            maxPerUser: 200,
+            deliveriesPerWindow: 20,
+            now: () => new Date("2026-10-15T18:00:00.000Z"),
+        });
+
+        const outcome = await service.notify(userId, {
+            kind: "job.finished",
+            class: "timer",
+            title: "Kettle",
+            targetDeviceId: 11,
+        });
+
+        expect(delivered).toHaveBeenCalledTimes(1);
+        expect(outcome.delivered).toBe(1);
+        expect(outcome.suppressed).toBeNull();
+    });
+
+    it("leaves the timer pending when its own device is absent, even if another is open", async () => {
+        const { store, hub, service } = makeService({});
+        const userId = makeUser(store);
+        hub.add(userId, fakeSocket(), 22);
+
+        const outcome = await service.notify(userId, {
+            kind: "job.finished",
+            class: "timer",
+            title: "Kettle",
+            targetDeviceId: 11,
+        });
+
+        expect(outcome.suppressed).toBe("absent");
+        expect(outcome.delivered).toBe(0);
+        expect(
+            service.list(userId, { deviceId: 11 }).notifications,
+        ).toHaveLength(1);
+    });
+});
+
 describe("notification hub (#139)", () => {
     it("tracks a user's sockets and counts what a push reached", () => {
         const hub = createNotificationHub();
@@ -1298,6 +1435,27 @@ describe("notification hub (#139)", () => {
         const gone = { ...fakeSocket(), readyState: 3 };
         hub.add(1, gone);
         expect(hub.deliver(1, { chunk: "into the void" })).toBe(0);
+    });
+
+    it("addresses one device without reaching the account's other sockets (#194)", () => {
+        const hub = createNotificationHub();
+        const phone = fakeSocket();
+        const desktop = fakeSocket();
+        hub.add(1, phone, 11);
+        hub.add(1, desktop, 22);
+
+        expect(hub.isPresent(1)).toBe(true);
+        expect(hub.isPresent(1, 11)).toBe(true);
+        expect(hub.isPresent(1, 22)).toBe(true);
+        expect(hub.isPresent(1, 33)).toBe(false);
+        expect(hub.deliver(1, { chunk: "only the phone" }, 11)).toBe(1);
+        expect(phone.frames).toHaveLength(1);
+        expect(desktop.frames).toEqual([]);
+
+        // An account-wide frame still means every socket, which is what a
+        // reminder relies on.
+        expect(hub.deliver(1, { chunk: "everyone" })).toBe(2);
+        expect(desktop.frames).toHaveLength(1);
     });
 
     it("survives a socket whose write throws", () => {

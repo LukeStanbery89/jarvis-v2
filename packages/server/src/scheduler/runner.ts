@@ -277,6 +277,13 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 // *dismiss* — the client would otherwise have to guess which
                 // job a row came from.
                 jobId: job.id,
+                // A timer is a local alarm (#194): address its announcement
+                // at the device that created the job. A null origin is a
+                // legacy timer (or a job created before device scoping), which
+                // keeps the pre-#194 account-wide behavior.
+                ...(job.class === "timer" && job.originDeviceId !== null
+                    ? { targetDeviceId: job.originDeviceId }
+                    : {}),
                 // Only the budget notice uses this: an occurrence skipped for
                 // the day's allowance supersedes that day's earlier notice
                 // rather than stacking one per firing.
@@ -408,6 +415,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 configurable: {
                     sessionId: jobThreadId(job.id),
                     userId: job.userId,
+                    ...(job.originDeviceId !== null
+                        ? { deviceId: job.originDeviceId }
+                        : {}),
                 },
                 signal,
             });
@@ -743,6 +753,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
                 configurable: {
                     sessionId: jobThreadId(job.id),
                     userId: job.userId,
+                    ...(job.originDeviceId !== null
+                        ? { deviceId: job.originDeviceId }
+                        : {}),
                 },
                 signal,
             });
@@ -771,6 +784,9 @@ export function createJobRunner(options: JobRunnerOptions): JobRunner {
         let output = "";
         const stream = agent(job.prompt ?? "", jobThreadId(job.id), {
             userId: job.userId,
+            ...(job.originDeviceId !== null
+                ? { deviceId: job.originDeviceId }
+                : {}),
             signal,
         });
         for await (const event of stream) {

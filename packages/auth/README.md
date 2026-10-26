@@ -11,18 +11,18 @@ concern so consumers depend on narrow seams, never raw SQL.
 
 ## Files
 
-| File            | Responsibility                                                                                                                                                                                                                                                                                                                                       |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                                     |
-| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                                            |
-| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                                                |
-| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                                           |
-| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & SessionLedger & NotificationLedger & JobLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session-ledger + prefs + web-session + notification + job ledgers |
-| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                                                 |
-| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                                             |
-| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                                           |
-| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                                               |
-| `README.md`     | this file                                                                                                                                                                                                                                                                                                                                            |
+| File            | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`      | `AppUser`/`AppDevice`/`AppSession` row shapes, `Role`, `ResolvedIdentity`, and `AuthContext` — the discriminated `guest \| authed \| session` union that `req.jarv` / the WS ctx carry (narrow by `kind` to reach non-null `user`/`device`, or the session's `user`/`csrfToken`)                                                                                                                                       |
+| `crypto.ts`     | The raw primitives: password hashing (`crypto.scrypt`, self-describing `scrypt$N$r$p$salt$key` strings) + device-token generation/hashing                                                                                                                                                                                                                                                                              |
+| `credential.ts` | The `CredentialVerifier` seam (`hash`/`verify`) — what the REST layer codes against; wraps `crypto.ts` and owns the timing-equalized dummy-hash for unknown usernames                                                                                                                                                                                                                                                  |
+| `ownership.ts`  | `ownsRow` / `canManage` — the single row-ownership policy shared by the WS session pipeline and the REST management routes                                                                                                                                                                                                                                                                                             |
+| `store.ts`      | The `AppDatabase` seam (`AppDatabase = UserLedger & DeviceLedger & WebSessionLedger & PrefLedger & PushSubscriptionLedger & SessionLedger & NotificationLedger & JobLedger & CodingJobLedger & { close() }`) + `SqliteAppDatabase` (better-sqlite3) over `JARVIS_DB_PATH` (`~/.jarvis/jarvis.sqlite`); schema migrations; the session, prefs, web-session, push-subscription, notification, job and coding-job ledgers |
+| `testing.ts`    | Test-support only, reachable via the `@lukestanbery/jarvis-auth/testing` subpath (a separate entry point, kept off the production surface): `createInMemoryAppDatabase()` — a migrated `AppDatabase` over `:memory:` with no filesystem side effects                                                                                                                                                                   |
+| `cookie.ts`     | `CookieSessionProvider` — the browser-session equivalent of the device-token flow: issues 32-byte cookie secrets (hash-at-rest), per-session CSRF nonces, expiry, and revoke over the `WebSessionLedger`                                                                                                                                                                                                               |
+| `errors.ts`     | `AuthError` with a stable `code` (routes map it to status codes) and a user-safe `message`                                                                                                                                                                                                                                                                                                                             |
+| `fs.ts`         | Best-effort private filesystem posture: `~/.jarvis` narrowed to `0700` and each SQLite database (app DB + LangGraph checkpoints) pre-created at `0600`                                                                                                                                                                                                                                                                 |
+| `README.md`     | this file                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 The REST layer lives outside this package in the server's `src/http/` (`middleware.ts` = `requireAuth`
 [bearer-then-cookie fallback]/`requireOwner`/`requireCsrf` filling `req.jarv`; `cookies.ts` = the web-session
@@ -56,9 +56,13 @@ only the surface they call:
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
 - `NotificationLedger` — JARVIS's outbound messages to a user (#139) over the
   `notifications` table: `createNotification` / `getNotification` /
-  `listNotifications` (newest first, the whole list) /
-  `countUnreadNotifications` / `setNotificationState` / `deleteNotification`
+  `listNotifications` (newest first; an optional `deviceId` filters to
+  account-wide rows plus that device's targeted timers, #194) /
+  `countUnreadNotifications` (same optional device view) /
+  `setNotificationState` / `deleteNotification`
   (what dismissing means, #90 phase 9c) / `pruneNotifications`.
+  `NotificationInput.targetDeviceId` is what makes a new timer local to the
+  device that set it; omitting it keeps a notification account-wide.
   Every method scopes by `userId`, so a foreign id is indistinguishable from a
   missing one — the reason the REST layer needs no ownership check. The store
   owns _transitions_ (terminal states are terminal, `delivered_at` and
@@ -86,7 +90,10 @@ only the surface they call:
   spell `undefined`, so a request's absent field and its explicit `null` already
   mean exactly those, and no sentinel is needed. `countModelRuns` / `recordModelRun` are the
   scheduler's **daily model-run budget** (below), which is a count this package
-  owns because it has to outlive a restart. This is the one ledger with two surfaces
+  owns because it has to outlive a restart. Every created job also carries an
+  optional `originDeviceId` (#194): the device credential that asked for it,
+  stored on the row so a timer's announcement can be addressed there (and a
+  scheduled prompt can attribute a timer it creates). This is the one ledger with two surfaces
   on purpose: a job belongs to one user, but the scheduler is a _process_
   acting for every user at once, so it selects due work across accounts and
   settles it by the id it claimed. `claimJob` is the load-bearing statement —
@@ -182,6 +189,13 @@ router and middleware span every ledger and therefore take the full
   with their user. Managed by the `CookieSessionProvider` +
   `WebSessionLedger`; the provider's `issue` sweeps expired rows
   (`deleteExpiredWebSessions`), so the table self-cleans without a timer.
+- `push_subscriptions` — one row per browser Web Push endpoint (#189
+  follow-up, v22): the endpoint and its `p256dh`/`auth` keys, globally unique
+  per endpoint, cascade-deleted with the user. Each row optionally names the
+  `device_id` that registered it (v24, #194), so a targeted timer's push can
+  select that browser and no other; an account-wide notification still uses
+  every subscription. The endpoint/keys are never exposed through the prefs
+  API.
 - `sessions` — the WS-turn ledger: one row per `thread_id` (unique), owned by
   a user/device or `NULL` (guest), with `kind` (`text`/`voice`) for the
   lifecycle matrix. `claimSession` claims atomically
@@ -195,7 +209,7 @@ router and middleware span every ledger and therefore take the full
   manages, from a consumer (v4 schema, planning-complete) onward.
 - `notifications` — one row per notification (#139, v7; `class` added in v9,
   `job_id` in v11, the state CHECK widened in v12 — both #90; `coding_job_id`
-  in v20 — #94): producer `kind` +
+  in v20 — #94; `target_device_id` in v24 — #194): producer `kind` +
   `class` (the delivery policy — a `timer` pierces quiet hours, everything else
   waits) + `priority` (display
   emphasis only), the
@@ -221,7 +235,12 @@ router and middleware span every ledger and therefore take the full
   before the row settles. The two links are separate because their ids live in
   different tables; a notification is never about both. Jobs are pruned as
   history while a notification the user was already shown stays true, so the
-  prune clears the link and keeps the row.
+  prune clears the link and keeps the row. `target_device_id` (nullable, no
+  foreign key on purpose) is the other delivery fact: a new `timer` names the
+  device it may interrupt, while `NULL` is an account-wide notification and
+  every legacy timer. Keeping the id after a device row is deleted is
+  deliberate — a revoked device's timer must stay addressed to nothing rather
+  than become an account-wide alarm.
 - `jobs` — one row per scheduled job (#90, v8; rebuilt in v10 for `class` and
   the `message` payload): `label`, `class` (the delivery class its announcement
   carries — `notification`/`reminder`/`timer`), `kind` (`prompt`/`tool`/
@@ -229,7 +248,8 @@ router and middleware span every ledger and therefore take the full
   refuses a row whose payload does not match its kind), `run_at`, a `state`
   lifecycle (`pending` → `running` → `done`/`failed`/`cancelled`/`missed`),
   `attempts`, `last_error`, `gate` (the deterministic check a firing must pass,
-  as JSON, v15) and `repeat` (the recurrence rule as JSON, v13 —
+  as JSON, v15), `origin_device_id` (the device credential that created the
+  job, v24, #194) and `repeat` (the recurrence rule as JSON, v13 —
   read defensively: a value that will not parse comes back as its raw text, so
   the scheduler can report a rule it cannot read rather than pretending the job
   is a one-shot). Indexed on `(user_id, created_at DESC)` for the
@@ -240,7 +260,10 @@ router and middleware span every ledger and therefore take the full
   references `jobs`, and dropping the old table with enforcement on would
   cascade a user's run history away. `missed` is deliberately
   not `failed`: a job whose moment passed while the server was down was never
-  attempted.
+  attempted. `origin_device_id` has no foreign key: device ids are never
+  reused (AUTOINCREMENT), and a deleted device's timer must stay targeted at
+  that device rather than fall back to the account. `NULL` is every legacy job
+  and every caller that had no device.
 - `job_model_runs` — the daily model-run budget (#90 phase 8c): `user_id`, a
   local `day` (`YYYY-MM-DD`) and a count, one row per account per day, never
   pruned (a year is 365 rows). A _budget_ rather than a throttle, which is why it

@@ -1020,12 +1020,32 @@ routes answer `503` and the client keeps the page-only path.
 
 Subscriptions are per browser, stored in `push_subscriptions` and registered via
 `GET /api/push/key`, `POST /api/push/subscribe`, and
-`POST /api/push/unsubscribe`. The push channel is `onlyWhenAbsent`: when an
-in-app socket is present the page already owns the ring and banner, while an
-absent socket is exactly when push is the only path left. Answerable
-notifications are not pushed because a push cannot collect the reply. A push
-service's `404`/`410` deletes the dead endpoint; other provider failures are
-logged and leave the durable notification untouched.
+`POST /api/push/unsubscribe`. Each row also records the device credential that
+registered it (`push_subscriptions.device_id`, #194), so a targeted timer can
+select one browser's endpoint(s) instead of every subscription on the account.
+The push channel is `onlyWhenAbsent`: when an in-app socket is present the page
+already owns the ring and banner, while an absent socket is exactly when push
+is the only path left; that presence question is asked of the notification's
+target device, not the account. Answerable notifications are not pushed because
+a push cannot collect the reply. A push service's `404`/`410` deletes the dead
+endpoint; other provider failures are logged and leave the durable notification
+untouched.
+
+**Timers are device-scoped (#194).** A scheduled job now records the device
+credential that created it (`jobs.origin_device_id`), and a `timer`'s
+announcement carries that device (`notifications.target_device_id`). The
+in-app hub and Web Push channel address only that device's socket/subscription,
+so a timer set on phone A does not ring on phone B or a desktop. A device's
+`GET /api/notifications` also filters out another device's timer rows — the
+job itself stays visible on `/timers` everywhere, and any device of the account
+can still edit or cancel it. A timer created through a cookie session, or by a
+background prompt with no originating device, is refused rather than broadcast;
+one created by a background prompt inherits the job's origin, so it can target
+the device that asked for the schedule. **Legacy timers** (created before v24)
+have `origin_device_id = NULL` and keep the old account-wide behavior, as do
+their existing notifications; no attempt is made to guess an origin. Push
+subscriptions carry `device_id` too, which is why a browser must re-register
+after upgrading before a targeted timer can reach it while backgrounded.
 
 **A dismissal deletes the row** (#90 phase 9c), which is the one lifecycle
 decision this section owns. `dismissed` used to be a terminal state a row sat in
@@ -1634,6 +1654,14 @@ rather than an implementation detail:
   stays with the model's tools, where the allowlist and the target tool's own
   schema are checked before the row is written — a stored tool call is a durable
   capability, and a REST form has no schema to validate one against.
+- **A timer needs the device that asked.** `POST /api/jobs` with
+  `class: "timer"` from a bearer credential stores that device as the target;
+  a cookie-session caller has no device and gets `403` rather than a timer that
+  would ring every signed-in client (#194). The model's `setTimer` reads the
+  same device from the turn (or from a scheduled prompt's origin), and refuses
+  with a sentence when there is none. Reminders and notifications remain
+  account-wide; only timers are device-scoped, and pre-v24 timers stay
+  account-wide as documented in the notification section.
 - **Times are instants here, words there.** `runAt` is an ISO-8601 instant (the
   output of a picker), while the model speaks times as words through its tools.
   Both end at one instant, but only the words need the resolver. A moment in the

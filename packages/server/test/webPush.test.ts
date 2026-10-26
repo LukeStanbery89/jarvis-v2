@@ -31,6 +31,7 @@ function subscription(endpoint: string): AppPushSubscription {
         p256dh: `p256dh-${endpoint}`,
         auth: `auth-${endpoint}`,
         createdAt: "2026-10-25T18:00:00.000Z",
+        deviceId: null,
     };
 }
 
@@ -51,6 +52,7 @@ function notification(
         answer: null,
         jobId: null,
         codingJobId: null,
+        targetDeviceId: null,
         createdAt: "2026-10-25T18:00:00.000Z",
         deliveredAt: null,
         settledAt: null,
@@ -93,6 +95,27 @@ describe("createWebPushChannel", () => {
             url: "/",
         });
         expect(options).toEqual({ TTL: 300, urgency: "high" });
+    });
+
+    it("selects only the targeted device's subscription (#194)", async () => {
+        const send = vi.fn<WebPushSend>().mockResolvedValue({});
+        const store = {
+            listPushSubscriptions: vi
+                .fn()
+                .mockReturnValue([subscription("https://push.example/phone")]),
+            deletePushSubscription: vi.fn(),
+        };
+        const channel = createWebPushChannel({
+            store,
+            vapid: VAPID,
+            send,
+        });
+
+        await expect(
+            channel.deliver(notification({ targetDeviceId: 11 })),
+        ).resolves.toBe(1);
+        expect(store.listPushSubscriptions).toHaveBeenCalledWith(7, 11);
+        expect(send).toHaveBeenCalledTimes(1);
     });
 
     it("removes an expired endpoint and keeps sending the rest", async () => {

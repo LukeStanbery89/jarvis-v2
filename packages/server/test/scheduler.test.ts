@@ -67,15 +67,28 @@ function pushed(socket: ReturnType<typeof fakeSocket>): {
 /** An agent seam that answers with `reply`, recording how it was called. */
 function fakeAgent(reply: string): {
     agent: JobAgentRunner;
-    calls: { prompt: string; sessionId: string; userId?: number }[];
+    calls: {
+        prompt: string;
+        sessionId: string;
+        userId?: number;
+        deviceId?: number;
+    }[];
 } {
-    const calls: { prompt: string; sessionId: string; userId?: number }[] = [];
+    const calls: {
+        prompt: string;
+        sessionId: string;
+        userId?: number;
+        deviceId?: number;
+    }[] = [];
     const agent: JobAgentRunner = async function* (prompt, sessionId, options) {
         calls.push({
             prompt,
             sessionId,
             ...(options?.userId !== undefined
                 ? { userId: options.userId }
+                : {}),
+            ...(options?.deviceId !== undefined
+                ? { deviceId: options.deviceId }
                 : {}),
         });
         yield { type: "token", text: reply } satisfies AgentEvent;
@@ -227,15 +240,22 @@ function harness(options: {
 }): {
     store: AppDatabase;
     userId: number;
+    deviceId: number;
     scheduler: Scheduler;
     runner: JobRunner;
     socket: ReturnType<typeof fakeSocket>;
 } {
     const store = createInMemoryAppDatabase();
     const userId = store.createUser("luke", "hash", "owner").id;
+    const deviceId = store.createDevice(
+        userId,
+        "test-device",
+        "device-hash",
+        "test0001",
+    ).id;
     const hub = createNotificationHub();
     const socket = fakeSocket();
-    hub.add(userId, socket);
+    hub.add(userId, socket, deviceId);
     const notifications = createNotificationService({
         store,
         hub,
@@ -267,7 +287,7 @@ function harness(options: {
         maxConcurrent: options.maxPerTick ?? 1,
         now: () => options.at,
     });
-    return { store, userId, scheduler, runner, socket };
+    return { store, userId, deviceId, scheduler, runner, socket };
 }
 
 /** A due prompt job, with everything a test might want to vary. */
@@ -358,6 +378,21 @@ function quietAt(at: Date): { start: string; end: string } {
 }
 
 describe("scheduler: a prompt job", () => {
+    it("passes the job's origin device into its turn (#194)", async () => {
+        const { agent, calls } = fakeAgent("Done.");
+        const h = harness({ at: AT, actor: agent });
+        h.store.createJob(h.userId, {
+            ...promptJob(),
+            id: "scoped-prompt",
+            originDeviceId: h.deviceId,
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        await h.scheduler.tick();
+
+        expect(calls[0]?.deviceId).toBe(h.deviceId);
+    });
+
     it("runs the turn, records the reply, and announces it", async () => {
         const { agent, calls } = fakeAgent("The filter is in the cupboard.");
         const h = harness({ at: AT, actor: agent });
@@ -638,6 +673,26 @@ describe("scheduler: a message job", () => {
         expect(h.store.listJobRuns("j1")[0].output).toBe("Call Mum");
     });
 
+    it("addresses a timer announcement at the device that created it (#194)", async () => {
+        const h = harness({ at: AT });
+        h.store.createJob(h.userId, {
+            id: "device-timer",
+            label: "Kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off.",
+            originDeviceId: h.deviceId,
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        await h.scheduler.tick();
+
+        const [notification] = h.store.listNotifications(h.userId);
+        expect(notification.targetDeviceId).toBe(h.deviceId);
+        expect(pushed(h.socket)).toHaveLength(1);
+    });
+
     it("lets a timer through quiet hours and holds a notification", async () => {
         const h = harness({ at: AT });
         h.store.setPrefs(h.userId, [
@@ -682,6 +737,11 @@ describe("scheduler: a message job", () => {
             ["Filter", "notification", "pending"],
             ["Kettle", "timer", "delivered"],
         ]);
+        // A timer whose row predates device scoping keeps the account-wide
+        // behavior rather than being guessed onto a device (#194).
+        expect(
+            stored.find((n) => n.title === "Kettle")?.targetDeviceId,
+        ).toBeNull();
     });
 });
 

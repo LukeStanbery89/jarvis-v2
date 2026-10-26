@@ -1638,7 +1638,7 @@ describe("notification push wiring (#139)", () => {
     it("tracks an authenticated socket and pushes a frame to it", async () => {
         const user = store.createUser("notified", "unused", "user");
         const material = generateDeviceToken();
-        store.createDevice(
+        const device = store.createDevice(
             user.id,
             "phone",
             material.tokenHash,
@@ -1654,6 +1654,9 @@ describe("notification push wiring (#139)", () => {
         await client.next(); // authResult
 
         expect(hub.isPresent(user.id)).toBe(true);
+        // #194: the socket is addressable as the device that authenticated it.
+        expect(hub.isPresent(user.id, device.id)).toBe(true);
+        expect(hub.isPresent(user.id, device.id + 1)).toBe(false);
         expect(
             hub.deliver(user.id, {
                 notification: {

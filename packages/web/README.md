@@ -669,6 +669,18 @@ a **turn** (a tool call is exactly how the assistant raises one) and the moment
 the **list is opened** (which is the user asking what is there). Silence is not
 a state the UI should be able to be in.
 
+**Timer notifications are device-scoped (#194).** A timer set in this browser
+belongs to the login device that set it: the server targets its in-app socket
+and its Web Push subscription, and `GET /api/notifications` omits that timer
+row from another device's list. So a timer set on phone A rings/notifies only
+phone A, while other devices still see the job on `/timers`, can edit or cancel
+it, and keep reminders and other notifications account-wide. The scope is the
+login device (a browser's stored device token), not a single tab: tabs sharing
+that login share the target. A push subscription is re-registered with the
+current device on load, which is what lets a backgrounded PWA receive its own
+targeted timer. **Legacy timers** created before #194 have no origin and keep
+the old account-wide behavior; they are not guessed onto a device.
+
 **System notifications (phases 2–3).** A switch in the settings panel (#143,
 "This browser") raises OS notifications for the case where the user is not
 looking at this tab. The rules live in `src/browserNotify.ts` and are all
@@ -696,8 +708,9 @@ endpoint to `/api/push/subscribe`; sign-out unsubscribes and removes the server
 row. On iOS, the `Notification` constructor is not available, so a hidden page
 falls back to `ServiceWorkerRegistration.showNotification`; the worker's push
 handler does the same for a backgrounded/closed app. The server sends push only
-when no `/ws` socket is present, and the worker suppresses the sound of a push
-that somehow races a visible page. The notification's `notificationclick` is
+when no `/ws` socket is present — for a targeted timer, no socket _on that
+device_ — and the worker suppresses the sound of a push that somehow races a
+visible page. The notification's `notificationclick` is
 routed back to the existing read/Stop handler by id.
 
 **Testing it.** In a development build, with the `jarvis.debug` gate on, the
@@ -745,7 +758,10 @@ Rules worth knowing, all pure and pinned by tests:
 
 - The ring target is the **oldest** fired timer, so two timers queue instead of
   shouting over each other; when one is stopped the next takes over, and the
-  ring loop is idempotent so the hand-over does not restart the pattern.
+  ring loop is idempotent so the hand-over does not restart the pattern. The
+  list this runs over is the device's own view: the server filters another
+  device's timer rows out (#194), so `selectAlerts` cannot ring for a timer
+  that phone did not set.
 - The ring target is never also the toast, and that is structural rather than a
   check: only a fired `timer` rings and only a failed or missed one toasts, so a
   firing timer appears in exactly one loud place (a test pins the pair).

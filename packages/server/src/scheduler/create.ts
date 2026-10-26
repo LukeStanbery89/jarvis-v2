@@ -179,6 +179,13 @@ export interface CreateRequest {
     label: string;
     class: NotificationClass;
     payload: JobPayload;
+    /**
+     * The device asking for the job (#194). Required for a `timer`, whose
+     * announcement must reach only that device; stored for the other classes
+     * so a later background prompt can still attribute a timer it creates.
+     * `null`/omitted means a legacy job or a caller with no device.
+     */
+    originDeviceId?: number | null;
     /** The moment the job is owed at — for a **one-shot**. */
     runAt: Date;
     /**
@@ -212,6 +219,11 @@ export type CreateRefusal =
     | "beyond-horizon"
     | "too-many"
     | "timer-too-long"
+    /**
+     * A timer was requested without a device (#194): there is nowhere to ring,
+     * and falling back to the account would be the bug this scope removes.
+     */
+    | "timer-needs-device"
     /**
      * The rule is not one this server will keep (#90 phase 8d) — malformed, on
      * a class that cannot repeat, or too frequent. One code for three faults
@@ -467,6 +479,8 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                 return `the user already has ${deps.maxPerUser} jobs scheduled, which is the limit — cancel one with cancelJob first.`;
             case "timer-too-long":
                 return `a countdown longer than ${MAX_DURATION_MINUTES} minutes (a day) is a reminder — use remindMe.`;
+            case "timer-needs-device":
+                return "a timer is a local alarm, so it needs the device that asked for it — set it from the signed-in app rather than a session with no device.";
             case "invalid-repeat":
                 // The specific fault is the parser's (see `repeatCheck`), which
                 // knows whether it was a weekday, an ordinal or an end.
@@ -584,6 +598,20 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
     function create(userId: number, request: CreateRequest): CreateOutcome {
         const at = request.at ?? now();
         const { label, payload } = request;
+        // A timer has no meaningful account-wide fallback: ringing every
+        // signed-in device is the bug #194 fixes. Refuse before anything is
+        // stored, rather than turning a missing credential into an alarm.
+        if (
+            request.class === "timer" &&
+            (request.originDeviceId === undefined ||
+                request.originDeviceId === null)
+        ) {
+            return {
+                ok: false,
+                code: "timer-needs-device",
+                reason: creationReason("timer-needs-device"),
+            };
+        }
         // Before the repeat check, because a gate is what the cadence floor
         // depends on: a gated job may repeat every minute.
         const gated = gateCheck(request.gate);
@@ -659,6 +687,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
                             toolArgs: payload.toolArgs,
                         }),
                 runAt: runAt.toISOString(),
+                originDeviceId: request.originDeviceId ?? null,
                 ...(checked.rule !== null ? { repeat: checked.rule } : {}),
                 ...(gated.gate !== null ? { gate: gated.gate } : {}),
             });
@@ -1012,6 +1041,7 @@ export function createJobCreator(deps: JobCreatorDeps): JobCreator {
             label: job.label,
             class: "reminder",
             payload,
+            originDeviceId: job.originDeviceId,
             runAt,
             at,
         });

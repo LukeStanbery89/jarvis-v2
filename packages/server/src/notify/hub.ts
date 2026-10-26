@@ -19,6 +19,14 @@
  * process, so there is nothing to persist. The consequence is worth stating —
  * a JARVIS restart empties the registry, and undelivered notifications are
  * found again through `GET /api/notifications` rather than re-pushed.
+ *
+ * Since #194 a socket also knows the **device** that authenticated it, and a
+ * timer is addressable: `deliver` with a device id reaches only that device's
+ * sockets. Account-wide notifications pass no device and keep the original
+ * every-socket behavior. A socket added without a device (a test, or a client
+ * that authenticated before this field existed) cannot receive a targeted
+ * timer, which is the correct failure direction: it does not ring the wrong
+ * phone.
  */
 import type { ServerFrame } from "@lukestanbery/jarvis-protocol";
 import { logger } from "../logger";
@@ -34,20 +42,37 @@ const WS_OPEN = 1;
 
 /** The live-connection registry. */
 export interface NotificationHub {
-    /** Tracks a socket as reachable for `userId` (idempotent per socket). */
-    add(userId: number, socket: HubSocket): void;
+    /**
+     * Tracks a socket as reachable for `userId` (idempotent per socket).
+     *
+     * @param deviceId - The authenticated device (#194), or omitted for an
+     *   account-wide socket. A targeted delivery only reaches a matching id.
+     */
+    add(userId: number, socket: HubSocket, deviceId?: number | null): void;
     /** Forgets a socket, whichever user it was tracked under. */
     remove(socket: HubSocket): void;
-    /** Whether `userId` has at least one open socket right now. */
-    isPresent(userId: number): boolean;
     /**
-     * Pushes one frame to every open socket of `userId`.
+     * Whether `userId` has an open socket right now.
      *
+     * @param deviceId - When given, require that same device; omitted (or
+     *   `null`) asks whether any socket of the account is open.
+     */
+    isPresent(userId: number, deviceId?: number | null): boolean;
+    /**
+     * Pushes one frame to the open sockets of `userId`.
+     *
+     * @param deviceId - When given, only that device's sockets receive it
+     *   (#194). Omitted (`null`/`undefined`) reaches every socket of the
+     *   account, which is what a reminder or informational notification does.
      * @returns How many sockets accepted it. A socket that closed between the
      * presence check and the write is skipped rather than treated as a
      * failure — delivery is best-effort and the record is the durable half.
      */
-    deliver(userId: number, frame: ServerFrame): number;
+    deliver(
+        userId: number,
+        frame: ServerFrame,
+        deviceId?: number | null,
+    ): number;
     /** Distinct users with at least one open socket (diagnostics/tests). */
     presentUsers(): number;
 }
@@ -63,6 +88,7 @@ export interface NotificationHub {
 export function createNotificationHub(): NotificationHub {
     const byUser = new Map<number, Set<HubSocket>>();
     const userOf = new Map<HubSocket, number>();
+    const deviceOf = new Map<HubSocket, number>();
 
     const forget = (socket: HubSocket): void => {
         const userId = userOf.get(socket);
@@ -70,6 +96,7 @@ export function createNotificationHub(): NotificationHub {
             return;
         }
         userOf.delete(socket);
+        deviceOf.delete(socket);
         const sockets = byUser.get(userId);
         if (sockets === undefined) {
             return;
@@ -81,9 +108,12 @@ export function createNotificationHub(): NotificationHub {
     };
 
     return {
-        add(userId: number, socket: HubSocket): void {
+        add(userId: number, socket: HubSocket, deviceId?: number | null): void {
             forget(socket);
             userOf.set(socket, userId);
+            if (deviceId !== undefined && deviceId !== null) {
+                deviceOf.set(socket, deviceId);
+            }
             const sockets = byUser.get(userId);
             if (sockets === undefined) {
                 byUser.set(userId, new Set([socket]));
@@ -96,11 +126,27 @@ export function createNotificationHub(): NotificationHub {
             forget(socket);
         },
 
-        isPresent(userId: number): boolean {
-            return byUser.has(userId);
+        isPresent(userId: number, deviceId?: number | null): boolean {
+            const sockets = byUser.get(userId);
+            if (sockets === undefined) {
+                return false;
+            }
+            if (deviceId === undefined || deviceId === null) {
+                return true;
+            }
+            for (const socket of sockets) {
+                if (deviceOf.get(socket) === deviceId) {
+                    return true;
+                }
+            }
+            return false;
         },
 
-        deliver(userId: number, frame: ServerFrame): number {
+        deliver(
+            userId: number,
+            frame: ServerFrame,
+            deviceId?: number | null,
+        ): number {
             const sockets = byUser.get(userId);
             if (sockets === undefined) {
                 return 0;
@@ -108,6 +154,13 @@ export function createNotificationHub(): NotificationHub {
             const payload = JSON.stringify(frame);
             let sent = 0;
             for (const socket of sockets) {
+                if (
+                    deviceId !== undefined &&
+                    deviceId !== null &&
+                    deviceOf.get(socket) !== deviceId
+                ) {
+                    continue;
+                }
                 if (socket.readyState !== WS_OPEN) {
                     continue;
                 }

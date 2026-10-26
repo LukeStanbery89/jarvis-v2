@@ -87,7 +87,7 @@ export interface NotificationService {
     /** A page of the user's notifications, plus the unread count for a badge. */
     list(
         userId: number,
-        options?: { limit?: number },
+        options?: { limit?: number; deviceId?: number | null },
     ): { notifications: AppNotification[]; unread: number };
     /** Marks a notification read (from any unsettled state). */
     markRead(userId: number, id: string): SettlementResult;
@@ -205,7 +205,14 @@ export function createNotificationService(
             // states of the same browser. `onlyWhenAbsent` keeps a push from
             // duplicating the page's own interruption; `requiresPresence` keeps
             // the in-app channel from pretending a closed socket delivered.
-            const present = hub.isPresent(userId);
+            // Presence is about the *addressable* target (#194): a timer asks
+            // whether its own device is listening, not whether some other
+            // signed-in browser is. Account-wide notifications keep the old
+            // any-socket question.
+            const present = hub.isPresent(
+                userId,
+                normalized.targetDeviceId ?? null,
+            );
             const eligible = channels.filter((channel) => {
                 if (
                     normalized.requiresAnswer &&
@@ -265,10 +272,16 @@ export function createNotificationService(
             };
         },
 
-        list(userId: number, listOptions: { limit?: number } = {}) {
+        list(
+            userId: number,
+            listOptions: { limit?: number; deviceId?: number | null } = {},
+        ) {
             return {
                 notifications: store.listNotifications(userId, listOptions),
-                unread: store.countUnreadNotifications(userId),
+                unread: store.countUnreadNotifications(
+                    userId,
+                    listOptions.deviceId,
+                ),
             };
         },
 

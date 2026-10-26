@@ -84,6 +84,13 @@ export interface NotificationInput {
      * client never has to send it back.
      */
     codingJobId?: string;
+    /**
+     * The one device this notification may interrupt (#194), when it is a new
+     * timer. Omitted for account-wide notifications and legacy timers; the
+     * channels address the target and a list read from another device omits
+     * the row.
+     */
+    targetDeviceId?: number | null;
 }
 
 /** What one delivery attempt achieved, for the caller and the tests. */
@@ -199,7 +206,10 @@ export function normalizeNotificationInput(
         "kind" | "class" | "priority" | "title" | "requiresAnswer"
     >
 > &
-    Pick<NotificationInput, "body" | "dedupeKey" | "jobId" | "codingJobId"> {
+    Pick<
+        NotificationInput,
+        "body" | "dedupeKey" | "jobId" | "codingJobId" | "targetDeviceId"
+    > {
     const kind = input.kind?.trim() ?? "";
     const title = input.title?.trim() ?? "";
     const notificationClass = input.class ?? "notification";
@@ -249,6 +259,15 @@ export function normalizeNotificationInput(
             "codingJobId must be a non-empty string of at most 64 characters",
         );
     }
+    if (
+        input.targetDeviceId !== undefined &&
+        input.targetDeviceId !== null &&
+        (!Number.isInteger(input.targetDeviceId) || input.targetDeviceId <= 0)
+    ) {
+        throw new NotificationInputError(
+            "targetDeviceId must be a positive integer",
+        );
+    }
     return {
         kind,
         class: notificationClass,
@@ -262,6 +281,9 @@ export function normalizeNotificationInput(
         ...(input.jobId !== undefined ? { jobId: input.jobId } : {}),
         ...(codingJobId !== undefined && codingJobId.length > 0
             ? { codingJobId }
+            : {}),
+        ...(input.targetDeviceId !== undefined && input.targetDeviceId !== null
+            ? { targetDeviceId: input.targetDeviceId }
             : {}),
     };
 }

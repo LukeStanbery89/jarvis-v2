@@ -618,6 +618,10 @@ async function handlePrompt(
                         conn.ctx.kind === "authed"
                             ? conn.ctx.user.id
                             : undefined,
+                    deviceId:
+                        conn.ctx.kind === "authed"
+                            ? conn.ctx.device.id
+                            : undefined,
                     location: conn.location,
                     clientIp: conn.clientIp,
                     tts: options.tts,
@@ -736,7 +740,11 @@ async function handleAuth(
     // is ever pushed to it. A guest never registers either: there is no user
     // to address.
     if (conn.capabilities.includes("notification")) {
-        options.notifications?.add(identity.user.id, socket);
+        options.notifications?.add(
+            identity.user.id,
+            socket,
+            identity.device.id,
+        );
     }
     logger.info(
         `Socket authenticated as ${identity.user.username} (device: ${identity.device.name})`,
@@ -824,6 +832,8 @@ interface StreamEventsOptions {
     attachmentIds: string[];
     /** The authenticated user's id, or `undefined` for a guest socket. */
     userId: number | undefined;
+    /** The authenticated device's id (#194), or `undefined` for a guest. */
+    deviceId: number | undefined;
     /** The socket's latest device-location report, if any. */
     location: DeviceLocation | undefined;
     /** The socket's peer address (#8), for guest metering; may be undefined. */
@@ -1005,6 +1015,7 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
             mode,
             attachmentIds,
             userId,
+            deviceId: opts.deviceId,
             location,
             clientIp,
             signal,

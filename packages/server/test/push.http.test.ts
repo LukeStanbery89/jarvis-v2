@@ -80,11 +80,15 @@ describe("push routes", () => {
             .set("authorization", auth)
             .send(SUBSCRIPTION);
         expect(subscribed.status).toBe(204);
+        const [device] = store.listDevicesByUser(me.id);
         expect(store.listPushSubscriptions(me.id)).toEqual([
             expect.objectContaining({
                 endpoint: SUBSCRIPTION.endpoint,
                 p256dh: SUBSCRIPTION.keys.p256dh,
                 auth: SUBSCRIPTION.keys.auth,
+                // #194: the row is attributable to the browser's device, so a
+                // targeted timer can select it.
+                deviceId: device.id,
             }),
         ]);
 
