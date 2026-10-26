@@ -1017,11 +1017,15 @@ textarea::placeholder {
 
 /* The user's bubble keeps its cyan identity as a *tint* rather than a solid
    fill — a solid one would be opaque glass, and the text would have to stay
-   black on it. The tint plus a stronger hairline is the whole distinction. */
+   black on it. The tint plus a stronger hairline is the whole distinction.
+   The corner nearest the speaker is squared — bottom-right on the user's,
+   bottom-left on the assistant's — so the side carries the direction of the
+   turn. */
 .msg.user {
     align-self: flex-end;
     background: rgba(0, 221, 255, 0.16);
     border: 1px solid var(--primary-dim);
+    border-bottom-right-radius: 0;
     color: var(--text);
 }
 
@@ -1029,22 +1033,59 @@ textarea::placeholder {
     align-self: flex-start;
     background: var(--glass);
     border: 1px solid var(--glass-line);
+    border-bottom-left-radius: 0;
 }
 
 /* Markdown blocks (p, ul, …) carry their own margins — trimming the first
-   and last makes the bubble's effective padding match the plain-text user
-   bubble instead of reading a paragraph margin taller. */
-.msg.assistant > :first-child {
+   and last makes every bubble's effective padding match its text instead of
+   reading a paragraph margin taller. Both sides render Markdown (#147). */
+.msg > :first-child {
     margin-top: 0;
 }
 
-.msg.assistant > :last-child {
+.msg > :last-child {
     margin-bottom: 0;
 }
 
 .msg.assistant.error {
     color: var(--error);
     font-weight: 600;
+}
+
+/* A GFM table gets its own horizontal scroll region (#147 follow-up). The
+   bubble keeps its normal width; the table keeps its natural column widths and
+   pans instead of squeezing every cell into the measure. `white-space: nowrap`
+   is the important half — the bubble's `overflow-wrap: anywhere` would
+   otherwise break headers and album names mid-word even inside the scroller. */
+.markdown-table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.markdown-table-scroll table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    overflow-wrap: normal;
+    word-break: normal;
+    white-space: nowrap;
+}
+
+/* A table has no column-gap; padding on all but the last cell is the gap. */
+.markdown-table-scroll th,
+.markdown-table-scroll td {
+    padding-right: 16px;
+}
+
+.markdown-table-scroll th:last-child,
+.markdown-table-scroll td:last-child {
+    padding-right: 0;
+}
+
+.markdown-table-scroll th {
+    text-align: left;
 }
 
 .tool-call {
@@ -1105,6 +1146,22 @@ textarea::placeholder {
            the rounded corners would otherwise clip the two 44px buttons. This
            is chat-only: the other pages keep their own natural bottom edge. */
         padding: 0.75rem 0.5rem max(1.75rem, env(safe-area-inset-bottom, 0px));
+    }
+
+    /* A phone's reading column is the screen, not the 46rem desktop cap. Let a
+       bubble grow to about nine tenths of the transcript and leave the rest as
+       the speaker's margin: the user's turns sit right, the assistant's sit
+       left, so the side alone says who is talking. */
+    .msg {
+        max-width: 90%;
+    }
+
+    .msg.user {
+        align-self: flex-end;
+    }
+
+    .msg.assistant {
+        align-self: flex-start;
     }
 
     .sidebar {
@@ -3507,9 +3564,55 @@ textarea::placeholder {
 }
 
 /* A body (Markdown, so links survive) and the plain detail lines under a row's
- * title. Compact, so a body does not turn a list row into a paragraph. */
-.row-body p {
-    margin: 0.15rem 0 0;
+ * title. Compact, so a body does not turn a list row into a paragraph: the
+ * blocks keep their hierarchy without the browser's default heading/list
+ * margins, and the card's own line height carries the result (#147). */
+.row-body > :first-child {
+    margin-top: 0;
+}
+
+.row-body > :last-child {
+    margin-bottom: 0;
+}
+
+.row-body p,
+.row-body ul,
+.row-body ol,
+.row-body blockquote {
+    margin: 0.15rem 0;
+}
+
+.row-body ul,
+.row-body ol {
+    padding-left: 1.2rem;
+}
+
+.row-body li {
+    margin: 0.08rem 0;
+}
+
+.row-body h1,
+.row-body h2,
+.row-body h3,
+.row-body h4,
+.row-body h5,
+.row-body h6 {
+    margin: 0.25rem 0 0.1rem;
+    font: inherit;
+    font-weight: 700;
+    line-height: 1.25;
+}
+
+.row-body blockquote {
+    padding-left: 0.5rem;
+    border-left: 2px solid var(--primary-dim);
+}
+
+.row-body pre {
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .job-detail,

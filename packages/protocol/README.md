@@ -10,8 +10,12 @@ It is also the home of the **scheduled-job rule** (#90 phase 8): the recurrence
 shape, its validation, and `nextOccurrence`. That is a widening of the package's
 remit, decided on purpose — the server schedules with the same function the web
 form previews with, so a preview cannot disagree with what will actually happen.
+The same shared-home argument puts `plainText` here (#147): a notification body
+is stored as Markdown, the web list renders it, and both the server's Web Push
+payload and the page's OS notification need the same plain-text fallback.
 It stays dependency-free: the maths is `Date` arithmetic behind an injectable
-`Zone`.
+`Zone`, and `plainText` is a small regex-backed subset rather than a Markdown
+parser.
 
 ## Install
 
@@ -79,6 +83,7 @@ npm install @lukestanbery/jarvis-protocol
 | `gateKey(gate)`                                 | The gate's identity — `{ tool, args }` as canonical JSON with sorted object keys — stored beside every answer so two firings are compared only when they asked the same question                                               |
 | `MAX_GATE_TOOL_LENGTH` / `MAX_GATE_ARGS_LENGTH` | The gate's bounds: `64` for the tool name, `2000` characters of serialized arguments (the identity is stored on every run row)                                                                                                 |
 | `GATE_CONDITIONS`                               | The tuple `["changed"]` — the only comparison, deliberately                                                                                                                                                                    |
+| `plainText(markdown)`                           | The notification body's plain-text fallback (#147): strips headings, list markers, emphasis, code fences, links/images and HTML, keeping readable labels and paragraph breaks for the OS Notification API and Web Push payload |
 | `parseFrame(raw)`                               | Parses a server frame; throws on malformed/unrecognized payload                                                                                                                                                                |
 | `parseClientMessage(raw)`                       | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, `ClientCancelFrame`, or `ChatPrompt`                                                                                          |
 | `parseRequest(raw)`                             | Parses + validates a client request (non-empty strings, ≤128 id)                                                                                                                                                               |
@@ -88,6 +93,18 @@ npm install @lukestanbery/jarvis-protocol
 | `serializeHello(caps[])`                        | Serializes a `hello` capability announcement to wire JSON                                                                                                                                                                      |
 | `serializeCancel()`                             | Serializes a `cancel` turn cancellation to wire JSON (#84 P6)                                                                                                                                                                  |
 | `serializeLocation(lat,lon,label?)`             | Serializes a `location` device report to wire JSON (#31)                                                                                                                                                                       |
+
+## Plain-text notification fallback (#147)
+
+A notification's `body` is model output and is stored **once**, as Markdown.
+The web list and toast render it through `Markdown.tsx`; the OS Notification API
+and the Web Push service worker cannot render Markdown, so they call
+`plainText(body)` first. That keeps one source of truth: a scheduled prompt's
+brief cannot read one way in `/notifications` and another in the lock-screen
+popup. The function keeps line structure (paragraphs and `•` list items), turns
+links and images into their labels/alt text (falling back to the URL), decodes
+the common HTML entities the renderer would decode, and leaves identifiers such
+as `snake_case` alone.
 
 ## Chat protocol
 

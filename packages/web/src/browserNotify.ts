@@ -30,7 +30,10 @@
  * per-browser preference and adds the subscription needed when the page itself
  * is suspended.
  */
-import type { NotificationClass } from "@lukestanbery/jarvis-protocol";
+import {
+    plainText,
+    type NotificationClass,
+} from "@lukestanbery/jarvis-protocol";
 import { describeBody } from "./notifications";
 
 /** What the bell toggle should say and look like. */
@@ -152,8 +155,12 @@ export function notificationBody(notification: {
     class?: NotificationClass;
 }): string {
     const body = describeBody(notification);
-    if (body !== null) {
-        return body;
+    // The OS Notification API has no Markdown renderer. Strip the stored body's
+    // syntax here rather than storing a second, plain copy alongside it: the
+    // list and the popup then read from one source and cannot drift (#147).
+    const text = body === null ? "" : plainText(body);
+    if (text.length > 0) {
+        return text;
     }
     if (notification.class === "timer") {
         // A timer with nothing to add is not "a notification": it is time.

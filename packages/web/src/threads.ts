@@ -21,7 +21,7 @@
  * a DOM.
  */
 
-/** One user-turn message (plain text, rendered verbatim). */
+/** One user-turn message (Markdown, rendered like the assistant's prose). */
 export interface UserMessage {
     id: string;
     role: "user";

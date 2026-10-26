@@ -162,6 +162,22 @@ describe("notificationBody", () => {
     });
 });
 
+describe("notificationBody (#147)", () => {
+    it("strips markdown for the OS card, keeping its readable structure", () => {
+        expect(
+            notificationBody({
+                body: "## Brief\n\n**Canada**: A major fire.\n\n1. **Oil**: Prices dipped.",
+            }),
+        ).toBe("Brief\n\nCanada: A major fire.\n\n• Oil: Prices dipped.");
+    });
+
+    it("falls back to the class hint when the markdown has no visible text", () => {
+        expect(notificationBody({ body: "** **" })).toBe(
+            "J.A.R.V.I.S. sent you a notification.",
+        );
+    });
+});
+
 describe("preference storage", () => {
     it("round-trips per user without leaking across accounts", () => {
         const storage = memoryStorage();
