@@ -53,6 +53,10 @@ npm install @lukestanbery/jarvis-protocol
 | `interface ChatPrompt`                          | A client request: `{ prompt, sessionId, mode?, attachments? }`                                                                                                                                                                 |
 | `interface ClientLocationFrame`                 | The device-location report (#31): `{ type: "location", lat, lon, label? }`                                                                                                                                                     |
 | `interface ClientCancelFrame`                   | The turn cancellation (#84 P6): `{ type: "cancel" }`                                                                                                                                                                           |
+| `interface ToolSource`                          | One original source on a `toolResult` (#199): `{ title, url }`, presentation-only                                                                                                                                              |
+| `MAX_TOOL_SOURCES`                              | `20` — longest allowed `sources` list on a `toolResult`                                                                                                                                                                        |
+| `MAX_TOOL_SOURCE_TITLE_LENGTH`                  | `300` — longest allowed source `title`                                                                                                                                                                                         |
+| `MAX_TOOL_SOURCE_URL_LENGTH`                    | `2048` — longest allowed source `url`                                                                                                                                                                                          |
 | `MAX_SESSION_ID_LENGTH`                         | `128` — longest allowed `sessionId`                                                                                                                                                                                            |
 | `MAX_TOKEN_LENGTH`                              | `128` — longest allowed device `token`                                                                                                                                                                                         |
 | `MAX_CAPABILITIES`                              | `16` — longest allowed `capabilities` list in a `hello` frame                                                                                                                                                                  |
@@ -85,6 +89,7 @@ npm install @lukestanbery/jarvis-protocol
 | `GATE_CONDITIONS`                               | The tuple `["changed"]` — the only comparison, deliberately                                                                                                                                                                    |
 | `plainText(markdown)`                           | The notification body's plain-text fallback (#147): strips headings, list markers, emphasis, code fences, links/images and HTML, keeping readable labels and paragraph breaks for the OS Notification API and Web Push payload |
 | `parseFrame(raw)`                               | Parses a server frame; throws on malformed/unrecognized payload                                                                                                                                                                |
+| `normalizeToolSources(value)`                   | Vets and normalizes an optional `toolResult.sources` list (#199); invalid entries are dropped, never the result                                                                                                                |
 | `parseClientMessage(raw)`                       | Parses + validates a client message into an `AuthRequest`, `ClientHello`, `ClientLocationFrame`, `ClientCancelFrame`, or `ChatPrompt`                                                                                          |
 | `parseRequest(raw)`                             | Parses + validates a client request (non-empty strings, ≤128 id)                                                                                                                                                               |
 | `serializeFrame(frame)`                         | Serializes a `ServerFrame` to wire JSON                                                                                                                                                                                        |
@@ -145,8 +150,13 @@ JSON text frames over `/ws`:
       streamed stays in history, and no error frame is sent. With no turn
       in flight it is ignored (no reply).
 - Server → Client:
-    - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output" } }`
-      frames while the agent calls tools,
+    - `{ "tool": { "name", "args" } }` and `{ "toolResult": { "name", "output", "sources?" } }`
+      frames while the agent calls tools. `sources` is an optional, bounded
+      list of `{ title, url }` originals behind a search result (#199); it is
+      presentation metadata, so a client that cannot render links can ignore
+      it and the model-facing `output` remains the complete answer. Invalid or
+      non-`http(s)` entries are dropped by the parser rather than failing the
+      result,
     - then `{ "chunk": "<text>" }` … then `{ "done": true }`, then (for `audio`-capable sockets) `{ "audioStart": {...} }`, binary PCM chunks, `{ "audioEnd": {...} }`; and
       `{ "authResult": { "user", "device" } }` as the one-frame reply to an
       `auth` handshake,

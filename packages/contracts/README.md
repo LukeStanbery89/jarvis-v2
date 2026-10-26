@@ -148,7 +148,10 @@ One channel (`/ws`), two operations, fifteen messages mirroring
 
 A client may open the socket with either the `hello` capability announcement or
 the `auth` handshake (and `auth` may also come immediately after `hello`); any
-other first frame runs the socket as a guest.
+other first frame runs the socket as a guest. `toolResult` may also carry an
+optional bounded `sources` list of `{ title, url }` pairs — presentation-only
+metadata behind a search result (#199) that clients without link rendering
+ignore.
 
 Payloads are strict (`additionalProperties: false`) and encode the protocol's
 bounds: non-empty-after-trim strings (`pattern: \S`) and the ≤128-char

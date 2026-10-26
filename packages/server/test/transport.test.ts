@@ -36,6 +36,25 @@ describe("toServerFrame", () => {
         });
     });
 
+    it("carries original sources on the toolResult frame (#199)", () => {
+        const sources = [
+            {
+                title: "Cyan - Wikipedia",
+                url: "https://en.wikipedia.org/wiki/Cyan",
+            },
+        ];
+        expect(
+            toServerFrame({
+                type: "toolResult",
+                name: "webSearch",
+                output: "results",
+                sources,
+            }),
+        ).toEqual({
+            toolResult: { name: "webSearch", output: "results", sources },
+        });
+    });
+
     it("always yields a valid ServerFrame (compile-time exhaustiveness guard)", () => {
         const frames: ServerFrame[] = [
             toServerFrame({ type: "token", text: "" }),

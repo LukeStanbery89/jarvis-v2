@@ -4,15 +4,18 @@
  * Renders each message as a memoized {@link MessageRow} — user text with image
  * previews (or a muted "not retained" note), tool-call notices, and Markdown
  * for both sides of the conversation (or an error banner) — plus a thinking
- * row while the agent works on the turn. Owns the scroll container's auto-scroll
- * via {@link useAutoScroll}. Presentational: props in, no events out.
+ * row while the agent works on the turn and a source list after an answer
+ * built from web searches (#199). Owns the scroll container's auto-scroll via
+ * {@link useAutoScroll}. Presentational: props in, no events out.
  */
-import { memo, useRef } from "react";
+import { Fragment, memo, useMemo, useRef } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import { Markdown } from "../../Markdown";
 import { ToolCall } from "../../components/ToolCall";
 import { useAutoScroll } from "../../hooks/useAutoScroll";
 import type { ThreadMessage } from "../../threads";
+import { Sources } from "./Sources";
+import { groupSources } from "./sourceLinks";
 
 /** Props for one {@link MessageRow}. */
 interface MessageRowProps {
@@ -132,6 +135,10 @@ export function Transcript({
 }: TranscriptProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     useAutoScroll(containerRef, messages, activeId, turning);
+    const { byAssistant, currentAssistantId } = useMemo(
+        () => groupSources(messages),
+        [messages],
+    );
     const last = messages[messages.length - 1];
     // A tool call is still part of the agent working, so only an assistant
     // bubble with visible words (or a settled error) ends the wait.
@@ -146,13 +153,22 @@ export function Transcript({
             {!hasThread && (
                 <p className="hint">Pick a conversation or start a new one</p>
             )}
-            {messages.map((message) => (
-                <MessageRow
-                    key={message.id}
-                    message={message}
-                    previews={previews}
-                />
-            ))}
+            {messages.map((message) => {
+                // Hold the in-flight answer's sources back until the turn
+                // settles: a footnote that scrolls into view below a growing
+                // bubble would chase the user away from the new words.
+                const sources =
+                    message.role === "assistant" &&
+                    !(turning && message.id === currentAssistantId)
+                        ? byAssistant.get(message.id)
+                        : undefined;
+                return (
+                    <Fragment key={message.id}>
+                        <MessageRow message={message} previews={previews} />
+                        {sources !== undefined && <Sources sources={sources} />}
+                    </Fragment>
+                );
+            })}
             {showThinking && <ThinkingRow />}
         </div>
     );

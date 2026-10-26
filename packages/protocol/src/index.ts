@@ -25,6 +25,7 @@ export type {
     NotificationFrame,
     NotificationPriority,
     ServerFrame,
+    ToolSource,
 } from "./types";
 export type {
     JobRepeat,
@@ -50,6 +51,9 @@ export {
     MAX_NOTIFICATION_TITLE_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    MAX_TOOL_SOURCE_TITLE_LENGTH,
+    MAX_TOOL_SOURCE_URL_LENGTH,
+    MAX_TOOL_SOURCES,
     NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
     REVOKED_TOKEN_ERROR,
@@ -77,6 +81,7 @@ export { plainText };
 
 export {
     MALFORMED_SERVER_FRAME,
+    normalizeToolSources,
     parseClientMessage,
     parseFrame,
     parseRequest,

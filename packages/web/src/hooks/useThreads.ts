@@ -19,6 +19,7 @@ import {
     type Dispatch,
     type RefObject,
 } from "react";
+import type { ToolSource } from "@lukestanbery/jarvis-protocol";
 import {
     appendChunk,
     appendMessage,
@@ -53,6 +54,8 @@ export type ThreadsAction =
           sessionId: string;
           name: string;
           output?: unknown;
+          /** Original web sources behind a search result (#199). */
+          sources?: ToolSource[];
           at: number;
       }
     | { type: "assistantError"; sessionId: string; text: string; at: number }
@@ -121,6 +124,7 @@ export function threadsReducer(
                 action.name,
                 action.output,
                 action.at,
+                action.sources,
             );
         case "assistantError":
             return markAssistantError(

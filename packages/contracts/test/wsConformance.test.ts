@@ -433,6 +433,25 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectSpecValid(MESSAGE_FOR_KEY.toolResult, JSON.parse(wire));
         });
 
+        it("validates a toolResult frame with original sources (#199)", () => {
+            const frame: ServerFrame = {
+                toolResult: {
+                    name: "webSearch",
+                    output: "1. Cyan - Wikipedia — https://en.wikipedia.org/wiki/Cyan",
+                    sources: [
+                        {
+                            title: "Cyan - Wikipedia",
+                            url: "https://en.wikipedia.org/wiki/Cyan",
+                        },
+                    ],
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.toolResult,
+            );
+        });
+
         it("validates a done frame", () => {
             const frame: ServerFrame = { done: true };
             expectWireConformant(
@@ -550,6 +569,17 @@ describe("AsyncAPI conformance: protocol frames", () => {
                 { tool: { name: "a" } },
                 { toolResult: { name: "a", output: {} } },
                 { toolResult: { name: "a" } },
+                {
+                    toolResult: {
+                        name: "webSearch",
+                        sources: [
+                            {
+                                title: "Example",
+                                url: "https://example.com/",
+                            },
+                        ],
+                    },
+                },
                 { done: true },
                 { error: "" },
                 { authResult: { user: "u", device: "d" } },

@@ -345,6 +345,20 @@ transcript never scroll sideways. Table headers are left-aligned, and every
 column except the last carries a 16px right gap so adjacent values do not run
 together.
 
+A `webSearch` result carries its original links beside the model-facing text
+(#199). Once the turn settles, the final assistant bubble is followed by a
+collapsed **Sources** disclosure with a count badge; opening it reveals
+numbered cards showing each result's title and hostname. Links run through the
+same `safeHref` allowlist as Markdown, duplicates collapse by normalized URL,
+and the sources are held back while the answer is still streaming so the
+footnote cannot pull the view away from new words. In a normal tab a card opens
+a new tab. In an installed PWA the click is diverted out of the app to the
+system browser — an Android `intent://` URL, iOS's `x-safari-https` scheme, or
+a new browser window where no stronger escape exists
+(`views/chat/externalBrowser.ts`). `views/chat/sourceLinks.ts` groups each
+turn's links onto its last answer and vets them; `views/chat/Sources.tsx`
+renders the disclosure.
+
 While the agent is working on a turn, the transcript ends with a small
 **three-dot** bubble in the assistant's own alignment and glass. It appears as
 soon as the prompt is submitted, survives tool calls, and gives way to the reply
@@ -993,7 +1007,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images and a focusable horizontal scroller around each table.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` renders the conversation: its sidebar rows (`useSessions`), the transcript, the composer, and the error/wake/voice status lines — the turn itself is the shell's `runTurn`, and the Settings item and the panel it opens are the shell's too (#90 phase 6d).
-- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx` (whose row delete is the `HoldToDelete` gesture, #157), `Transcript.tsx` (memoized message rows + auto-scroll + the per-turn working bubble), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
+- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx` (whose row delete is the `HoldToDelete` gesture, #157), `Transcript.tsx` (memoized message rows + auto-scroll + the per-turn working bubble), `Sources.tsx`, `sourceLinks.ts` and `externalBrowser.ts` (the collapsible original-link list under a web-search answer, its grouping/vetting, and the PWA system-browser escape, #199), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
 - `src/hooks/useJobRuns.ts` — one job's attempts, read when a record asks (#90 phase 7d): `loaded` with the runs, `gone` for the 404 a _stale_ link gets (the schema nulls a record's `job_id` when its job is pruned, so only a list read before the prune can ask after something that is gone), `error` for anything else. Mounted only once a disclosure is open, because a `<details>` renders its children either way and a naive one would fire a request per record on every visit.
 - `src/hooks/useJobPage.ts` — a job page's form lifecycle (#90 phase 7): which object the form has open, the line the last save left (the server's quiet-hours forecast), and the transitions between them. One copy, because three pages open the same form and a second would be the place they disagreed about what "saved" means.
 - `src/hooks/` — the hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing` (the preference, the one-shot fix, and the fixed position the widget reads), `useWeather` (#186), `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `usePrefs` (#143 account prefs read/patch), `useJobs` (#90 job list), `useClock`, `useRoute`, `useAutoScroll`.

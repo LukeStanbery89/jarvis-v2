@@ -1156,6 +1156,147 @@ textarea::placeholder {
     text-align: left;
 }
 
+/* Original sources under a web-search answer (#199). The list is a sibling of
+   the answer bubble, not part of it: the bubble keeps its glass shape and the
+   links read as a compact footnote. It holds the in-flight turn's sources back
+   (see Transcript) so a growing answer never pushes its own footnote away. */
+.sources {
+    align-self: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    width: min(46rem, 100%);
+    max-width: 100%;
+    min-width: 0;
+    /* The transcript's row gap is generous between bubbles; a source list is
+       attached to the bubble above it, so close that one internal seam. */
+    margin-top: -0.35rem;
+}
+
+.sources-heading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: fit-content;
+    margin: 0;
+    padding: 0.28rem 0.55rem;
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: 999px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.sources-heading::-webkit-details-marker {
+    display: none;
+}
+
+.sources-heading::marker {
+    content: "";
+}
+
+.sources-heading:hover,
+.sources-heading:focus-visible {
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
+.sources-count {
+    min-width: 1.05rem;
+    padding: 0 0.28rem;
+    color: var(--primary);
+    font-size: 0.68rem;
+    line-height: 1.35;
+    text-align: center;
+    background: var(--primary-wash);
+    border-radius: 999px;
+    font-variant-numeric: tabular-nums;
+}
+
+.sources-chevron {
+    flex: 0 0 auto;
+    transition: transform 120ms ease-out;
+}
+
+.sources[open] .sources-chevron {
+    transform: rotate(180deg);
+}
+
+/* Author CSS for a child display can override the UA's closed-details rule;
+   this keeps the cards hidden until the summary is opened. */
+.sources:not([open]) > .source-list {
+    display: none;
+}
+
+.source-list {
+    display: grid;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.source-link {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.45rem 0.6rem;
+    color: var(--text);
+    background: var(--glass);
+    border: 1px solid var(--glass-line);
+    border-radius: 10px;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+    transition:
+        border-color 120ms ease-out,
+        background 120ms ease-out;
+}
+
+.source-link:hover,
+.source-link:focus-visible {
+    background: var(--control);
+    border-color: var(--primary);
+}
+
+.source-number {
+    flex: 0 0 auto;
+    min-width: 1rem;
+    color: var(--primary-dim);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
+.source-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 0.1rem;
+}
+
+.source-title {
+    font-size: 0.86rem;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+.source-domain {
+    color: var(--primary-dim);
+    font-size: 0.72rem;
+    line-height: 1.3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .source-link,
+    .sources-chevron {
+        transition: none;
+    }
+}
+
 .tool-call {
     align-self: flex-start;
     /* A tool payload can be arbitrarily long. Cap it to the reading column and
@@ -1230,6 +1371,10 @@ textarea::placeholder {
 
     .msg.assistant {
         align-self: flex-start;
+    }
+
+    .sources {
+        width: 90%;
     }
 
     .sidebar {

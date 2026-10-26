@@ -158,6 +158,69 @@ describe("ToolCallTracker", () => {
         ]);
     });
 
+    it("carries a tool's artifact sources onto its toolResult (#199)", () => {
+        const events = track(
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "call-search",
+                        name: "webSearch",
+                        args: { query: "cyan" },
+                    },
+                ],
+            }),
+            new ToolMessage({
+                content:
+                    "1. Cyan - Wikipedia — https://en.wikipedia.org/wiki/Cyan",
+                tool_call_id: "call-search",
+                name: "webSearch",
+                artifact: [
+                    {
+                        title: "Cyan - Wikipedia",
+                        url: "https://en.wikipedia.org/wiki/Cyan",
+                    },
+                ],
+            }),
+        );
+
+        expect(events).toEqual([
+            {
+                type: "tool",
+                name: "webSearch",
+                args: { query: "cyan" },
+            },
+            {
+                type: "toolResult",
+                name: "webSearch",
+                output: "1. Cyan - Wikipedia — https://en.wikipedia.org/wiki/Cyan",
+                sources: [
+                    {
+                        title: "Cyan - Wikipedia",
+                        url: "https://en.wikipedia.org/wiki/Cyan",
+                    },
+                ],
+            },
+        ]);
+    });
+
+    it("drops a malformed source artifact without losing the output", () => {
+        const events = track(
+            COMPLETE_CALL,
+            new ToolMessage({
+                content: "ok",
+                tool_call_id: "call-1",
+                name: "getCurrentTime",
+                artifact: [{ title: "bad", url: "javascript:alert(1)" }],
+            }),
+        );
+
+        expect(events).toEqual([
+            { type: "tool", name: "getCurrentTime", args: {} },
+            { type: "toolResult", name: "getCurrentTime", output: "ok" },
+        ]);
+    });
+
     it("drops filler after a result even when the segment already held text", () => {
         const events = track(
             new AIMessage({ content: "Checking." }),

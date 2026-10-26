@@ -11,7 +11,8 @@
  * Message records distinguish user text, assistant text (which grows as
  * chunks stream in, and can carry an `error` marker so failures are styled
  * distinctly and never re-rendered as ordinary prose), and tool/toolResult
- * notices.
+ * notices. A search result's presentation-only `sources` ride along with the
+ * tool notice (#199), so the chat can show the answer's original links.
  *
  * All mutation helpers are **pure** (they return new maps) so a React
  * reducer can own the state; persistence is the separate `saveThreads`
@@ -20,6 +21,7 @@
  * working). The `Storage` handle is injected so node tests can run without
  * a DOM.
  */
+import type { ToolSource } from "@lukestanbery/jarvis-protocol";
 
 /** One user-turn message (Markdown, rendered like the assistant's prose). */
 export interface UserMessage {
@@ -52,7 +54,13 @@ export interface AssistantMessage {
 export interface ToolMessage {
     id: string;
     role: "tool";
-    tool: { name: string; args?: unknown; output?: unknown };
+    tool: {
+        name: string;
+        args?: unknown;
+        output?: unknown;
+        /** Original web sources behind a search result (#199). */
+        sources?: ToolSource[];
+    };
     at: number;
 }
 
@@ -159,6 +167,10 @@ export function appendMessage(
  * per call instead of a call box followed by a result box. Anything else
  * (no preceding call, a different tool, or a call that already has output)
  * appends a standalone result notice, keeping out-of-order frames intact.
+ *
+ * `sources` is the search result's presentation-only original-link list
+ * (#199); it is stored beside the output and never changes how the model's
+ * text is displayed in the tool disclosure.
  */
 export function appendToolResult(
     map: ThreadMap,
@@ -166,6 +178,7 @@ export function appendToolResult(
     name: string,
     output: unknown,
     at: number = Date.now(),
+    sources?: ToolSource[],
 ): ThreadMap {
     const record = map[sessionId];
     if (record) {
@@ -178,7 +191,11 @@ export function appendToolResult(
             const messages = [...record.messages];
             messages[messages.length - 1] = {
                 ...last,
-                tool: { ...last.tool, output },
+                tool: {
+                    ...last.tool,
+                    output,
+                    ...(sources !== undefined ? { sources } : {}),
+                },
             };
             return {
                 ...map,
@@ -189,7 +206,11 @@ export function appendToolResult(
     return appendMessage(map, sessionId, {
         id: crypto.randomUUID(),
         role: "tool",
-        tool: { name, output },
+        tool: {
+            name,
+            output,
+            ...(sources !== undefined ? { sources } : {}),
+        },
         at,
     });
 }

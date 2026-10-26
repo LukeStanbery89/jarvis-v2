@@ -27,13 +27,41 @@
 export type ServerFrame =
     | { chunk: string }
     | { tool: { name: string; args?: unknown } }
-    | { toolResult: { name: string; output?: unknown } }
+    | {
+          toolResult: {
+              name: string;
+              output?: unknown;
+              /**
+               * Original web sources behind a search tool's output (#199).
+               *
+               * Optional and presentation-only: `output` remains the complete
+               * model-facing answer. A client that cannot render links ignores
+               * this field, which is why adding it does not change the turn's
+               * text contract.
+               */
+              sources?: ToolSource[];
+          };
+      }
     | { done: true }
     | { error: string }
     | AuthResultFrame
     | AudioStartFrame
     | AudioEndFrame
     | NotificationFrame;
+
+/**
+ * One original source behind a tool result (#199).
+ *
+ * The protocol carries only what a client needs to render a link: a display
+ * title and an absolute URL. The snippet stays in the model-facing `output`
+ * text; the UI's source list is deliberately compact.
+ */
+export interface ToolSource {
+    /** Human-readable title shown for the link. */
+    title: string;
+    /** Absolute `http(s)` URL; clients still run it through their own allowlist. */
+    url: string;
+}
 
 /** Payload of an `authResult` frame: the account a socket is now bound to. */
 export interface AuthResult {
@@ -212,6 +240,21 @@ export const MAX_NOTIFICATION_TITLE_LENGTH = 200;
 
 /** Longest notification `body` — enough for a sentence or three. */
 export const MAX_NOTIFICATION_BODY_LENGTH = 2000;
+
+/**
+ * Most original sources one `toolResult` may carry (#199).
+ *
+ * A search returns at most `JARVIS_SEARCH_MAX_RESULTS` (five by default), so
+ * this is headroom for a future multi-query tool while still bounding what a
+ * client has to render.
+ */
+export const MAX_TOOL_SOURCES = 20;
+
+/** Longest display title for one original source. */
+export const MAX_TOOL_SOURCE_TITLE_LENGTH = 300;
+
+/** Longest URL for one original source. */
+export const MAX_TOOL_SOURCE_URL_LENGTH = 2048;
 
 /**
  * Longest `answer` a client may send back for an answerable notification.

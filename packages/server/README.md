@@ -1773,7 +1773,10 @@ and exchange JSON text frames:
 - Server → Client (in order, per prompt):
     - `{ "tool": { "name": "<tool>", "args": { ... } } }` — the agent is calling
       a tool (emitted once per call).
-    - `{ "toolResult": { "name": "<tool>", "output": <any> } }` — the tool returned.
+    - `{ "toolResult": { "name": "<tool>", "output": <any>, "sources"?: [...] } }` — the tool returned.
+      `sources` is optional presentation metadata for a search result (#199):
+      bounded `{ title, url }` pairs the web client renders after the answer.
+      The model still receives only the formatted `output` text.
     - zero or more `{ "chunk": "<text>" }` frames — the streamed answer.
     - `{ "done": true }` — the response is complete.
 - On invalid input or model failure: `{ "error": "<message>" }`, followed by `{ "done": true }`
