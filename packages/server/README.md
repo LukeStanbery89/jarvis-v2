@@ -858,14 +858,20 @@ made **no tool calls** answers `{"error": "the model returned an empty response"
   explanation.
 
 A text-free turn that **did make tool calls** is different: the tool results are
-the turn's output, and the client already renders their cards. The server
-finishes it with a short confirmation (`Done — the requested tool calls
-completed.`) and `done` instead of the empty-response error. Only the
-no-tool-call case is a failure. Note that LM Studio's OpenAI-compatible endpoint
-ignores both `reasoning_budget: 0` and
-`chat_template_kwargs: { enable_thinking: false }`, so this cannot be switched
-off per request — the model itself has to be loaded with thinking disabled, or
-answered by a non-reasoning model.
+the turn's output, and the client already renders their cards. An informational
+result is the answer, so the server sends it as the assistant text — a
+`getCurrentTime` call with no prose turns into `3:26 PM`, not a generic
+confirmation. Action tools whose card carries the outcome (timers, schedules,
+job lists, notifications, coding jobs and GitHub writes) still finish with the
+short confirmation (`Done — the requested tool calls completed.`) and `done`
+instead of the empty-response error. The persisted history also drops the empty
+assistant ending a tool-only turn, so the next prompt still begins with a user
+message for strict templates (Qwen otherwise reports “No user query found in
+messages”). Only the no-tool-call case is a failure.
+Note that LM Studio's OpenAI-compatible endpoint ignores both
+`reasoning_budget: 0` and `chat_template_kwargs: { enable_thinking: false }`, so
+this cannot be switched off per request — the model itself has to be loaded
+with thinking disabled, or answered by a non-reasoning model.
 
 ## Rate limiting
 

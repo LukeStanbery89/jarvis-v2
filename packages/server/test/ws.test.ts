@@ -55,7 +55,20 @@ vi.mock("../src/agent", () => ({
             yield {
                 type: "toolResult",
                 name: "getCurrentTime",
-                output: "2026-09-20T00:00:00.000Z",
+                output: "3:26 PM",
+            };
+            return;
+        }
+        if (prompt === "timer") {
+            yield {
+                type: "tool",
+                name: "setTimer",
+                args: { minutes: 1 },
+            };
+            yield {
+                type: "toolResult",
+                name: "setTimer",
+                output: "Timer set for 1 minute.",
             };
             return;
         }
@@ -214,15 +227,31 @@ describe("chat websocket", () => {
         expect(chunks).toEqual([]);
     });
 
-    it("finishes a tool-only turn with a confirmation instead of an empty-response error", async () => {
+    it("surfaces an informational tool-only result as the answer", async () => {
         const { chunks, toolResults, done, error } = await exchange({
             prompt: "silent",
             sessionId: SESSION_ID,
         });
         expect(error).toBeNull();
         expect(done).toBe(true);
+        expect(chunks.join("")).toBe("3:26 PM");
+        expect(toolResults).toEqual([
+            { name: "getCurrentTime", output: "3:26 PM" },
+        ]);
+    });
+
+    it("keeps the confirmation for an action-tool-only turn", async () => {
+        const { chunks, toolResults, done, error } = await exchange({
+            prompt: "timer",
+            sessionId: SESSION_ID,
+        });
+        expect(error).toBeNull();
+        expect(done).toBe(true);
         expect(chunks.join("")).toMatch(/tool calls completed/i);
-        expect(toolResults).toHaveLength(1);
+        expect(chunks.join("")).not.toContain("Timer set");
+        expect(toolResults).toEqual([
+            { name: "setTimer", output: "Timer set for 1 minute." },
+        ]);
     });
 
     it("treats a whitespace-only response as empty", async () => {
