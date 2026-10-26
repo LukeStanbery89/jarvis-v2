@@ -13,8 +13,9 @@ import type { AgentEvent } from "./llm/event";
  * Maps one {@link AgentEvent} onto its {@link ServerFrame}.
  *
  * Exhaustive over the event union: `token` → `chunk`, `tool` → `tool`, and
- * `toolResult` → `toolResult`. A new event kind forces a compile error here,
- * which is the point — every transport stays in lockstep with the model layer.
+ * `toolResult` → `toolResult` (with optional original `sources`, #199). A new
+ * event kind forces a compile error here, which is the point — every
+ * transport stays in lockstep with the model layer.
  */
 export function toServerFrame(event: AgentEvent): ServerFrame {
     switch (event.type) {
@@ -23,6 +24,14 @@ export function toServerFrame(event: AgentEvent): ServerFrame {
         case "tool":
             return { tool: { name: event.name, args: event.args } };
         case "toolResult":
-            return { toolResult: { name: event.name, output: event.output } };
+            return {
+                toolResult: {
+                    name: event.name,
+                    output: event.output,
+                    ...(event.sources !== undefined
+                        ? { sources: event.sources }
+                        : {}),
+                },
+            };
     }
 }

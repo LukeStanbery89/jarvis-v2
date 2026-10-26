@@ -25,6 +25,9 @@ import {
     MAX_NOTIFICATION_TITLE_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    MAX_TOOL_SOURCE_TITLE_LENGTH,
+    MAX_TOOL_SOURCE_URL_LENGTH,
+    MAX_TOOL_SOURCES,
     NOTIFICATION_CLASSES,
     NOTIFICATION_PRIORITIES,
 } from "./types";
@@ -41,6 +44,7 @@ import type {
     NotificationFrame,
     NotificationPriority,
     ServerFrame,
+    ToolSource,
 } from "./types";
 
 /**
@@ -109,7 +113,7 @@ export function parseFrame(raw: string): ServerFrame {
         done?: unknown;
         error?: unknown;
         tool?: { name?: unknown; args?: unknown };
-        toolResult?: { name?: unknown; output?: unknown };
+        toolResult?: { name?: unknown; output?: unknown; sources?: unknown };
         authResult?: { user?: unknown; device?: unknown };
         audioStart?: {
             generationId?: unknown;
@@ -127,10 +131,12 @@ export function parseFrame(raw: string): ServerFrame {
         return { tool: { name: frame.tool.name, args: frame.tool.args } };
     }
     if (frame.toolResult && typeof frame.toolResult.name === "string") {
+        const sources = normalizeToolSources(frame.toolResult.sources);
         return {
             toolResult: {
                 name: frame.toolResult.name,
                 output: frame.toolResult.output,
+                ...(sources !== undefined ? { sources } : {}),
             },
         };
     }
@@ -185,6 +191,57 @@ export function parseFrame(raw: string): ServerFrame {
         }
     }
     throw new Error("received an unrecognized message from the server");
+}
+
+/**
+ * Normalizes the optional original-source list on a `toolResult` frame (#199).
+ *
+ * Source metadata is presentation-only, so a malformed entry must never take
+ * down the tool result it describes: invalid items are skipped and an absent
+ * (or wholly invalid) list is normalized away. URLs are limited to absolute
+ * `http(s)` links here as defense in depth; the UI still runs each one through
+ * its own allowlist before creating an anchor.
+ *
+ * @param payload - The raw `toolResult.sources` value.
+ * @returns The validated sources in wire order, or `undefined` when none.
+ */
+export function normalizeToolSources(
+    payload: unknown,
+): ToolSource[] | undefined {
+    if (!Array.isArray(payload)) {
+        return undefined;
+    }
+    const sources: ToolSource[] = [];
+    for (const raw of payload.slice(0, MAX_TOOL_SOURCES)) {
+        if (typeof raw !== "object" || raw === null) {
+            continue;
+        }
+        const item = raw as { title?: unknown; url?: unknown };
+        if (typeof item.title !== "string" || typeof item.url !== "string") {
+            continue;
+        }
+        const title = item.title.trim();
+        const url = item.url.trim();
+        if (
+            title.length === 0 ||
+            title.length > MAX_TOOL_SOURCE_TITLE_LENGTH ||
+            url.length === 0 ||
+            url.length > MAX_TOOL_SOURCE_URL_LENGTH
+        ) {
+            continue;
+        }
+        let parsed: URL;
+        try {
+            parsed = new URL(url);
+        } catch {
+            continue;
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            continue;
+        }
+        sources.push({ title, url: parsed.href });
+    }
+    return sources.length > 0 ? sources : undefined;
 }
 
 /**

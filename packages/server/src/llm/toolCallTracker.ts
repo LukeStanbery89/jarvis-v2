@@ -12,6 +12,9 @@
  * - Executed tools become `toolResult` events, keyed to the call that made
  *   them; a call that was never announced (e.g. args never parsed during
  *   streaming) is announced at result time.
+ * - A tool's `artifact` (the presentation-only half of a
+ *   `content_and_artifact` result) becomes the event's optional `sources`
+ *   list (#199); the model-facing `output` is unchanged.
  * - Whitespace-only text that opens a segment is dropped: a local model
  *   emits `\n\n` around its tool calls, and on a client the first chunk after
  *   a tool opens a *new* assistant bubble, so forwarding it drew an empty chat
@@ -26,6 +29,10 @@ import {
     AIMessageChunk,
     ToolMessage,
 } from "@langchain/core/messages";
+import {
+    normalizeToolSources,
+    type ToolSource,
+} from "@lukestanbery/jarvis-protocol";
 import type { AgentEvent } from "./event";
 
 export type { AgentEvent } from "./event";
@@ -238,13 +245,24 @@ export class ToolCallTracker {
             typeof message.content === "string"
                 ? message.content
                 : JSON.stringify(message.content);
+        // A tool may attach presentation-only data beside its model-facing
+        // content (#199). The search tool's artifact is its original links;
+        // normalize it here so a malformed artifact cannot reach the wire.
+        const sources: ToolSource[] | undefined = normalizeToolSources(
+            message.artifact,
+        );
 
         const events: AgentEvent[] = [];
         if (id && !this.announced.has(id)) {
             this.announced.add(id);
             events.push({ type: "tool", name, args });
         }
-        events.push({ type: "toolResult", name, output });
+        events.push({
+            type: "toolResult",
+            name,
+            output,
+            ...(sources !== undefined ? { sources } : {}),
+        });
         return events;
     }
 }

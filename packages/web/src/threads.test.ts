@@ -130,6 +130,27 @@ describe("thread mutations", () => {
         });
     });
 
+    it("appendToolResult stores original sources beside the output (#199)", () => {
+        const sources = [
+            {
+                title: "Cyan - Wikipedia",
+                url: "https://en.wikipedia.org/wiki/Cyan",
+            },
+        ];
+        let map = appendMessage(ensureThread({}, "s1", 1), "s1", {
+            id: "t1",
+            role: "tool",
+            tool: { name: "webSearch", args: { query: "cyan" } },
+            at: 2,
+        });
+        map = appendToolResult(map, "s1", "webSearch", "results", 3, sources);
+
+        expect(map.s1?.messages?.[0]).toMatchObject({
+            role: "tool",
+            tool: { name: "webSearch", output: "results", sources },
+        });
+    });
+
     it("appendToolResult appends a standalone notice for a mismatched/absent call", () => {
         let map = appendMessage(ensureThread({}, "s1", 1), "s1", {
             id: "t1",

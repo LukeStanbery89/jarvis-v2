@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { ToolMessage } from "@langchain/core/messages";
 import {
     createWebSearchTool,
     formatSearchAnswer,
+    searchSources,
 } from "../src/llm/tools/webSearch";
 import { SearchError } from "../src/llm/tools/search/types";
 import { FixedWindowQuota } from "../src/rate/fixedWindowQuota";
@@ -48,6 +50,19 @@ function fakeProvider(
 
 const OWNER_CONFIG = { configurable: { userId: 7 } };
 
+/**
+ * Normalizes a direct tool invocation to its model-facing text.
+ *
+ * A direct `invoke` has no tool-call id, so LangChain returns the content
+ * string; the declared `content_and_artifact` output type is the tuple. The
+ * artifact is covered separately by the tracker test.
+ */
+function textOf(result: unknown): string {
+    return typeof result === "string"
+        ? result
+        : (result as [string, unknown])[0];
+}
+
 /** Runs the tool with the given providers; returns its text result. */
 async function run(
     providers: SearchProvider[],
@@ -55,10 +70,12 @@ async function run(
     quota = new FixedWindowQuota(10),
 ): Promise<string> {
     const tool = createWebSearchTool({ providers, quota });
-    return (await tool.invoke(
-        kind === undefined ? { query } : { query, kind },
-        OWNER_CONFIG,
-    )) as string;
+    return textOf(
+        await tool.invoke(
+            kind === undefined ? { query } : { query, kind },
+            OWNER_CONFIG,
+        ),
+    );
 }
 
 describe("webSearch routing", () => {
@@ -115,6 +132,33 @@ describe("webSearch routing", () => {
         expect(result).toContain("via serper");
     });
 
+    it("attaches the original links as the tool-call artifact (#199)", async () => {
+        const tavily = fakeProvider("tavily", new Map());
+        const tool = createWebSearchTool({
+            providers: [tavily.provider],
+            quota: new FixedWindowQuota(10),
+        });
+        const result = await tool.invoke(
+            {
+                type: "tool_call",
+                id: "call-search",
+                name: "webSearch",
+                args: { query: "test" },
+            },
+            OWNER_CONFIG,
+        );
+
+        expect(result).toBeInstanceOf(ToolMessage);
+        const message = result as ToolMessage;
+        expect(message.content).toContain("Result via tavily");
+        expect(message.artifact).toEqual([
+            {
+                title: "Result via tavily",
+                url: "https://tavily.example/r",
+            },
+        ]);
+    });
+
     it("reports failure as model-facing text when every provider fails", async () => {
         const tavily = fakeProvider(
             "tavily",
@@ -147,7 +191,7 @@ describe("webSearch metering", () => {
             providers: [tavily.provider],
             quota: new FixedWindowQuota(10),
         });
-        const result = (await tool.invoke({ query: "q" }, {})) as string;
+        const result = textOf(await tool.invoke({ query: "q" }, {}));
         expect(result).toMatch(/requires signing in/i);
         expect(tavily.calls).toHaveLength(0);
     });
@@ -158,16 +202,14 @@ describe("webSearch metering", () => {
             providers: [tavily.provider],
             quota: new FixedWindowQuota(1),
         });
-        const first = (await tool.invoke(
-            { query: "q" },
-            { configurable: { userId: 1 } },
-        )) as string;
+        const first = textOf(
+            await tool.invoke({ query: "q" }, { configurable: { userId: 1 } }),
+        );
         expect(first).toContain("Result via tavily");
         // A different user's budget is untouched.
-        const other = (await tool.invoke(
-            { query: "q" },
-            { configurable: { userId: 2 } },
-        )) as string;
+        const other = textOf(
+            await tool.invoke({ query: "q" }, { configurable: { userId: 2 } }),
+        );
         expect(other).toContain("Result via tavily");
         expect(tavily.calls).toHaveLength(2);
     });
@@ -218,6 +260,49 @@ describe("formatSearchAnswer", () => {
         expect(formatSearchAnswer({ provider: "serper", results: [] })).toBe(
             "No results found.",
         );
+    });
+});
+
+describe("searchSources (#199)", () => {
+    it("maps search results to the presentation links", () => {
+        expect(
+            searchSources({
+                provider: "tavily",
+                results: [
+                    {
+                        title: "Cyan - Wikipedia",
+                        url: "https://en.wikipedia.org/wiki/Cyan",
+                        snippet: "between blue and green",
+                    },
+                    {
+                        title: "",
+                        url: "https://example.com/untitled",
+                        snippet: "",
+                    },
+                ],
+            }),
+        ).toEqual([
+            {
+                title: "Cyan - Wikipedia",
+                url: "https://en.wikipedia.org/wiki/Cyan",
+            },
+            {
+                title: "https://example.com/untitled",
+                url: "https://example.com/untitled",
+            },
+        ]);
+    });
+
+    it("skips a result with no URL", () => {
+        expect(
+            searchSources({
+                provider: "serper",
+                results: [
+                    { title: "no link", url: "   ", snippet: "" },
+                    { title: "kept", url: "https://example.com/", snippet: "" },
+                ],
+            }),
+        ).toEqual([{ title: "kept", url: "https://example.com/" }]);
     });
 });
 

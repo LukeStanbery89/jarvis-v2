@@ -26,8 +26,13 @@
  * The caller's identity arrives through LangGraph's `configurable.userId`
  * (stamped by `ws.ts` on every authenticated turn — the same verified seam
  * the `analyzeImage` tool uses), so the quota keys on the real account.
+ *
+ * The tool's return is a `content_and_artifact` pair (#199): the model sees
+ * the formatted text as before, while the artifact carries the result
+ * titles/URLs that the chat UI renders as an original-sources list.
  */
 import { tool, type ToolRuntime } from "@langchain/core/tools";
+import type { ToolSource } from "@lukestanbery/jarvis-protocol";
 import { z } from "zod";
 import {
     TAVILY_VERTICALS,
@@ -72,6 +77,26 @@ export function formatSearchAnswer(answer: SearchAnswer): string {
     return lines.join("\n");
 }
 
+/**
+ * Extracts the presentation-only source list from a search answer (#199).
+ *
+ * The model still sees the formatted text; the artifact is what the chat UI
+ * renders after the answer. Titles fall back to the URL so a provider that
+ * returns an untitled hit still produces a usable link, and entries without a
+ * URL are skipped — there is nothing to open.
+ */
+export function searchSources(answer: SearchAnswer): ToolSource[] {
+    return answer.results
+        .filter((result) => result.url.trim() !== "")
+        .map((result) => {
+            const url = result.url.trim();
+            return {
+                title: result.title.trim() || url,
+                url,
+            };
+        });
+}
+
 /** Model-facing text for a failed search; never leaks keys or internals. */
 function failureText(attempts: { provider: string; reason: string }[]): string {
     const detail = attempts.map((a) => `${a.provider}: ${a.reason}`).join("; ");
@@ -102,13 +127,16 @@ const VERTICAL_ENUM = [
  */
 export function createWebSearchTool(deps: WebSearchDeps) {
     return tool(
-        async ({ query, kind }, runtime: ToolRuntime): Promise<string> => {
+        async (
+            { query, kind },
+            runtime: ToolRuntime,
+        ): Promise<[string, ToolSource[]]> => {
             const gate = requireMeteredUser(runtime, deps.quota, {
                 subject: "Web search",
                 logName: "webSearch",
             });
             if (!gate.ok) {
-                return gate.text;
+                return [gate.text, []];
             }
             const vertical: SearchVertical = kind ?? "general";
             // Prefer Tavily wherever it can serve the vertical; otherwise
@@ -131,7 +159,7 @@ export function createWebSearchTool(deps: WebSearchDeps) {
                     logger.debug(
                         `webSearch(${vertical}) via ${answer.provider}: ${answer.results.length} results`,
                     );
-                    return formatSearchAnswer(answer);
+                    return [formatSearchAnswer(answer), searchSources(answer)];
                 } catch (err) {
                     // A cancelled turn must reject (the graph's bare-done
                     // path), not fall through to the next provider.
@@ -145,10 +173,13 @@ export function createWebSearchTool(deps: WebSearchDeps) {
                     });
                 }
             }
-            return failureText(attempts);
+            return [failureText(attempts), []];
         },
         {
             name: "webSearch",
+            // The artifact carries the original links for the chat UI (#199);
+            // the model only ever sees the formatted first tuple element.
+            responseFormat: "content_and_artifact",
             description:
                 "Searches the live web and returns titles, URLs, and snippets. " +
                 "Pass the user's information need as `query`. Use `kind` to pick " +

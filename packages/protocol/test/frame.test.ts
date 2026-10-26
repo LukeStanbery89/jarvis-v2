@@ -9,6 +9,7 @@ import {
     MAX_LOCATION_LABEL_LENGTH,
     MAX_SESSION_ID_LENGTH,
     MAX_TOKEN_LENGTH,
+    MAX_TOOL_SOURCES,
     MALFORMED_SERVER_FRAME,
     parseClientMessage,
     parseFrame,
@@ -49,6 +50,85 @@ describe("parseFrame", () => {
         expect(
             parseFrame('{"toolResult":{"name":"search","output":"results"}}'),
         ).toEqual({ toolResult: { name: "search", output: "results" } });
+    });
+
+    it("parses and normalizes original sources (#199)", () => {
+        expect(
+            parseFrame(
+                JSON.stringify({
+                    toolResult: {
+                        name: "webSearch",
+                        output: "search text",
+                        sources: [
+                            {
+                                title: "  Cyan - Wikipedia  ",
+                                url: "https://en.wikipedia.org/wiki/Cyan",
+                            },
+                        ],
+                    },
+                }),
+            ),
+        ).toEqual({
+            toolResult: {
+                name: "webSearch",
+                output: "search text",
+                sources: [
+                    {
+                        title: "Cyan - Wikipedia",
+                        url: "https://en.wikipedia.org/wiki/Cyan",
+                    },
+                ],
+            },
+        });
+    });
+
+    it("drops malformed or unsafe source entries without losing the output", () => {
+        expect(
+            parseFrame(
+                JSON.stringify({
+                    toolResult: {
+                        name: "webSearch",
+                        output: "search text",
+                        sources: [
+                            { title: "", url: "https://example.com" },
+                            { title: "bad", url: "javascript:alert(1)" },
+                            { title: "relative", url: "/local" },
+                            { title: "good", url: "https://example.com/a" },
+                        ],
+                    },
+                }),
+            ),
+        ).toEqual({
+            toolResult: {
+                name: "webSearch",
+                output: "search text",
+                sources: [{ title: "good", url: "https://example.com/a" }],
+            },
+        });
+    });
+
+    it("normalizes an invalid sources list away", () => {
+        expect(
+            parseFrame(
+                '{"toolResult":{"name":"webSearch","output":"text","sources":"nope"}}',
+            ),
+        ).toEqual({ toolResult: { name: "webSearch", output: "text" } });
+    });
+
+    it("caps a toolResult's sources at the protocol bound", () => {
+        const sources = Array.from(
+            { length: MAX_TOOL_SOURCES + 1 },
+            (_, i) => ({
+                title: `source ${i}`,
+                url: `https://example.com/${i}`,
+            }),
+        );
+        const parsed = parseFrame(
+            JSON.stringify({ toolResult: { name: "webSearch", sources } }),
+        );
+        expect(
+            "toolResult" in parsed ? parsed.toolResult.sources : undefined,
+        ).toHaveLength(MAX_TOOL_SOURCES);
     });
 
     it("parses a done frame", () => {
@@ -100,6 +180,13 @@ describe("serializeFrame round-trips", () => {
         { tool: { name: "getCurrentTime", args: {} } },
         { tool: { name: "calculate" } },
         { toolResult: { name: "search", output: "results" } },
+        {
+            toolResult: {
+                name: "webSearch",
+                output: "results",
+                sources: [{ title: "Example", url: "https://example.com/" }],
+            },
+        },
         { done: true },
         { error: "boom" },
         { authResult: { user: "luke", device: "macbook" } },

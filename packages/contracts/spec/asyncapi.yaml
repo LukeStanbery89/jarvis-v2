@@ -426,7 +426,10 @@ components:
             summary: The agent received a tool's output
             description: >-
                 Emitted after a tool call finishes. `output` is the tool's
-                raw JSON result; it may be absent.
+                raw JSON result; it may be absent. `sources` is optional,
+                bounded, presentation-only metadata behind a search result
+                (#199): the original titles and links, which a rich client
+                can show after the answer.
             payload:
                 type: object
                 additionalProperties: false
@@ -442,11 +445,42 @@ components:
                             name:
                                 type: string
                             output: {}
+                            sources:
+                                type: array
+                                maxItems: 20
+                                description: >-
+                                    Original web sources behind the tool result,
+                                    in relevance order. Invalid entries are
+                                    dropped by the protocol parser; the field is
+                                    absent when there is nothing to render.
+                                items:
+                                    type: object
+                                    additionalProperties: false
+                                    required:
+                                        - title
+                                        - url
+                                    properties:
+                                        title:
+                                            type: string
+                                            minLength: 1
+                                            maxLength: 300
+                                        url:
+                                            type: string
+                                            minLength: 1
+                                            maxLength: 2048
+                                            pattern: "^https?://"
             examples:
                 - payload:
                       toolResult:
                           name: calculator
                           output: "4"
+                - payload:
+                      toolResult:
+                          name: webSearch
+                          output: "1. Cyan - Wikipedia — https://en.wikipedia.org/wiki/Cyan"
+                          sources:
+                              - title: Cyan - Wikipedia
+                                url: https://en.wikipedia.org/wiki/Cyan
         done:
             title: Turn complete
             summary: Terminal frame of a successful turn

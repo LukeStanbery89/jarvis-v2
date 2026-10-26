@@ -5,9 +5,18 @@
  * stream these events outward; each concrete transport maps them onto its own
  * representation (the WebSocket endpoint maps them onto `@lukestanbery/jarvis-protocol`
  * frames). `token` events carry the streamed answer text, `tool` announces a
- * model tool call, and `toolResult` carries an executed tool's output.
+ * model tool call, and `toolResult` carries an executed tool's output plus any
+ * presentation-only original sources (#199).
  */
+import type { ToolSource } from "@lukestanbery/jarvis-protocol";
+
 export type AgentEvent =
     | { type: "token"; text: string }
     | { type: "tool"; name: string; args: unknown }
-    | { type: "toolResult"; name: string; output: unknown };
+    | {
+          type: "toolResult";
+          name: string;
+          output: unknown;
+          /** Original web sources behind a search result (#199). */
+          sources?: ToolSource[];
+      };

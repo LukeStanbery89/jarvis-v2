@@ -260,6 +260,7 @@ export function AppShell({
                         sessionId,
                         name: frame.toolResult.name,
                         output: frame.toolResult.output,
+                        sources: frame.toolResult.sources,
                         at: Date.now(),
                     });
                 }

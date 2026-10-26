@@ -138,4 +138,76 @@ describe("Transcript", () => {
 
         expect(html).not.toContain("thinking");
     });
+
+    it("renders original sources under the final answer (#199)", () => {
+        const html = render(
+            [
+                userTurn,
+                {
+                    id: "t1",
+                    role: "tool",
+                    tool: {
+                        name: "webSearch",
+                        output: "results",
+                        sources: [
+                            {
+                                title: "Cyan - Wikipedia",
+                                url: "https://en.wikipedia.org/wiki/Cyan",
+                            },
+                        ],
+                    },
+                    at: 2,
+                },
+                {
+                    id: "a1",
+                    role: "assistant",
+                    text: "Cyan is a greenish-blue.",
+                    at: 3,
+                },
+            ],
+            false,
+        );
+
+        expect(html).toContain('<details class="sources">');
+        expect(html).toContain("sources-count");
+        expect(html).toContain("Sources");
+        expect(html).toContain("Cyan - Wikipedia");
+        expect(html).toContain("en.wikipedia.org");
+        expect(html).toContain('href="https://en.wikipedia.org/wiki/Cyan"');
+        expect(html).toContain('target="_blank"');
+        expect(html).not.toContain("<details open");
+    });
+
+    it("holds the in-flight answer's sources back until the turn settles", () => {
+        const html = render(
+            [
+                userTurn,
+                {
+                    id: "t1",
+                    role: "tool",
+                    tool: {
+                        name: "webSearch",
+                        output: "results",
+                        sources: [
+                            {
+                                title: "Cyan - Wikipedia",
+                                url: "https://en.wikipedia.org/wiki/Cyan",
+                            },
+                        ],
+                    },
+                    at: 2,
+                },
+                {
+                    id: "a1",
+                    role: "assistant",
+                    text: "Cyan is a greenish-blue.",
+                    at: 3,
+                },
+            ],
+            true,
+        );
+
+        expect(html).not.toContain("Sources");
+        expect(html).not.toContain("Cyan - Wikipedia");
+    });
 });
