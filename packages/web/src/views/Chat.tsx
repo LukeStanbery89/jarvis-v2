@@ -192,6 +192,9 @@ export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
                     previews={previews}
                     hasThread={activeThread !== null}
                     activeId={activeId}
+                    turning={
+                        activeId !== null && app.turnSessionId === activeId
+                    }
                 />
                 {voiceStatus !== null && (
                     <p className="voice-status" role="status">

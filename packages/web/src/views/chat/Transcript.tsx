@@ -3,9 +3,9 @@
  *
  * Renders each message as a memoized {@link MessageRow} — user text with image
  * previews (or a muted "not retained" note), tool-call notices, and Markdown
- * for both sides of the conversation (or an error banner) — and owns the scroll
- * container's auto-scroll via {@link useAutoScroll}. Presentational: props in,
- * no events out.
+ * for both sides of the conversation (or an error banner) — plus a thinking
+ * row while the agent works on the turn. Owns the scroll container's auto-scroll
+ * via {@link useAutoScroll}. Presentational: props in, no events out.
  */
 import { memo, useRef } from "react";
 import { Image as ImageIcon } from "lucide-react";
@@ -76,6 +76,27 @@ const MessageRow = memo(function MessageRow({
     );
 });
 
+/**
+ * The wait between a prompt and the assistant's first visible words.
+ *
+ * It sits in an ordinary assistant bubble so the conversation keeps its
+ * speaker-side alignment and width. The dots are the whole visible surface;
+ * `role="status"` carries a visually hidden "JARVIS is working" so a screen
+ * reader still gets the same feedback.
+ */
+function ThinkingRow() {
+    return (
+        <div className="msg assistant thinking" role="status">
+            <span className="thinking-dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+            </span>
+            <span className="thinking-label">JARVIS is working</span>
+        </div>
+    );
+}
+
 /** Props for {@link Transcript}. */
 export interface TranscriptProps {
     /** The active thread's messages. */
@@ -86,6 +107,15 @@ export interface TranscriptProps {
     hasThread: boolean;
     /** The active thread id (an auto-scroll trigger on switch). */
     activeId: string | null;
+    /**
+     * Whether the in-flight turn belongs to this thread.
+     *
+     * The shell keeps one turn in flight at a time; this flag is already scoped
+     * to the active conversation, so an unrelated open thread never shows its
+     * indicator. It disappears once the assistant has visible words (or an
+     * error) — a streaming reply is its own feedback.
+     */
+    turning: boolean;
 }
 
 /**
@@ -98,9 +128,19 @@ export function Transcript({
     previews,
     hasThread,
     activeId,
+    turning,
 }: TranscriptProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
-    useAutoScroll(containerRef, messages, activeId);
+    useAutoScroll(containerRef, messages, activeId, turning);
+    const last = messages[messages.length - 1];
+    // A tool call is still part of the agent working, so only an assistant
+    // bubble with visible words (or a settled error) ends the wait.
+    const showThinking =
+        turning &&
+        !(
+            last?.role === "assistant" &&
+            (last.error === true || last.text.trim() !== "")
+        );
     return (
         <div className="transcript" ref={containerRef}>
             {!hasThread && (
@@ -113,6 +153,7 @@ export function Transcript({
                     previews={previews}
                 />
             ))}
+            {showThinking && <ThinkingRow />}
         </div>
     );
 }
