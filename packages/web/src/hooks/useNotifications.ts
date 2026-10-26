@@ -17,7 +17,9 @@
  *
  * The token is the component's device credential; a 401 is the caller's
  * problem (the app drops to login), so failures here are surfaced as a short
- * message rather than swallowed or thrown.
+ * message rather than swallowed or thrown. The server uses that same credential
+ * to filter the list to this device's targeted timers (#194), so the client
+ * never has to know a notification's delivery target.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";

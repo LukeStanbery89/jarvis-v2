@@ -26,16 +26,16 @@ import type { NotificationHub } from "../hub";
 
 /**
  * What an in-app push can do: show text, collect a reply over the normal chat
- * path, on a user's *account* rather than one addressable device. It cannot
- * speak or show images — TTS is a presentation concern of the client and a
- * notification never carries binary payloads.
+ * path, and — since #194 — address one device when the record names one. It
+ * cannot speak or show images: TTS is a presentation concern of the client and
+ * a notification never carries binary payloads.
  */
 export const IN_APP_CAPABILITIES: NotificationChannelCapabilities = {
     canSpeak: false,
     canShowText: true,
     canShowImage: false,
     canAcceptReply: true,
-    isAddressable: false,
+    isAddressable: true,
     requiresPresence: true,
     onlyWhenAbsent: false,
 };
@@ -80,7 +80,11 @@ export function createInAppChannel(hub: NotificationHub): NotificationChannel {
         capabilities: IN_APP_CAPABILITIES,
         deliver(notification: AppNotification): number {
             const frame: ServerFrame = toNotificationFrame(notification);
-            return hub.deliver(notification.userId, frame);
+            return hub.deliver(
+                notification.userId,
+                frame,
+                notification.targetDeviceId,
+            );
         },
     };
 }

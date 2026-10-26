@@ -13,6 +13,10 @@
  * context/game loop the push path cannot use). A second push for that page
  * would duplicate the interruption. When the socket is gone — the normal state
  * after the phone backgrounds or locks — this channel is the only one left.
+ *
+ * Since #194 a targeted timer names a device, and only that device's push
+ * subscriptions are selected. Account-wide notifications (and legacy timers)
+ * carry no target and still reach every subscribed browser.
  */
 import webpush from "web-push";
 import type { PushSubscription as WebPushSubscription } from "web-push";
@@ -96,9 +100,13 @@ export function createWebPushChannel(
         id: "web-push",
         capabilities: WEB_PUSH_CAPABILITIES,
         async deliver(notification): Promise<number> {
-            const subscriptions = store.listPushSubscriptions(
-                notification.userId,
-            );
+            const subscriptions =
+                notification.targetDeviceId === null
+                    ? store.listPushSubscriptions(notification.userId)
+                    : store.listPushSubscriptions(
+                          notification.userId,
+                          notification.targetDeviceId,
+                      );
             if (subscriptions.length === 0) {
                 return 0;
             }

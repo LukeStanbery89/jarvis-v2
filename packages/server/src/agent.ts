@@ -68,6 +68,13 @@ export interface RunAgentOptions {
      */
     userId?: number;
     /**
+     * The authenticated device's numeric row id (#194), present on a socket
+     * turn and on a scheduled job's own runs. Tools that create a local
+     * resource — today `setTimer` — read it to address the result to the
+     * device that asked. Absent for a guest or a legacy job.
+     */
+    deviceId?: number;
+    /**
      * The device's reported whereabouts (#31), from the socket's latest
      * `location` frame. Exposed to tool runtime callbacks so location-aware
      * tools (the `getWeather` tool) can answer locationless questions;
@@ -624,6 +631,9 @@ export async function* runAgent(
     const configurable = {
         sessionId,
         ...(options.userId !== undefined ? { userId: options.userId } : {}),
+        ...(options.deviceId !== undefined
+            ? { deviceId: options.deviceId }
+            : {}),
         ...(options.location !== undefined
             ? { location: options.location }
             : {}),

@@ -398,6 +398,10 @@ export interface AlertSelection {
  * first, and the next takes over when it is stopped. The banner is the newest
  * unsettled row that is not the ring target, so a firing timer appears in
  * exactly one place — the thing this split exists to guarantee.
+ *
+ * The list itself is already device-filtered by the server (#194): another
+ * device's timer rows never reach this client, which is why a timer can be
+ * scoped to one device without a target field on the wire.
  */
 export function selectAlerts(
     list: ClientNotification[],

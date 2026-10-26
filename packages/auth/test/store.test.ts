@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 23;
+const LATEST_VERSION = 24;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -525,6 +525,53 @@ describe("push subscriptions", () => {
         );
     });
 
+    it("selects a device's subscriptions for a targeted timer (#194)", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        const phone = store.createDevice(
+            user.id,
+            "phone",
+            "phone-hash",
+            "phone000",
+        );
+        const desktop = store.createDevice(
+            user.id,
+            "desktop",
+            "desktop-hash",
+            "desktop0",
+        );
+        store.upsertPushSubscription(
+            user.id,
+            {
+                endpoint: "https://push.example/phone",
+                p256dh: "phone-key",
+                auth: "phone-auth",
+            },
+            phone.id,
+        );
+        store.upsertPushSubscription(
+            user.id,
+            {
+                endpoint: "https://push.example/desktop",
+                p256dh: "desktop-key",
+                auth: "desktop-auth",
+            },
+            desktop.id,
+        );
+
+        expect(
+            store
+                .listPushSubscriptions(user.id, phone.id)
+                .map((s) => s.endpoint),
+        ).toEqual(["https://push.example/phone"]);
+        expect(
+            store
+                .listPushSubscriptions(user.id, desktop.id)
+                .map((s) => s.endpoint),
+        ).toEqual(["https://push.example/desktop"]);
+        // Account-wide delivery still reaches both.
+        expect(store.listPushSubscriptions(user.id)).toHaveLength(2);
+    });
+
     it("keeps subscriptions per user and moves a re-subscribed endpoint", () => {
         const a = store.createUser("luke", "hash", "owner");
         const b = store.createUser("zoe", "hash", "user");
@@ -625,6 +672,42 @@ describe("notifications", () => {
         );
     });
 
+    it("filters device-targeted notifications without hiding account-wide ones (#194)", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        for (const [id, target] of [
+            ["phone", 11],
+            ["desktop", 22],
+            ["everyone", null],
+        ] as const) {
+            store.createNotification(user.id, {
+                id,
+                kind: "job.finished",
+                class: "timer",
+                priority: "normal",
+                title: id,
+                targetDeviceId: target,
+                createdAt: "2026-10-15T18:00:00.000Z",
+            });
+        }
+
+        expect(
+            store.listNotifications(user.id, { deviceId: 11 }).map((n) => n.id),
+        ).toEqual(["everyone", "phone"]);
+        expect(
+            store.listNotifications(user.id, { deviceId: 22 }).map((n) => n.id),
+        ).toEqual(["everyone", "desktop"]);
+        expect(
+            store
+                .listNotifications(user.id, { deviceId: null })
+                .map((n) => n.id),
+        ).toEqual(["everyone"]);
+        // No filter is the account-level view, which dedupe and pruning use.
+        expect(store.listNotifications(user.id)).toHaveLength(3);
+        expect(store.countUnreadNotifications(user.id, 11)).toBe(2);
+        expect(store.countUnreadNotifications(user.id, 22)).toBe(2);
+        expect(store.countUnreadNotifications(user.id, null)).toBe(1);
+    });
+
     it("scopes every read and write to the owning user", () => {
         const luke = store.createUser("luke", "hash", "owner");
         const pepper = store.createUser("pepper", "hash", "user");
@@ -639,6 +722,23 @@ describe("notifications", () => {
         expect(store.listNotifications(pepper.id)).toEqual([]);
         expect(store.setNotificationState(pepper.id, "n1", "read")).toBeNull();
         expect(store.getNotification(luke.id, "n1")?.state).toBe("pending");
+    });
+
+    it("stores the device that created a job (#194)", () => {
+        const user = store.createUser("luke", "hash", "owner");
+        const job = store.createJob(user.id, {
+            id: "scoped",
+            label: "Kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off.",
+            originDeviceId: 11,
+            runAt: "2026-10-20T09:00:00.000Z",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        expect(job.originDeviceId).toBe(11);
+        expect(store.getJob(user.id, "scoped")?.originDeviceId).toBe(11);
     });
 
     it("links a notification to the job that produced it, and lets go when the job is pruned", () => {

@@ -137,8 +137,27 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             repeat?: unknown;
             at: Date;
         },
+        originDeviceId?: number,
     ): CreateOutcome {
-        return creator.create(userId, request);
+        return creator.create(userId, {
+            ...request,
+            ...(originDeviceId !== undefined ? { originDeviceId } : {}),
+        });
+    }
+
+    /**
+     * The device behind this tool call (#194).
+     *
+     * A socket turn carries the authenticated device through `configurable`;
+     * a scheduled prompt carries its job's origin. A caller with neither (a
+     * legacy job, or a hand-built runtime in a test) gets `undefined`, and a
+     * timer is then refused rather than broadcast to every signed-in device.
+     */
+    function deviceOf(runtime: ToolRuntime): number | undefined {
+        const value = runtime.configurable?.deviceId;
+        return typeof value === "number" && Number.isInteger(value) && value > 0
+            ? value
+            : undefined;
     }
 
     /**
@@ -470,16 +489,20 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
             const runAt = new Date(at.getTime() + duration.ms);
             return scheduledText(
                 { done: "Timer set", refused: "The timer was not set" },
-                storeJob(access.userId, {
-                    label,
-                    class: "timer",
-                    payload: {
-                        kind: "message",
-                        message: message ?? label,
+                storeJob(
+                    access.userId,
+                    {
+                        label,
+                        class: "timer",
+                        payload: {
+                            kind: "message",
+                            message: message ?? label,
+                        },
+                        runAt,
+                        at,
                     },
-                    runAt,
-                    at,
-                }),
+                    deviceOf(runtime),
+                ),
                 at,
             );
         },
@@ -546,20 +569,24 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     done: "Reminder scheduled",
                     refused: "The reminder was not set",
                 },
-                storeJob(access.userId, {
-                    label,
-                    class: "reminder",
-                    payload: {
-                        kind: "message",
-                        message: message ?? label,
+                storeJob(
+                    access.userId,
+                    {
+                        label,
+                        class: "reminder",
+                        payload: {
+                            kind: "message",
+                            message: message ?? label,
+                        },
+                        runAt: first.at,
+                        ...(stated !== null
+                            ? { repeat: anchoredRule(stated, first.at) }
+                            : {}),
+                        ...(gated.gate !== null ? { gate: gated.gate } : {}),
+                        at: atTime,
                     },
-                    runAt: first.at,
-                    ...(stated !== null
-                        ? { repeat: anchoredRule(stated, first.at) }
-                        : {}),
-                    ...(gated.gate !== null ? { gate: gated.gate } : {}),
-                    at: atTime,
-                }),
+                    deviceOf(runtime),
+                ),
                 atTime,
             );
         },
@@ -662,21 +689,25 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     done: "Task scheduled",
                     refused: "The task was not scheduled",
                 },
-                storeJob(access.userId, {
-                    label,
-                    class: "notification",
-                    payload: {
-                        kind: "tool",
-                        toolName: resolved.tool.name,
-                        toolArgs: args ?? {},
+                storeJob(
+                    access.userId,
+                    {
+                        label,
+                        class: "notification",
+                        payload: {
+                            kind: "tool",
+                            toolName: resolved.tool.name,
+                            toolArgs: args ?? {},
+                        },
+                        runAt: first.at,
+                        ...(stated !== null
+                            ? { repeat: anchoredRule(stated, first.at) }
+                            : {}),
+                        ...(gated.gate !== null ? { gate: gated.gate } : {}),
+                        at: atTime,
                     },
-                    runAt: first.at,
-                    ...(stated !== null
-                        ? { repeat: anchoredRule(stated, first.at) }
-                        : {}),
-                    ...(gated.gate !== null ? { gate: gated.gate } : {}),
-                    at: atTime,
-                }),
+                    deviceOf(runtime),
+                ),
                 atTime,
             );
         },
@@ -761,17 +792,21 @@ export function createJobsTools(deps: JobsToolDeps): StructuredToolInterface[] {
                     done: "Job scheduled",
                     refused: "The job was not scheduled",
                 },
-                storeJob(access.userId, {
-                    label,
-                    class: "notification",
-                    payload: { kind: "prompt", prompt },
-                    runAt: first.at,
-                    ...(stated !== null
-                        ? { repeat: anchoredRule(stated, first.at) }
-                        : {}),
-                    ...(gated.gate !== null ? { gate: gated.gate } : {}),
-                    at: atTime,
-                }),
+                storeJob(
+                    access.userId,
+                    {
+                        label,
+                        class: "notification",
+                        payload: { kind: "prompt", prompt },
+                        runAt: first.at,
+                        ...(stated !== null
+                            ? { repeat: anchoredRule(stated, first.at) }
+                            : {}),
+                        ...(gated.gate !== null ? { gate: gated.gate } : {}),
+                        at: atTime,
+                    },
+                    deviceOf(runtime),
+                ),
                 atTime,
             );
         },

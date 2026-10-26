@@ -51,6 +51,8 @@ const SCHEDULABLE: StructuredToolInterface[] = [
 interface Harness {
     store: AppDatabase;
     userId: number;
+    /** The device credential the default runtime carries (#194). */
+    deviceId: number;
     /** Invokes one tool as the signed-in owner and returns its text. */
     call: (name: string, args: Record<string, unknown>) => Promise<string>;
     /** Invokes one tool as a guest (no `userId` in the runtime). */
@@ -70,6 +72,12 @@ function harness(
 ): Harness {
     const store = createInMemoryAppDatabase();
     const userId = store.createUser("luke", "hash", "owner").id;
+    const deviceId = store.createDevice(
+        userId,
+        "test-device",
+        "device-hash",
+        "test0001",
+    ).id;
     const at = options.at ?? NOW;
     let idSeq = 0;
     const instances = createJobsTools({
@@ -94,12 +102,18 @@ function harness(
         name: string,
         args: Record<string, unknown>,
         runtime: Record<string, unknown> = {
-            configurable: { sessionId: "s1", clientIp: "10.0.0.1", userId },
+            configurable: {
+                sessionId: "s1",
+                clientIp: "10.0.0.1",
+                userId,
+                deviceId,
+            },
         },
     ): Promise<string> => (await toolFor(name).invoke(args, runtime)) as string;
     return {
         store,
         userId,
+        deviceId,
         call: (name, args) => call(name, args),
         asGuest: (name, args) =>
             call(name, args, {
@@ -205,6 +219,7 @@ describe("jobs tools: setTimer", () => {
             label: "Pasta",
             message: "Drain it.",
             state: "pending",
+            originDeviceId: h.deviceId,
         });
         expect(new Date(job.runAt).getTime()).toBe(NOW.getTime() + 600_000);
         expect(text).toContain('Timer set: "Pasta" (job job-1)');
@@ -259,6 +274,19 @@ describe("jobs tools: setTimer", () => {
         expect(await h.call("setTimer", { label: "Tea" })).toContain(
             "give `minutes`",
         );
+        expect(h.jobs()).toEqual([]);
+    });
+    it("refuses a timer when the turn has no device to ring (#194)", async () => {
+        const h = harness();
+
+        const text = (await h
+            .tool("setTimer")
+            .invoke(
+                { label: "Tea", minutes: 5 },
+                { configurable: { sessionId: "s1", userId: h.userId } },
+            )) as string;
+
+        expect(text).toContain("local alarm");
         expect(h.jobs()).toEqual([]);
     });
 });

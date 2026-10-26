@@ -197,6 +197,10 @@ export function createNotificationRouter(
                     fallback: DEFAULT_LIMIT,
                     max: MAX_LIMIT,
                 }),
+                // #194: a timer notification belongs to the device that set
+                // it. A bearer caller names that device; a cookie session has
+                // no device and sees only account-wide rows.
+                deviceId: jarv.kind === "authed" ? jarv.device.id : null,
             });
             res.status(200).json({
                 notifications: notifications.map(toNotificationResponse),

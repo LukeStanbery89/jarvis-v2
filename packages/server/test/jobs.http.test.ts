@@ -13,7 +13,10 @@
  */
 import { describe, expect, it, beforeEach } from "vitest";
 import request from "supertest";
-import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
+import {
+    createCookieSessionProvider,
+    generateDeviceToken,
+} from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import { createApp } from "../src/app";
@@ -43,6 +46,7 @@ describe("jobs routes (#90 phase 5)", () => {
     let creator: JobCreator;
     let token: string;
     let userId: number;
+    let deviceId: number;
     let appConfig: AppConfig;
 
     beforeEach(() => {
@@ -61,12 +65,12 @@ describe("jobs routes (#90 phase 5)", () => {
         // database (or this test's fixtures).
         const material = generateDeviceToken();
         token = material.token;
-        store.createDevice(
+        deviceId = store.createDevice(
             userId,
             "web-test",
             material.tokenHash,
             material.prefix,
-        );
+        ).id;
         appConfig = getAppConfig();
     });
 
@@ -126,6 +130,26 @@ describe("jobs routes (#90 phase 5)", () => {
             .post("/api/jobs")
             .send({ label: "Kettle", class: "timer", runAt: iso(10) })
             .expect(401);
+    });
+
+    it("refuses a timer from a cookie session with no device (#194)", async () => {
+        const session = createCookieSessionProvider(store).issue(userId);
+
+        const refused = await request(buildApp())
+            .post("/api/jobs")
+            .set("Cookie", `jarvis_session=${session.token}`)
+            .set("x-csrf-token", session.csrfToken)
+            .send({ label: "Kettle", class: "timer", runAt: iso(10) })
+            .expect(403);
+
+        expect(refused.body.error).toContain("local alarm");
+        expect(store.listJobs(userId)).toEqual([]);
+    });
+
+    it("stores the creating device on a timer (#194)", async () => {
+        const id = await createTimer();
+
+        expect(store.getJob(userId, id)?.originDeviceId).toBe(deviceId);
     });
 
     it("mounts nothing at all when the scheduler is not wired", async () => {
