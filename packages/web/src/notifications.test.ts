@@ -338,6 +338,26 @@ describe("describeBody (#90 phase 6c)", () => {
         ).toBe("3 files changed.");
     });
 
+    it("compares the rendered text, so markdown syntax cannot hide a duplicate (#147)", () => {
+        expect(
+            describeBody({ title: "Kettle", body: "**Kettle**" }),
+        ).toBeNull();
+        expect(
+            describeBody({
+                title: "Read more",
+                body: "[Read more](https://example.com)",
+            }),
+        ).toBeNull();
+        expect(describeBody({ title: "Kettle", body: "** **" })).toBeNull();
+        // The original Markdown survives for the rich surfaces.
+        expect(
+            describeBody({
+                title: "Morning brief",
+                body: "**Canada**: A major fire.",
+            }),
+        ).toBe("**Canada**: A major fire.");
+    });
+
     it("has nothing to say about an absent or empty body", () => {
         expect(describeBody({ title: "Kettle" })).toBeNull();
         expect(describeBody({ title: "Kettle", body: "" })).toBeNull();

@@ -197,6 +197,24 @@ describe("the notifications page renders through the shared cards", () => {
         expect(html).toContain("Dismiss");
     });
 
+    it("renders a notification body as Markdown, not raw syntax (#147)", () => {
+        const html = renderToStaticMarkup(
+            createElement(NotificationsPage, {
+                notifications: notificationsState([
+                    record({
+                        body: "**Canada**: A major fire.\n\n1. **Oil**: Prices dipped.",
+                    }),
+                ]),
+                jobs: jobsState([]),
+                token: "device-token",
+            }),
+        );
+
+        expect(html).toContain("<strong>Canada</strong>");
+        expect(html).toContain("<ol>");
+        expect(html).not.toContain("**Canada**");
+    });
+
     it("offers the question surface for an answerable notification (#94, #180)", () => {
         const html = renderToStaticMarkup(
             createElement(NotificationsPage, {
@@ -302,6 +320,20 @@ describe("the toast renders the class chip and the primary fact", () => {
         expect(html).toContain("class-chip");
         expect(html).toContain("Take meds");
         expect(html).toContain("Take meds now");
+    });
+
+    it("renders the toast body as Markdown (#147)", () => {
+        const html = renderToStaticMarkup(
+            createElement(ToastStack, {
+                toasts: [record({ body: "**Take meds now**" })],
+                onMarkRead: () => undefined,
+                onDismiss: () => undefined,
+                onSnooze: () => undefined,
+            }),
+        );
+
+        expect(html).toContain("<strong>Take meds now</strong>");
+        expect(html).not.toContain("**Take meds now**");
     });
 
     it("sends an answerable notification to its answer box (#94)", () => {

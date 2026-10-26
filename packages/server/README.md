@@ -1023,6 +1023,10 @@ Subscriptions are per browser, stored in `push_subscriptions` and registered via
 `POST /api/push/unsubscribe`. Each row also records the device credential that
 registered it (`push_subscriptions.device_id`, #194), so a targeted timer can
 select one browser's endpoint(s) instead of every subscription on the account.
+The payload's body is `plainText(notification.body)` (#147): the service worker
+has no Markdown renderer, and converting on the server keeps the background
+popup consistent with the page's own OS notification. The REST record still
+holds the Markdown body the web list and toast render.
 The push channel is `onlyWhenAbsent`: when an in-app socket is present the page
 already owns the ring and banner, while an absent socket is exactly when push
 is the only path left; that presence question is asked of the notification's

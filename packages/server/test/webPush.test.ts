@@ -118,6 +118,31 @@ describe("createWebPushChannel", () => {
         expect(send).toHaveBeenCalledTimes(1);
     });
 
+    it("sends the service worker a plain-text body (#147)", async () => {
+        const send = vi.fn<WebPushSend>().mockResolvedValue({});
+        const channel = createWebPushChannel({
+            store: {
+                listPushSubscriptions: () => [
+                    subscription("https://push.example/a"),
+                ],
+                deletePushSubscription: vi.fn(),
+            },
+            vapid: VAPID,
+            send,
+        });
+
+        await channel.deliver(
+            notification({
+                body: "**Canada**: A major fire.\n\n1. **Oil**: Prices dipped.",
+            }),
+        );
+
+        const payload = JSON.parse(send.mock.calls[0][1]);
+        expect(payload.body).toBe(
+            "Canada: A major fire.\n\n• Oil: Prices dipped.",
+        );
+    });
+
     it("removes an expired endpoint and keeps sending the rest", async () => {
         const send = vi
             .fn<WebPushSend>()

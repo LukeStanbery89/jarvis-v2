@@ -6,6 +6,7 @@
  * `@lukestanbery/jarvis-server` (`src/ws.ts`) and `@lukestanbery/jarvis-cli` (`src/client.ts`); see the
  * package README for the canonical protocol specification.
  */
+import { plainText } from "./plainText";
 export type {
     AuthRequest,
     AuthResult,
@@ -72,6 +73,8 @@ export {
     MAX_GATE_TOOL_LENGTH,
     parseJobGate,
 } from "./gate";
+export { plainText };
+
 export {
     MALFORMED_SERVER_FRAME,
     parseClientMessage,

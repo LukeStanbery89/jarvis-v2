@@ -2,10 +2,10 @@
  * The scrolling transcript.
  *
  * Renders each message as a memoized {@link MessageRow} — user text with image
- * previews (or a muted "not retained" note), tool-call notices, and assistant
- * Markdown (or an error banner) — and owns the scroll container's
- * auto-scroll via {@link useAutoScroll}. Presentational: props in, no events
- * out.
+ * previews (or a muted "not retained" note), tool-call notices, and Markdown
+ * for both sides of the conversation (or an error banner) — and owns the scroll
+ * container's auto-scroll via {@link useAutoScroll}. Presentational: props in,
+ * no events out.
  */
 import { memo, useRef } from "react";
 import { Image as ImageIcon } from "lucide-react";
@@ -54,7 +54,7 @@ const MessageRow = memo(function MessageRow({
                         />
                     ),
                 )}
-                {message.text}
+                <Markdown text={message.text} />
             </div>
         );
     }

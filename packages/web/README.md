@@ -236,11 +236,16 @@ Under 48 rem the chat is one column and the thread list becomes a drawer over
 the conversation: a scrim closes it, Escape closes it, and a pick closes it on
 the way to the thread. The closed drawer is `visibility: hidden`, not merely
 translated off-screen, so it stays out of the tab order; reduced motion drops
-the slide. The state lives in `AppShell`, not `Chat`, because the control is in
-the top bar — the chat route's first button, where the wordmark sits on wide
-screens — while the drawer is the view's; the shell also closes it on a
-navigation. At that width the wordmark is pinned to the bar's true centre
-(the flanks differ in width, so flex-centring would sit it off-centre).
+the slide. At that width a bubble is capped at 90% of the transcript instead of
+the desktop 46 rem measure, with the user's turns aligned right and the
+assistant's left — the side alone says who is speaking. At every width the
+corner nearest the speaker is squared (bottom-right on a user turn, bottom-left
+on an assistant turn), so the bubble reads as coming from that side. The state
+lives in `AppShell`, not `Chat`, because the control is in the top bar — the
+chat route's first button, where the wordmark sits on wide screens — while the
+drawer is the view's; the shell also closes it on a navigation. At that width
+the wordmark is pinned to the bar's true centre (the flanks differ in width, so
+flex-centring would sit it off-centre).
 
 The **bar** collapses at its own breakpoint, **60 rem**, not the shell's 48:
 with three state chips beside them, the wordmark, the four links plus the
@@ -331,7 +336,14 @@ local transcripts, so threads created on the CLI or another browser appear
 (they start empty and continue on the first prompt). "New chat" mints a
 fresh `sessionId` locally; the server row appears after the first prompt.
 Threads are trimmed to their most recent 200 messages, and on localStorage
-quota exhaustion the oldest whole thread is evicted once.
+quota exhaustion the oldest whole thread is evicted once. Both sides of a
+transcript render through `src/Markdown.tsx` (#147): a user's own message gets
+the same GFM subset, hardened links and raw-HTML refusal as the assistant's
+reply. A GFM table is wrapped in its own focusable horizontal scroller, so wide
+columns keep their natural width and only the table pans — the bubble and the
+transcript never scroll sideways. Table headers are left-aligned, and every
+column except the last carries a 16px right gap so adjacent values do not run
+together.
 
 Deleting a conversation is a **press-and-hold** gesture (#157): the row's trash
 button fills a red ring clockwise for three seconds, and the row is removed only
@@ -364,7 +376,8 @@ On connect the client sends a first-frame `hello` announcement
 (`{ type: "hello", capabilities: [...] }`, see `src/views/Chat.tsx`)
 declaring what it can render: `markdown`, `image`, `link`, and `audio`.
 Typed prompts carry `mode: "text"` — text chats are answered with the
-declared capabilities (rich Markdown/tables/images). Mic prompts carry
+declared capabilities (rich Markdown/tables/images), and both the prompt and
+the reply are rendered as Markdown in the transcript. Mic prompts carry
 `mode: "voice"` (see below) and always yield plain conversational text
 server-side. Raw `html` is deliberately _not_ claimed: model text is rendered as
 Markdown with raw HTML skipped by react-markdown's default transform.
@@ -629,7 +642,12 @@ The surfaces are the notifications page at `/notifications`
 (`src/views/app/NotificationsPage.tsx`, where Mark read · Dismiss · Snooze live),
 the unread red badge in the top bar, and — since #90 phase 6b — a floating toast in
 the shell (`src/views/app/Toast.tsx`) that reaches the user on **every** page,
-because a fired reminder arrives wherever they happen to be. Which rows reach
+because a fired reminder arrives wherever they happen to be. Both the record card
+and the toast render the body through `Markdown.tsx` (#147), so a scheduled
+prompt's bold text, headings and numbered lists read as formatting rather than
+syntax. The OS popup is plain text by platform: `notificationBody` and the
+server's push payload call the protocol's `plainText(body)` first, so the same
+brief loses its markers without drifting from the stored body. Which rows reach
 the toast is `selectToasts`' decision (see the alert-classes section below), not
 the list's. Reading or dismissing is optimistic — the list
 updates immediately and rolls back if the server refuses — and a notification
@@ -964,7 +982,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/voiceTrace.ts` — the opt-in raw-vs-submitted transcript trace (#121), a separate switch from `debug.ts` because it prints real speech.
 - `src/dev/VoiceHarness.tsx` — the offline replay harness (#121, `?voice-harness=1`), lazily imported.
 - `src/safeHref.ts` — link protocol allowlist.
-- `src/Markdown.tsx` — GFM renderer with hardened links/images.
+- `src/Markdown.tsx` — GFM renderer with hardened links/images and a focusable horizontal scroller around each table.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` renders the conversation: its sidebar rows (`useSessions`), the transcript, the composer, and the error/wake/voice status lines — the turn itself is the shell's `runTurn`, and the Settings item and the panel it opens are the shell's too (#90 phase 6d).
 - `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx` (whose row delete is the `HoldToDelete` gesture, #157), `Transcript.tsx` (memoized message rows + auto-scroll), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
 - `src/hooks/useJobRuns.ts` — one job's attempts, read when a record asks (#90 phase 7d): `loaded` with the runs, `gone` for the 404 a _stale_ link gets (the schema nulls a record's `job_id` when its job is pruned, so only a list read before the prune can ask after something that is gone), `error` for anything else. Mounted only once a disclosure is open, because a `<details>` renders its children either way and a naive one would fire a request per record on every visit.

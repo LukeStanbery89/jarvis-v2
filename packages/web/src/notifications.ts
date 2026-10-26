@@ -23,9 +23,10 @@
  * made, so the overlay and the banner can never disagree about which row is
  * the one demanding attention.
  */
-import type {
-    NotificationClass,
-    NotificationFrame,
+import {
+    plainText,
+    type NotificationClass,
+    type NotificationFrame,
 } from "@lukestanbery/jarvis-protocol";
 import type { Notification } from "./api";
 import { clockText, describeSpan } from "./clock";
@@ -479,6 +480,14 @@ export function describeBody(notification: {
     if (body === undefined || body.trim() === "") {
         return null;
     }
+    // Compare the *text the reader sees*, not the source syntax: a body of
+    // `**Kettle**` is the same sentence as the title "Kettle" and should not
+    // repeat in the card. The original Markdown is still returned for the
+    // rich surfaces below.
+    const visible = plainText(body);
+    if (visible.length === 0) {
+        return null;
+    }
     const title =
         notification.title === undefined
             ? ""
@@ -486,7 +495,7 @@ export function describeBody(notification: {
     if (title === "") {
         return body;
     }
-    const normalized = normalizeText(body);
+    const normalized = normalizeText(visible);
     if (
         normalized === title ||
         RESTATEMENT_LEAD_INS.some((lead) => normalized === `${lead} ${title}`)

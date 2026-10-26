@@ -20,6 +20,7 @@
  */
 import webpush from "web-push";
 import type { PushSubscription as WebPushSubscription } from "web-push";
+import { plainText } from "@lukestanbery/jarvis-protocol";
 import type {
     AppPushSubscription,
     PushSubscriptionLedger,
@@ -110,12 +111,17 @@ export function createWebPushChannel(
             if (subscriptions.length === 0) {
                 return 0;
             }
+            // The service worker has no Markdown renderer, and a push arrives
+            // when the page cannot do the conversion (#147). Strip the stored
+            // body here so the background popup gets the same readable text as
+            // the page's own OS notification; the REST record keeps Markdown
+            // for the list and toast.
+            const body =
+                notification.body === null ? "" : plainText(notification.body);
             const payload = JSON.stringify({
                 id: notification.id,
                 title: notification.title,
-                ...(notification.body !== null
-                    ? { body: notification.body }
-                    : {}),
+                ...(body.length > 0 ? { body } : {}),
                 class: notification.class,
                 priority: notification.priority,
                 url: "/",
