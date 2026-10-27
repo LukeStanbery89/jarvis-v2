@@ -11,17 +11,13 @@ updates:
           interval: "weekly"
       groups:
           # Safe updates ride together: one review and one CI run for the
-          # weekly minor/patch pass. Majors get their own group because one
-          # incompatible major (for example TypeScript 7 breaking the contracts
-          # codegen) must not hold every patch hostage.
+          # weekly minor/patch pass. Majors deliberately stay as individual
+          # PRs: an overlapping major group loses every dependency to this
+          # first group, and one incompatible major (for example TypeScript 7
+          # breaking the contracts codegen) must not hold every patch hostage.
           npm_and_yarn:
               patterns:
                   - "*"
               update-types:
                   - "minor"
                   - "patch"
-          npm_and_yarn-major:
-              patterns:
-                  - "*"
-              update-types:
-                  - "major"
