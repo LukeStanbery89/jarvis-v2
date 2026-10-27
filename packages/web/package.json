@@ -26,7 +26,7 @@
         "@lukestanbery/jarvis-contracts": "^0.1.0",
         "@types/react": "^19.1.0",
         "@types/react-dom": "^19.1.0",
-        "@vitejs/plugin-react": "^5.0.0",
+        "@vitejs/plugin-react": "^6.1.2",
         "typescript": "^7.0.2",
         "vite": "^8.3.5",
         "vitest": "^5.0.5"
