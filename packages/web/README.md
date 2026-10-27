@@ -327,17 +327,21 @@ clears the credential but keeps the transcripts.
 
 ## Conversations and transcripts
 
-The server stores LangGraph thread state but no readable message history,
-so transcripts live **client-side** in localStorage
-(`jarvis.web.user.<name>.threads`), keyed by the wire `sessionId`. The
-sidebar merges the server's `GET /api/sessions` rows (filtered to the
-signed-in user's `userId` — owner listings include every account) with the
-local transcripts, so threads created on the CLI or another browser appear
-(they start empty and continue on the first prompt). "New chat" mints a
-fresh `sessionId` locally; the server row appears after the first prompt.
-Threads are trimmed to their most recent 200 messages, and on localStorage
-quota exhaustion the oldest whole thread is evicted once. Both sides of a
-transcript render through `src/Markdown.tsx` (#147): a user's own message gets
+The server owns the durable transcript (#122): `GET /api/sessions/{threadId}`
+returns encrypted rows as pages, and the web keeps only **thread metadata**
+(ids, titles, timestamps, paging cursor) in localStorage
+(`jarvis.web.user.<name>.threads`), keyed by the wire `sessionId`. Message
+bodies live in memory for the open thread and are fetched again on reload;
+the first load of the new build strips any old message bodies from the local
+cache. The sidebar merges the server's `GET /api/sessions` rows (filtered to
+the signed-in user's `userId` — owner listings include every account), so
+threads created on the CLI or another browser appear with their history.
+Opening a thread fetches the newest 20 messages; scrolling to the oldest
+loaded row fetches the previous page and prepends it, preserving the reader's
+position. A thread whose live content is shorter than the pane keeps fetching
+until it fills or runs out. A model-generated title arrives as an out-of-turn
+`sessionTitle` frame and updates the row in place. Both sides of a transcript
+render through `src/Markdown.tsx` (#147): a user's own message gets
 the same GFM subset, hardened links and raw-HTML refusal as the assistant's
 reply. A GFM table is wrapped in its own focusable horizontal scroller, so wide
 columns keep their natural width and only the table pans — the bubble and the
@@ -996,7 +1000,7 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/hooks/usePopoverMenu.ts` — the state and placement one floating menu needs (#156): a stable `menuId`, the open flag from the popover's own `toggle` event, the toggle/menu refs, and the measurement through `src/popover.ts` (re-placed on scroll/resize while open). Shared by `SnoozeMenu` and `RowActions` so the two popovers stay identical — and, because both are `popover="auto"`, mutually exclusive without either knowing the other exists.
 - `src/api.ts` — typed REST client (login, session list/delete, notification list/read/dismiss/answer, coding-job questions, jobs list/detail/create/edit/cancel/snooze, prefs read/patch; Bearer token). `answerNotification` sends `{ answers }` for a structured set and `{ answer }` for the legacy text path; `getCodingJobQuestions` is the app's read of a parked job's questions and recorded answers.
 - `src/credentials.ts` — per-user localStorage credential store.
-- `src/threads.ts` — client-side transcript store (pure helpers + persistence).
+- `src/threads.ts` — the in-memory transcript store and metadata-only persistence: append/stream/tool/error helpers, server-page hydrate/prepend, and title updates (#122).
 - `src/ChatClient.ts` — event-driven `/ws` wire client (incl. `sendLocation`, #31; binary audio decode, #83; `cancelTurn` + dropped-generation audio filtering, #84 P6; out-of-turn `notification` frames via `onNotification`, #139).
 - `src/location.ts` — geolocation consent + request plumbing (#31).
 - `src/voice.ts` — voice-controller wiring + STT engine selection (Web Speech first, Vosk WASM fallback — #84 P3b) and the wake-word helpers (`createWakeWord`, `createWakeStt`, `probeWakeSupport`, wake pref — #84 P4); the controller lives in `packages/voice`.
@@ -1007,10 +1011,10 @@ dials the same same-origin URLs as in production (`src/wsUrl.ts`).
 - `src/safeHref.ts` — link protocol allowlist.
 - `src/Markdown.tsx` — GFM renderer with hardened links/images and a focusable horizontal scroller around each table.
 - `src/views/Login.tsx`, `src/views/Chat.tsx` — the sign-in gate and the chat page (`/chat`). `Chat.tsx` renders the conversation: its sidebar rows (`useSessions`), the transcript, the composer, and the error/wake/voice status lines — the turn itself is the shell's `runTurn`, and the Settings item and the panel it opens are the shell's too (#90 phase 6d).
-- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx` (whose row delete is the `HoldToDelete` gesture, #157), `Transcript.tsx` (memoized message rows + auto-scroll + the per-turn working bubble), `Sources.tsx`, `sourceLinks.ts` and `externalBrowser.ts` (the collapsible original-link list under a web-search answer, its grouping/vetting, and the PWA system-browser escape, #199), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send), `PendingAttachments.tsx`.
+- `src/views/chat/` — the presentational chat components (#109): `Sidebar.tsx` (whose row delete is the `HoldToDelete` gesture, #157), `Transcript.tsx` (memoized message rows, prepend-aware auto-scroll, the infinite-scroll top trigger, the loading-earlier row, and the per-turn working bubble), `Sources.tsx`, `sourceLinks.ts` and `externalBrowser.ts` (the collapsible original-link list under a web-search answer, its grouping/vetting, and the PWA system-browser escape, #199), `Composer.tsx` (draft, focus, paste/drop, mic/attach/send, the 16k prompt cap), `PendingAttachments.tsx`.
 - `src/hooks/useJobRuns.ts` — one job's attempts, read when a record asks (#90 phase 7d): `loaded` with the runs, `gone` for the 404 a _stale_ link gets (the schema nulls a record's `job_id` when its job is pruned, so only a list read before the prune can ask after something that is gone), `error` for anything else. Mounted only once a disclosure is open, because a `<details>` renders its children either way and a naive one would fire a request per record on every visit.
 - `src/hooks/useJobPage.ts` — a job page's form lifecycle (#90 phase 7): which object the form has open, the line the last save left (the server's quiet-hours forecast), and the transitions between them. One copy, because three pages open the same form and a second would be the place they disagreed about what "saved" means.
-- `src/hooks/` — the hooks (#109): `useThreads` (transcript reducer + persistence), `useSessions`, `useAudio`, `useChatClient` and `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing` (the preference, the one-shot fix, and the fixed position the widget reads), `useWeather` (#186), `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `usePrefs` (#143 account prefs read/patch), `useJobs` (#90 job list), `useClock`, `useRoute`, `useAutoScroll`.
+- `src/hooks/` — the hooks (#109): `useThreads` (transcript reducer + metadata persistence + server-page hydrate/prepend), `useSessions`, `useAudio`, `useChatClient` (including the out-of-turn `sessionTitle` callback), `useVoiceSession` (each constructs its socket/controller in a mount effect so React StrictMode's double-invoke yields a live instance), `useLocationSharing` (the preference, the one-shot fix, and the fixed position the widget reads), `useWeather` (#186), `useAttachments`, `useNotifications` (#139 list state + REST), `useBrowserNotify` (#139 phase 2 OS announcements), `usePrefs` (#143 account prefs read/patch), `useJobs` (#90 job list), `useClock`, `useRoute`, `useAutoScroll` (with the prepend hold).
 - `src/notifications.ts` — pure notification-list helpers (#139): merge a pushed frame with the fetched page by id, settle locally, pick the banner, count unread. Since #180 it also carries the client-side `CodingQuestion` / `CodingJobQuestion` / `CodingAnswer` shapes the answer form reads.
 - `src/codingAnswers.ts` — the pure half of the structured answer form (#180): `emptyCodingDraft` prefills from recorded answers, `codingDraftComplete` enforces required questions and Other text, and `codingAnswersFromDraft` produces the `answers` payload.
 - `src/views/app/CodingQuestionForm.tsx` — the one-control-per-question form (#180): textarea, radio group, checkbox group, optional Other, and the **Send answers** submit; the page owns the request so a refusal keeps the draft.

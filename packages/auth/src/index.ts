@@ -55,6 +55,7 @@ export type {
     CodingJobQuestion,
     CodingJobQuestionSet,
     CodingJobState,
+    ChatTranscriptLedger,
     CreateCodingJobInput,
     CreateJobInput,
     CreateNotificationInput,
@@ -79,15 +80,19 @@ export type {
     WebSessionLedger,
 } from "./store";
 export type {
+    AppChatMessage,
     AppDevice,
     AppSession,
     AppUser,
     AuthContext,
     AuthenticatedContext,
+    ChatMessageRole,
     GuestContext,
+    NewChatMessage,
     ResolvedIdentity,
     Role,
     SessionContext,
     SessionKind,
+    SessionTitleSource,
     WebSessionRow,
 } from "./types";

@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Paperclip, SendHorizontal, Square } from "lucide-react";
+import { MAX_PROMPT_LENGTH } from "@lukestanbery/jarvis-protocol";
 import type { VoiceSnapshot } from "@lukestanbery/jarvis-voice";
 import type { PendingImage } from "../../attachments";
 import { HapticButton } from "../app/HapticButton";
@@ -75,7 +76,7 @@ export function Composer({
     /** Trims + guards, clears synchronously, then hands the text to Chat. */
     function submit(): void {
         const text = draft.trim();
-        if (text === "" || streaming) {
+        if (text === "" || streaming || text.length > MAX_PROMPT_LENGTH) {
             return;
         }
         setDraft("");
@@ -161,6 +162,7 @@ export function Composer({
                 name="message"
                 value={draft}
                 placeholder="Message JARVIS…"
+                maxLength={MAX_PROMPT_LENGTH}
                 disabled={streaming}
                 ref={composerRef}
                 onChange={(e) => setDraft(e.target.value)}

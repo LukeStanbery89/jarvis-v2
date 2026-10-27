@@ -65,6 +65,8 @@ import type { AppDatabase, AuthContext } from "@lukestanbery/jarvis-auth";
 import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
 import { createSessionManager } from "./sessionManager";
 import type { SessionManager, TurnOutcome } from "./sessionManager";
+import type { ChatHistoryService, ChatTranscriptEntry } from "./sessionHistory";
+import type { SessionTitleService } from "./sessionTitle";
 import type { NotificationHub } from "./notify/hub";
 import { runAgent } from "./agent";
 import type { AgentEvent, DeviceLocation } from "./agent";
@@ -94,6 +96,15 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  * (`tool`/`toolResult`/`audioStart`) always send.
  */
 const MAX_SEND_BUFFER_BYTES = 1_048_576;
+
+/**
+ * Defense-in-depth cap on the prose one turn may stream (#122).
+ *
+ * `max_tokens` on the model is the primary bound; this catches a provider
+ * that ignores it. Tool traffic still flows after the cap so a tool-only
+ * ending is not lost.
+ */
+const MAX_TURN_TEXT_CHARS = 32_000;
 
 /**
  * Tools whose result is an action confirmation rather than the answer.
@@ -256,6 +267,20 @@ export interface ChatServerOptions {
      * that spoke. Absent → nothing server-initiated is ever sent.
      */
     notifications?: NotificationHub;
+    /**
+     * Durable transcript (#122): the turn path appends its normalized messages
+     * and applies retention after the agent settles. Absent in tests that do
+     * not exercise history.
+     */
+    history?: ChatHistoryService;
+    /** Excerpt + model title service (#122). */
+    titles?: SessionTitleService;
+    /**
+     * Post-turn checkpoint maintenance (#122): trim the model context to its
+     * window and prune old checkpoint versions. Injected because the graph's
+     * singleton lives in `agent.ts` and tests replace `runAgent`.
+     */
+    maintainContext?: (threadId: string) => Promise<void>;
 }
 
 /**
@@ -273,8 +298,19 @@ export function attachChatServer(
     store: AppDatabase,
     options: ChatServerOptions = { turnTimeoutMs: DEFAULT_TURN_TIMEOUT_MS },
 ): WebSocketServer {
-    const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
-    const sessions = createSessionManager(store);
+    const wss = new WebSocketServer({
+        server: httpServer,
+        path: "/ws",
+        // A prompt is capped at 16k chars (~64 KiB worst-case UTF-8) plus the
+        // JSON envelope. Refuse a giant frame before it reaches the parser.
+        maxPayload: 128 * 1024,
+    });
+    const sessions = createSessionManager(store, {
+        titles: options.titles,
+        ...(options.history
+            ? { deleteThread: (id) => options.history!.deleteThread(id) }
+            : {}),
+    });
 
     // The ws library re-emits transport/receiver failures (a malformed
     // frame, invalid UTF-8, an oversize message, a write error during a
@@ -587,11 +623,13 @@ async function handlePrompt(
               )
             : prompt.prompt;
 
+    const transcript: ChatTranscriptEntry[] = [];
     const turn = await sessions.runTurn({
         sessionId: prompt.sessionId,
         actor: conn.ctx,
         guestThreads: conn.guestThreads,
         mode,
+        titleHint: prompt.prompt,
         stream: async (sessionId) => {
             // The turn's cancellation source (#84 P6): a `cancel` frame
             // aborts it while streaming; a `cancel` that arrived while this
@@ -609,6 +647,8 @@ async function handlePrompt(
                 await streamEventsToSocket({
                     socket,
                     prompt: effectivePrompt,
+                    recordedPrompt: prompt.prompt,
+                    entries: transcript,
                     sessionId,
                     turnTimeoutMs: options.turnTimeoutMs,
                     capabilities: conn.capabilities,
@@ -634,9 +674,62 @@ async function handlePrompt(
                     conn.active = null;
                 }
             }
+            // Transcript and checkpoint maintenance stay inside the turn's
+            // per-thread lock: the context trim writes a fresh checkpoint, and
+            // a concurrent turn must not race that write. Storage failures are
+            // logged, never allowed to turn a delivered answer into an error.
+            const session = store.getSessionByThread(sessionId);
+            if (session && options.history) {
+                try {
+                    options.history.append(session, transcript);
+                    options.history.enforceRetention(session);
+                } catch (err) {
+                    logger.error(
+                        `Could not record transcript for ${sessionId}: ${
+                            err instanceof Error ? err.message : String(err)
+                        }`,
+                    );
+                }
+            }
+            if (session && options.maintainContext) {
+                try {
+                    await options.maintainContext(sessionId);
+                } catch (err) {
+                    logger.warn(
+                        `Could not maintain checkpoint context for ${sessionId}: ${
+                            err instanceof Error ? err.message : String(err)
+                        }`,
+                    );
+                }
+            }
         },
     });
     respondToTurn(socket, turn, prompt.sessionId);
+
+    if (
+        turn === "completed" &&
+        transcript.length > 0 &&
+        conn.ctx.kind === "authed" &&
+        options.titles
+    ) {
+        const session = store.getSessionByThread(prompt.sessionId);
+        if (session) {
+            void options.titles.upgrade(session).then((title) => {
+                if (
+                    title !== null &&
+                    conn.capabilities.includes("sessionTitle") &&
+                    socket.readyState === WebSocket.OPEN
+                ) {
+                    sendFrame(socket, {
+                        sessionTitle: {
+                            sessionId: prompt.sessionId,
+                            title,
+                        },
+                    });
+                }
+            });
+        }
+    }
 }
 
 /** Picks the user-facing error frame for a rejected turn outcome. */
@@ -818,8 +911,12 @@ async function handleAuth(
 interface StreamEventsOptions {
     /** The prompting socket (frames and binary audio go here). */
     socket: WebSocket;
-    /** The prompt text. */
+    /** The prompt text sent to the agent. */
     prompt: string;
+    /** The user's original prompt, recorded in the transcript. */
+    recordedPrompt?: string;
+    /** Mutable transcript entries the caller persists after the turn. */
+    entries?: ChatTranscriptEntry[];
     /** The claimed session/thread id. */
     sessionId: string;
     /** Hard cap for the turn before the server aborts it. */
@@ -972,6 +1069,36 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
     const toolArgs = new Map<string, unknown>();
     /** Informational results, in call order, for a no-prose turn. */
     const toolAnswers: string[] = [];
+    /**
+     * Durable transcript entries (#122). The user row is recorded before the
+     * model runs; tool results and assistant segments are added as they
+     * settle. The caller writes the whole turn after the socket turn ends.
+     */
+    const entries = opts.entries ?? [];
+    entries.push({
+        role: "user",
+        payload: {
+            kind: "user",
+            text: opts.recordedPrompt ?? prompt,
+            ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+        },
+    });
+    /** The assistant prose since the last tool boundary / turn start. */
+    let assistantText = "";
+    /** Total prose characters emitted this turn, across segments. */
+    let turnTextChars = 0;
+    let turnTextTruncated = false;
+    /** Tool calls awaiting their result, in call order. */
+    const pendingTools: { name: string; args: unknown }[] = [];
+    const flushAssistant = (): void => {
+        if (assistantText.length > 0) {
+            entries.push({
+                role: "assistant",
+                payload: { kind: "assistant", text: assistantText },
+            });
+            assistantText = "";
+        }
+    };
     // Time-to-first-audio decomposition (#83 phase 6, #89): first LLM
     // token, first queued segment, first PCM delivered — deltas against
     // the turn's start, logged once when the stream completes.
@@ -989,6 +1116,11 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
         }
         finished = true;
         speaking?.abort();
+        flushAssistant();
+        entries.push({
+            role: "assistant",
+            payload: { kind: "assistant", text: message, error: true },
+        });
         sendError(socket, message);
     };
     // The `cancel` (#84 P6) epilogue: unlike a failure this is not an error
@@ -1001,6 +1133,7 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
         }
         finished = true;
         speaking?.abort();
+        flushAssistant();
         logger.info(`Turn ${generationId} cancelled by client`);
         sendFrame(socket, { done: true });
     };
@@ -1031,13 +1164,33 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
                     return;
                 }
                 logAgentEvent(event);
+                let outgoing: AgentEvent = event;
                 if (event.type === "token") {
+                    if (turnTextTruncated) {
+                        continue;
+                    }
                     firstTokenAt ??= Date.now();
-                    responseText += event.text;
-                    speaking?.push(event.text);
+                    const remaining = MAX_TURN_TEXT_CHARS - turnTextChars;
+                    const visible =
+                        event.text.length > remaining
+                            ? `${event.text.slice(0, Math.max(0, remaining))}\n\n…[truncated]`
+                            : event.text;
+                    responseText += visible;
+                    assistantText += visible;
+                    turnTextChars += visible.length;
+                    speaking?.push(visible);
+                    if (event.text.length > remaining) {
+                        turnTextTruncated = true;
+                        outgoing = { type: "token", text: visible };
+                    }
                 } else if (event.type === "tool") {
                     toolCallCount += 1;
+                    flushAssistant();
                     toolArgs.set(event.name, event.args);
+                    pendingTools.push({
+                        name: event.name,
+                        args: event.args,
+                    });
                 } else if (event.type === "toolResult") {
                     const answer = informationalToolText(
                         event.name,
@@ -1048,8 +1201,29 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
                         toolAnswers.push(answer);
                     }
                     toolArgs.delete(event.name);
+                    const pendingIndex = pendingTools.findIndex(
+                        (tool) => tool.name === event.name,
+                    );
+                    const pending =
+                        pendingIndex >= 0
+                            ? pendingTools.splice(pendingIndex, 1)[0]
+                            : undefined;
+                    entries.push({
+                        role: "tool",
+                        payload: {
+                            kind: "tool",
+                            name: event.name,
+                            ...(pending?.args !== undefined
+                                ? { args: pending.args }
+                                : {}),
+                            output: event.output,
+                            ...(event.sources !== undefined
+                                ? { sources: event.sources }
+                                : {}),
+                        },
+                    });
                 }
-                sendFrame(socket, toServerFrame(event));
+                sendFrame(socket, toServerFrame(outgoing));
             }
         } catch (err) {
             if (signal.aborted) {
@@ -1099,6 +1273,7 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
                         ? toolAnswers.join("\n\n")
                         : "Done — the requested tool calls completed.";
                 responseText = confirmation;
+                assistantText = confirmation;
                 if (socket.readyState === WebSocket.OPEN) {
                     firstTokenAt ??= Date.now();
                     sendFrame(
@@ -1149,10 +1324,14 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
             finishCancelled();
             return;
         }
+        flushAssistant();
         finished = true;
         sendFrame(socket, { done: true });
     } finally {
         clearTimeout(timer);
+        // A socket that closed mid-turn still produced real partial text;
+        // record it rather than losing what the user saw.
+        flushAssistant();
     }
 }
 

@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AppDatabase } from "@lukestanbery/jarvis-auth";
 import { createAuthRouter } from "./http/authRoutes";
+import type { SessionContentServices } from "./sessionHistory";
 import {
     contractErrorResponse,
     mountContractValidator,
@@ -117,6 +118,12 @@ export function createApp(
      * provider/quota serves the `getWeather` tool.
      */
     weather?: WeatherRouteDeps,
+    /**
+     * Encrypted transcript + title services (#122). Present in production;
+     * absent in tests that do not exercise history, where the detail route
+     * answers 503 and session titles stay null.
+     */
+    sessionContent?: SessionContentServices,
 ) {
     const app = express();
 
@@ -201,7 +208,16 @@ export function createApp(
         );
     }
 
-    app.use("/api", createAuthRouter(store, appConfig));
+    app.use(
+        "/api",
+        createAuthRouter(
+            store,
+            appConfig,
+            undefined,
+            undefined,
+            sessionContent,
+        ),
+    );
 
     // Notifications (#139): mounted only when the surface is wired, so a
     // deployment with `JARVIS_NOTIFY=off` has no endpoint at all rather than

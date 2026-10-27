@@ -20,7 +20,7 @@ import {
  * than a literal hunt through the file, and the *assertions themselves* still
  * prove the chain ran (they check the shape and the rows, not just the number).
  */
-const LATEST_VERSION = 24;
+const LATEST_VERSION = 25;
 
 let store: AppDatabase;
 let db: Database.Database;
@@ -371,6 +371,90 @@ describe("sessions", () => {
         store.deleteSession("gone");
         expect(store.getSessionByThread("gone")).toBeNull();
         store.deleteSession("never-existed");
+    });
+});
+
+describe("chat transcript ledger (#122)", () => {
+    it("stores encrypted titles, history markers, and paged rows", () => {
+        const owner = store.createUser("luke", "hash", "owner");
+        const session = store.claimSession("chat-ledger", {
+            userId: owner.id,
+            deviceId: null,
+            kind: "text",
+        }).session;
+        store.setSessionTitle("chat-ledger", "ciphertext", "excerpt");
+        const titled = store.getSessionByThread("chat-ledger")!;
+        expect(titled.title).toBe("ciphertext");
+        expect(titled.titleSource).toBe("excerpt");
+        store.markSessionHistoryTrimmed(
+            "chat-ledger",
+            "2026-01-01T00:00:00.000Z",
+        );
+        expect(store.getSessionByThread("chat-ledger")?.historyTrimmedAt).toBe(
+            "2026-01-01T00:00:00.000Z",
+        );
+
+        store.appendChatMessages(session.id, [
+            { role: "user", payload: "p1", createdAt: "2026-01-01T00:00:01Z" },
+            { role: "user", payload: "p2", createdAt: "2026-01-01T00:00:02Z" },
+            { role: "user", payload: "p3", createdAt: "2026-01-01T00:00:03Z" },
+        ]);
+        expect(
+            store.listFirstChatMessages(session.id, 2).map((m) => m.payload),
+        ).toEqual(["p1", "p2"]);
+        expect(
+            store
+                .listChatMessages(session.id, { limit: 2 })
+                .map((m) => m.payload),
+        ).toEqual(["p2", "p3"]);
+        const all = store.listChatMessages(session.id, { limit: 10 });
+        expect(
+            store
+                .listChatMessages(session.id, {
+                    limit: 10,
+                    before: all[1].id,
+                })
+                .map((m) => m.payload),
+        ).toEqual(["p1"]);
+        expect(store.chatMessageUsage(session.id)).toEqual({
+            count: 3,
+            bytes: 6,
+        });
+    });
+
+    it("trims oldest rows and cascades on session delete", () => {
+        const owner = store.createUser("luke", "hash", "owner");
+        const session = store.claimSession("chat-trim", {
+            userId: owner.id,
+            deviceId: null,
+            kind: "text",
+        }).session;
+        store.appendChatMessages(session.id, [
+            { role: "user", payload: "a", createdAt: "2026-01-01T00:00:01Z" },
+            { role: "user", payload: "b", createdAt: "2026-01-01T00:00:02Z" },
+            { role: "user", payload: "c", createdAt: "2026-01-01T00:00:03Z" },
+            { role: "user", payload: "d", createdAt: "2026-01-01T00:00:04Z" },
+        ]);
+        expect(
+            store.trimChatMessages(session.id, {
+                maxMessages: 2,
+                maxBytes: 100,
+            }),
+        ).toBe(2);
+        expect(
+            store
+                .listChatMessages(session.id, { limit: 10 })
+                .map((m) => m.payload),
+        ).toEqual(["c", "d"]);
+
+        store.deleteSession("chat-trim");
+        expect(
+            db
+                .prepare(
+                    "SELECT COUNT(*) AS n FROM chat_messages WHERE session_id = ?",
+                )
+                .get(session.id),
+        ).toEqual({ n: 0 });
     });
 });
 

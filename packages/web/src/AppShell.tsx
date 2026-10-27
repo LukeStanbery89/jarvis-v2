@@ -74,6 +74,9 @@ const CHAT_CAPABILITIES: ClientCapability[] = [
     // The out-of-turn `notification` frame (#139): this client renders
     // notifications, so the server may push them to its sockets.
     "notification",
+    // The out-of-turn `sessionTitle` frame (#122): this client can update a
+    // sidebar title when the server generates a better one.
+    "sessionTitle",
 ];
 
 /** Props for {@link AppShell}. */
@@ -223,6 +226,11 @@ export function AppShell({
             if (notification.jobId !== undefined) {
                 jobs.refresh();
             }
+        },
+        onSessionTitle: ({ sessionId, title }) => {
+            // The local record is the sidebar's freshest title cache; the
+            // server list will agree on its next refresh.
+            threads.dispatch({ type: "title", sessionId, title });
         },
         onFrame: (frame) => {
             // The two notes a voice session takes from the wire (#84, #90 phase

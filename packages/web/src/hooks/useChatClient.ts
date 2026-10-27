@@ -61,6 +61,8 @@ export function useChatClient(options: {
     onFrame(frame: ServerFrame): void;
     /** One server-initiated notification frame, outside any turn (#139). */
     onNotification(notification: NotificationFrame["notification"]): void;
+    /** One out-of-turn title update (#122). */
+    onSessionTitle(update: { sessionId: string; title: string }): void;
     /**
      * The socket recovered from a drop (#139): re-read anything the server
      * could not push while it was down.
@@ -85,6 +87,8 @@ export function useChatClient(options: {
     onFrameRef.current = options.onFrame;
     const onNotificationRef = useRef(options.onNotification);
     onNotificationRef.current = options.onNotification;
+    const onSessionTitleRef = useRef(options.onSessionTitle);
+    onSessionTitleRef.current = options.onSessionTitle;
     const onReconnectedRef = useRef(options.onReconnected);
     onReconnectedRef.current = options.onReconnected;
     const onAuthRejectedRef = useRef(options.onAuthRejected);
@@ -103,6 +107,7 @@ export function useChatClient(options: {
                 onFrame: (frame) => onFrameRef.current(frame),
                 onNotification: (notification) =>
                     onNotificationRef.current(notification),
+                onSessionTitle: (update) => onSessionTitleRef.current(update),
                 onReconnected: () => onReconnectedRef.current(),
                 onAuthRejected: () => onAuthRejectedRef.current(),
             },

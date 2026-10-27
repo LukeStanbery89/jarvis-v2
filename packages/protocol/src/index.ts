@@ -25,6 +25,7 @@ export type {
     NotificationFrame,
     NotificationPriority,
     ServerFrame,
+    SessionTitleUpdate,
     ToolSource,
 } from "./types";
 export type {
@@ -49,7 +50,9 @@ export {
     MAX_NOTIFICATION_ID_LENGTH,
     MAX_NOTIFICATION_KIND_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
+    MAX_PROMPT_LENGTH,
     MAX_SESSION_ID_LENGTH,
+    MAX_SESSION_TITLE_LENGTH,
     MAX_TOKEN_LENGTH,
     MAX_TOOL_SOURCE_TITLE_LENGTH,
     MAX_TOOL_SOURCE_URL_LENGTH,

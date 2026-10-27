@@ -7,7 +7,9 @@ import {
     MAX_CAPABILITIES,
     MAX_CAPABILITY_LENGTH,
     MAX_LOCATION_LABEL_LENGTH,
+    MAX_PROMPT_LENGTH,
     MAX_SESSION_ID_LENGTH,
+    MAX_SESSION_TITLE_LENGTH,
     MAX_TOKEN_LENGTH,
     MAX_TOOL_SOURCES,
     MALFORMED_SERVER_FRAME,
@@ -133,6 +135,35 @@ describe("parseFrame", () => {
 
     it("parses a done frame", () => {
         expect(parseFrame('{"done":true}')).toEqual({ done: true });
+    });
+
+    it("parses an out-of-turn sessionTitle frame (#122)", () => {
+        expect(
+            parseFrame(
+                '{"sessionTitle":{"sessionId":"thread-1","title":"Debugging the scheduler"}}',
+            ),
+        ).toEqual({
+            sessionTitle: {
+                sessionId: "thread-1",
+                title: "Debugging the scheduler",
+            },
+        });
+    });
+
+    it("rejects an empty or oversized sessionTitle", () => {
+        expect(() =>
+            parseFrame('{"sessionTitle":{"sessionId":"thread-1","title":""}}'),
+        ).toThrow(/unrecognized/);
+        expect(() =>
+            parseFrame(
+                JSON.stringify({
+                    sessionTitle: {
+                        sessionId: "thread-1",
+                        title: "x".repeat(MAX_SESSION_TITLE_LENGTH + 1),
+                    },
+                }),
+            ),
+        ).toThrow(/unrecognized/);
     });
 
     it("parses an error frame", () => {
@@ -682,6 +713,17 @@ describe("parseClientMessage", () => {
         expect(() => parseClientMessage('{"sessionId":"abc"}')).toThrow(
             /prompt/,
         );
+    });
+
+    it("rejects a prompt over the length cap (#122)", () => {
+        expect(() =>
+            parseClientMessage(
+                JSON.stringify({
+                    prompt: "x".repeat(MAX_PROMPT_LENGTH + 1),
+                    sessionId: "abc",
+                }),
+            ),
+        ).toThrow(new RegExp(String(MAX_PROMPT_LENGTH)));
     });
 
     it("rejects a prompt-shaped message with an invalid sessionId field", () => {

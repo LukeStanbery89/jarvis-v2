@@ -8,25 +8,40 @@
  * handled, instead of a silent runtime mismatch.
  */
 
+/** One generated conversation title update (#122). */
+export interface SessionTitleUpdate {
+    /** The thread whose title changed — the wire `sessionId`. */
+    sessionId: string;
+    /** The new display title (plaintext; encrypted at rest). */
+    title: string;
+}
+
 /**
  * A frame the server sends to chat clients over `/ws`.
  *
  * Frames are JSON object frames, key-discriminated: exactly one of
  * `chunk` / `tool` / `toolResult` / `done` / `error` / `authResult` /
- * `audioStart` / `audioEnd` / `notification` is present. Binary WebSocket
- * messages (raw little-endian s16le PCM chunks, #83) are not JSON and never
- * pass through frame parsing — clients branch on the message type before
- * parsing.
+ * `audioStart` / `audioEnd` / `notification` / `sessionTitle` is present.
+ * Binary WebSocket messages (raw little-endian s16le PCM chunks, #83) are not
+ * JSON and never pass through frame parsing — clients branch on the message
+ * type before parsing.
  *
- * Every frame but {@link NotificationFrame} belongs to a turn: a client may
- * assume the frames between a prompt and its `done` describe that turn. A
- * `notification` is the one server frame that arrives **outside** a turn
- * (#139) — a client must accept it whenever the socket is ready, not only
- * while a prompt is streaming.
+ * Every frame but {@link NotificationFrame} and `sessionTitle` belongs to a
+ * turn: a client may assume the frames between a prompt and its `done`
+ * describe that turn. A `notification` (#139) and a `sessionTitle` (#122) are
+ * the server frames that arrive **outside** a turn — a client must accept them
+ * whenever the socket is ready, not only while a prompt is streaming.
  */
 export type ServerFrame =
     | { chunk: string }
     | { tool: { name: string; args?: unknown } }
+    | {
+          /**
+           * An out-of-turn title update (#122). Sent after the turn's `done`
+           * frame when a client declared the `sessionTitle` capability.
+           */
+          sessionTitle: SessionTitleUpdate;
+      }
     | {
           toolResult: {
               name: string;
@@ -317,6 +332,7 @@ export const CLIENT_CAPABILITIES = [
     "link",
     "audio",
     "notification",
+    "sessionTitle",
 ] as const;
 
 /**
@@ -449,6 +465,18 @@ export const MAX_LOCATION_LABEL_LENGTH = 64;
 
 /** Longest `sessionId` a client may send in a chat request. */
 export const MAX_SESSION_ID_LENGTH = 128;
+
+/**
+ * Longest prompt text a chat request may carry.
+ *
+ * About 4k tokens. The model's context window and the transcript caps are
+ * separate limits; this one stops a paste or a client bug before it reaches
+ * the agent, the checkpoint, or a transcript row.
+ */
+export const MAX_PROMPT_LENGTH = 16_000;
+
+/** Longest conversation title a `sessionTitle` frame may carry. */
+export const MAX_SESSION_TITLE_LENGTH = 80;
 
 /** Longest device `token` a client may send in an `auth` handshake. */
 export const MAX_TOKEN_LENGTH = 128;

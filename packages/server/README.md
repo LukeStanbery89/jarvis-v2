@@ -621,8 +621,11 @@ fail silently either:
 | `LLM_TEMPERATURE`                        | `0.15`                                                                          | Sampling temperature                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `LLM_SYSTEM_PROMPT`                      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends seven fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer; the image-analysis rule; the home-assistant rule; the tools-over-memory rule for research, #8; notification restraint, #139; and scheduling discipline, #90) plus capability notes — see the Chat protocol section |
 | `JARVIS_AGENT_MAX_TURNS`                 | `10`                                                                            | Max agent loop steps per turn (tools + model calls)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `JARVIS_CHECKPOINT_PATH`                 | `~/.jarvis/checkpoints.sqlite`                                                  | SQLite checkpoint file for conversation persistence                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `JARVIS_DB_PATH`                         | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, prefs                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `JARVIS_CHAT_MAX_OUTPUT_TOKENS`          | `2048`                                                                          | Output-token cap for one chat model call; the primary bound on one assistant message                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `JARVIS_CHAT_ENCRYPTION_KEY`             | unset                                                                           | Base64 32-byte key for transcript, title, and checkpoint encryption; required in production                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `JARVIS_CHAT_KEY_FILE`                   | `~/.jarvis/chat.key`                                                            | Development key file, created `0600` on first use when no env key is set                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `JARVIS_CHECKPOINT_PATH`                 | `~/.jarvis/checkpoints.sqlite`                                                  | Encrypted SQLite checkpoint file for model memory                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `JARVIS_DB_PATH`                         | `~/.jarvis/jarvis.sqlite`                                                       | App database: users, devices, sessions, encrypted transcript/titles, prefs                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `JARVIS_TURN_TIMEOUT_MS`                 | `120000`                                                                        | Hard cap for one agent turn before it is aborted                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `LLM_VL_MODEL`                           | `qwen3.6-35b-a3b-splash`                                                        | Vision-language model the `analyzeImage` tool calls (must accept `image_url` parts)                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `LLM_VL_MAX_TOKENS`                      | `1024`                                                                          | Output-token cap for one image analysis                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -1713,8 +1716,9 @@ table — "web session" is the `jarvis_session` cookie):
 | `GET`    | `/api/users`               | device token or web session (owner) | List accounts                                                                            |
 | `POST`   | `/api/users`               | device token or web session (owner) | Create an account (`role` optional, default `user`)                                      |
 | `PATCH`  | `/api/users/{id}`          | device token or web session (owner) | Update `role`/`disabled` (self-disable → 400; demoting the last **enabled** owner → 409) |
-| `GET`    | `/api/sessions`            | device token or web session         | List sessions (owner sees all, with `userId`)                                            |
-| `DELETE` | `/api/sessions/{threadId}` | device token or web session         | Delete the caller's owned session (owner: any)                                           |
+| `GET`    | `/api/sessions`            | device token or web session         | List sessions (owner sees all, with `userId`), with decrypted titles                     |
+| `GET`    | `/api/sessions/{threadId}` | device token or web session         | One transcript page (`limit`/`before`); 503 when history is unconfigured                 |
+| `DELETE` | `/api/sessions/{threadId}` | device token or web session         | Delete the caller's owned session (owner: any), transcript and checkpoint included       |
 | `GET`    | `/api/weather`             | device token or web session         | Current conditions for device coordinates (`lat`, `lon`); 503 when unconfigured          |
 | `GET`    | `/api/jobs`                | device token or web session         | List scheduled jobs, newest first (`includeSettled=true` for history)                    |
 | `POST`   | `/api/jobs`                | device token or web session         | Schedule a message job (`label`, `class`, `message?`, `runAt`), with a quiet forecast    |
@@ -1800,20 +1804,44 @@ prompt's chat `mode`, recorded at first claim). Guest sessions are
 deleted when their socket closes; owned sessions persist and can be listed or
 deleted via the REST management API. Sockets that vanish without a close
 frame (a dropped connection, a sleeping laptop) are terminated by a 30-second
-ping/pong keepalive, so their cleanup — guest rows included — still fires.
-Note that deleting a session removes the
-ledger row, not the conversation history in the LangGraph checkpointer (see
-`JARVIS_CHECKPOINT_PATH`) — that remains a documented limitation.
+ping/pong keepalive, so their cleanup — guest rows and their checkpoints
+included — still fires.
+
+Deleting a session removes its ledger row, its encrypted transcript rows
+(`chat_messages`), and its LangGraph checkpoint thread. Titles are generated
+from the first prompt immediately and upgraded by a small model call after the
+first completed turn; the update arrives as an out-of-turn `sessionTitle` frame
+for clients that declared the capability.
 
 Concatenate the `chunk` payloads verbatim to reconstruct the full response. A
 single prompt may loop through `tool`/`toolResult` pairs several times before
 the agent produces its final text (bounded by `JARVIS_AGENT_MAX_TURNS`); tool
-events cannot appear inside the text stream, only before it. The agent state —
-including the whole message history of each session — is persisted to the
-SQLite checkpoint file (`JARVIS_CHECKPOINT_PATH`), so a server restart resumes
-conversations. That checkpoint file is a separate database from the auth app
-database (`JARVIS_DB_PATH`); the server depends on `better-sqlite3` directly to
-open it, while account state is reached only through `@lukestanbery/jarvis-auth`.
+events cannot appear inside the text stream, only before it. The agent state is
+persisted to the SQLite checkpoint file (`JARVIS_CHECKPOINT_PATH`), so a server
+restart resumes conversations; after each turn old checkpoint versions are
+pruned and the model context is trimmed to the newest 100 messages. The durable
+transcript lives separately in `chat_messages`, so the UI can page history
+without depending on LangGraph's checkpoint format.
+
+## Chat content at rest (#122)
+
+All conversation content is encrypted before it reaches either SQLite file:
+
+- `chat_messages.payload` is an AES-256-GCM envelope around the normalized
+  message JSON.
+- `sessions.title` is encrypted the same way.
+- The checkpoint serializer wraps LangChain's own serializer, so checkpoints,
+  metadata, and pending writes are encrypted blobs.
+
+Production requires `JARVIS_CHAT_ENCRYPTION_KEY` (base64, 32 bytes) and fails
+to start without it. Development generates `~/.jarvis/chat.key` at `0600` on
+first use; back that file up if you want to keep the history. `npm run
+chat:dump -- <threadId>` decrypts a thread locally for debugging. The
+transcript retains at most 2,000 messages or 10 MB per thread; older rows are
+removed oldest-first and the session is marked as trimmed. Each message is also
+capped at write time (16k user / 32k assistant / 16k tool output characters),
+and the model's output is capped at `JARVIS_CHAT_MAX_OUTPUT_TOKENS`.
+
 Try it with the `@lukestanbery/jarvis-cli` REPL.
 
 ## Server-side TTS (#83)

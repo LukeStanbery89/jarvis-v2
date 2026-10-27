@@ -14,6 +14,7 @@ function session(
     return {
         kind: "text",
         userId: 1,
+        title: null,
         createdAt: "2026-01-01T00:00:00.000Z",
         lastActiveAt: "2026-01-01T00:00:00.000Z",
         ...over,
@@ -53,7 +54,14 @@ describe("mergeSessions", () => {
         ]);
     });
 
-    it("falls back to a short Thread <id> title for a server-only row", () => {
+    it("uses the server title for a server-only row", () => {
+        const rows = [
+            session({ threadId: "0123456789", title: "Server title" }),
+        ];
+        expect(mergeSessions(rows, {})[0]?.title).toBe("Server title");
+    });
+
+    it("falls back to a short Thread <id> title when the server has none", () => {
         const rows = [session({ threadId: "0123456789" })];
         expect(mergeSessions(rows, {})).toEqual([
             {

@@ -20,15 +20,19 @@ import {
     type RefObject,
 } from "react";
 import type { ToolSource } from "@lukestanbery/jarvis-protocol";
+import type { SessionDetail } from "../api";
 import {
     appendChunk,
     appendMessage,
     appendToolResult,
     deleteThread,
     ensureThread,
+    hydrateThread,
     loadThreads,
     markAssistantError,
+    prependThreadHistory,
     saveThreads,
+    setThreadTitle,
     type ThreadMap,
 } from "../threads";
 
@@ -60,6 +64,18 @@ export type ThreadsAction =
       }
     | { type: "assistantError"; sessionId: string; text: string; at: number }
     | { type: "ensure"; sessionId: string; at: number }
+    | {
+          type: "hydrate";
+          sessionId: string;
+          detail: SessionDetail;
+          at: number;
+      }
+    | {
+          type: "prepend";
+          sessionId: string;
+          detail: SessionDetail;
+      }
+    | { type: "title"; sessionId: string; title: string }
     | { type: "deleted"; sessionId: string };
 
 /** The public surface {@link useThreads} returns to the chat view. */
@@ -135,6 +151,17 @@ export function threadsReducer(
             );
         case "ensure":
             return ensureThread(map, action.sessionId, action.at);
+        case "hydrate":
+            return hydrateThread(
+                map,
+                action.sessionId,
+                action.detail,
+                action.at,
+            );
+        case "prepend":
+            return prependThreadHistory(map, action.sessionId, action.detail);
+        case "title":
+            return setThreadTitle(map, action.sessionId, action.title);
         case "deleted":
             return deleteThread(map, action.sessionId);
     }

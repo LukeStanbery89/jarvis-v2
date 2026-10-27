@@ -99,6 +99,7 @@ const MESSAGE_FOR_KEY: Record<string, string> = {
     audioStart: "audioStart",
     audioEnd: "audioEnd",
     notification: "notification",
+    sessionTitle: "sessionTitle",
 };
 
 /**
@@ -518,6 +519,19 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeFrame(frame),
                 MESSAGE_FOR_KEY.notification,
+            );
+        });
+
+        it("validates a sessionTitle frame (#122)", () => {
+            const frame: ServerFrame = {
+                sessionTitle: {
+                    sessionId: "thread-1",
+                    title: "Debugging the scheduler",
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.sessionTitle,
             );
         });
 

@@ -688,6 +688,31 @@ describe("turn cancellation (#84 P6)", () => {
     });
 });
 
+describe("session titles (#122)", () => {
+    it("surfaces an out-of-turn title update", () => {
+        const seen: { sessionId: string; title: string }[] = [];
+        const harness = makeClient("tok", {
+            onSessionTitle: (update) => seen.push(update),
+        });
+        const socket = connected(harness);
+
+        socket.receive({
+            sessionTitle: {
+                sessionId: "thread-1",
+                title: "Debugging the scheduler",
+            },
+        });
+
+        expect(seen).toEqual([
+            {
+                sessionId: "thread-1",
+                title: "Debugging the scheduler",
+            },
+        ]);
+        expect(harness.frames).toEqual([]);
+    });
+});
+
 describe("notifications (#139)", () => {
     /** A pushed notification frame, exactly as the server serializes it. */
     const frame = {

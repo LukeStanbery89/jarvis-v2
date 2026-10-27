@@ -10,11 +10,21 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { getLlmConfig } from "../config";
 
-export function createChatModel(): ChatOpenAI {
-    const { baseUrl, model, temperature, streamUsage } = getLlmConfig();
+/** Per-instance overrides for the one-off model calls (titles, etc.). */
+export interface ChatModelOptions {
+    /** Output-token cap override; defaults to the chat config. */
+    maxTokens?: number;
+    /** Sampling-temperature override. */
+    temperature?: number;
+}
+
+export function createChatModel(options: ChatModelOptions = {}): ChatOpenAI {
+    const { baseUrl, model, temperature, streamUsage, chatMaxOutputTokens } =
+        getLlmConfig();
     return new ChatOpenAI({
         model,
-        temperature,
+        temperature: options.temperature ?? temperature,
+        maxTokens: options.maxTokens ?? chatMaxOutputTokens,
         apiKey: "lm-studio",
         streamUsage,
         configuration: { baseURL: baseUrl },

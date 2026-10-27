@@ -16,13 +16,14 @@
  * same `voiceStatusLine`, so they cannot disagree.
  *
  * Transcript state is a reducer over the pure `threads.ts` helpers (owned by the
- * shell now), persisted (throttled) to localStorage under the signed-in user's
- * namespace. The sidebar merges the server's `GET /api/sessions` rows (filtered
- * to the caller's own `userId` — owner listings include other accounts) with
- * local threads, so conversations created on other clients appear (empty) and
- * locally-created ones appear before their first server claim.
+ * shell now), with metadata persisted (throttled) to localStorage under the
+ * signed-in user's namespace. Opening a thread fetches the newest transcript
+ * page from the server; scrolling to the oldest loaded row fetches the next
+ * older page and prepends it. The sidebar merges `GET /api/sessions` rows with
+ * local metadata, so conversations created on other clients appear with their
+ * durable history.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { mergeSessions } from "../sidebar";
 import { determineReady } from "../attachments";
@@ -73,6 +74,11 @@ export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
     });
 
     const [banner, setBanner] = useState<string | null>(null);
+    /** The thread whose newest page is being fetched. */
+    const [historyLoading, setHistoryLoading] = useState<string | null>(null);
+    /** An older page is in flight; also guards the scroll trigger. */
+    const [olderLoading, setOlderLoading] = useState(false);
+    const olderRequest = useRef(false);
 
     const { pending, previews, attachFiles, detachChip, clearPending } =
         useAttachments({ token: credential.token, onError: setBanner });
@@ -108,6 +114,98 @@ export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
             clearPending();
         }
         void refreshSessions();
+    }
+
+    /**
+     * Opens a thread and hydrates its newest transcript page.
+     *
+     * A failure keeps whatever local messages are already in memory; a 404 is
+     * the normal shape for an unclaimed local chat, not an error. The
+     * `activeIdRef` check makes a slow response harmless when the user picks
+     * another conversation while it is in flight.
+     */
+    async function openWithHistory(id: string): Promise<void> {
+        openThread(id);
+        setBanner(null);
+        setHistoryLoading(id);
+        try {
+            const detail = await api.getSession(credential.token, id, {
+                limit: 20,
+            });
+            if (activeIdRef.current !== id) {
+                return;
+            }
+            const local = threads[id];
+            if (
+                detail.messages.length > 0 ||
+                local === undefined ||
+                local.messages.length === 0
+            ) {
+                dispatch({
+                    type: "hydrate",
+                    sessionId: id,
+                    detail,
+                    at: Date.now(),
+                });
+            } else if (detail.title !== null) {
+                dispatch({
+                    type: "title",
+                    sessionId: id,
+                    title: detail.title,
+                });
+            }
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 401) {
+                onAuthRejected();
+                return;
+            }
+            if (!(err instanceof ApiError) || err.status !== 404) {
+                setBanner(
+                    err instanceof Error
+                        ? err.message
+                        : "could not load the conversation",
+                );
+            }
+        } finally {
+            setHistoryLoading((current) => (current === id ? null : current));
+        }
+    }
+
+    /** Loads the page immediately older than the transcript's first row. */
+    async function loadOlder(): Promise<void> {
+        if (activeId === null || olderRequest.current) {
+            return;
+        }
+        const record = threads[activeId];
+        if (!record?.hasMore || record.nextBefore == null) {
+            return;
+        }
+        olderRequest.current = true;
+        setOlderLoading(true);
+        try {
+            const detail = await api.getSession(credential.token, activeId, {
+                limit: 20,
+                before: record.nextBefore,
+            });
+            if (activeIdRef.current === activeId) {
+                dispatch({ type: "prepend", sessionId: activeId, detail });
+            }
+        } catch (err) {
+            if (err instanceof ApiError && err.status === 401) {
+                onAuthRejected();
+                return;
+            }
+            if (!(err instanceof ApiError) || err.status !== 404) {
+                setBanner(
+                    err instanceof Error
+                        ? err.message
+                        : "could not load earlier messages",
+                );
+            }
+        } finally {
+            olderRequest.current = false;
+            setOlderLoading(false);
+        }
     }
 
     /**
@@ -177,7 +275,7 @@ export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
                 }}
                 onOpenThread={(id) => {
                     onCloseThreads();
-                    openThread(id);
+                    void openWithHistory(id);
                 }}
                 onRemoveThread={(id) => void remove(id)}
             />
@@ -190,7 +288,16 @@ export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
                 <Transcript
                     messages={transcriptMessages}
                     previews={previews}
-                    hasThread={activeThread !== null}
+                    hasThread={
+                        activeThread !== null ||
+                        (activeId !== null && historyLoading === activeId)
+                    }
+                    historyLoading={
+                        activeId !== null && historyLoading === activeId
+                    }
+                    hasMore={activeThread?.hasMore ?? false}
+                    loadingOlder={olderLoading}
+                    onLoadOlder={() => void loadOlder()}
                     activeId={activeId}
                     turning={
                         activeId !== null && app.turnSessionId === activeId

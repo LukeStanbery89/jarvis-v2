@@ -1505,6 +1505,13 @@ textarea::placeholder {
     color: var(--primary-dim);
 }
 
+/* Inline page-loading status at the top of the transcript. */
+.history-loading {
+    margin: 0 auto 0.25rem;
+    color: var(--primary-dim);
+    font-size: 0.8rem;
+}
+
 /* --- Icon-only buttons (Lucide) --- */
 
 /* Square hit-area, centered glyph; the icon inherits currentColor, so the

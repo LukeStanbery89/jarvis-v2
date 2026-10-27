@@ -1228,6 +1228,70 @@ paths:
                             schema:
                                 $ref: "#/components/schemas/Error"
     /api/sessions/{threadId}:
+        get:
+            operationId: chatSessionGet
+            summary: Read one chat-thread transcript page
+            description: >-
+                Returns the caller's own thread plus one page of its durable,
+                decrypted transcript. The page is newest-first by default;
+                pass `before` (the oldest loaded message id) to walk older
+                pages. An owner may read any thread. The server answers 503
+                when its chat-history surface is not configured.
+            tags: [ChatSessions]
+            security:
+                - bearerToken: []
+                - session: []
+            parameters:
+                - $ref: "#/components/parameters/PathThreadId"
+                - name: limit
+                  in: query
+                  required: false
+                  description: Messages per page (20 default, 50 maximum).
+                  schema:
+                      type: integer
+                      minimum: 1
+                      maximum: 50
+                      default: 20
+                - name: before
+                  in: query
+                  required: false
+                  description: >-
+                      Return messages older than this message id. Omit for the
+                      newest page.
+                  schema:
+                      type: integer
+                      minimum: 1
+            responses:
+                "200":
+                    description: One transcript page.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/SessionDetail"
+                "400":
+                    description: Invalid `limit` or `before`.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "401":
+                    description: Missing or invalid credentials.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "404":
+                    description: No such session, or it belongs to another user.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
+                "503":
+                    description: Chat history is not configured on this server.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: "#/components/schemas/Error"
         delete:
             operationId: chatSessionDelete
             summary: Delete a chat-thread session
@@ -2380,7 +2444,7 @@ components:
                 A chat-thread session row. `userId` is null for guest threads
                 (which are deleted on socket close) or may differ from the
                 caller for owner listings.
-            required: [threadId, kind, userId, createdAt, lastActiveAt]
+            required: [threadId, kind, userId, title, createdAt, lastActiveAt]
             properties:
                 threadId:
                     type: string
@@ -2391,12 +2455,111 @@ components:
                     enum: [text, voice]
                 userId:
                     type: [integer, "null"]
+                title:
+                    type: [string, "null"]
+                    maxLength: 80
+                    description: >-
+                        Decrypted display title. `null` until the first prompt
+                        has been claimed.
                 createdAt:
                     type: string
                     format: date-time
                 lastActiveAt:
                     type: string
                     format: date-time
+        SessionDetail:
+            allOf:
+                - $ref: "#/components/schemas/SessionSummary"
+                - type: object
+                  required: [historyTrimmed, messages, hasMore, nextBefore]
+                  properties:
+                      historyTrimmed:
+                          type: boolean
+                          description: >-
+                              True when retention removed older messages from
+                              this thread.
+                      messages:
+                          type: array
+                          items:
+                              $ref: "#/components/schemas/ChatHistoryMessage"
+                      hasMore:
+                          type: boolean
+                      nextBefore:
+                          type: [integer, "null"]
+                          minimum: 1
+        ChatHistoryMessage:
+            oneOf:
+                - $ref: "#/components/schemas/UserHistoryMessage"
+                - $ref: "#/components/schemas/AssistantHistoryMessage"
+                - $ref: "#/components/schemas/ToolHistoryMessage"
+        UserHistoryMessage:
+            type: object
+            required: [id, role, text]
+            properties:
+                id:
+                    type: integer
+                    minimum: 1
+                role:
+                    const: user
+                text:
+                    type: string
+                    maxLength: 16000
+                attachmentIds:
+                    type: array
+                    maxItems: 4
+                    items:
+                        type: string
+                        minLength: 1
+                        maxLength: 32
+        AssistantHistoryMessage:
+            type: object
+            required: [id, role, text]
+            properties:
+                id:
+                    type: integer
+                    minimum: 1
+                role:
+                    const: assistant
+                text:
+                    type: string
+                    maxLength: 32000
+                error:
+                    type: boolean
+        ToolHistoryMessage:
+            type: object
+            required: [id, role, tool]
+            properties:
+                id:
+                    type: integer
+                    minimum: 1
+                role:
+                    const: tool
+                tool:
+                    type: object
+                    required: [name]
+                    properties:
+                        name:
+                            type: string
+                            minLength: 1
+                        args: {}
+                        output: {}
+                        sources:
+                            type: array
+                            maxItems: 8
+                            items:
+                                $ref: "#/components/schemas/ToolSource"
+        ToolSource:
+            type: object
+            required: [title, url]
+            properties:
+                title:
+                    type: string
+                    minLength: 1
+                    maxLength: 300
+                url:
+                    type: string
+                    minLength: 1
+                    maxLength: 2048
         Prefs:
             type: object
             description: >-

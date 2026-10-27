@@ -403,7 +403,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Read one chat-thread transcript page
+         * @description Returns the caller's own thread plus one page of its durable, decrypted transcript. The page is newest-first by default; pass `before` (the oldest loaded message id) to walk older pages. An owner may read any thread. The server answers 503 when its chat-history surface is not configured.
+         */
+        get: operations["chatSessionGet"];
         put?: never;
         post?: never;
         /**
@@ -811,10 +815,49 @@ export interface components {
             /** @enum {unknown} */
             kind: "text" | "voice";
             userId: number | null;
+            /** @description Decrypted display title. `null` until the first prompt has been claimed. */
+            title: string | null;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             lastActiveAt: string;
+        };
+        SessionDetail: components["schemas"]["SessionSummary"] & {
+            /** @description True when retention removed older messages from this thread. */
+            historyTrimmed: boolean;
+            messages: components["schemas"]["ChatHistoryMessage"][];
+            hasMore: boolean;
+            nextBefore: number | null;
+        };
+        ChatHistoryMessage: components["schemas"]["UserHistoryMessage"] | components["schemas"]["AssistantHistoryMessage"] | components["schemas"]["ToolHistoryMessage"];
+        UserHistoryMessage: {
+            id: number;
+            /** @constant */
+            role: "user";
+            text: string;
+            attachmentIds?: string[];
+        };
+        AssistantHistoryMessage: {
+            id: number;
+            /** @constant */
+            role: "assistant";
+            text: string;
+            error?: boolean;
+        };
+        ToolHistoryMessage: {
+            id: number;
+            /** @constant */
+            role: "tool";
+            tool: {
+                name: string;
+                args?: unknown;
+                output?: unknown;
+                sources?: components["schemas"]["ToolSource"][];
+            };
+        };
+        ToolSource: {
+            title: string;
+            url: string;
         };
         /** @description Free-form per-user integration preferences: a map of string keys (1–256 chars, at most 64 entries) to any JSON value. PUT bodies must contain at least one key (server-enforced); a store may be empty when read. Keys the server itself reads — today `notify.enabled` (boolean or null) and `notify.quietHours` (`{ start, end }` `"HH:MM"` times, or null for off) — are validated on write, so a malformed value is a 400 rather than a setting that saves and then does nothing. Other keys are free-form. */
         Prefs: {
@@ -2570,6 +2613,70 @@ export interface operations {
             };
             /** @description Missing or invalid credentials. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    chatSessionGet: {
+        parameters: {
+            query?: {
+                /** @description Messages per page (20 default, 50 maximum). */
+                limit?: number;
+                /** @description Return messages older than this message id. Omit for the newest page. */
+                before?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The chat-thread session id (at most 128 characters). */
+                threadId: components["parameters"]["PathThreadId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One transcript page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionDetail"];
+                };
+            };
+            /** @description Invalid `limit` or `before`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such session, or it belongs to another user. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Chat history is not configured on this server. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -22,12 +22,15 @@ import type {
 import { ensurePrivateFile, ensurePrivateStorage } from "./fs";
 import { AuthError } from "./errors";
 import type {
+    AppChatMessage,
     AppDevice,
     AppSession,
     AppUser,
+    NewChatMessage,
     ResolvedIdentity,
     Role,
     SessionKind,
+    SessionTitleSource,
     WebSessionRow,
 } from "./types";
 
@@ -391,9 +394,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
     device_id      INTEGER REFERENCES devices(id) ON DELETE SET NULL,
     kind           TEXT NOT NULL CHECK (kind IN ('text', 'voice')),
+    title          TEXT,
+    title_source   TEXT,
+    history_trimmed_at TEXT,
     created_at     TEXT NOT NULL,
     last_active_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+    payload    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages (session_id, id);
 CREATE TABLE IF NOT EXISTS prefs (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     key        TEXT NOT NULL,
@@ -1721,10 +1736,51 @@ export interface SessionLedger {
     touchSession(threadId: string): void;
     /** Removes a session row (guest cleanup on socket close, or explicit REST delete). */
     deleteSession(threadId: string): void;
+    /** Stores an already-encrypted title and how it was produced. */
+    setSessionTitle(
+        threadId: string,
+        title: string,
+        source: SessionTitleSource,
+    ): void;
+    /** Notes that retention removed older transcript rows for this thread. */
+    markSessionHistoryTrimmed(threadId: string, at?: string): void;
     /** Owned sessions for a user, newest-active first (powers `GET /api/sessions`). */
     listOwnedSessions(userId: number): AppSession[];
     /** Every session across all users, newest-active first (owner-wide admin view). */
     listAllSessions(): AppSession[];
+}
+
+/**
+ * Durable transcript ledger: encrypted rows behind the paged chat-history API.
+ *
+ * The ledger never understands a message's content; `payload` is the server's
+ * opaque ciphertext. Paging is by row id, so a page cursor stays stable while
+ * new turns append.
+ */
+export interface ChatTranscriptLedger {
+    /** Appends one turn's normalized messages atomically. */
+    appendChatMessages(sessionId: number, entries: NewChatMessage[]): void;
+    /**
+     * Returns up to `limit` rows in chronological order. With `before`, only
+     * rows older than that id are considered (the previous page).
+     */
+    listChatMessages(
+        sessionId: number,
+        opts: { limit: number; before?: number },
+    ): AppChatMessage[];
+    /** First `limit` rows in chronological order (title derivation). */
+    listFirstChatMessages(sessionId: number, limit: number): AppChatMessage[];
+    /** Current row count and ciphertext byte size for retention. */
+    chatMessageUsage(sessionId: number): { count: number; bytes: number };
+    /**
+     * Deletes the oldest rows until the thread is within both limits.
+     *
+     * @returns The number of rows deleted.
+     */
+    trimChatMessages(
+        sessionId: number,
+        opts: { maxMessages: number; maxBytes: number },
+    ): number;
 }
 
 /**
@@ -1740,6 +1796,7 @@ export type AppDatabase = UserLedger &
     PrefLedger &
     PushSubscriptionLedger &
     SessionLedger &
+    ChatTranscriptLedger &
     NotificationLedger &
     JobLedger &
     CodingJobLedger & {
@@ -1777,8 +1834,20 @@ interface SessionRow {
     userId: number | null;
     deviceId: number | null;
     kind: SessionKind;
+    title: string | null;
+    titleSource: SessionTitleSource | null;
+    historyTrimmedAt: string | null;
     createdAt: string;
     lastActiveAt: string;
+}
+
+/** A `chat_messages` row as the SELECTs alias it (see {@link mapChatMessage}). */
+interface ChatMessageRow {
+    id: number;
+    sessionId: number;
+    role: "user" | "assistant" | "tool";
+    payload: string;
+    createdAt: string;
 }
 
 /** The device⊕user join row `resolveTokenHash` reads (user columns `u_`-aliased). */
@@ -1955,8 +2024,21 @@ function mapSession(row: SessionRow): AppSession {
         userId: row.userId,
         deviceId: row.deviceId,
         kind: row.kind,
+        title: row.title,
+        titleSource: row.titleSource,
+        historyTrimmedAt: row.historyTrimmedAt,
         createdAt: row.createdAt,
         lastActiveAt: row.lastActiveAt,
+    };
+}
+
+function mapChatMessage(row: ChatMessageRow): AppChatMessage {
+    return {
+        id: row.id,
+        sessionId: row.sessionId,
+        role: row.role,
+        payload: row.payload,
+        createdAt: row.createdAt,
     };
 }
 
@@ -3021,6 +3103,32 @@ ${CODING_JOB_INDEXES}`);
         );
         db.pragma("user_version = 24");
     }
+
+    if (version < 25) {
+        // v25: durable, paged conversation history (#122). The session row
+        // carries the encrypted title and the retention marker; the transcript
+        // lives once per message, encrypted by the server. Checkpoints remain
+        // LangGraph's model memory, not the UI's read model.
+        if (!hasColumn(db, "sessions", "title")) {
+            db.exec("ALTER TABLE sessions ADD COLUMN title TEXT");
+        }
+        if (!hasColumn(db, "sessions", "title_source")) {
+            db.exec("ALTER TABLE sessions ADD COLUMN title_source TEXT");
+        }
+        if (!hasColumn(db, "sessions", "history_trimmed_at")) {
+            db.exec("ALTER TABLE sessions ADD COLUMN history_trimmed_at TEXT");
+        }
+        db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+    payload    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages (session_id, id);`);
+        db.pragma("user_version = 25");
+    }
 }
 
 export function openAppDatabase(
@@ -3059,8 +3167,17 @@ export class SqliteAppDatabase implements AppDatabase {
         selectSessionByThread: Database.Statement;
         updateSessionLastActive: Database.Statement;
         deleteSession: Database.Statement;
+        setSessionTitle: Database.Statement;
+        markSessionHistoryTrimmed: Database.Statement;
         listSessionsByUser: Database.Statement;
         listAllSessions: Database.Statement;
+        insertChatMessage: Database.Statement;
+        selectChatMessagesNewest: Database.Statement;
+        selectChatMessagesBefore: Database.Statement;
+        selectChatMessagesOldest: Database.Statement;
+        selectChatMessageSizes: Database.Statement;
+        deleteChatMessagesBefore: Database.Statement;
+        chatMessageUsage: Database.Statement;
         updateUserRole: Database.Statement;
         updateUserDisabled: Database.Statement;
         updateDeviceName: Database.Statement;
@@ -3219,7 +3336,7 @@ export class SqliteAppDatabase implements AppDatabase {
                 "INSERT INTO sessions (thread_id, user_id, device_id, kind, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING",
             ),
             selectSessionByThread: db.prepare(
-                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE thread_id = ?",
+                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, title, title_source AS titleSource, history_trimmed_at AS historyTrimmedAt, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE thread_id = ?",
             ),
             updateSessionLastActive: db.prepare(
                 "UPDATE sessions SET last_active_at = ? WHERE thread_id = ?",
@@ -3227,11 +3344,38 @@ export class SqliteAppDatabase implements AppDatabase {
             deleteSession: db.prepare(
                 "DELETE FROM sessions WHERE thread_id = ?",
             ),
+            setSessionTitle: db.prepare(
+                "UPDATE sessions SET title = ?, title_source = ? WHERE thread_id = ?",
+            ),
+            markSessionHistoryTrimmed: db.prepare(
+                "UPDATE sessions SET history_trimmed_at = ? WHERE thread_id = ?",
+            ),
             listSessionsByUser: db.prepare(
-                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE user_id = ? ORDER BY last_active_at DESC",
+                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, title, title_source AS titleSource, history_trimmed_at AS historyTrimmedAt, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions WHERE user_id = ? ORDER BY last_active_at DESC",
             ),
             listAllSessions: db.prepare(
-                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions ORDER BY last_active_at DESC",
+                "SELECT id, thread_id AS threadId, user_id AS userId, device_id AS deviceId, kind, title, title_source AS titleSource, history_trimmed_at AS historyTrimmedAt, created_at AS createdAt, last_active_at AS lastActiveAt FROM sessions ORDER BY last_active_at DESC",
+            ),
+            insertChatMessage: db.prepare(
+                "INSERT INTO chat_messages (session_id, role, payload, created_at) VALUES (?, ?, ?, ?)",
+            ),
+            selectChatMessagesNewest: db.prepare(
+                "SELECT id, session_id AS sessionId, role, payload, created_at AS createdAt FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            ),
+            selectChatMessagesBefore: db.prepare(
+                "SELECT id, session_id AS sessionId, role, payload, created_at AS createdAt FROM chat_messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+            ),
+            selectChatMessagesOldest: db.prepare(
+                "SELECT id, session_id AS sessionId, role, payload, created_at AS createdAt FROM chat_messages WHERE session_id = ? ORDER BY id ASC LIMIT ?",
+            ),
+            selectChatMessageSizes: db.prepare(
+                "SELECT id, role, length(payload) AS bytes FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+            ),
+            deleteChatMessagesBefore: db.prepare(
+                "DELETE FROM chat_messages WHERE session_id = ? AND id < ?",
+            ),
+            chatMessageUsage: db.prepare(
+                "SELECT COUNT(*) AS count, COALESCE(SUM(length(payload)), 0) AS bytes FROM chat_messages WHERE session_id = ?",
             ),
             updateUserRole: db.prepare(
                 "UPDATE users SET role = ? WHERE id = ?",
@@ -3926,6 +4070,103 @@ export class SqliteAppDatabase implements AppDatabase {
 
     deleteSession(threadId: string): void {
         this.statements.deleteSession.run(threadId);
+    }
+
+    setSessionTitle(
+        threadId: string,
+        title: string,
+        source: SessionTitleSource,
+    ): void {
+        this.statements.setSessionTitle.run(title, source, threadId);
+    }
+
+    markSessionHistoryTrimmed(threadId: string, at: string = now()): void {
+        this.statements.markSessionHistoryTrimmed.run(at, threadId);
+    }
+
+    appendChatMessages(sessionId: number, entries: NewChatMessage[]): void {
+        const insert = this.statements.insertChatMessage;
+        const append = this.db.transaction((rows: NewChatMessage[]) => {
+            for (const row of rows) {
+                insert.run(sessionId, row.role, row.payload, row.createdAt);
+            }
+        });
+        append(entries);
+    }
+
+    listChatMessages(
+        sessionId: number,
+        opts: { limit: number; before?: number },
+    ): AppChatMessage[] {
+        const rows = (
+            opts.before === undefined
+                ? this.statements.selectChatMessagesNewest.all(
+                      sessionId,
+                      opts.limit,
+                  )
+                : this.statements.selectChatMessagesBefore.all(
+                      sessionId,
+                      opts.before,
+                      opts.limit,
+                  )
+        ) as ChatMessageRow[];
+        return rows.reverse().map(mapChatMessage);
+    }
+
+    listFirstChatMessages(sessionId: number, limit: number): AppChatMessage[] {
+        const rows = this.statements.selectChatMessagesOldest.all(
+            sessionId,
+            limit,
+        ) as ChatMessageRow[];
+        return rows.map(mapChatMessage);
+    }
+
+    chatMessageUsage(sessionId: number): { count: number; bytes: number } {
+        const row = this.statements.chatMessageUsage.get(sessionId) as {
+            count: number;
+            bytes: number;
+        };
+        return { count: row.count, bytes: row.bytes };
+    }
+
+    trimChatMessages(
+        sessionId: number,
+        opts: { maxMessages: number; maxBytes: number },
+    ): number {
+        const usage = this.chatMessageUsage(sessionId);
+        if (usage.count <= opts.maxMessages && usage.bytes <= opts.maxBytes) {
+            return 0;
+        }
+        const sizes = this.statements.selectChatMessageSizes.all(sessionId) as {
+            id: number;
+            role: "user" | "assistant" | "tool";
+            bytes: number;
+        }[];
+        let cut = sizes.length;
+        let keptMessages = 0;
+        let keptBytes = 0;
+        for (let i = sizes.length - 1; i >= 0; i -= 1) {
+            const row = sizes[i];
+            if (
+                keptMessages + 1 > opts.maxMessages ||
+                keptBytes + row.bytes > opts.maxBytes
+            ) {
+                break;
+            }
+            keptMessages += 1;
+            keptBytes += row.bytes;
+            cut = i;
+        }
+        // Keep the oldest surviving message at a turn boundary, so a page
+        // never opens on a dangling tool result or assistant segment.
+        while (cut < sizes.length && sizes[cut].role !== "user") {
+            cut += 1;
+        }
+        if (cut <= 0 || cut >= sizes.length) {
+            return 0;
+        }
+        this.statements.deleteChatMessagesBefore.run(sessionId, sizes[cut].id);
+        return cut;
     }
 
     listOwnedSessions(userId: number): AppSession[] {

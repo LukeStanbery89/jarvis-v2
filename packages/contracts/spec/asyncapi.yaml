@@ -81,6 +81,8 @@ channels:
                 $ref: "#/components/messages/audioEnd"
             notification:
                 $ref: "#/components/messages/notification"
+            sessionTitle:
+                $ref: "#/components/messages/sessionTitle"
             pcmChunk:
                 $ref: "#/components/messages/pcmChunk"
 operations:
@@ -130,10 +132,13 @@ operations:
             the span, raw binary PCM `pcmChunk` messages follow (one per
             spoken segment, in segment order), `audioEnd` closes it — always
             before the terminal `done`, so the turn lock covers speaking.
-            `notification` (#139) is the one frame that is **not** part of a
-            turn: it arrives whenever the server has something to tell the
-            user, so a client must handle it whether or not a prompt is in
-            flight, and must not treat it as the reply to one.
+            `notification` (#139) and `sessionTitle` (#122) are the frames
+            that are **not** part of a turn. A `notification` arrives whenever
+            the server has something to tell the user; a `sessionTitle` arrives
+            after a turn when the server has generated a better conversation
+            title. A client must handle either whether or not a prompt is in
+            flight, and must not treat it as the reply to one. `sessionTitle`
+            is sent only to a socket that declared the capability.
             Failures and
             pre-turn rejections (busy thread, foreign session, bad first
             frame, bad token) each answer `error` followed by a terminal
@@ -148,6 +153,7 @@ operations:
             - $ref: "#/channels/ws/messages/audioStart"
             - $ref: "#/channels/ws/messages/audioEnd"
             - $ref: "#/channels/ws/messages/notification"
+            - $ref: "#/channels/ws/messages/sessionTitle"
             - $ref: "#/channels/ws/messages/pcmChunk"
 components:
     messages:
@@ -195,6 +201,7 @@ components:
                                 - link
                                 - audio
                                 - notification
+                                - sessionTitle
             examples:
                 - payload:
                       type: hello
@@ -624,6 +631,43 @@ components:
                 - payload:
                       audioEnd:
                           generationId: 7
+        sessionTitle:
+            title: Conversation title update
+            summary: A model-generated title for a chat thread (#122)
+            description: >-
+                Sent after a turn's terminal `done` when the server has
+                generated a better title for that conversation. Outside any
+                turn, like `notification`; a client that did not declare the
+                `sessionTitle` capability is never sent one. The title is
+                plaintext on the wire and encrypted at rest; it carries the
+                thread's wire `sessionId` so a client can update the right row
+                even if the user moved to another view.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - sessionTitle
+                properties:
+                    sessionTitle:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - sessionId
+                            - title
+                        properties:
+                            sessionId:
+                                type: string
+                                minLength: 1
+                                maxLength: 128
+                            title:
+                                type: string
+                                minLength: 1
+                                maxLength: 80
+            examples:
+                - payload:
+                      sessionTitle:
+                          sessionId: 4cd3092a-…
+                          title: Debugging the scheduler
         notification:
             title: Proactive notification
             summary: Something JARVIS wants to tell the user, outside any turn (#139)
