@@ -419,26 +419,48 @@ export function sharedIssueRule(ref: IssueRef): string {
 }
 
 /**
- * Derives a system prompt that admits the formats a capable client renders.
+ * Router-only instruction for the two-role graph (#214).
  *
- * Pure (and exported) so the conditioning rules are unit-testable without a
- * model. The fixed hygiene paragraphs — tool-call discipline
- * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
- * lookups ({@link IMAGE_ANALYSIS_RULE}), Home Assistant calls
- * ({@link HOME_CALL_RULE}), tools-over-memory for research
- * ({@link RESEARCH_RULE}), notification restraint ({@link NOTIFY_RULE}), and
- * scheduling discipline ({@link SCHEDULE_RULE}) — are always appended: all are
- * server concerns, independent of the client's rendering capabilities and of
- * any `LLM_SYSTEM_PROMPT` override. (The Home,
- * research, and notification rules are unconditional even though their tools
- * are optional: a model that cannot see a tool is never misled by instruction
- * it cannot follow.) Capability notes are appended as one paragraph only when
- * the client actually declared the token. Under `mode: "voice"` (#83) the
- * spoken-word directive ({@link VOICE_FORMAT_RULE}) is appended instead: the
- * reply is shaped for text-to-speech rather than for a renderer.
+ * The router's prose is discarded, so this tells it plainly that its job is
+ * the tool decision rather than the answer. The loop is explicit: call a tool,
+ * read the result, continue only if another call is needed, and finally emit
+ * no tool call so the writer can speak.
  */
-export function systemPromptForCapabilities(
-    systemPrompt: string,
+const ROUTER_ROLE_RULE =
+    "You are the tool router for this turn, not the answer writer. Decide " +
+    "which tool calls, if any, the request needs, with well-formed arguments. " +
+    "Call tools one at a time, read each result, and continue only while " +
+    "another call is required. When you have enough information, return no " +
+    "tool call and no prose; the writer will compose the user-facing reply. " +
+    "Do not answer the user yourself.";
+
+/**
+ * Writer-only instruction for the two-role graph (#214).
+ *
+ * The writer receives the conversation plus the router's tool calls and their
+ * results, but no tools are bound. It must answer from what is actually in the
+ * transcript and must not pretend a tool result exists.
+ */
+const WRITER_ROLE_RULE =
+    "Tool work for this turn has already been handled. Use the conversation " +
+    "and the tool results above to write the user-facing reply. Do not claim " +
+    "to have used a tool whose result is absent, and do not invent tool " +
+    "output. If the results do not settle the request, say what is missing " +
+    "or answer from the conversation.";
+
+/**
+ * Formats the capability and voice notes that condition a reply.
+ *
+ * Kept separate from the tool-hygiene paragraphs so the two-role graph can
+ * give the writer the persona and rendering rules without giving it the tool
+ * catalog. The leading separators are part of the returned string, matching
+ * the shape {@link systemPromptForCapabilities} has always emitted.
+ *
+ * @param capabilities - Render guarantees the client declared.
+ * @param mode - `"voice"` adds the spoken-word directive.
+ * @returns The rendering and spoken-word paragraphs, or an empty string.
+ */
+function capabilityGuidance(
     capabilities: ClientCapability[],
     mode?: ChatMode,
 ): string {
@@ -468,10 +490,103 @@ export function systemPromptForCapabilities(
             ? ""
             : `\n\nThe conversation client renders the following in your replies: ${notes.join(" ")}`;
     const spoken = mode === "voice" ? `\n\n${VOICE_FORMAT_RULE}` : "";
-    return `${systemPrompt}\n\n${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${githubEnabled ? `\n\n${GITHUB_RULE}` : ""}${codingEnabled ? `\n\n${CODING_RULE}` : ""}${rendering}${spoken}`;
+    return `${rendering}${spoken}`;
+}
+
+/**
+ * The fixed tool-hygiene paragraphs shared by the legacy prompt and the
+ * router role in the split graph (#214).
+ *
+ * All seven paragraphs are server concerns rather than client concerns, and
+ * the two conditional ones name tools that only exist when their deps are
+ * wired. Keeping them in one function is what lets the writer omit them
+ * entirely without editing each rule.
+ *
+ * @returns The paragraphs, separated for appending after the base prompt.
+ */
+export function toolHygienePrompt(): string {
+    return `${TOOL_CALL_RULES}\n\n${TIME_CALL_RULE}\n\n${IMAGE_ANALYSIS_RULE}\n\n${HOME_CALL_RULE}\n\n${RESEARCH_RULE}\n\n${NOTIFY_RULE}\n\n${SCHEDULE_RULE}${githubEnabled ? `\n\n${GITHUB_RULE}` : ""}${codingEnabled ? `\n\n${CODING_RULE}` : ""}`;
+}
+
+/**
+ * The persona plus capability and voice guidance, without tool instructions.
+ *
+ * This is the system message stored in a two-role thread. The router and
+ * writer each add their own ephemeral role paragraph to their model call, so
+ * one stored prime still serves both roles and existing threads remain valid.
+ *
+ * @param systemPrompt - The operator's persona.
+ * @param capabilities - Render guarantees the client declared.
+ * @param mode - `"voice"` adds the spoken-word directive.
+ * @returns The base system prompt.
+ */
+export function baseSystemPrompt(
+    systemPrompt: string,
+    capabilities: ClientCapability[],
+    mode?: ChatMode,
+): string {
+    return `${systemPrompt}${capabilityGuidance(capabilities, mode)}`;
+}
+
+/**
+ * Builds the router's ephemeral system prompt for one turn.
+ *
+ * @param base - The stored base prompt from {@link baseSystemPrompt}.
+ * @param sharedIssue - The per-turn GitHub issue rule, when the prompt shared
+ *   one; the router is the role that chooses `startCodingJob`.
+ * @returns The router prompt.
+ */
+export function routerSystemPrompt(base: string, sharedIssue?: string): string {
+    return `${base}\n\n${toolHygienePrompt()}${sharedIssue === undefined ? "" : `\n\n${sharedIssue}`}\n\n${ROUTER_ROLE_RULE}`;
+}
+
+/**
+ * Builds the writer's ephemeral system prompt for one turn.
+ *
+ * @param base - The stored base prompt from {@link baseSystemPrompt}.
+ * @returns The writer prompt, with no tool catalog or tool-hygiene rules.
+ */
+export function writerSystemPrompt(base: string): string {
+    return `${base}\n\n${WRITER_ROLE_RULE}`;
+}
+
+/**
+ * Derives a system prompt that admits the formats a capable client renders.
+ *
+ * Pure (and exported) so the conditioning rules are unit-testable without a
+ * model. The fixed hygiene paragraphs — tool-call discipline
+ * ({@link TOOL_CALL_RULES}), clock freshness ({@link TIME_CALL_RULE}), image
+ * lookups ({@link IMAGE_ANALYSIS_RULE}), Home Assistant calls
+ * ({@link HOME_CALL_RULE}), tools-over-memory for research
+ * ({@link RESEARCH_RULE}), notification restraint ({@link NOTIFY_RULE}), and
+ * scheduling discipline ({@link SCHEDULE_RULE}) — are always appended: all are
+ * server concerns, independent of the client's rendering capabilities and of
+ * any `LLM_SYSTEM_PROMPT` override. (The Home,
+ * research, and notification rules are unconditional even though their tools
+ * are optional: a model that cannot see a tool is never misled by instruction
+ * it cannot follow.) Capability notes are appended as one paragraph only when
+ * the client actually declared the token. Under `mode: "voice"` (#83) the
+ * spoken-word directive ({@link VOICE_FORMAT_RULE}) is appended instead: the
+ * reply is shaped for text-to-speech rather than for a renderer.
+ */
+export function systemPromptForCapabilities(
+    systemPrompt: string,
+    capabilities: ClientCapability[],
+    mode?: ChatMode,
+): string {
+    return `${systemPrompt}\n\n${toolHygienePrompt()}${capabilityGuidance(capabilities, mode)}`;
 }
 
 let graph: AgentGraph | null = null;
+
+/**
+ * Whether the compiled graph uses the router/writer split (#214).
+ *
+ * Set once when the graph is built. `runAgent` reads it to decide whether the
+ * stored prime should omit tool instructions (split) or keep the legacy full
+ * prompt (single model).
+ */
+let routerEnabled = false;
 
 /**
  * The checkpoint saver behind {@link graph}.
@@ -539,7 +654,13 @@ export function initAgentGraph(
     if (graph) {
         return graph;
     }
-    const { checkpointPath, agentMaxTurns } = getLlmConfig();
+    const {
+        checkpointPath,
+        agentMaxTurns,
+        model: writerModel,
+        routerModel,
+        routerMaxRounds,
+    } = getLlmConfig();
     ensurePrivateStorage(checkpointPath);
     logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
     const saver = new SqliteSaver(
@@ -551,14 +672,86 @@ export function initAgentGraph(
     const tools = createTools(deps);
     codingEnabled = deps?.coding !== undefined;
     githubEnabled = deps?.github !== undefined;
+    const writer = createChatModel();
+    const router =
+        routerModel === undefined
+            ? undefined
+            : createChatModel({ role: "router" });
+    routerEnabled = router !== undefined;
+    if (router === undefined) {
+        logger.info(
+            `Agent graph ready with one model (${writerModel}); tool routing uses the same model`,
+        );
+    } else {
+        logger.info(
+            `Agent model roles: router=${routerModel}, writer=${writerModel}, max router rounds=${routerMaxRounds}`,
+        );
+        if (routerModel === writerModel) {
+            logger.warn(
+                "LLM_ROUTER_MODEL equals LLM_MODEL; the role split adds a model call without separating routing from writing",
+            );
+        }
+    }
     graph = createAgentGraph({
-        model: createChatModel(),
+        model: writer,
         tools,
         checkpointer: saver,
+        router,
+        routerMaxRounds,
     });
     agentTools = tools;
     logger.info(`Agent graph ready; checkpoints in ${checkpointPath}`);
+    if (routerModel !== undefined && process.env.VITEST === undefined) {
+        // Fire-and-forget: a missing model is a warning, not a startup
+        // failure. The first turn will surface the real connection error (and
+        // the router-failure fallback keeps that turn usable). Skipped under
+        // the test runner so a unit test never depends on a live endpoint.
+        void warnIfRouterModelMissing(routerModel);
+    }
     return graph;
+}
+
+/**
+ * Logs a warning when the configured router model is not advertised by the
+ * OpenAI-compatible endpoint.
+ *
+ * The check is best-effort and asynchronous: an endpoint that is down, slow,
+ * or does not implement `/models` must not delay or fail startup. The model
+ * still gets its chance at the first turn; this exists so an obvious typo in
+ * `LLM_ROUTER_MODEL` is visible before a user hits it.
+ *
+ * @param model - The configured `LLM_ROUTER_MODEL`.
+ */
+async function warnIfRouterModelMissing(model: string): Promise<void> {
+    const { baseUrl } = getLlmConfig();
+    const url = `${baseUrl.replace(/\/+$/, "")}/models`;
+    try {
+        const response = await fetch(url, {
+            headers: { authorization: "Bearer lm-studio" },
+            signal: AbortSignal.timeout(2500),
+        });
+        if (!response.ok) {
+            logger.debug(
+                `Could not verify router model at ${url}: HTTP ${response.status}`,
+            );
+            return;
+        }
+        const payload = (await response.json()) as {
+            data?: Array<{ id?: unknown }>;
+        };
+        const ids = (payload.data ?? [])
+            .map((entry) => entry.id)
+            .filter((id): id is string => typeof id === "string");
+        if (!ids.includes(model)) {
+            logger.warn(
+                `LLM_ROUTER_MODEL ${model} is not advertised by ${url}; the first split turn will fall back if the endpoint cannot serve it`,
+            );
+        }
+    } catch (err) {
+        logger.debug(
+            `Could not verify router model at ${url}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+    }
 }
 
 /**
@@ -804,15 +997,28 @@ export async function* runAgent(
     // reference rides into `configurable` so `startCodingJob` can attach the
     // issue even when a small relay model paraphrases it into `task`.
     const sharedIssue = issueRefFromPrompt(prompt);
-    const baseSystemPrompt = systemPromptForCapabilities(
+    const sharedIssueText =
+        sharedIssue === null ? undefined : sharedIssueRule(sharedIssue);
+    const fullPrompt = systemPromptForCapabilities(
         systemPrompt,
         options.capabilities ?? [],
         options.mode,
     );
-    const systemPromptForTurn =
-        sharedIssue === null
-            ? baseSystemPrompt
-            : `${baseSystemPrompt}\n\n${sharedIssueRule(sharedIssue)}`;
+    const legacyPrompt =
+        sharedIssueText === undefined
+            ? fullPrompt
+            : `${fullPrompt}\n\n${sharedIssueText}`;
+    // In a split turn the stored prime is the base only. The router and writer
+    // each receive an ephemeral role prompt; the writer never sees the tool
+    // catalog or the tool hygiene paragraphs (#214). The legacy prompt stays
+    // available for the router-failure fallback, which may need to call tools.
+    const splitBase = baseSystemPrompt(
+        systemPrompt,
+        options.capabilities ?? [],
+        options.mode,
+    );
+    const split = routerEnabled;
+    const systemPromptForTurn = split ? splitBase : legacyPrompt;
     // `sessionId` and `clientIp` are always stamped: they are what a guest
     // turn has instead of a `userId`, and tools that admit guests (#8) key
     // their budgets on them. Neither is new information — `sessionId` is
@@ -838,5 +1044,16 @@ export async function* runAgent(
         recursionLimit: agentMaxTurns,
         configurable,
         signal: options.signal,
+        roleSplit: split,
+        ...(split
+            ? {
+                  routerSystemPrompt: routerSystemPrompt(
+                      splitBase,
+                      sharedIssueText,
+                  ),
+                  writerSystemPrompt: writerSystemPrompt(splitBase),
+                  fallbackSystemPrompt: legacyPrompt,
+              }
+            : {}),
     });
 }

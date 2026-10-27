@@ -20,6 +20,15 @@ export const DEFAULT_LLM_MODEL = "qwen/qwen3-4b-2507";
 /** Default sampling temperature. */
 export const DEFAULT_LLM_TEMPERATURE = 0.15;
 
+/** Default router sampling temperature; tool selection stays deterministic. */
+export const DEFAULT_LLM_ROUTER_TEMPERATURE = 0;
+
+/** Default output-token cap for one router call; it emits tool calls only. */
+export const DEFAULT_LLM_ROUTER_MAX_TOKENS = 512;
+
+/** Default maximum router/tool rounds in one turn. */
+export const DEFAULT_LLM_ROUTER_MAX_ROUNDS = 4;
+
 /** Default maximum model/tool turns per agent run before the graph aborts. */
 export const DEFAULT_AGENT_MAX_TURNS = 10;
 
@@ -905,6 +914,7 @@ export const DEFAULT_SYSTEM_PROMPT =
  */
 export interface LlmConfig {
     baseUrl: string;
+    /** Writer model (`LLM_MODEL`); the legacy single model when no router is set. */
     model: string;
     temperature: number;
     streamUsage: boolean;
@@ -912,6 +922,20 @@ export interface LlmConfig {
     agentMaxTurns: number;
     /** Output-token cap for one chat model call (`JARVIS_CHAT_MAX_OUTPUT_TOKENS`). */
     chatMaxOutputTokens: number;
+    /**
+     * Optional small model for tool routing (`LLM_ROUTER_MODEL`).
+     *
+     * When set, a turn is split into a router that owns the tool loop and the
+     * writer (`model`) that only writes the reply. Unset keeps the legacy
+     * single-model graph.
+     */
+    routerModel?: string;
+    /** Router sampling temperature (`LLM_ROUTER_TEMPERATURE`). */
+    routerTemperature: number;
+    /** Router output-token cap (`LLM_ROUTER_MAX_TOKENS`). */
+    routerMaxTokens: number;
+    /** Maximum router/tool rounds in one turn (`JARVIS_ROUTER_MAX_ROUNDS`). */
+    routerMaxRounds: number;
     checkpointPath: string;
     /** Vision-language model the `analyzeImage` tool calls (`LLM_VL_MODEL`). */
     vlModel: string;
@@ -935,6 +959,7 @@ export function getServerPort(): number {
 }
 
 export function getLlmConfig(): LlmConfig {
+    const routerModel = process.env.LLM_ROUTER_MODEL?.trim();
     return {
         baseUrl: process.env.LLM_BASE_URL ?? DEFAULT_LLM_BASE_URL,
         model: process.env.LLM_MODEL ?? DEFAULT_LLM_MODEL,
@@ -954,6 +979,22 @@ export function getLlmConfig(): LlmConfig {
             "JARVIS_CHAT_MAX_OUTPUT_TOKENS",
             process.env.JARVIS_CHAT_MAX_OUTPUT_TOKENS,
             DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
+        ),
+        routerModel: routerModel || undefined,
+        routerTemperature: zeroOkOr(
+            "LLM_ROUTER_TEMPERATURE",
+            process.env.LLM_ROUTER_TEMPERATURE,
+            DEFAULT_LLM_ROUTER_TEMPERATURE,
+        ),
+        routerMaxTokens: numberOr(
+            "LLM_ROUTER_MAX_TOKENS",
+            process.env.LLM_ROUTER_MAX_TOKENS,
+            DEFAULT_LLM_ROUTER_MAX_TOKENS,
+        ),
+        routerMaxRounds: numberOr(
+            "JARVIS_ROUTER_MAX_ROUNDS",
+            process.env.JARVIS_ROUTER_MAX_ROUNDS,
+            DEFAULT_LLM_ROUTER_MAX_ROUNDS,
         ),
         checkpointPath:
             process.env.JARVIS_CHECKPOINT_PATH ?? defaultCheckpointPath(),

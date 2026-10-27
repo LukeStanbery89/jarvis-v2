@@ -18,15 +18,16 @@ npm install @lukestanbery/jarvis-server
 
 ## Scripts
 
-| Script                  | Description                                                |
-| ----------------------- | ---------------------------------------------------------- |
-| `npm run build`         | Compile TypeScript to `dist/`                              |
-| `npm run typecheck`     | Type-check src and tests (no emit)                         |
-| `npm run dev`           | Run the server with watch mode                             |
-| `npm start`             | Run the compiled server                                    |
-| `npm test`              | Run the test suite (Vitest)                                |
-| `npm run tts:harness`   | Local TTS harness: synthesize text and play it aloud (#83) |
-| `npm run probe:sandbox` | Probe the Docker assumptions the sandbox (#141) rests on   |
+| Script                     | Description                                                |
+| -------------------------- | ---------------------------------------------------------- |
+| `npm run build`            | Compile TypeScript to `dist/`                              |
+| `npm run typecheck`        | Type-check src and tests (no emit)                         |
+| `npm run dev`              | Run the server with watch mode                             |
+| `npm start`                | Run the compiled server                                    |
+| `npm test`                 | Run the test suite (Vitest)                                |
+| `npm run tts:harness`      | Local TTS harness: synthesize text and play it aloud (#83) |
+| `npm run eval:model-roles` | Warm router/writer routing + latency benchmark (#214)      |
+| `npm run probe:sandbox`    | Probe the Docker assumptions the sandbox (#141) rests on   |
 
 ## Usage
 
@@ -617,8 +618,12 @@ fail silently either:
 | `JARVIS_JOB_MAX_LATENESS_MS`             | `3600000`                                                                       | How late a job may be and still run; past it the job is recorded (and announced) as `missed` rather than attempted, because a reminder that fires six hours after the fact is not a reminder                                                                                                                                                                                                                                                                                                                    |
 | `JARVIS_JOB_MAX_PER_TICK`                | `1`                                                                             | Jobs one tick takes on; above 1 the runs really do go concurrently, against one model — a home server has one                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `LLM_BASE_URL`                           | `http://localhost:1234/v1`                                                      | OpenAI-compatible base URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `LLM_MODEL`                              | `qwen/qwen3-4b-2507`                                                            | Model served by the server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `LLM_TEMPERATURE`                        | `0.15`                                                                          | Sampling temperature                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `LLM_MODEL`                              | `qwen/qwen3-4b-2507`                                                            | Writer model. With `LLM_ROUTER_MODEL` unset it is the single chat model; with it set, only this model writes the reply                                                                                                                                                                                                                                                                                                                                                                                          |
+| `LLM_TEMPERATURE`                        | `0.15`                                                                          | Writer sampling temperature                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `LLM_ROUTER_MODEL`                       | unset                                                                           | Optional small tool-routing model (#214). Setting it enables the split graph; the router owns tool selection and the tool loop, and the writer never receives tool schemas                                                                                                                                                                                                                                                                                                                                      |
+| `LLM_ROUTER_TEMPERATURE`                 | `0`                                                                             | Router sampling temperature; deterministic tool selection                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `LLM_ROUTER_MAX_TOKENS`                  | `512`                                                                           | Router output cap; a router turn emits tool calls, not prose                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `JARVIS_ROUTER_MAX_ROUNDS`               | `4`                                                                             | Maximum router/tool rounds in one turn before the writer answers from the results so far                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `LLM_SYSTEM_PROMPT`                      | `You are J.A.R.V.I.S., a helpful, personal AI assistant. ...` (concise persona) | System message priming every conversation thread; the server always appends seven fixed hygiene paragraphs (one tool call at a time with well-formed arguments; exactly one `getCurrentTime` call per time/date/weekday ask, passing the question verbatim, never reusing an earlier answer; the image-analysis rule; the home-assistant rule; the tools-over-memory rule for research, #8; notification restraint, #139; and scheduling discipline, #90) plus capability notes — see the Chat protocol section |
 | `JARVIS_AGENT_MAX_TURNS`                 | `10`                                                                            | Max agent loop steps per turn (tools + model calls)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `JARVIS_CHAT_MAX_OUTPUT_TOKENS`          | `2048`                                                                          | Output-token cap for one chat model call; the primary bound on one assistant message                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -681,6 +686,39 @@ fail silently either:
 | `JARVIS_API_CONTRACT`                    | unset                                                                           | Set `verify` to also validate REST response bodies against the OpenAPI contract (request shapes are always validated)                                                                                                                                                                                                                                                                                                                                                                                           |
 | `JARVIS_LOG_LEVEL`                       | `info` (`silent` under tests)                                                   | Log verbosity: `silent` \| `debug` \| `info` \| `warn` \| `error`                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `JARVIS_LOG_SENSITIVE`                   | `auto`                                                                          | Force sensitive payload logging: `full` \| `redacted`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+#### Model roles and tool routing (#214)
+
+`LLM_ROUTER_MODEL` is an opt-in split. When it is unset, the agent is exactly the
+single-model graph described below: `LLM_MODEL` selects tools and writes the
+reply. When it is set, a turn runs through two roles:
+
+1. The **router** (`LLM_ROUTER_MODEL`) receives the conversation and the tool
+   catalog, calls tools one at a time, reads each result, and stops when it
+   needs nothing else. Its prose is discarded; only its tool calls reach the
+   client and the checkpoint.
+2. The **writer** (`LLM_MODEL`) receives the conversation, the router's tool
+   calls, and their results, but no tools and no tool schemas. It writes the
+   only assistant text the user sees.
+
+The tool loop is capped by `JARVIS_ROUTER_MAX_ROUNDS`; the writer answers from
+the results collected so far if the cap is reached. A router failure before any
+tool runs falls back to the legacy tool-capable `LLM_MODEL` loop. A failure
+after a tool ran goes straight to the writer instead, so a side effect is never
+replayed. Both models must be served by the same `LLM_BASE_URL`.
+
+The split is a latency optimization only when both models are resident: the
+router's small prompt and tool turn should replace a large model's tool turn,
+and the writer's prompt is smaller because it carries no tool schemas. Measure
+with both models preloaded and warm; never compare a cold first call. Leave
+memory headroom too: a host that is swapping or near its ceiling measures disk
+and load time rather than the role split, so both models must be loaded
+together with room left for the rest of the system. The routing-correctness and warm-latency
+gates for the change are recorded in #214. `npm run eval:model-roles` runs the
+side-effect-free corpus against the legacy and split graphs; it prints p50/p95,
+TTFT, routing accuracy, and the cold samples it discarded
+(`LLM_ROUTER_MODEL=... npm run eval:model-roles -- --samples=3`). It refuses to
+measure when the endpoint reports either model unloaded.
 
 ```sh
 LLM_MODEL=some-other-model npm run dev

@@ -19,6 +19,7 @@
         "prepublishOnly": "npm run build",
         "tts:harness": "tsx scripts/tts-harness.ts",
         "chat:dump": "tsx scripts/chat-dump.ts",
+        "eval:model-roles": "tsx scripts/modelRolesEval.ts",
         "probe:sandbox": "node scripts/probe-sandbox.mjs",
         "probe:coding-job": "node scripts/probe-coding-job.mjs"
     },
