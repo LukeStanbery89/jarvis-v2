@@ -59,6 +59,7 @@ import type {
     ClientHello,
     ClientLocationFrame,
     ServerFrame,
+    ToolSource,
 } from "@lukestanbery/jarvis-protocol";
 import { hashDeviceToken } from "@lukestanbery/jarvis-auth";
 import type { AppDatabase, AuthContext } from "@lukestanbery/jarvis-auth";
@@ -142,6 +143,48 @@ const HOME_ASSISTANT_READ_ACTIONS = new Set([
 ]);
 
 /**
+ * Turns a tool-only `webSearch` result into a short answer (#210).
+ *
+ * The formatted search text is model-facing: a prose summary followed by
+ * numbered `title — url` lines and snippets. That is useful to the model, but
+ * it is not an assistant answer, and the chat UI already renders the same
+ * results as a `Sources` disclosure (#199). When the model writes no prose
+ * after the search, returning the payload here duplicated the whole result in
+ * the bubble; a pointer to the links keeps the bubble short and leaves the
+ * payload behind the tool card.
+ *
+ * Empty and failed searches are answered before the success path, so they
+ * cannot claim there are sources when there are none. The remaining control
+ * text (a quota or sign-in refusal) is already concise and actionable, and
+ * passes through unchanged.
+ *
+ * @param output - The model-facing text the tool returned.
+ * @param sources - The presentation links extracted from the search result.
+ * @returns The short user-facing answer.
+ */
+function searchToolText(
+    output: string,
+    sources: readonly ToolSource[] | undefined,
+): string {
+    const text = output.trim();
+    if (text === "No results found.") {
+        return "I couldn't find any results for that.";
+    }
+    if (text.startsWith("Web search failed.")) {
+        return "I couldn't search the web just now.";
+    }
+    if (sources !== undefined && sources.length > 0) {
+        return "I found these sources — see the links below.";
+    }
+    // A result list with no usable URLs still must not leak into the bubble;
+    // there are no links to point at, so say that much.
+    if (/^\d+\.\s/m.test(text)) {
+        return "I found some search results for that.";
+    }
+    return text;
+}
+
+/**
  * The answer to surface when a tool-only turn produced no prose.
  *
  * The model normally writes a sentence after a tool result. When it does not,
@@ -149,19 +192,28 @@ const HOME_ASSISTANT_READ_ACTIONS = new Set([
  * and must not be replaced by a generic "done" line. Action results keep the
  * generic confirmation, as do non-string or empty payloads.
  *
+ * `webSearch` is the exception: its output is a long list of snippets and URLs
+ * rather than a sentence, so it collapses to a short pointer to the `Sources`
+ * disclosure ({@link searchToolText}, #210).
+ *
  * @param name - The tool that produced the result.
  * @param args - The call's arguments, needed to tell a Home Assistant read from
  *   a write because one tool owns both.
  * @param output - The result the tool returned.
+ * @param sources - The result's presentation links, when the tool supplies any.
  * @returns The user-facing text, or `null` when the generic fallback belongs.
  */
 function informationalToolText(
     name: string,
     args: unknown,
     output: unknown,
+    sources: readonly ToolSource[] | undefined,
 ): string | null {
     if (typeof output !== "string" || output.trim().length === 0) {
         return null;
+    }
+    if (name === "webSearch") {
+        return searchToolText(output, sources);
     }
     if (name === "homeAssistant") {
         const action =
@@ -1299,6 +1351,7 @@ async function streamEventsToSocket(opts: StreamEventsOptions): Promise<void> {
                         event.name,
                         toolArgs.get(event.name),
                         event.output,
+                        event.sources,
                     );
                     if (answer !== null && !toolAnswers.includes(answer)) {
                         toolAnswers.push(answer);

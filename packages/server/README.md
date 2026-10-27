@@ -864,7 +864,13 @@ A text-free turn that **did make tool calls** is different: the tool results are
 the turn's output, and the client already renders their cards. An informational
 result is the answer, so the server sends it as the assistant text — a
 `getCurrentTime` call with no prose turns into `3:26 PM`, not a generic
-confirmation. Action tools whose card carries the outcome (timers, schedules,
+confirmation. `webSearch` is the exception (#210): its formatted text is a long
+list of snippets and URLs that the chat UI already shows once as a `Sources`
+disclosure, so a tool-only successful search becomes a short pointer to those
+links instead of pasting the payload into the bubble. An empty or failed search
+gets a plain sentence (“I couldn't find any results for that.” / “I couldn't
+search the web just now.”), and quota/sign-in refusals keep their existing
+concise text. Action tools whose card carries the outcome (timers, schedules,
 job lists, notifications, coding jobs and GitHub writes) still finish with the
 short confirmation (`Done — the requested tool calls completed.`) and `done`
 instead of the empty-response error. The persisted history also drops the empty
