@@ -317,7 +317,24 @@ export function AppShell({
         // `reconnecting` both precede `connected`) — and the effect that tried
         // to, with a dependency that changes every render, was a fetch loop.
         // `refresh` is a stable `useCallback`.
-        onReconnected: notifications.refresh,
+        onReconnected: () => {
+            notifications.refresh();
+            jobs.refresh();
+            // A frame pushed while the socket was down is gone. If a thread is
+            // open, treat the reconnect as an activity nudge so it refetches
+            // the newest page rather than silently missing a turn.
+            const active = threads.activeIdRef.current;
+            if (active !== null) {
+                sessionSyncSeq.current += 1;
+                setSessionSync((previous) => ({
+                    ...previous,
+                    activity: {
+                        sessionId: active,
+                        seq: sessionSyncSeq.current,
+                    },
+                }));
+            }
+        },
         onAuthRejected,
     });
 

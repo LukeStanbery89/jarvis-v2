@@ -116,6 +116,10 @@ export function useChatClient(options: {
                 onNotification: (notification) =>
                     onNotificationRef.current(notification),
                 onSessionTitle: (update) => onSessionTitleRef.current(update),
+                onSessionActivity: (update) =>
+                    onSessionActivityRef.current(update),
+                onSessionDeleted: (update) =>
+                    onSessionDeletedRef.current(update),
                 onReconnected: () => onReconnectedRef.current(),
                 onAuthRejected: () => onAuthRejectedRef.current(),
             },
