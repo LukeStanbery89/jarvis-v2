@@ -44,7 +44,7 @@
         "@lukestanbery/jarvis-contracts": "^0.1.0",
         "@lukestanbery/jarvis-logger": "^0.1.0",
         "@lukestanbery/jarvis-protocol": "^0.1.0",
-        "better-sqlite3": "^12.11.1",
+        "better-sqlite3": "^13.0.3",
         "dockerode": "^5.0.1",
         "dotenv": "^18.0.9",
         "express": "^5.3.0",
