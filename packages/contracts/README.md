@@ -141,10 +141,10 @@ artifact; regenerate it.
 One channel (`/ws`), two operations, fifteen messages mirroring
 `@lukestanbery/jarvis-protocol`'s types:
 
-| Operation            | Direction     | Messages                                                                                                                                                                                              |
-| -------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time)                     |
-| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`, `notification` and `sessionTitle` (out-of-turn, only to sockets that declared the capability) |
+| Operation            | Direction     | Messages                                                                                                                                                                                                                                             |
+| -------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time)                                                                    |
+| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`, `notification`, `sessionTitle`, `sessionActivity`, and `sessionDeleted` (out-of-turn, only to sockets that declared the matching capability) |
 
 A client may open the socket with either the `hello` capability announcement or
 the `auth` handshake (and `auth` may also come immediately after `hello`); any

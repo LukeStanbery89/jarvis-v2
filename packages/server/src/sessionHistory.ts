@@ -14,6 +14,7 @@ import type {
 } from "@lukestanbery/jarvis-auth";
 import type { ToolSource } from "@lukestanbery/jarvis-protocol";
 import type { ChatCipher } from "./chatCrypto";
+import type { SessionEventPublisher } from "./sessionEvents";
 
 /** How many messages the REST page returns by default. */
 export const DEFAULT_HISTORY_PAGE_SIZE = 20;
@@ -79,6 +80,8 @@ export interface ChatHistoryPage {
 export interface SessionContentServices {
     history: ChatHistoryService;
     cipher: ChatCipher;
+    /** Cross-device notifications; the delete route publishes one. */
+    events?: SessionEventPublisher;
 }
 
 /** The title-generation input: the first exchange, if it exists. */
@@ -89,8 +92,11 @@ export interface FirstExchange {
 
 /** The history seam consumed by the REST layer and the WS turn path. */
 export interface ChatHistoryService {
-    /** Encrypts and appends one turn's normalized messages. */
-    append(session: AppSession, entries: ChatTranscriptEntry[]): void;
+    /** Encrypts and appends one turn's normalized messages, returning them. */
+    append(
+        session: AppSession,
+        entries: ChatTranscriptEntry[],
+    ): ChatHistoryMessage[];
     /** Reads one page, newest first by default. */
     page(
         session: AppSession,
@@ -218,19 +224,24 @@ export function createChatHistoryService(options: {
     return {
         append(session, entries) {
             if (entries.length === 0) {
-                return;
+                return [];
             }
             const createdAt = new Date().toISOString();
-            store.appendChatMessages(
+            const boundedEntries = entries.map(bounded);
+            const rows = store.appendChatMessages(
                 session.id,
-                entries.map((entry) => {
-                    const boundedEntry = bounded(entry);
-                    return {
-                        role: boundedEntry.role,
-                        payload: cipher.encryptJson(boundedEntry.payload),
-                        createdAt,
-                    };
-                }),
+                boundedEntries.map((entry) => ({
+                    role: entry.role,
+                    payload: cipher.encryptJson(entry.payload),
+                    createdAt,
+                })),
+            );
+            return rows.map((row, index) =>
+                toHistoryMessage(
+                    row.id,
+                    row.role,
+                    boundedEntries[index].payload,
+                ),
             );
         },
         page(session, opts) {

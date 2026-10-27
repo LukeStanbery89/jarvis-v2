@@ -25,6 +25,8 @@ export type {
     NotificationFrame,
     NotificationPriority,
     ServerFrame,
+    SessionActivityUpdate,
+    SessionDeletedUpdate,
     SessionTitleUpdate,
     ToolSource,
 } from "./types";

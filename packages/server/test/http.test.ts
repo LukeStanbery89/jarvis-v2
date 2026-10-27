@@ -539,6 +539,7 @@ describe("session history routes (#122)", () => {
     function content(): SessionContentServices {
         return {
             cipher,
+            events: { publish: vi.fn() },
             history: {
                 append: vi.fn(),
                 page: vi.fn(() => ({
@@ -648,6 +649,11 @@ describe("session history routes (#122)", () => {
         expect(services.history.deleteThread).toHaveBeenCalledWith(
             "history-delete",
         );
+        expect(services.events?.publish).toHaveBeenCalledWith({
+            type: "deleted",
+            userId: ownerId,
+            sessionId: "history-delete",
+        });
         expect(store.getSessionByThread("history-delete")).toBeNull();
     });
 

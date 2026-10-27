@@ -197,6 +197,47 @@ export function hydrateThread(
     };
 }
 
+/**
+ * Merges a fresh newest page into an already-loaded thread.
+ *
+ * Unlike {@link hydrateThread}, this keeps every older page the reader has
+ * paged in and appends only messages whose server ids are not already present.
+ * It is the cross-device activity path (#122 follow-up): another client settled
+ * a turn, and this client refetched the newest page without losing its scroll
+ * position or older history. A thread with no loaded messages falls back to a
+ * full hydrate.
+ */
+export function syncThreadHistory(
+    map: ThreadMap,
+    sessionId: string,
+    detail: SessionDetail,
+    at: number = Date.now(),
+): ThreadMap {
+    const record = map[sessionId];
+    if (!record || record.messages.length === 0) {
+        return hydrateThread(map, sessionId, detail, at);
+    }
+    const known = new Set(record.messages.map((message) => message.id));
+    const fresh = historyMessagesToThread(detail.messages).filter(
+        (message) => !known.has(message.id),
+    );
+    const updatedAt = Date.parse(detail.lastActiveAt);
+    return {
+        ...map,
+        [sessionId]: {
+            ...record,
+            title: detail.title ?? record.title,
+            updatedAt: Number.isFinite(updatedAt)
+                ? updatedAt
+                : record.updatedAt,
+            messages:
+                fresh.length > 0
+                    ? [...record.messages, ...fresh]
+                    : record.messages,
+        },
+    };
+}
+
 /** Prepends an older page to a thread, preserving its loaded tail. */
 export function prependThreadHistory(
     map: ThreadMap,

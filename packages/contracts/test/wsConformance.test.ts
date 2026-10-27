@@ -100,6 +100,8 @@ const MESSAGE_FOR_KEY: Record<string, string> = {
     audioEnd: "audioEnd",
     notification: "notification",
     sessionTitle: "sessionTitle",
+    sessionActivity: "sessionActivity",
+    sessionDeleted: "sessionDeleted",
 };
 
 /**
@@ -519,6 +521,23 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeFrame(frame),
                 MESSAGE_FOR_KEY.notification,
+            );
+        });
+
+        it("validates cross-device session sync frames (#122)", () => {
+            expectWireConformant(
+                () =>
+                    serializeFrame({
+                        sessionActivity: { sessionId: "thread-1" },
+                    }),
+                MESSAGE_FOR_KEY.sessionActivity,
+            );
+            expectWireConformant(
+                () =>
+                    serializeFrame({
+                        sessionDeleted: { sessionId: "thread-1" },
+                    }),
+                MESSAGE_FOR_KEY.sessionDeleted,
             );
         });
 

@@ -538,6 +538,13 @@ export function createAuthRouter(
                 await sessionContent.history.deleteThread(threadId);
             }
             store.deleteSession(threadId);
+            if (session.userId !== null) {
+                sessionContent?.events?.publish({
+                    type: "deleted",
+                    userId: session.userId,
+                    sessionId: threadId,
+                });
+            }
             res.status(204).end();
         }),
     );

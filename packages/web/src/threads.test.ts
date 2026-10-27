@@ -17,6 +17,7 @@ import {
     prependThreadHistory,
     saveThreads,
     setThreadTitle,
+    syncThreadHistory,
     threadsKey,
     type ThreadMap,
 } from "./threads";
@@ -329,6 +330,61 @@ describe("server history hydration", () => {
         expect(next.s1?.messages).toHaveLength(4);
         expect(next.s1?.hasMore).toBe(false);
         expect(next.s1?.nextBefore).toBeNull();
+    });
+
+    it("merges a new server page without dropping older loaded pages", () => {
+        const map = hydrateThread({}, "s1", detail(), 5);
+        const older = detail({
+            messages: [{ id: 8, role: "user", text: "earlier" }],
+            hasMore: false,
+            nextBefore: null,
+        });
+        const withOlder = prependThreadHistory(map, "s1", older);
+        const refreshed = detail({
+            title: "Finished turn",
+            messages: [
+                { id: 10, role: "user", text: "hello", attachmentIds: ["a1"] },
+                {
+                    id: 11,
+                    role: "tool",
+                    tool: {
+                        name: "webSearch",
+                        args: { query: "x" },
+                        output: "result",
+                        sources: [
+                            {
+                                title: "Source",
+                                url: "https://example.com",
+                            },
+                        ],
+                    },
+                },
+                { id: 12, role: "assistant", text: "answer" },
+                { id: 13, role: "user", text: "again" },
+                { id: 14, role: "assistant", text: "second answer" },
+            ],
+            hasMore: true,
+            nextBefore: 10,
+        });
+        const next = syncThreadHistory(withOlder, "s1", refreshed);
+        expect(next.s1?.title).toBe("Finished turn");
+        expect(next.s1?.messages.map((message) => message.id)).toEqual([
+            "history:8",
+            "history:10",
+            "history:11",
+            "history:12",
+            "history:13",
+            "history:14",
+        ]);
+        // The older page cursor is retained for the transcript's paging.
+        expect(next.s1?.hasMore).toBe(false);
+        expect(next.s1?.nextBefore).toBeNull();
+    });
+
+    it("hydrates a thread that has no loaded messages", () => {
+        const map = syncThreadHistory({}, "s1", detail(), 5);
+        expect(map.s1?.messages).toHaveLength(3);
+        expect(map.s1?.title).toBe("Server title");
     });
 
     it("updates a title without moving the thread", () => {

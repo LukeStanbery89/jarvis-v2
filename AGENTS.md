@@ -31,6 +31,10 @@ a wrapped serializer and holds only the model's working memory (newest two
 versions, context trimmed to 100 messages). The web keeps thread metadata only
 in localStorage, fetches the newest 20 messages on open, prepends older pages
 at the top of the transcript, and applies the out-of-turn `sessionTitle` frame.
+A settled turn broadcasts `sessionActivity` to the account's other sockets (the
+web refetches and merges the newest page by row id), and a delete broadcasts
+`sessionDeleted` so the thread disappears everywhere; both are gated on the
+`sessionSync` capability.
 Prompts are capped at 16,000 characters and chat output at
 `JARVIS_CHAT_MAX_OUTPUT_TOKENS` (default 2048). Production requires
 `JARVIS_CHAT_ENCRYPTION_KEY`; development auto-generates `~/.jarvis/chat.key`

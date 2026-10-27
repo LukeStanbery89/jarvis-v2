@@ -23,7 +23,7 @@
  * local metadata, so conversations created on other clients appear with their
  * durable history.
  */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { mergeSessions } from "../sidebar";
 import { determineReady } from "../attachments";
@@ -79,6 +79,83 @@ export function Chat({ app, threadsOpen, onCloseThreads }: ChatProps) {
     /** An older page is in flight; also guards the scroll trigger. */
     const [olderLoading, setOlderLoading] = useState(false);
     const olderRequest = useRef(false);
+    /** Per-thread serialized refetches for cross-device activity (#122). */
+    const syncChains = useRef(new Map<string, Promise<void>>());
+    const sessionActivity = app.sessionSync.activity;
+    const sessionDeleted = app.sessionSync.deleted;
+
+    // Another device settled a turn in a thread this one has open. Refetch the
+    // newest page and merge it by server id, preserving any older pages the
+    // reader already scrolled in. Requests for the same thread are serialized
+    // so a slow earlier fetch cannot land after a newer one.
+    useEffect(() => {
+        if (!sessionActivity) {
+            return;
+        }
+        void refreshSessions();
+        if (activeIdRef.current !== sessionActivity.sessionId) {
+            return;
+        }
+        const id = sessionActivity.sessionId;
+        const previous = syncChains.current.get(id) ?? Promise.resolve();
+        const next = previous
+            .catch(() => undefined)
+            .then(async () => {
+                try {
+                    const detail = await api.getSession(credential.token, id, {
+                        limit: 20,
+                    });
+                    if (activeIdRef.current !== id) {
+                        return;
+                    }
+                    dispatch({
+                        type: "sync",
+                        sessionId: id,
+                        detail,
+                        at: Date.now(),
+                    });
+                } catch (err) {
+                    if (err instanceof ApiError && err.status === 401) {
+                        onAuthRejected();
+                        return;
+                    }
+                    if (err instanceof ApiError && err.status === 404) {
+                        dispatch({ type: "deleted", sessionId: id });
+                        if (activeIdRef.current === id) {
+                            openThread(null);
+                        }
+                        return;
+                    }
+                    setBanner(
+                        err instanceof Error
+                            ? err.message
+                            : "could not refresh the conversation",
+                    );
+                }
+            });
+        syncChains.current.set(id, next);
+        void next.finally(() => {
+            if (syncChains.current.get(id) === next) {
+                syncChains.current.delete(id);
+            }
+        });
+    }, [
+        sessionActivity,
+        activeIdRef,
+        credential.token,
+        dispatch,
+        onAuthRejected,
+        refreshSessions,
+        openThread,
+    ]);
+
+    // The shell already removed the deleted thread from the local map. This
+    // refreshes the sidebar rows so the server's list agrees.
+    useEffect(() => {
+        if (sessionDeleted) {
+            void refreshSessions();
+        }
+    }, [sessionDeleted, refreshSessions]);
 
     const { pending, previews, attachFiles, detachChip, clearPending } =
         useAttachments({ token: credential.token, onError: setBanner });

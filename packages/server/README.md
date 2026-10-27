@@ -1808,10 +1808,19 @@ ping/pong keepalive, so their cleanup — guest rows and their checkpoints
 included — still fires.
 
 Deleting a session removes its ledger row, its encrypted transcript rows
-(`chat_messages`), and its LangGraph checkpoint thread. Titles are generated
-from the first prompt immediately and upgraded by a small model call after the
-first completed turn; the update arrives as an out-of-turn `sessionTitle` frame
-for clients that declared the capability.
+(`chat_messages`), and its LangGraph checkpoint thread. The delete also
+broadcasts `sessionDeleted` to the account's other connected sockets, so a
+thread removed on one device disappears from the others without a refresh.
+Titles are generated from the first prompt immediately and upgraded by a small
+model call after the first completed turn; the update is broadcast as an
+out-of-turn `sessionTitle` frame to clients that declared that capability.
+
+A settled turn broadcasts `sessionActivity` to the account's other sockets
+(clients that declared `sessionSync`). It carries only the thread id: a client
+with that thread open refetches the newest transcript page through
+`GET /api/sessions/{threadId}` and merges it by row id, preserving older pages
+already paged in. The originating socket is excluded because it already has
+the messages.
 
 Concatenate the `chunk` payloads verbatim to reconstruct the full response. A
 single prompt may loop through `tool`/`toolResult` pairs several times before

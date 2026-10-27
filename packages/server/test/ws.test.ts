@@ -1,9 +1,10 @@
 import type { AddressInfo } from "net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { WebSocket, type WebSocketServer } from "ws";
+import { WebSocket, type RawData, type WebSocketServer } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
 import { createNotificationHub } from "../src/notify/hub";
+import { createSessionEvents } from "../src/sessionEvents";
 import { runAgent } from "../src/agent";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
@@ -135,7 +136,12 @@ attachChatServer(slowTtsServer, store, { turnTimeoutMs: 30_000, tts: slowTts });
 // The history/title variant (#122): a fake transcript and title service, so
 // the socket path can be exercised without a real model or checkpoint. The
 // mock runAgent above still supplies the token stream.
-const historyAppend = vi.fn();
+const historyAppend = vi.fn(
+    (
+        _session: import("@lukestanbery/jarvis-auth").AppSession,
+        _entries: import("../src/sessionHistory").ChatTranscriptEntry[],
+    ) => [] as import("../src/sessionHistory").ChatHistoryMessage[],
+);
 const historyService: import("../src/sessionHistory").ChatHistoryService = {
     append: historyAppend,
     page: () => ({ messages: [], hasMore: false, nextBefore: null }),
@@ -152,11 +158,13 @@ const titleService: import("../src/sessionTitle").SessionTitleService = {
     ensureExcerpt: titleEnsureExcerpt,
     upgrade: titleUpgrade,
 };
+const historyEvents = createSessionEvents();
 const historyServer = createApp(store, appConfig).listen(0);
 attachChatServer(historyServer, store, {
     turnTimeoutMs: 30_000,
     history: historyService,
     titles: titleService,
+    sessionEvents: historyEvents,
 });
 
 // A short-heartbeat variant, so the keepalive is testable in real time
@@ -1040,6 +1048,40 @@ function exchangeMany(
 }
 
 describe("conversation history and titles (#122)", () => {
+    /** Waits for one server frame by key, with a short test timeout. */
+    function waitForFrame(
+        ws: WebSocket,
+        key: string,
+    ): Promise<Record<string, unknown>> {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                cleanup();
+                reject(new Error(`timed out waiting for ${key}`));
+            }, 5_000);
+            const onMessage = (data: RawData): void => {
+                const frame = JSON.parse(data.toString()) as Record<
+                    string,
+                    unknown
+                >;
+                if (frame[key] !== undefined) {
+                    cleanup();
+                    resolve(frame);
+                }
+            };
+            const onError = (): void => {
+                cleanup();
+                reject(new Error(`socket failed waiting for ${key}`));
+            };
+            function cleanup(): void {
+                clearTimeout(timer);
+                ws.off("message", onMessage);
+                ws.off("error", onError);
+            }
+            ws.on("message", onMessage);
+            ws.on("error", onError);
+        });
+    }
+
     it("records the turn and pushes a title after done", async () => {
         historyAppend.mockClear();
         titleEnsureExcerpt.mockClear();
@@ -1123,6 +1165,75 @@ describe("conversation history and titles (#122)", () => {
             payload: { kind: "assistant", text: "Hello, World!" },
         });
         expect(titleUpgrade).toHaveBeenCalled();
+    });
+
+    it("nudges the user's other sockets after a turn, but not the sender", async () => {
+        historyAppend.mockClear();
+        const user = store.createUser("sync-user", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "sync-device",
+            material.tokenHash,
+            material.prefix,
+        );
+        const open = (): {
+            ws: WebSocket;
+            frames: Record<string, unknown>[];
+            auth: Promise<Record<string, unknown>>;
+        } => {
+            const ws = new WebSocket(historyUrl);
+            const frames: Record<string, unknown>[] = [];
+            ws.on("message", (data) => {
+                frames.push(
+                    JSON.parse(data.toString()) as Record<string, unknown>,
+                );
+            });
+            const auth = waitForFrame(ws, "authResult");
+            ws.on("open", () => {
+                ws.send(
+                    JSON.stringify({
+                        type: "hello",
+                        capabilities: ["sessionSync", "sessionTitle"],
+                    }),
+                );
+                ws.send(
+                    JSON.stringify({
+                        type: "auth",
+                        token: material.token,
+                    }),
+                );
+            });
+            return { ws, frames, auth };
+        };
+
+        const sender = open();
+        const watcher = open();
+        await Promise.all([sender.auth, watcher.auth]);
+        const activity = waitForFrame(watcher.ws, "sessionActivity");
+        const done = waitForFrame(sender.ws, "done");
+        sender.ws.send(
+            JSON.stringify({ prompt: "hi", sessionId: "sync-thread" }),
+        );
+        await done;
+        expect(await activity).toEqual({
+            sessionActivity: { sessionId: "sync-thread" },
+        });
+        expect(sender.frames.some((frame) => "sessionActivity" in frame)).toBe(
+            false,
+        );
+        expect(historyAppend).toHaveBeenCalled();
+        const deleted = waitForFrame(watcher.ws, "sessionDeleted");
+        historyEvents.publish({
+            type: "deleted",
+            userId: user.id,
+            sessionId: "sync-thread",
+        });
+        expect(await deleted).toEqual({
+            sessionDeleted: { sessionId: "sync-thread" },
+        });
+        sender.ws.close();
+        watcher.ws.close();
     });
 });
 

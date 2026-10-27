@@ -126,6 +126,8 @@ export function parseFrame(raw: string): ServerFrame {
         audioEnd?: { generationId?: unknown };
         notification?: unknown;
         sessionTitle?: { sessionId?: unknown; title?: unknown };
+        sessionActivity?: { sessionId?: unknown };
+        sessionDeleted?: { sessionId?: unknown };
     };
     if (typeof frame.chunk === "string") {
         return { chunk: frame.chunk };
@@ -145,6 +147,30 @@ export function parseFrame(raw: string): ServerFrame {
     }
     if (frame.done === true) {
         return { done: true };
+    }
+    if (
+        frame.sessionActivity &&
+        typeof frame.sessionActivity.sessionId === "string" &&
+        frame.sessionActivity.sessionId.length > 0 &&
+        frame.sessionActivity.sessionId.length <= MAX_SESSION_ID_LENGTH
+    ) {
+        return {
+            sessionActivity: {
+                sessionId: frame.sessionActivity.sessionId,
+            },
+        };
+    }
+    if (
+        frame.sessionDeleted &&
+        typeof frame.sessionDeleted.sessionId === "string" &&
+        frame.sessionDeleted.sessionId.length > 0 &&
+        frame.sessionDeleted.sessionId.length <= MAX_SESSION_ID_LENGTH
+    ) {
+        return {
+            sessionDeleted: {
+                sessionId: frame.sessionDeleted.sessionId,
+            },
+        };
     }
     if (
         frame.sessionTitle &&

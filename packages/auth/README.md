@@ -56,9 +56,9 @@ only the surface they call:
   ciphertext; the server encrypts/decrypts it. The server's `SessionManager`
   (`packages/server/src/sessionManager.ts`) is typed against exactly this role.
 - `ChatTranscriptLedger` — the durable, paged transcript (#122) over the
-  `chat_messages` table: append a turn atomically, page by row id, read the
-  first rows for title generation, measure bytes/count for retention, and trim
-  the oldest rows. `payload` is opaque encrypted JSON; `role` and timestamps
+  `chat_messages` table: append a turn atomically (returning the inserted rows
+  for cross-device fan-out), page by row id, read the first rows for title
+  generation, measure bytes/count for retention, and trim the oldest rows. `payload` is opaque encrypted JSON; `role` and timestamps
   are the only readable columns. `ON DELETE CASCADE` keeps a session delete
   from leaving orphan transcript rows.
 - `NotificationLedger` — JARVIS's outbound messages to a user (#139) over the

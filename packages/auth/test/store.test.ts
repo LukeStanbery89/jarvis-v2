@@ -394,11 +394,13 @@ describe("chat transcript ledger (#122)", () => {
             "2026-01-01T00:00:00.000Z",
         );
 
-        store.appendChatMessages(session.id, [
+        const appended = store.appendChatMessages(session.id, [
             { role: "user", payload: "p1", createdAt: "2026-01-01T00:00:01Z" },
             { role: "user", payload: "p2", createdAt: "2026-01-01T00:00:02Z" },
             { role: "user", payload: "p3", createdAt: "2026-01-01T00:00:03Z" },
         ]);
+        expect(appended.map((row) => row.payload)).toEqual(["p1", "p2", "p3"]);
+        expect(appended[0].id).toBeGreaterThan(0);
         expect(
             store.listFirstChatMessages(session.id, 2).map((m) => m.payload),
         ).toEqual(["p1", "p2"]);

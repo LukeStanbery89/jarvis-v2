@@ -33,6 +33,7 @@ import {
 import { createChatCipher, resolveChatKey } from "./chatCrypto";
 import { createEncryptedSerde } from "./llm/encryptedSerde";
 import { createChatHistoryService } from "./sessionHistory";
+import { createSessionEvents } from "./sessionEvents";
 import { createSessionTitleService } from "./sessionTitle";
 import { createThreadTitleGenerator } from "./llm/threadTitle";
 import { createVisionModel } from "./llm/visionModel";
@@ -234,6 +235,7 @@ logger.info(
 
 const chatCipher = createChatCipher(resolveChatKey());
 const checkpointSerde = createEncryptedSerde(chatCipher);
+const sessionEvents = createSessionEvents();
 const store = openAppDatabase(appConfig.appDbPath, {
     /**
      * A migration repaired something on the way in (#90 phase 6c).
@@ -625,7 +627,7 @@ const webApp = createApp(
     internalRoutes,
     onNotificationAnswer,
     weatherDeps,
-    { history: sessionHistory, cipher: chatCipher },
+    { history: sessionHistory, cipher: chatCipher, events: sessionEvents },
 );
 
 const { server } = createJarvisServer(webApp, {
@@ -642,6 +644,7 @@ attachChatServer(server, store, {
     ...(notificationHub ? { notifications: notificationHub } : {}),
     history: sessionHistory,
     titles: sessionTitles,
+    sessionEvents,
     maintainContext: async (threadId) => {
         await trimAgentContext(threadId, 100);
         pruneAgentThreadVersions(threadId, 2);

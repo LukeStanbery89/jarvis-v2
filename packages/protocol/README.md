@@ -35,17 +35,19 @@ npm install @lukestanbery/jarvis-protocol
 
 | Export                                          | Description                                                                                                                                                                                                                    |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `type ServerFrame`                              | Union of every frame the server sends to a chat client, including the out-of-turn `notification` (#139) and `sessionTitle` (#122) frames                                                                                       |
+| `type ServerFrame`                              | Union of every frame the server sends to a chat client, including the out-of-turn `notification` (#139), `sessionTitle`, `sessionActivity`, and `sessionDeleted` (#122) frames                                                 |
 | `type SessionTitleUpdate`                       | The out-of-turn `{ sessionId, title }` update carried by a `sessionTitle` frame after a turn                                                                                                                                   |
+| `type SessionActivityUpdate`                    | The out-of-turn `{ sessionId }` nudge that another client settled a turn; the client refetches the thread                                                                                                                      |
+| `type SessionDeletedUpdate`                     | The out-of-turn `{ sessionId }` notice that another client deleted the thread                                                                                                                                                  |
 | `type NotificationFrame`                        | The proactive-notification payload (#139): `{ notification: { id, kind, class, priority, title, body?, createdAt, requiresAnswer? } }`                                                                                         |
 | `type NotificationClass`                        | `"notification" \| "reminder" \| "timer"` (#90) — what kind of attention a notification asks for, derived from `NOTIFICATION_CLASSES`                                                                                          |
 | `NOTIFICATION_CLASSES`                          | The class tuple the `NotificationClass` union and the parser both derive from                                                                                                                                                  |
 | `type NotificationPriority`                     | `"low" \| "normal" \| "high" \| "urgent"` — display emphasis only (the _class_ decides quiet hours), derived from `NOTIFICATION_PRIORITIES`                                                                                    |
 | `NOTIFICATION_PRIORITIES`                       | The priority tuple the `NotificationPriority` union and the parser both derive from                                                                                                                                            |
 | `type ClientFrame`                              | Union of every frame a chat client sends: `AuthRequest \| ClientHello \| ChatPrompt \| ClientLocationFrame \| ClientCancelFrame`                                                                                               |
-| `type ClientCapability`                         | `"markdown" \| "html" \| "image" \| "link" \| "audio" \| "notification" \| "sessionTitle"` — what a client declares it can handle, derived from `CLIENT_CAPABILITIES`                                                          |
+| `type ClientCapability`                         | `"markdown" \| "html" \| "image" \| "link" \| "audio" \| "notification" \| "sessionTitle" \| "sessionSync"` — what a client declares it can handle, derived from `CLIENT_CAPABILITIES`                                         |
 | `type ChatMode`                                 | `"text" \| "voice"` — the chat mode a prompt runs under (absent = `"text"`), derived from `CHAT_MODES`                                                                                                                         |
-| `CLIENT_CAPABILITIES`                           | The capability tuple (`readonly ["markdown", "html", "image", "link", "audio", "notification", "sessionTitle"]`) the `ClientCapability` union and the parser both derive from                                                  |
+| `CLIENT_CAPABILITIES`                           | The capability tuple (`readonly ["markdown", "html", "image", "link", "audio", "notification", "sessionTitle", "sessionSync"]`) the `ClientCapability` union and the parser both derive from                                   |
 | `CHAT_MODES`                                    | The chat-mode tuple (`readonly ["text", "voice"]`) the `ChatMode` union and the parser both derive from                                                                                                                        |
 | `REVOKED_TOKEN_ERROR`                           | The mid-prompt credential-rejection error text the server sends and both clients match (`"device token revoked; reconnect to re-authenticate"`)                                                                                |
 | `interface AuthRequest`                         | The `auth` handshake: `{ type: "auth", token }`                                                                                                                                                                                |
@@ -126,8 +128,8 @@ JSON text frames over `/ws`:
       identity-independent chats).
     - Optionally, **first frame only**: `{ "type": "hello", "capabilities": ["markdown", "html", "image", "link", "audio", ...] }`
       — declares what the client can render in the response (`markdown`,
-      `html`, `image`, `link`, `audio`, `notification`, `sessionTitle`, ≤16
-      tokens). The server stores the declaration
+      `html`, `image`, `link`, `audio`, `notification`, `sessionTitle`,
+      `sessionSync`, ≤16 tokens). The server stores the declaration
       for the socket's lifetime and conditions the agent's output on it; an
       empty list ("plain text only") is valid, and `hello` may precede `auth`.
     - `{ "prompt": "<text>", "sessionId": "<id>", "mode": "text" | "voice", "attachments": ["<id>", …] }` —
@@ -176,11 +178,16 @@ JSON text frames over `/ws`:
       `notification` is informational. Delivery is
       best-effort: the durable record lives behind `GET /api/notifications`,
       and a client matches by `id` so nothing renders twice.
-    - and `{ "sessionTitle": { "sessionId", "title" } }` (#122) at **any**
-      time — an out-of-turn title update generated after a turn. It is sent
-      only to a socket that declared the `sessionTitle` capability, carries
-      the thread's wire `sessionId`, and never means the turn failed or
-      restarted. Clients that do not declare the capability never receive it.
+    - `{ "sessionTitle": { "sessionId", "title" } }` (#122) at **any** time —
+      an out-of-turn title update generated after a turn. It is sent only to a
+      socket that declared the `sessionTitle` capability, carries the thread's
+      wire `sessionId`, and never means the turn failed or restarted.
+    - `{ "sessionActivity": { "sessionId" } }` and
+      `{ "sessionDeleted": { "sessionId" } }` (#122 follow-up) at **any** time —
+      another client settled a turn in the thread (refetch it) or deleted it
+      (drop it). Both are sent only to sockets that declared `sessionSync`, and
+      activity never echoes to the socket that produced the turn. Clients that
+      do not declare the capability never receive either.
 - Invalid input or model failure: `{ "error": "<message>" }` then `{ "done": true }`.
 
 Frames are key-discriminated (no `type` field), with exception only for the

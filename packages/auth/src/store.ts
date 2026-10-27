@@ -1758,8 +1758,11 @@ export interface SessionLedger {
  * new turns append.
  */
 export interface ChatTranscriptLedger {
-    /** Appends one turn's normalized messages atomically. */
-    appendChatMessages(sessionId: number, entries: NewChatMessage[]): void;
+    /** Appends one turn's normalized messages atomically, returning the rows. */
+    appendChatMessages(
+        sessionId: number,
+        entries: NewChatMessage[],
+    ): AppChatMessage[];
     /**
      * Returns up to `limit` rows in chronological order. With `before`, only
      * rows older than that id are considered (the previous page).
@@ -4084,14 +4087,31 @@ export class SqliteAppDatabase implements AppDatabase {
         this.statements.markSessionHistoryTrimmed.run(at, threadId);
     }
 
-    appendChatMessages(sessionId: number, entries: NewChatMessage[]): void {
+    appendChatMessages(
+        sessionId: number,
+        entries: NewChatMessage[],
+    ): AppChatMessage[] {
         const insert = this.statements.insertChatMessage;
+        const appended: AppChatMessage[] = [];
         const append = this.db.transaction((rows: NewChatMessage[]) => {
             for (const row of rows) {
-                insert.run(sessionId, row.role, row.payload, row.createdAt);
+                const result = insert.run(
+                    sessionId,
+                    row.role,
+                    row.payload,
+                    row.createdAt,
+                );
+                appended.push({
+                    id: Number(result.lastInsertRowid),
+                    sessionId,
+                    role: row.role,
+                    payload: row.payload,
+                    createdAt: row.createdAt,
+                });
             }
         });
         append(entries);
+        return appended;
     }
 
     listChatMessages(

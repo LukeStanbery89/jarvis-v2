@@ -150,6 +150,24 @@ describe("parseFrame", () => {
         });
     });
 
+    it("parses out-of-turn session activity and deletion frames (#122)", () => {
+        expect(
+            parseFrame('{"sessionActivity":{"sessionId":"thread-1"}}'),
+        ).toEqual({ sessionActivity: { sessionId: "thread-1" } });
+        expect(
+            parseFrame('{"sessionDeleted":{"sessionId":"thread-1"}}'),
+        ).toEqual({ sessionDeleted: { sessionId: "thread-1" } });
+    });
+
+    it("rejects a session sync frame without a thread id", () => {
+        expect(() =>
+            parseFrame('{"sessionActivity":{"sessionId":""}}'),
+        ).toThrow(/unrecognized/);
+        expect(() => parseFrame('{"sessionDeleted":{}}')).toThrow(
+            /unrecognized/,
+        );
+    });
+
     it("rejects an empty or oversized sessionTitle", () => {
         expect(() =>
             parseFrame('{"sessionTitle":{"sessionId":"thread-1","title":""}}'),

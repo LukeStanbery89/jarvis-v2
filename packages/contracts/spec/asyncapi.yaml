@@ -83,6 +83,10 @@ channels:
                 $ref: "#/components/messages/notification"
             sessionTitle:
                 $ref: "#/components/messages/sessionTitle"
+            sessionActivity:
+                $ref: "#/components/messages/sessionActivity"
+            sessionDeleted:
+                $ref: "#/components/messages/sessionDeleted"
             pcmChunk:
                 $ref: "#/components/messages/pcmChunk"
 operations:
@@ -136,10 +140,13 @@ operations:
             that are **not** part of a turn. A `notification` arrives whenever
             the server has something to tell the user; a `sessionTitle` arrives
             after a turn when the server has generated a better conversation
-            title. A client must handle either whether or not a prompt is in
-            flight, and must not treat it as the reply to one. `sessionTitle`
-            is sent only to a socket that declared the capability.
-            Failures and
+            title. `sessionActivity` and `sessionDeleted` are the cross-device
+            half: another client settled a turn (refetch the thread) or deleted
+            it (drop it). A client must handle any of them whether or not a
+            prompt is in flight, and must not treat one as the reply to a
+            prompt. `sessionTitle`, `sessionActivity`, and `sessionDeleted` are
+            sent only to sockets that declared `sessionTitle` / `sessionSync`
+            as appropriate. Failures and
             pre-turn rejections (busy thread, foreign session, bad first
             frame, bad token) each answer `error` followed by a terminal
             `done`: the turn either never starts or does not continue.
@@ -154,6 +161,8 @@ operations:
             - $ref: "#/channels/ws/messages/audioEnd"
             - $ref: "#/channels/ws/messages/notification"
             - $ref: "#/channels/ws/messages/sessionTitle"
+            - $ref: "#/channels/ws/messages/sessionActivity"
+            - $ref: "#/channels/ws/messages/sessionDeleted"
             - $ref: "#/channels/ws/messages/pcmChunk"
 components:
     messages:
@@ -202,6 +211,7 @@ components:
                                 - audio
                                 - notification
                                 - sessionTitle
+                                - sessionSync
             examples:
                 - payload:
                       type: hello
@@ -668,6 +678,65 @@ components:
                       sessionTitle:
                           sessionId: 4cd3092a-…
                           title: Debugging the scheduler
+        sessionActivity:
+            title: Session activity update
+            summary: Another client settled a turn in this thread (#122)
+            description: >-
+                Sent to the user's other sockets after a turn's transcript and
+                retention have been recorded. The client refetches the thread
+                through `GET /api/sessions/{threadId}`; the frame carries only
+                the id, so the encrypted transcript has one read path. Sent only
+                to sockets that declared the `sessionSync` capability, and never
+                to the socket that produced the turn.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - sessionActivity
+                properties:
+                    sessionActivity:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - sessionId
+                        properties:
+                            sessionId:
+                                type: string
+                                minLength: 1
+                                maxLength: 128
+            examples:
+                - payload:
+                      sessionActivity:
+                          sessionId: 4cd3092a-…
+        sessionDeleted:
+            title: Session deleted
+            summary: A thread was deleted on another client (#122)
+            description: >-
+                Sent to every authenticated socket owned by the account after
+                the thread's transcript, ledger row, and checkpoint have been
+                deleted. A client drops the local thread and clears it if it is
+                open. Sent only to sockets that declared the `sessionSync`
+                capability.
+            payload:
+                type: object
+                additionalProperties: false
+                required:
+                    - sessionDeleted
+                properties:
+                    sessionDeleted:
+                        type: object
+                        additionalProperties: false
+                        required:
+                            - sessionId
+                        properties:
+                            sessionId:
+                                type: string
+                                minLength: 1
+                                maxLength: 128
+            examples:
+                - payload:
+                      sessionDeleted:
+                          sessionId: 4cd3092a-…
         notification:
             title: Proactive notification
             summary: Something JARVIS wants to tell the user, outside any turn (#139)

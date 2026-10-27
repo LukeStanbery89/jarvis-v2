@@ -16,20 +16,33 @@ export interface SessionTitleUpdate {
     title: string;
 }
 
+/** An out-of-turn nudge that a thread's transcript changed (#122 follow-up). */
+export interface SessionActivityUpdate {
+    /** The thread to refetch, identified by the wire `sessionId`. */
+    sessionId: string;
+}
+
+/** An out-of-turn notice that a thread was deleted (#122 follow-up). */
+export interface SessionDeletedUpdate {
+    /** The deleted thread, identified by the wire `sessionId`. */
+    sessionId: string;
+}
+
 /**
  * A frame the server sends to chat clients over `/ws`.
  *
  * Frames are JSON object frames, key-discriminated: exactly one of
  * `chunk` / `tool` / `toolResult` / `done` / `error` / `authResult` /
- * `audioStart` / `audioEnd` / `notification` / `sessionTitle` is present.
+ * `audioStart` / `audioEnd` / `notification` / `sessionTitle` /
+ * `sessionActivity` / `sessionDeleted` is present.
  * Binary WebSocket messages (raw little-endian s16le PCM chunks, #83) are not
  * JSON and never pass through frame parsing — clients branch on the message
  * type before parsing.
  *
- * Every frame but {@link NotificationFrame} and `sessionTitle` belongs to a
- * turn: a client may assume the frames between a prompt and its `done`
- * describe that turn. A `notification` (#139) and a `sessionTitle` (#122) are
- * the server frames that arrive **outside** a turn — a client must accept them
+ * Every frame but the out-of-turn ones belongs to a turn: a client may assume
+ * the frames between a prompt and its `done` describe that turn. A
+ * `notification` (#139), `sessionTitle`, `sessionActivity`, and
+ * `sessionDeleted` (#122) arrive **outside** a turn — a client must accept them
  * whenever the socket is ready, not only while a prompt is streaming.
  */
 export type ServerFrame =
@@ -41,6 +54,14 @@ export type ServerFrame =
            * frame when a client declared the `sessionTitle` capability.
            */
           sessionTitle: SessionTitleUpdate;
+      }
+    | {
+          /** Another client settled a turn in this thread; refetch it. */
+          sessionActivity: SessionActivityUpdate;
+      }
+    | {
+          /** The thread was deleted on another client; drop it locally. */
+          sessionDeleted: SessionDeletedUpdate;
       }
     | {
           toolResult: {
@@ -333,6 +354,7 @@ export const CLIENT_CAPABILITIES = [
     "audio",
     "notification",
     "sessionTitle",
+    "sessionSync",
 ] as const;
 
 /**

@@ -66,6 +66,7 @@ import { DEFAULT_TURN_TIMEOUT_MS } from "./config";
 import { createSessionManager } from "./sessionManager";
 import type { SessionManager, TurnOutcome } from "./sessionManager";
 import type { ChatHistoryService, ChatTranscriptEntry } from "./sessionHistory";
+import type { SessionEvents } from "./sessionEvents";
 import type { SessionTitleService } from "./sessionTitle";
 import type { NotificationHub } from "./notify/hub";
 import { runAgent } from "./agent";
@@ -189,6 +190,10 @@ interface ConnectionState {
     promptSeen: boolean;
     /** Render capabilities declared by a `hello` frame (empty for plain text). */
     capabilities: ClientCapability[];
+    /** Stable per-connection id, used to suppress a socket's own activity echo. */
+    connId: string;
+    /** Called once after a successful auth so the socket joins the user registry. */
+    onAuthenticated?: (userId: number) => void;
     /**
      * The device's latest reported location (#31), from `location` frames.
      * Memory-only for the socket's lifetime — never persisted; refreshable
@@ -276,6 +281,12 @@ export interface ChatServerOptions {
     /** Excerpt + model title service (#122). */
     titles?: SessionTitleService;
     /**
+     * Cross-device session events (#122 follow-up): a turn in one socket nudges
+     * the user's other sockets to refetch, a delete reaches every device, and a
+     * generated title is broadcast. Absent in tests that do not exercise sync.
+     */
+    sessionEvents?: SessionEvents;
+    /**
      * Post-turn checkpoint maintenance (#122): trim the model context to its
      * window and prune old checkpoint versions. Injected because the graph's
      * singleton lives in `agent.ts` and tests replace `runAgent`.
@@ -310,6 +321,61 @@ export function attachChatServer(
         ...(options.history
             ? { deleteThread: (id) => options.history!.deleteThread(id) }
             : {}),
+    });
+
+    /** One authenticated socket in the cross-device session registry. */
+    interface SessionSocket {
+        socket: WebSocket;
+        conn: ConnectionState;
+        connId: string;
+    }
+    /** Authenticated sockets, grouped by account. */
+    const sessionSockets = new Map<number, Set<SessionSocket>>();
+    let nextConnId = 0;
+
+    // The hub carries ids only; the listener decides which sockets declared
+    // the matching capability. `conn.capabilities` is read live, so a hello
+    // that arrives after auth is still honored.
+    const unsubscribeSessionEvents = options.sessionEvents?.subscribe(
+        (event) => {
+            const sockets = sessionSockets.get(event.userId);
+            if (!sockets) {
+                return;
+            }
+            for (const entry of [...sockets]) {
+                if (entry.socket.readyState !== WebSocket.OPEN) {
+                    continue;
+                }
+                if (event.type === "activity") {
+                    if (
+                        entry.connId === event.origin ||
+                        !entry.conn.capabilities.includes("sessionSync")
+                    ) {
+                        continue;
+                    }
+                    sendFrame(entry.socket, {
+                        sessionActivity: { sessionId: event.sessionId },
+                    });
+                } else if (event.type === "deleted") {
+                    if (!entry.conn.capabilities.includes("sessionSync")) {
+                        continue;
+                    }
+                    sendFrame(entry.socket, {
+                        sessionDeleted: { sessionId: event.sessionId },
+                    });
+                } else if (entry.conn.capabilities.includes("sessionTitle")) {
+                    sendFrame(entry.socket, {
+                        sessionTitle: {
+                            sessionId: event.sessionId,
+                            title: event.title,
+                        },
+                    });
+                }
+            }
+        },
+    );
+    wss.on("close", () => {
+        unsubscribeSessionEvents?.();
     });
 
     // The ws library re-emits transport/receiver failures (a malformed
@@ -362,6 +428,7 @@ export function attachChatServer(
             authed: false,
             promptSeen: false,
             capabilities: [],
+            connId: String(++nextConnId),
             // The socket's peer address (#8): captured once at handshake, the
             // client half of a guest's metering key. `undefined` when the
             // transport exposes none — `requireMeteredCaller` then refuses the
@@ -372,6 +439,14 @@ export function attachChatServer(
             turnCounter: 0,
             active: null,
             cancelPending: false,
+        };
+        conn.onAuthenticated = (userId) => {
+            let sockets = sessionSockets.get(userId);
+            if (!sockets) {
+                sockets = new Set();
+                sessionSockets.set(userId, sockets);
+            }
+            sockets.add({ socket, conn, connId: conn.connId });
         };
 
         socket.on("message", (raw) => {
@@ -459,6 +534,16 @@ export function attachChatServer(
         socket.on("close", () => {
             clearInterval(heartbeat);
             options.notifications?.remove(socket);
+            for (const [userId, sockets] of sessionSockets) {
+                for (const entry of sockets) {
+                    if (entry.socket === socket) {
+                        sockets.delete(entry);
+                    }
+                }
+                if (sockets.size === 0) {
+                    sessionSockets.delete(userId);
+                }
+            }
             sessions.cleanupGuests(conn.guestThreads);
             logger.info("WebSocket connection closed");
         });
@@ -683,6 +768,14 @@ async function handlePrompt(
                 try {
                     options.history.append(session, transcript);
                     options.history.enforceRetention(session);
+                    if (session.userId !== null) {
+                        options.sessionEvents?.publish({
+                            type: "activity",
+                            userId: session.userId,
+                            sessionId,
+                            origin: conn.connId,
+                        });
+                    }
                 } catch (err) {
                     logger.error(
                         `Could not record transcript for ${sessionId}: ${
@@ -715,8 +808,17 @@ async function handlePrompt(
         const session = store.getSessionByThread(prompt.sessionId);
         if (session) {
             void options.titles.upgrade(session).then((title) => {
-                if (
-                    title !== null &&
+                if (title === null) {
+                    return;
+                }
+                if (session.userId !== null && options.sessionEvents) {
+                    options.sessionEvents.publish({
+                        type: "title",
+                        userId: session.userId,
+                        sessionId: prompt.sessionId,
+                        title,
+                    });
+                } else if (
                     conn.capabilities.includes("sessionTitle") &&
                     socket.readyState === WebSocket.OPEN
                 ) {
@@ -821,6 +923,7 @@ async function handleAuth(
         device: identity.device,
     };
     conn.tokenHash = hashDeviceToken(token);
+    conn.onAuthenticated?.(identity.user.id);
     store.touchDevice(identity.device.id);
     // Reachable from now on (#139): the registry is what lets the server push
     // a notification to this socket without it having asked for anything.

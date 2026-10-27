@@ -64,6 +64,16 @@ export interface AppState {
      */
     turnSessionId: string | null;
     /**
+     * Cross-device session nudges (#122 follow-up). `activity` asks the chat to
+     * refetch an open thread after another client settled a turn; `deleted`
+     * tells it the sidebar rows changed. The sequence makes repeated events
+     * for the same id distinct.
+     */
+    sessionSync: {
+        activity: { sessionId: string; seq: number } | null;
+        deleted: { sessionId: string; seq: number } | null;
+    };
+    /**
      * Runs one turn on the active thread (minting one when nothing is open).
      *
      * Owned by the shell because a voice turn can start on any page; the typed

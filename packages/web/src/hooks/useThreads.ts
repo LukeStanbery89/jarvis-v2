@@ -33,6 +33,7 @@ import {
     prependThreadHistory,
     saveThreads,
     setThreadTitle,
+    syncThreadHistory,
     type ThreadMap,
 } from "../threads";
 
@@ -74,6 +75,12 @@ export type ThreadsAction =
           type: "prepend";
           sessionId: string;
           detail: SessionDetail;
+      }
+    | {
+          type: "sync";
+          sessionId: string;
+          detail: SessionDetail;
+          at: number;
       }
     | { type: "title"; sessionId: string; title: string }
     | { type: "deleted"; sessionId: string };
@@ -160,6 +167,13 @@ export function threadsReducer(
             );
         case "prepend":
             return prependThreadHistory(map, action.sessionId, action.detail);
+        case "sync":
+            return syncThreadHistory(
+                map,
+                action.sessionId,
+                action.detail,
+                action.at,
+            );
         case "title":
             return setThreadTitle(map, action.sessionId, action.title);
         case "deleted":
