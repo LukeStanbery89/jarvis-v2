@@ -363,15 +363,18 @@ export const DEFAULT_VAPID_SUBJECT = "mailto:jarvis@localhost";
  * what a run did, so a deployment with notifications off has no scheduler
  * either.
  *
- * `tickMs` is deliberately coarse: the queue is a table, so a scan finds
- * whatever is due *now*, and a restart has nothing to rebuild. The cost of
- * coarseness is that a job can run up to one tick late, which is irrelevant
- * next to the seconds a turn itself takes.
+ * `tickMs` is short: a due message job is picked up within half a second, and
+ * a scan never waits for a run, so a long prompt turn cannot delay the next
+ * alarm (#217). The queue is still a table, so a restart has nothing to
+ * rebuild.
  *
- * `maxPerTick` bounds how much work one tick takes on, not how fast the
- * backlog drains — with the default of one, a hundred due jobs drain over a
- * hundred ticks rather than pinning the process. Raising it above 1 really does
- * run turns concurrently, against one model: a home server has one.
+ * `maxPerTick` bounds how many non-message jobs one scan starts and how many
+ * may be in flight, not how fast the backlog drains — with the default of one,
+ * a hundred due jobs drain over a hundred scans rather than pinning the process.
+ * Message jobs (timers and reminders, which run no model) are deliberately not
+ * held behind that bound: an alarm must not wait for a prompt turn. Raising it
+ * above 1 really does run model turns concurrently, against one model: a home
+ * server has one.
  *
  * `maxLatenessMs` is the honesty knob: a job whose moment passed while the
  * server was down runs late if it is within this window, and is recorded as
@@ -387,13 +390,16 @@ export const DEFAULT_VAPID_SUBJECT = "mailto:jarvis@localhost";
  * right shape.
  */
 export interface SchedulerConfig {
-    /** Interval between scans (`JARVIS_JOB_TICK_MS`), default 5000. */
+    /** Interval between scans (`JARVIS_JOB_TICK_MS`), default 500. */
     readonly tickMs: number;
     /** Jobs kept per user (`JARVIS_JOB_MAX_PER_USER`), default 50. */
     readonly maxPerUser: number;
     /** Latest a job may run and still be worth running, default 1h. */
     readonly maxLatenessMs: number;
-    /** Jobs one tick takes on (`JARVIS_JOB_MAX_PER_TICK`), default 1. */
+    /**
+     * Non-message jobs one scan starts and allows in flight
+     * (`JARVIS_JOB_MAX_PER_TICK`), default 1. Message jobs bypass the bound.
+     */
     readonly maxPerTick: number;
     /**
      * How far ahead a job may be set (`JARVIS_JOB_MAX_HORIZON_DAYS`), default
@@ -408,9 +414,9 @@ export interface SchedulerConfig {
     readonly modelRunsPerDay: number;
 }
 
-/** LAN-reasonable scheduler defaults: a 5s scan, 50 jobs, an hour of lateness. */
+/** LAN-reasonable scheduler defaults: a 500ms scan, 50 jobs, an hour of lateness. */
 export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
-    tickMs: 5000,
+    tickMs: 500,
     maxPerUser: 50,
     maxLatenessMs: 60 * 60 * 1000,
     maxPerTick: 1,

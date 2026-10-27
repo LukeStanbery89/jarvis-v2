@@ -44,6 +44,7 @@ afterEach(() => {
     delete process.env.JARVIS_DB_PATH;
     delete process.env.JARVIS_TURN_TIMEOUT_MS;
     delete process.env.JARVIS_JOB_MAX_HORIZON_DAYS;
+    delete process.env.JARVIS_JOB_TICK_MS;
     delete process.env.JARVIS_BOOTSTRAP_TOKEN;
     delete process.env.JARVIS_HOST;
     delete process.env.JARVIS_TLS_CERT;
@@ -515,6 +516,11 @@ describe("cross-origin configuration (#63)", () => {
 });
 
 describe("scheduler settings (#90)", () => {
+    it("defaults the scan to half a second so timers are not seconds late (#217)", () => {
+        expect(DEFAULT_SCHEDULER_CONFIG.tickMs).toBe(500);
+        expect(getAppConfig().scheduler?.tickMs).toBe(500);
+    });
+
     it("defaults the scheduling horizon to a year", () => {
         expect(getAppConfig().scheduler?.maxHorizonDays).toBe(
             DEFAULT_SCHEDULER_CONFIG.maxHorizonDays,
