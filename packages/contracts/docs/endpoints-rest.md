@@ -31,6 +31,7 @@ Source of truth: `spec/openapi.yaml` (regenerate with
 | `POST` | `/api/push/unsubscribe` | device token or web session | Remove this browser's Web Push registration |
 | `GET` | `/api/weather` | device token or web session | Current weather for device coordinates |
 | `GET` | `/api/sessions` | device token or web session | List chat-thread sessions |
+| `GET` | `/api/sessions/{threadId}` | device token or web session | Read one chat-thread transcript page |
 | `DELETE` | `/api/sessions/{threadId}` | device token or web session | Delete a chat-thread session |
 | `GET` | `/api/stt/model` | none | Download the local speech-recognition model archive |
 | `GET` | `/api/wake/model/{file}` | none | Download a local wake-word model file |

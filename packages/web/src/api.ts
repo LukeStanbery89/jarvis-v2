@@ -31,6 +31,12 @@ export type LoginResult = components["schemas"]["AuthResult"];
 /** Chat-thread session row as exposed by `GET /api/sessions`. */
 export type SessionSummary = components["schemas"]["SessionSummary"];
 
+/** One decrypted transcript message from a session detail page. */
+export type ChatHistoryMessage = components["schemas"]["ChatHistoryMessage"];
+
+/** `GET /api/sessions/{threadId}`: summary plus one transcript page. */
+export type SessionDetail = components["schemas"]["SessionDetail"];
+
 /**
  * One stored notification (#139), as the REST API exposes it. The live
  * `/ws` `notification` frame carries a subset of this shape — same `id`, so
@@ -223,6 +229,30 @@ export function createApi(
          */
         listSessions(token: string): Promise<SessionSummary[]> {
             return request("GET", "/api/sessions", { token });
+        },
+        /**
+         * Reads one page of a thread's durable transcript. Omit `before` for
+         * the newest page; pass the oldest loaded message id for the previous
+         * one. A 404 means the thread is local-only (or gone).
+         */
+        getSession(
+            token: string,
+            threadId: string,
+            opts: { limit?: number; before?: number } = {},
+        ): Promise<SessionDetail> {
+            const query = new URLSearchParams();
+            if (opts.limit !== undefined) {
+                query.set("limit", String(opts.limit));
+            }
+            if (opts.before !== undefined) {
+                query.set("before", String(opts.before));
+            }
+            const suffix = query.toString() === "" ? "" : `?${query}`;
+            return request(
+                "GET",
+                `/api/sessions/${encodeURIComponent(threadId)}${suffix}`,
+                { token },
+            );
         },
         /** Deletes one of the caller's own chat threads (204; 404 unknown). */
         async deleteSession(token: string, threadId: string): Promise<void> {

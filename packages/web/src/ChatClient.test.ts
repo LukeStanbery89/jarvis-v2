@@ -688,6 +688,50 @@ describe("turn cancellation (#84 P6)", () => {
     });
 });
 
+describe("session titles (#122)", () => {
+    it("surfaces an out-of-turn title update", () => {
+        const seen: { sessionId: string; title: string }[] = [];
+        const harness = makeClient("tok", {
+            onSessionTitle: (update) => seen.push(update),
+        });
+        const socket = connected(harness);
+
+        socket.receive({
+            sessionTitle: {
+                sessionId: "thread-1",
+                title: "Debugging the scheduler",
+            },
+        });
+
+        expect(seen).toEqual([
+            {
+                sessionId: "thread-1",
+                title: "Debugging the scheduler",
+            },
+        ]);
+        expect(harness.frames).toEqual([]);
+    });
+});
+
+describe("cross-device session sync (#122)", () => {
+    it("surfaces activity and deletion outside a turn", () => {
+        const activity: string[] = [];
+        const deleted: string[] = [];
+        const harness = makeClient("tok", {
+            onSessionActivity: (update) => activity.push(update.sessionId),
+            onSessionDeleted: (update) => deleted.push(update.sessionId),
+        });
+        const socket = connected(harness);
+
+        socket.receive({ sessionActivity: { sessionId: "thread-1" } });
+        socket.receive({ sessionDeleted: { sessionId: "thread-2" } });
+
+        expect(activity).toEqual(["thread-1"]);
+        expect(deleted).toEqual(["thread-2"]);
+        expect(harness.frames).toEqual([]);
+    });
+});
+
 describe("notifications (#139)", () => {
     /** A pushed notification frame, exactly as the server serializes it. */
     const frame = {

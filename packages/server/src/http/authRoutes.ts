@@ -39,6 +39,7 @@ import { DEFAULT_RATE_LIMIT_CONFIG, type AppConfig } from "../config";
 import { logger } from "../logger";
 import { assertKnownPrefs } from "../prefs/known";
 import { RateLimiter } from "./rateLimit";
+import type { SessionContentServices } from "../sessionHistory";
 
 const USERNAME_MAX = 64;
 const PASSWORD_MIN = 8;
@@ -126,6 +127,7 @@ export function createAuthRouter(
     cookieSessions: CookieSessionProvider = createCookieSessionProvider(store, {
         ttlMs: appConfig.sessionTtlMs,
     }),
+    sessionContent?: SessionContentServices,
 ): Router {
     const router = Router();
     const limiter = new RateLimiter(
@@ -431,6 +433,12 @@ export function createAuthRouter(
         }),
     );
 
+    /** Decrypts a stored title; a server without the content seam exposes none. */
+    const titleFor = (title: string | null): string | null =>
+        title === null || sessionContent === undefined
+            ? null
+            : sessionContent.cipher.decrypt(title);
+
     router.get("/sessions", authenticated, (req, res) => {
         const jarv = authed(req).jarv;
         const sessions =
@@ -442,17 +450,17 @@ export function createAuthRouter(
                 threadId: s.threadId,
                 kind: s.kind,
                 userId: s.userId,
+                title: titleFor(s.title),
                 createdAt: s.createdAt,
                 lastActiveAt: s.lastActiveAt,
             })),
         );
     });
 
-    router.delete(
+    router.get(
         "/sessions/:threadId",
         authenticated,
-        requireCsrf,
-        (req, res) => {
+        route((req, res) => {
             const jarv = authed(req).jarv;
             const threadId = String(req.params.threadId);
             const session = store.getSessionByThread(threadId);
@@ -467,9 +475,78 @@ export function createAuthRouter(
                 res.status(404).json({ error: "session not found" });
                 return;
             }
+            if (sessionContent === undefined) {
+                res.status(503).json({
+                    error: "chat history is not available",
+                });
+                return;
+            }
+            const limit =
+                req.query.limit === undefined
+                    ? undefined
+                    : Number(req.query.limit);
+            const before =
+                req.query.before === undefined
+                    ? undefined
+                    : Number(req.query.before);
+            if (
+                (limit !== undefined &&
+                    (!Number.isInteger(limit) || limit < 1)) ||
+                (before !== undefined &&
+                    (!Number.isInteger(before) || before < 0))
+            ) {
+                res.status(400).json({ error: "invalid history cursor" });
+                return;
+            }
+            const page = sessionContent.history.page(session, {
+                ...(limit !== undefined ? { limit } : {}),
+                ...(before !== undefined ? { before } : {}),
+            });
+            res.status(200).json({
+                threadId: session.threadId,
+                kind: session.kind,
+                userId: session.userId,
+                title: titleFor(session.title),
+                historyTrimmed: session.historyTrimmedAt !== null,
+                createdAt: session.createdAt,
+                lastActiveAt: session.lastActiveAt,
+                ...page,
+            });
+        }),
+    );
+
+    router.delete(
+        "/sessions/:threadId",
+        authenticated,
+        requireCsrf,
+        route(async (req, res) => {
+            const jarv = authed(req).jarv;
+            const threadId = String(req.params.threadId);
+            const session = store.getSessionByThread(threadId);
+            if (
+                !session ||
+                !canManage(
+                    session.userId,
+                    jarv.user.id,
+                    jarv.user.role === "owner",
+                )
+            ) {
+                res.status(404).json({ error: "session not found" });
+                return;
+            }
+            if (sessionContent !== undefined) {
+                await sessionContent.history.deleteThread(threadId);
+            }
             store.deleteSession(threadId);
+            if (session.userId !== null) {
+                sessionContent?.events?.publish({
+                    type: "deleted",
+                    userId: session.userId,
+                    sessionId: threadId,
+                });
+            }
             res.status(204).end();
-        },
+        }),
     );
 
     router.get("/prefs", authenticated, (req, res) => {

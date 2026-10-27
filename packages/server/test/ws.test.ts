@@ -1,9 +1,10 @@
 import type { AddressInfo } from "net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { WebSocket, type WebSocketServer } from "ws";
+import { WebSocket, type RawData, type WebSocketServer } from "ws";
 import { createApp } from "../src/app";
 import { attachChatServer } from "../src/ws";
 import { createNotificationHub } from "../src/notify/hub";
+import { createSessionEvents } from "../src/sessionEvents";
 import { runAgent } from "../src/agent";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
@@ -132,6 +133,40 @@ const slowTts: import("../src/tts/types").TtsProvider = {
 const slowTtsServer = createApp(store, appConfig).listen(0);
 attachChatServer(slowTtsServer, store, { turnTimeoutMs: 30_000, tts: slowTts });
 
+// The history/title variant (#122): a fake transcript and title service, so
+// the socket path can be exercised without a real model or checkpoint. The
+// mock runAgent above still supplies the token stream.
+const historyAppend = vi.fn(
+    (
+        _session: import("@lukestanbery/jarvis-auth").AppSession,
+        _entries: import("../src/sessionHistory").ChatTranscriptEntry[],
+    ) => [] as import("../src/sessionHistory").ChatHistoryMessage[],
+);
+const historyService: import("../src/sessionHistory").ChatHistoryService = {
+    append: historyAppend,
+    page: () => ({ messages: [], hasMore: false, nextBefore: null }),
+    firstExchange: () => ({ user: "hi", assistant: "Hello, World!" }),
+    enforceRetention: () => 0,
+    deleteThread: async () => {},
+    decrypt: () => {
+        throw new Error("not used");
+    },
+};
+const titleEnsureExcerpt = vi.fn();
+const titleUpgrade = vi.fn(async () => "Better title");
+const titleService: import("../src/sessionTitle").SessionTitleService = {
+    ensureExcerpt: titleEnsureExcerpt,
+    upgrade: titleUpgrade,
+};
+const historyEvents = createSessionEvents();
+const historyServer = createApp(store, appConfig).listen(0);
+attachChatServer(historyServer, store, {
+    turnTimeoutMs: 30_000,
+    history: historyService,
+    titles: titleService,
+    sessionEvents: historyEvents,
+});
+
 // A short-heartbeat variant, so the keepalive is testable in real time
 // (30 ms instead of the 30 s production default).
 const heartbeatServer = createApp(store, appConfig).listen(0);
@@ -146,6 +181,7 @@ let ttsUrl: string;
 let hardeningUrl: string;
 let slowTtsUrl: string;
 let heartbeatUrl: string;
+let historyUrl: string;
 
 beforeAll(() => {
     const address = server.address() as AddressInfo | null;
@@ -160,6 +196,8 @@ beforeAll(() => {
     slowTtsUrl = `ws://localhost:${slowTtsAddress?.port ?? 0}/ws`;
     const heartbeatAddress = heartbeatServer.address() as AddressInfo | null;
     heartbeatUrl = `ws://localhost:${heartbeatAddress?.port ?? 0}/ws`;
+    const historyAddress = historyServer.address() as AddressInfo | null;
+    historyUrl = `ws://localhost:${historyAddress?.port ?? 0}/ws`;
 });
 
 afterAll(async () => {
@@ -169,6 +207,7 @@ afterAll(async () => {
     hardeningServer.close();
     slowTtsServer.close();
     heartbeatServer.close();
+    historyServer.close();
     // Let pending server-side socket-close handlers (guest-session cleanup)
     // flush before the store is shut down.
     await settle();
@@ -1007,6 +1046,196 @@ function exchangeMany(
         ws.on("error", reject);
     });
 }
+
+describe("conversation history and titles (#122)", () => {
+    /** Waits for one server frame by key, with a short test timeout. */
+    function waitForFrame(
+        ws: WebSocket,
+        key: string,
+    ): Promise<Record<string, unknown>> {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                cleanup();
+                reject(new Error(`timed out waiting for ${key}`));
+            }, 5_000);
+            const onMessage = (data: RawData): void => {
+                const frame = JSON.parse(data.toString()) as Record<
+                    string,
+                    unknown
+                >;
+                if (frame[key] !== undefined) {
+                    cleanup();
+                    resolve(frame);
+                }
+            };
+            const onError = (): void => {
+                cleanup();
+                reject(new Error(`socket failed waiting for ${key}`));
+            };
+            function cleanup(): void {
+                clearTimeout(timer);
+                ws.off("message", onMessage);
+                ws.off("error", onError);
+            }
+            ws.on("message", onMessage);
+            ws.on("error", onError);
+        });
+    }
+
+    it("records the turn and pushes a title after done", async () => {
+        historyAppend.mockClear();
+        titleEnsureExcerpt.mockClear();
+        titleUpgrade.mockClear();
+        const user = store.createUser("title-user", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "macbook",
+            material.tokenHash,
+            material.prefix,
+        );
+
+        const frames = await new Promise<Record<string, unknown>[]>(
+            (resolve, reject) => {
+                const ws = new WebSocket(historyUrl);
+                const seen: Record<string, unknown>[] = [];
+                let authed = false;
+                ws.on("open", () => {
+                    ws.send(
+                        JSON.stringify({
+                            type: "hello",
+                            capabilities: ["sessionTitle"],
+                        }),
+                    );
+                    ws.send(
+                        JSON.stringify({
+                            type: "auth",
+                            token: material.token,
+                        }),
+                    );
+                });
+                ws.on("message", (data) => {
+                    const frame = JSON.parse(data.toString()) as Record<
+                        string,
+                        unknown
+                    >;
+                    seen.push(frame);
+                    if (frame.authResult !== undefined && !authed) {
+                        authed = true;
+                        ws.send(
+                            JSON.stringify({
+                                prompt: "hi",
+                                sessionId: "title-thread",
+                            }),
+                        );
+                        return;
+                    }
+                    if (frame.sessionTitle !== undefined) {
+                        ws.close();
+                        resolve(seen);
+                    }
+                });
+                ws.on("error", reject);
+            },
+        );
+
+        const kinds = frames.map((frame) => Object.keys(frame)[0]);
+        expect(kinds.indexOf("done")).toBeGreaterThan(-1);
+        expect(kinds.indexOf("done")).toBeLessThan(
+            kinds.indexOf("sessionTitle"),
+        );
+        expect(frames[frames.length - 1]).toEqual({
+            sessionTitle: {
+                sessionId: "title-thread",
+                title: "Better title",
+            },
+        });
+        expect(titleEnsureExcerpt).toHaveBeenCalled();
+        expect(historyAppend).toHaveBeenCalledTimes(1);
+        const entries = historyAppend.mock.calls[0][1] as {
+            role: string;
+            payload: { kind: string; text?: string };
+        }[];
+        expect(entries[0]).toMatchObject({
+            role: "user",
+            payload: { kind: "user", text: "hi" },
+        });
+        expect(entries[1]).toMatchObject({
+            role: "assistant",
+            payload: { kind: "assistant", text: "Hello, World!" },
+        });
+        expect(titleUpgrade).toHaveBeenCalled();
+    });
+
+    it("nudges the user's other sockets after a turn, but not the sender", async () => {
+        historyAppend.mockClear();
+        const user = store.createUser("sync-user", "unused", "user");
+        const material = generateDeviceToken();
+        store.createDevice(
+            user.id,
+            "sync-device",
+            material.tokenHash,
+            material.prefix,
+        );
+        const open = (): {
+            ws: WebSocket;
+            frames: Record<string, unknown>[];
+            auth: Promise<Record<string, unknown>>;
+        } => {
+            const ws = new WebSocket(historyUrl);
+            const frames: Record<string, unknown>[] = [];
+            ws.on("message", (data) => {
+                frames.push(
+                    JSON.parse(data.toString()) as Record<string, unknown>,
+                );
+            });
+            const auth = waitForFrame(ws, "authResult");
+            ws.on("open", () => {
+                ws.send(
+                    JSON.stringify({
+                        type: "hello",
+                        capabilities: ["sessionSync", "sessionTitle"],
+                    }),
+                );
+                ws.send(
+                    JSON.stringify({
+                        type: "auth",
+                        token: material.token,
+                    }),
+                );
+            });
+            return { ws, frames, auth };
+        };
+
+        const sender = open();
+        const watcher = open();
+        await Promise.all([sender.auth, watcher.auth]);
+        const activity = waitForFrame(watcher.ws, "sessionActivity");
+        const done = waitForFrame(sender.ws, "done");
+        sender.ws.send(
+            JSON.stringify({ prompt: "hi", sessionId: "sync-thread" }),
+        );
+        await done;
+        expect(await activity).toEqual({
+            sessionActivity: { sessionId: "sync-thread" },
+        });
+        expect(sender.frames.some((frame) => "sessionActivity" in frame)).toBe(
+            false,
+        );
+        expect(historyAppend).toHaveBeenCalled();
+        const deleted = waitForFrame(watcher.ws, "sessionDeleted");
+        historyEvents.publish({
+            type: "deleted",
+            userId: user.id,
+            sessionId: "sync-thread",
+        });
+        expect(await deleted).toEqual({
+            sessionDeleted: { sessionId: "sync-thread" },
+        });
+        sender.ws.close();
+        watcher.ws.close();
+    });
+});
 
 /**
  * Sends every payload in order on one socket, collecting raw frames until

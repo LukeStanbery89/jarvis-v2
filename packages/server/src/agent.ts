@@ -11,6 +11,9 @@
  * client can actually render.
  */
 import Database from "better-sqlite3";
+import { BaseMessage, RemoveMessage } from "@langchain/core/messages";
+import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph";
+import type { SerializerProtocol } from "@langchain/langgraph-checkpoint";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { createChatModel } from "./llm/chatModel";
 import {
@@ -471,6 +474,25 @@ export function systemPromptForCapabilities(
 let graph: AgentGraph | null = null;
 
 /**
+ * The checkpoint saver behind {@link graph}.
+ *
+ * Kept so the server can delete a thread's model memory with the transcript's
+ * ledger row, and prune old checkpoint versions after a turn. Retaining the
+ * saver is what keeps those two stores from drifting into orphan data.
+ */
+let checkpointSaver: SqliteSaver | null = null;
+
+/** Options for {@link initAgentGraph} that are not tool wiring. */
+export interface AgentGraphInitOptions {
+    /**
+     * Serializer used by the checkpointer. Production passes the encrypting
+     * serde; omitting it would write plaintext, which is why the server entry
+     * point always supplies one.
+     */
+    checkpointSerde: SerializerProtocol;
+}
+
+/**
  * Whether this process registered `startCodingJob` (#141).
  *
  * The coding rule is the one hygiene paragraph that must not be unconditional:
@@ -505,15 +527,26 @@ let agentTools: readonly StructuredToolInterface[] | null = null;
  * attachment store, vision model, and VL quota for `analyzeImage`. They are
  * injected here (never constructed inside the graph module, per review
  * finding B4); omitting them registers only the baseline tools.
+ *
+ * `options.checkpointSerde` is the encrypting serializer (#122); production
+ * must supply it. The saver is retained so session deletion, context trimming,
+ * and version pruning can reach the same checkpoint store the graph writes.
  */
-export function initAgentGraph(deps?: ToolDeps): AgentGraph {
+export function initAgentGraph(
+    deps: ToolDeps | undefined,
+    options: AgentGraphInitOptions,
+): AgentGraph {
     if (graph) {
         return graph;
     }
     const { checkpointPath, agentMaxTurns } = getLlmConfig();
     ensurePrivateStorage(checkpointPath);
     logger.debug(`Agent recursion limit: ${agentMaxTurns} turns`);
-    const saver = new SqliteSaver(new Database(checkpointPath));
+    const saver = new SqliteSaver(
+        new Database(checkpointPath),
+        options.checkpointSerde,
+    );
+    checkpointSaver = saver;
     ensurePrivateFile(checkpointPath);
     const tools = createTools(deps);
     codingEnabled = deps?.coding !== undefined;
@@ -558,6 +591,164 @@ function getAgentGraph(): AgentGraph {
         );
     }
     return graph;
+}
+
+/** The initialized checkpoint saver, or a clear startup error. */
+function getCheckpointSaver(): SqliteSaver {
+    if (checkpointSaver === null) {
+        throw new Error(
+            "agent graph not initialized; call initAgentGraph() at server startup",
+        );
+    }
+    return checkpointSaver;
+}
+
+/**
+ * Deletes every checkpoint and pending write for `threadId`.
+ *
+ * Used by the REST session delete and guest-socket cleanup, so a conversation
+ * row and its model memory disappear together. `SqliteSaver.deleteThread`
+ * removes both tables in one transaction.
+ *
+ * @param threadId - The wire `sessionId`.
+ */
+export async function deleteAgentThread(threadId: string): Promise<void> {
+    await getCheckpointSaver().deleteThread(threadId);
+}
+
+/**
+ * Drops all but the newest `keep` checkpoint versions for one thread.
+ *
+ * LangGraph writes a checkpoint at every step. The app never uses time travel,
+ * so keeping the newest two versions is enough for a settled turn while
+ * stopping the checkpoint file from growing superlinearly with conversation
+ * length. Only the default (empty) checkpoint namespace is pruned.
+ *
+ * @param threadId - The wire `sessionId`.
+ * @param keep - Newest versions to retain (at least one).
+ * @returns The number of checkpoint rows removed.
+ */
+export function pruneAgentThreadVersions(threadId: string, keep = 2): number {
+    return pruneThreadVersions(getCheckpointSaver(), threadId, keep);
+}
+
+/**
+ * {@link pruneAgentThreadVersions} over an explicit saver (tests and any
+ * future multi-saver path).
+ */
+export function pruneThreadVersions(
+    saver: SqliteSaver,
+    threadId: string,
+    keep = 2,
+): number {
+    const safeKeep = Math.max(1, Math.floor(keep));
+    const db = saver.db;
+    const rows = db
+        .prepare(
+            "SELECT checkpoint_id AS id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = '' ORDER BY checkpoint_id DESC",
+        )
+        .all(threadId) as { id: string }[];
+    if (rows.length <= safeKeep) {
+        return 0;
+    }
+    const keepIds = rows.slice(0, safeKeep).map((row) => row.id);
+    const placeholders = keepIds.map(() => "?").join(", ");
+    const remove = db.transaction(() => {
+        db.prepare(
+            `DELETE FROM writes WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id NOT IN (${placeholders})`,
+        ).run(threadId, ...keepIds);
+        const removed = db
+            .prepare(
+                `DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id NOT IN (${placeholders})`,
+            )
+            .run(threadId, ...keepIds);
+        return removed.changes;
+    });
+    return remove();
+}
+
+/**
+ * Trims the checkpoint's persisted messages to the newest `maxMessages`.
+ *
+ * The transcript table is the durable history; this is the model's working
+ * context. We cut at a human turn boundary and keep the leading system
+ * message(s), so the next model call never starts on a dangling tool result.
+ * `RemoveMessage(REMOVE_ALL_MESSAGES)` is the LangGraph reducer's replace
+ * primitive; a plain `messages` update would append.
+ *
+ * @param threadId - The wire `sessionId`.
+ * @param maxMessages - Newest messages to keep (including system messages).
+ * @returns Whether the state was rewritten.
+ */
+export async function trimAgentContext(
+    threadId: string,
+    maxMessages: number,
+): Promise<boolean> {
+    return trimGraphContext(getAgentGraph(), threadId, maxMessages);
+}
+
+/**
+ * {@link trimAgentContext} over an explicit graph (tests and future
+ * multi-graph paths).
+ */
+export async function trimGraphContext(
+    graph: AgentGraph,
+    threadId: string,
+    maxMessages: number,
+): Promise<boolean> {
+    const state = await graph.getState({
+        configurable: { thread_id: threadId },
+    });
+    const messages = state.values.messages as BaseMessage[] | undefined;
+    if (!messages || messages.length <= maxMessages) {
+        return false;
+    }
+    const kept = trimMessagesForContext(messages, maxMessages);
+    if (kept.length === messages.length) {
+        return false;
+    }
+    await graph.updateState(
+        { configurable: { thread_id: threadId } },
+        {
+            messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), ...kept],
+        },
+    );
+    return true;
+}
+
+/**
+ * Pure context-window trim used by {@link trimAgentContext}.
+ *
+ * Keeps every leading system message and the newest complete turns. A turn
+ * begins at a human message; the slice is moved back to the nearest human so
+ * a tool result can never be orphaned from its call.
+ *
+ * @param messages - Persisted LangGraph messages.
+ * @param maxMessages - Target size after trimming.
+ * @returns The messages to persist.
+ */
+export function trimMessagesForContext(
+    messages: BaseMessage[],
+    maxMessages: number,
+): BaseMessage[] {
+    if (messages.length <= maxMessages) {
+        return messages;
+    }
+    let systemCount = 0;
+    while (
+        systemCount < messages.length &&
+        messages[systemCount]._getType() === "system"
+    ) {
+        systemCount += 1;
+    }
+    let start = Math.max(systemCount, messages.length - maxMessages);
+    while (start > systemCount && messages[start]._getType() !== "human") {
+        start -= 1;
+    }
+    if (messages[start]?._getType() !== "human") {
+        return messages;
+    }
+    return [...messages.slice(0, systemCount), ...messages.slice(start)];
 }
 
 /**

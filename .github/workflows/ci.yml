@@ -46,7 +46,12 @@ jobs:
 
             - name: Start the server
               run: |
-                  docker run -d --name jarvis-ci -p 54321:54321 jarvis-server:ci
+                  # Test-only 32-byte all-zero key: production now requires
+                  # JARVIS_CHAT_ENCRYPTION_KEY, and the smoke test only needs
+                  # the process to boot against an empty volume.
+                  docker run -d --name jarvis-ci -p 54321:54321 \
+                    -e JARVIS_CHAT_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+                    jarvis-server:ci
 
             # /health is model-free, so this needs no LLM. Retried because the
             # agent graph builds a SQLite checkpointer at startup before the

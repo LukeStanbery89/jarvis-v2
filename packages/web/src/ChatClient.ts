@@ -72,6 +72,15 @@ export interface ChatClientEvents {
      * than {@link onFrame} precisely because `onFrame` is turn-scoped.
      */
     onNotification?(notification: NotificationFrame["notification"]): void;
+    /**
+     * One out-of-turn conversation-title update (#122): the server generated a
+     * better title after a turn. Delivered whenever the socket is ready.
+     */
+    onSessionTitle?(update: { sessionId: string; title: string }): void;
+    /** Another client settled a turn in this thread; refetch it (#122). */
+    onSessionActivity?(update: { sessionId: string }): void;
+    /** The thread was deleted on another client; drop it locally (#122). */
+    onSessionDeleted?(update: { sessionId: string }): void;
     /** The credential is permanently unusable (invalid or revoked). */
     onAuthRejected?(): void;
 }
@@ -451,6 +460,22 @@ export class ChatClient {
             // notification raised while the user was idle — the exact case
             // this feature exists for.
             this.options.events.onNotification?.(frame.notification);
+            return;
+        }
+        if ("sessionTitle" in frame) {
+            // Also outside the turn gate: it is generated after `done`, so the
+            // prompt's handlers are already gone when it arrives.
+            this.options.events.onSessionTitle?.(frame.sessionTitle);
+            return;
+        }
+        if ("sessionActivity" in frame) {
+            // Another device settled a turn. Outside the turn gate for the same
+            // reason: the local socket has no prompt in flight.
+            this.options.events.onSessionActivity?.(frame.sessionActivity);
+            return;
+        }
+        if ("sessionDeleted" in frame) {
+            this.options.events.onSessionDeleted?.(frame.sessionDeleted);
             return;
         }
         if (this.streaming) {

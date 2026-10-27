@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     generateDeviceToken,
     type AppDatabase,
@@ -241,5 +241,41 @@ describe("SessionManager.cleanupGuests", () => {
         sessions.cleanupGuests(["guest-row", "owned-row", "never-claimed"]);
         expect(store.getSessionByThread("guest-row")).toBeNull();
         expect(store.getSessionByThread("owned-row")).not.toBeNull();
+    });
+
+    it("removes a guest's checkpoint before its ledger row", async () => {
+        const deleteThread = vi.fn(async () => {});
+        sessions = createSessionManager(store, { deleteThread });
+        const guestThreads = new Set<string>();
+        await sessions.runTurn({
+            sessionId: "guest-checkpoint",
+            actor: GUEST,
+            guestThreads,
+            stream: async () => {},
+        });
+
+        sessions.cleanupGuests(["guest-checkpoint"]);
+        await vi.waitFor(() => {
+            expect(deleteThread).toHaveBeenCalledWith("guest-checkpoint");
+            expect(store.getSessionByThread("guest-checkpoint")).toBeNull();
+        });
+    });
+
+    it("sets the first excerpt title from the prompt hint", async () => {
+        const ensureExcerpt = vi.fn();
+        sessions = createSessionManager(store, {
+            titles: { ensureExcerpt },
+        });
+        await sessions.runTurn({
+            sessionId: "guest-title",
+            actor: GUEST,
+            guestThreads: new Set<string>(),
+            titleHint: "Plan my week",
+            stream: async () => {},
+        });
+        expect(ensureExcerpt).toHaveBeenCalledWith(
+            expect.objectContaining({ threadId: "guest-title" }),
+            "Plan my week",
+        );
     });
 });

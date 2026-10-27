@@ -20,6 +20,8 @@ import type { AuthContext, SessionLedger } from "@lukestanbery/jarvis-auth";
 import { ownsRow } from "@lukestanbery/jarvis-auth";
 import type { ChatMode } from "@lukestanbery/jarvis-protocol";
 import { createKeyedLock } from "./keyedLock";
+import { logger } from "./logger";
+import type { SessionTitleService } from "./sessionTitle";
 
 /** How a turn resolved; the caller decides the user-facing message. */
 export type TurnOutcome = "completed" | "busy" | "not-owned";
@@ -50,6 +52,8 @@ export interface SessionManager {
          * not re-claim it.
          */
         mode?: ChatMode;
+        /** The original prompt, used to set the first excerpt title. */
+        titleHint?: string;
         stream: (sessionId: string) => Promise<void>;
     }): Promise<TurnOutcome>;
 
@@ -66,11 +70,24 @@ export interface SessionManager {
  * Builds the default {@link SessionManager} over a `SessionLedger` — the
  * narrow role this seam needs, so the ledger split stays honest.
  */
-export function createSessionManager(store: SessionLedger): SessionManager {
+export function createSessionManager(
+    store: SessionLedger,
+    options: {
+        titles?: Pick<SessionTitleService, "ensureExcerpt">;
+        deleteThread?: (threadId: string) => Promise<void>;
+    } = {},
+): SessionManager {
     /** Thread ids with a turn currently in flight, across all sockets. */
     const threadLocks = createKeyedLock();
     return {
-        async runTurn({ sessionId, actor, guestThreads, mode, stream }) {
+        async runTurn({
+            sessionId,
+            actor,
+            guestThreads,
+            mode,
+            titleHint,
+            stream,
+        }) {
             if (!threadLocks.tryAcquire(sessionId)) {
                 return "busy";
             }
@@ -93,6 +110,9 @@ export function createSessionManager(store: SessionLedger): SessionManager {
                 if (!ownsRow(session.userId, actorUserId)) {
                     return "not-owned";
                 }
+                if (titleHint !== undefined && options.titles) {
+                    options.titles.ensureExcerpt(session, titleHint);
+                }
                 await stream(sessionId);
                 store.touchSession(sessionId);
                 return "completed";
@@ -107,7 +127,30 @@ export function createSessionManager(store: SessionLedger): SessionManager {
                 // re-parented (owned) row must never be deleted from under its
                 // owner. Expressed through the same policy as the chat guard.
                 if (session && ownsRow(session.userId, null)) {
-                    store.deleteSession(threadId);
+                    if (options.deleteThread === undefined) {
+                        store.deleteSession(threadId);
+                        continue;
+                    }
+                    // Delete the checkpoint before the ledger row: if the
+                    // checkpoint store fails, the row remains visible for a
+                    // later cleanup rather than orphaning an encrypted thread.
+                    void options
+                        .deleteThread(threadId)
+                        .then(() => {
+                            const current = store.getSessionByThread(threadId);
+                            if (current && ownsRow(current.userId, null)) {
+                                store.deleteSession(threadId);
+                            }
+                        })
+                        .catch((err: unknown) => {
+                            logger.warn(
+                                `Could not remove guest checkpoint ${threadId}: ${
+                                    err instanceof Error
+                                        ? err.message
+                                        : String(err)
+                                }`,
+                            );
+                        });
                 }
             }
         },

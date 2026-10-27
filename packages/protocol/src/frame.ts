@@ -23,7 +23,9 @@ import {
     MAX_NOTIFICATION_ID_LENGTH,
     MAX_NOTIFICATION_KIND_LENGTH,
     MAX_NOTIFICATION_TITLE_LENGTH,
+    MAX_PROMPT_LENGTH,
     MAX_SESSION_ID_LENGTH,
+    MAX_SESSION_TITLE_LENGTH,
     MAX_TOKEN_LENGTH,
     MAX_TOOL_SOURCE_TITLE_LENGTH,
     MAX_TOOL_SOURCE_URL_LENGTH,
@@ -123,6 +125,9 @@ export function parseFrame(raw: string): ServerFrame {
         };
         audioEnd?: { generationId?: unknown };
         notification?: unknown;
+        sessionTitle?: { sessionId?: unknown; title?: unknown };
+        sessionActivity?: { sessionId?: unknown };
+        sessionDeleted?: { sessionId?: unknown };
     };
     if (typeof frame.chunk === "string") {
         return { chunk: frame.chunk };
@@ -142,6 +147,46 @@ export function parseFrame(raw: string): ServerFrame {
     }
     if (frame.done === true) {
         return { done: true };
+    }
+    if (
+        frame.sessionActivity &&
+        typeof frame.sessionActivity.sessionId === "string" &&
+        frame.sessionActivity.sessionId.length > 0 &&
+        frame.sessionActivity.sessionId.length <= MAX_SESSION_ID_LENGTH
+    ) {
+        return {
+            sessionActivity: {
+                sessionId: frame.sessionActivity.sessionId,
+            },
+        };
+    }
+    if (
+        frame.sessionDeleted &&
+        typeof frame.sessionDeleted.sessionId === "string" &&
+        frame.sessionDeleted.sessionId.length > 0 &&
+        frame.sessionDeleted.sessionId.length <= MAX_SESSION_ID_LENGTH
+    ) {
+        return {
+            sessionDeleted: {
+                sessionId: frame.sessionDeleted.sessionId,
+            },
+        };
+    }
+    if (
+        frame.sessionTitle &&
+        typeof frame.sessionTitle.sessionId === "string" &&
+        frame.sessionTitle.sessionId.length > 0 &&
+        frame.sessionTitle.sessionId.length <= MAX_SESSION_ID_LENGTH &&
+        typeof frame.sessionTitle.title === "string" &&
+        frame.sessionTitle.title.trim().length > 0 &&
+        frame.sessionTitle.title.length <= MAX_SESSION_TITLE_LENGTH
+    ) {
+        return {
+            sessionTitle: {
+                sessionId: frame.sessionTitle.sessionId,
+                title: frame.sessionTitle.title,
+            },
+        };
     }
     if (typeof frame.error === "string") {
         return { error: frame.error };
@@ -397,6 +442,11 @@ function validateChatPrompt(request: {
         request.sessionId.trim() === ""
     ) {
         throw new Error("expected a non-empty string field 'sessionId'");
+    }
+    if (request.prompt.length > MAX_PROMPT_LENGTH) {
+        throw new Error(
+            `prompt must be at most ${MAX_PROMPT_LENGTH} characters`,
+        );
     }
     if (request.sessionId.length > MAX_SESSION_ID_LENGTH) {
         throw new Error(

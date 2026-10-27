@@ -8,25 +8,61 @@
  * handled, instead of a silent runtime mismatch.
  */
 
+/** One generated conversation title update (#122). */
+export interface SessionTitleUpdate {
+    /** The thread whose title changed — the wire `sessionId`. */
+    sessionId: string;
+    /** The new display title (plaintext; encrypted at rest). */
+    title: string;
+}
+
+/** An out-of-turn nudge that a thread's transcript changed (#122 follow-up). */
+export interface SessionActivityUpdate {
+    /** The thread to refetch, identified by the wire `sessionId`. */
+    sessionId: string;
+}
+
+/** An out-of-turn notice that a thread was deleted (#122 follow-up). */
+export interface SessionDeletedUpdate {
+    /** The deleted thread, identified by the wire `sessionId`. */
+    sessionId: string;
+}
+
 /**
  * A frame the server sends to chat clients over `/ws`.
  *
  * Frames are JSON object frames, key-discriminated: exactly one of
  * `chunk` / `tool` / `toolResult` / `done` / `error` / `authResult` /
- * `audioStart` / `audioEnd` / `notification` is present. Binary WebSocket
- * messages (raw little-endian s16le PCM chunks, #83) are not JSON and never
- * pass through frame parsing — clients branch on the message type before
- * parsing.
+ * `audioStart` / `audioEnd` / `notification` / `sessionTitle` /
+ * `sessionActivity` / `sessionDeleted` is present.
+ * Binary WebSocket messages (raw little-endian s16le PCM chunks, #83) are not
+ * JSON and never pass through frame parsing — clients branch on the message
+ * type before parsing.
  *
- * Every frame but {@link NotificationFrame} belongs to a turn: a client may
- * assume the frames between a prompt and its `done` describe that turn. A
- * `notification` is the one server frame that arrives **outside** a turn
- * (#139) — a client must accept it whenever the socket is ready, not only
- * while a prompt is streaming.
+ * Every frame but the out-of-turn ones belongs to a turn: a client may assume
+ * the frames between a prompt and its `done` describe that turn. A
+ * `notification` (#139), `sessionTitle`, `sessionActivity`, and
+ * `sessionDeleted` (#122) arrive **outside** a turn — a client must accept them
+ * whenever the socket is ready, not only while a prompt is streaming.
  */
 export type ServerFrame =
     | { chunk: string }
     | { tool: { name: string; args?: unknown } }
+    | {
+          /**
+           * An out-of-turn title update (#122). Sent after the turn's `done`
+           * frame when a client declared the `sessionTitle` capability.
+           */
+          sessionTitle: SessionTitleUpdate;
+      }
+    | {
+          /** Another client settled a turn in this thread; refetch it. */
+          sessionActivity: SessionActivityUpdate;
+      }
+    | {
+          /** The thread was deleted on another client; drop it locally. */
+          sessionDeleted: SessionDeletedUpdate;
+      }
     | {
           toolResult: {
               name: string;
@@ -317,6 +353,8 @@ export const CLIENT_CAPABILITIES = [
     "link",
     "audio",
     "notification",
+    "sessionTitle",
+    "sessionSync",
 ] as const;
 
 /**
@@ -449,6 +487,18 @@ export const MAX_LOCATION_LABEL_LENGTH = 64;
 
 /** Longest `sessionId` a client may send in a chat request. */
 export const MAX_SESSION_ID_LENGTH = 128;
+
+/**
+ * Longest prompt text a chat request may carry.
+ *
+ * About 4k tokens. The model's context window and the transcript caps are
+ * separate limits; this one stops a paste or a client bug before it reaches
+ * the agent, the checkpoint, or a transcript row.
+ */
+export const MAX_PROMPT_LENGTH = 16_000;
+
+/** Longest conversation title a `sessionTitle` frame may carry. */
+export const MAX_SESSION_TITLE_LENGTH = 80;
 
 /** Longest device `token` a client may send in an `auth` handshake. */
 export const MAX_TOKEN_LENGTH = 128;

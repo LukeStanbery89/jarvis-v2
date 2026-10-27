@@ -13,6 +13,7 @@
  */
 import * as readline from "node:readline";
 import { Writable } from "node:stream";
+import { MAX_PROMPT_LENGTH } from "@lukestanbery/jarvis-protocol";
 import { ChatClient } from "./client";
 import { getServerUrl, serverOrigin } from "./config";
 import {
@@ -358,6 +359,13 @@ rl.on("line", (line) => {
     }
     if (prompt === "new") {
         handleNew();
+        return;
+    }
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+        logger.warn(
+            `Message is too long (${prompt.length}/${MAX_PROMPT_LENGTH} characters).`,
+        );
+        rl.prompt();
         return;
     }
 

@@ -23,7 +23,19 @@ import {
     DEFAULT_ATTACHMENT_CONFIG,
 } from "./config";
 import { attachChatServer } from "./ws";
-import { initAgentGraph, getAgentTools } from "./agent";
+import {
+    deleteAgentThread,
+    getAgentTools,
+    initAgentGraph,
+    pruneAgentThreadVersions,
+    trimAgentContext,
+} from "./agent";
+import { createChatCipher, resolveChatKey } from "./chatCrypto";
+import { createEncryptedSerde } from "./llm/encryptedSerde";
+import { createChatHistoryService } from "./sessionHistory";
+import { createSessionEvents } from "./sessionEvents";
+import { createSessionTitleService } from "./sessionTitle";
+import { createThreadTitleGenerator } from "./llm/threadTitle";
 import { createVisionModel } from "./llm/visionModel";
 import { createTavilyClient } from "./llm/tools/search/tavily";
 import { createSerperClient } from "./llm/tools/search/serper";
@@ -221,6 +233,9 @@ logger.info(
         : "Wake model serving disabled (JARVIS_WAKE_PROVIDER unset)",
 );
 
+const chatCipher = createChatCipher(resolveChatKey());
+const checkpointSerde = createEncryptedSerde(chatCipher);
+const sessionEvents = createSessionEvents();
 const store = openAppDatabase(appConfig.appDbPath, {
     /**
      * A migration repaired something on the way in (#90 phase 6c).
@@ -448,50 +463,66 @@ if (appConfig.github) {
     );
 }
 
-initAgentGraph({
-    attachments,
-    vision: createVisionModel(getLlmConfig()),
-    vlLimiter,
-    ...(searchDeps ? { search: searchDeps } : {}),
-    ...(weatherDeps ? { weather: weatherDeps } : {}),
-    ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
-    ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
-    ...(notifications ? { notifications: { service: notifications } } : {}),
-    // The scheduling tools (#90 phase 3) create rows in the same queue the
-    // scheduler drains, so they are wired exactly when the loop is: storing a
-    // job nobody would run is a promise the server cannot keep. The horizon is
-    // the config's days as an instant, because the tools compare moments.
-    ...(appConfig.scheduler && notifications
-        ? {
-              jobs: {
-                  ledger: store,
-                  maxPerUser: appConfig.scheduler.maxPerUser,
-                  maxHorizonMs: appConfig.scheduler.maxHorizonDays * 86_400_000,
-              },
-          }
-        : {}),
-    // The owner gate is the store's role, read per call rather than captured:
-    // a demoted account must lose the capability immediately, not at restart.
-    ...(githubClient && appConfig.github?.repos.length
-        ? {
-              github: {
-                  client: githubClient,
-                  repos: appConfig.github.repos,
-                  isOwner: (userId: number) =>
-                      store.getUserById(userId)?.role === "owner",
-              },
-          }
-        : {}),
-    ...(codingJobs
-        ? {
-              coding: {
-                  service: codingJobs,
-                  isOwner: (userId: number) =>
-                      store.getUserById(userId)?.role === "owner",
-                  repos: appConfig.sandbox?.repos ?? [],
-              },
-          }
-        : {}),
+initAgentGraph(
+    {
+        attachments,
+        vision: createVisionModel(getLlmConfig()),
+        vlLimiter,
+        ...(searchDeps ? { search: searchDeps } : {}),
+        ...(weatherDeps ? { weather: weatherDeps } : {}),
+        ...(homeAssistantDeps ? { homeAssistant: homeAssistantDeps } : {}),
+        ...(wikipediaDeps ? { wikipedia: wikipediaDeps } : {}),
+        ...(notifications ? { notifications: { service: notifications } } : {}),
+        // The scheduling tools (#90 phase 3) create rows in the same queue the
+        // scheduler drains, so they are wired exactly when the loop is: storing a
+        // job nobody would run is a promise the server cannot keep. The horizon is
+        // the config's days as an instant, because the tools compare moments.
+        ...(appConfig.scheduler && notifications
+            ? {
+                  jobs: {
+                      ledger: store,
+                      maxPerUser: appConfig.scheduler.maxPerUser,
+                      maxHorizonMs:
+                          appConfig.scheduler.maxHorizonDays * 86_400_000,
+                  },
+              }
+            : {}),
+        // The owner gate is the store's role, read per call rather than captured:
+        // a demoted account must lose the capability immediately, not at restart.
+        ...(githubClient && appConfig.github?.repos.length
+            ? {
+                  github: {
+                      client: githubClient,
+                      repos: appConfig.github.repos,
+                      isOwner: (userId: number) =>
+                          store.getUserById(userId)?.role === "owner",
+                  },
+              }
+            : {}),
+        ...(codingJobs
+            ? {
+                  coding: {
+                      service: codingJobs,
+                      isOwner: (userId: number) =>
+                          store.getUserById(userId)?.role === "owner",
+                      repos: appConfig.sandbox?.repos ?? [],
+                  },
+              }
+            : {}),
+    },
+    { checkpointSerde },
+);
+
+const sessionHistory = createChatHistoryService({
+    store,
+    cipher: chatCipher,
+    deleteThread: deleteAgentThread,
+});
+const sessionTitles = createSessionTitleService({
+    store,
+    history: sessionHistory,
+    cipher: chatCipher,
+    generate: createThreadTitleGenerator(),
 });
 
 // The scheduler (#90): one loop over the `jobs` table, running each due job
@@ -596,6 +627,7 @@ const webApp = createApp(
     internalRoutes,
     onNotificationAnswer,
     weatherDeps,
+    { history: sessionHistory, cipher: chatCipher, events: sessionEvents },
 );
 
 const { server } = createJarvisServer(webApp, {
@@ -610,6 +642,13 @@ attachChatServer(server, store, {
     attachments,
     ...(tts ? { tts, ttsSegment: appConfig.tts?.segment } : {}),
     ...(notificationHub ? { notifications: notificationHub } : {}),
+    history: sessionHistory,
+    titles: sessionTitles,
+    sessionEvents,
+    maintainContext: async (threadId) => {
+        await trimAgentContext(threadId, 100);
+        pruneAgentThreadVersions(threadId, 2);
+    },
 });
 
 // Last, once the socket layer is attached: the first thing `start` does is

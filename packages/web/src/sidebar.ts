@@ -8,7 +8,7 @@
  * so the merge and the wake description are node-testable without a DOM.
  */
 import type { SessionSummary } from "./api";
-import type { ThreadMap } from "./threads";
+import { NEW_CHAT_TITLE, type ThreadMap } from "./threads";
 
 /** One merged sidebar row. */
 export interface SidebarRow {
@@ -37,13 +37,19 @@ export function mergeSessions(
     const byId = new Map<string, SidebarRow>();
     for (const row of rows) {
         const local = threads[row.threadId];
+        const fallback =
+            row.threadId.length > 8
+                ? `Thread ${row.threadId.slice(0, 8)}`
+                : `Thread ${row.threadId}`;
         byId.set(row.threadId, {
             id: row.threadId,
+            // Hydration copies the server title into the local record, so a
+            // real local title is the freshest value (the live title frame
+            // lands there). A newly-created "New chat" defers to the server.
             title:
-                local?.title ??
-                (row.threadId.length > 8
-                    ? `Thread ${row.threadId.slice(0, 8)}`
-                    : `Thread ${row.threadId}`),
+                local?.title !== undefined && local.title !== NEW_CHAT_TITLE
+                    ? local.title
+                    : (row.title ?? local?.title ?? fallback),
             lastActive: Date.parse(row.lastActiveAt) || 0,
             kind: row.kind,
         });

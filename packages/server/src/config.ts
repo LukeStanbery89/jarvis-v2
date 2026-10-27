@@ -24,6 +24,16 @@ export const DEFAULT_LLM_TEMPERATURE = 0.15;
 export const DEFAULT_AGENT_MAX_TURNS = 10;
 
 /**
+ * Default output-token cap for one chat model call.
+ *
+ * The turn timeout bounds wall-clock duration, not output size. The
+ * OpenAI-compatible provider honors `max_tokens`; this is the primary bound on
+ * how large one assistant message can become. 2k tokens is generous for a
+ * conversational reply and keeps a single transcript row small.
+ */
+export const DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 2048;
+
+/**
  * Default vision-language model used by the `analyzeImage` tool.
  *
  * Distinct from {@link DEFAULT_LLM_MODEL} on purpose: the chat model is a
@@ -900,6 +910,8 @@ export interface LlmConfig {
     streamUsage: boolean;
     systemPrompt: string;
     agentMaxTurns: number;
+    /** Output-token cap for one chat model call (`JARVIS_CHAT_MAX_OUTPUT_TOKENS`). */
+    chatMaxOutputTokens: number;
     checkpointPath: string;
     /** Vision-language model the `analyzeImage` tool calls (`LLM_VL_MODEL`). */
     vlModel: string;
@@ -937,6 +949,11 @@ export function getLlmConfig(): LlmConfig {
             "JARVIS_AGENT_MAX_TURNS",
             process.env.JARVIS_AGENT_MAX_TURNS,
             DEFAULT_AGENT_MAX_TURNS,
+        ),
+        chatMaxOutputTokens: numberOr(
+            "JARVIS_CHAT_MAX_OUTPUT_TOKENS",
+            process.env.JARVIS_CHAT_MAX_OUTPUT_TOKENS,
+            DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
         ),
         checkpointPath:
             process.env.JARVIS_CHECKPOINT_PATH ?? defaultCheckpointPath(),

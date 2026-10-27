@@ -23,6 +23,23 @@ npm workspaces monorepo with independent, publishable packages under `packages/`
 - `packages/voice` (`@lukestanbery/jarvis-voice`) — Shared voice-input abstractions (Stt/WakeWord/VAD seams), `reduceVoice` state machine, `VoiceController` orchestrator, Web Speech + Vosk STT providers, browser VAD, openWakeWord wake provider, barge-in watch. A wake session is fed the detector's **live, phrase-free command stream** (`WakeCallbacks.onCommandAudio`, cut at the detector score's onset) instead of a replayed look-back ring, so the wake phrase's audio cannot reach the recognizer — the invariant #121 established; `stripWakePhrase` is only a safety net, and the wake→command corpus under `test/fixtures/` is the acceptance gate for changes on that path (`npm run probe:wake` reproduces the score/cut timeline offline). Consumed by `packages/web`; zero mandatory runtime deps. Peer: `@lichess-org/vosk-browser`; optional deps: `openwakeword-web`, `onnxruntime-web`.
 - `packages/contracts` (`@lukestanbery/jarvis-contracts`) — Contract-first OpenAPI 3.1 (REST) and AsyncAPI 3.1 (WS) specs, generated TS types, lint/bundle/validate tooling, conformance tests, and docs. Specs mirror `@lukestanbery/jarvis-protocol` and are the source of truth.
 
+Conversation data is server-authoritative (#122): the auth DB's `chat_messages`
+holds the durable, encrypted transcript and `sessions.title` the encrypted
+label; the server pages it through `GET /api/sessions/{threadId}` and derives
+titles from the first exchange. The LangGraph checkpoint store is encrypted by
+a wrapped serializer and holds only the model's working memory (newest two
+versions, context trimmed to 100 messages). The web keeps thread metadata only
+in localStorage, fetches the newest 20 messages on open, prepends older pages
+at the top of the transcript, and applies the out-of-turn `sessionTitle` frame.
+A settled turn broadcasts `sessionActivity` to the account's other sockets (the
+web refetches and merges the newest page by row id), and a delete broadcasts
+`sessionDeleted` so the thread disappears everywhere; both are gated on the
+`sessionSync` capability.
+Prompts are capped at 16,000 characters and chat output at
+`JARVIS_CHAT_MAX_OUTPUT_TOKENS` (default 2048). Production requires
+`JARVIS_CHAT_ENCRYPTION_KEY`; development auto-generates `~/.jarvis/chat.key`
+and `npm run chat:dump -- <threadId>` decrypts a thread for debugging.
+
 Each package has its own `package.json`, `tsconfig.json` (extends `tsconfig.base.json`), `src/` (or `server` + per-package `test/`), and `README.md`.
 
 Future client types (voice, etc.) should be added as new packages under `packages/`.

@@ -44,25 +44,25 @@ attachment upload, and the public model-file routes). The management routes mirr
 `packages/server/src/http/authRoutes.ts`; the attachment route is owned by
 `packages/server/src/http/attachmentRoutes.ts`:
 
-| Tag              | Operations (operationId)                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------- |
-| `Health`         | `GET /health` (`healthCheck`)                                                               |
-| `Attachments`    | `POST /api/attachments` (`attachmentUpload`)                                                |
-| `Bootstrap`      | `POST /api/bootstrap` (`bootstrap`)                                                         |
-| `Authentication` | `POST /api/auth/login` (`authLogin`), `POST /api/session` (`sessionLogin`)                  |
-| `Session`        | `GET`/`DELETE /api/session` (`sessionGet`/`sessionLogout`)                                  |
-| `Account`        | `GET /api/me` (`meGet`)                                                                     |
-| `Devices`        | `POST /api/devices`, `PATCH`/`DELETE /api/devices/{id}`, `GET /api/users/{id}/devices`      |
-| `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                            |
-| `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`                 |
-| `Push`           | `GET /api/push/key`, `POST /api/push/{subscribe,unsubscribe}`                               |
-| `Weather`        | `GET /api/weather` (`weatherNow`)                                                           |
-| `ChatSessions`   | `GET /api/sessions`, `DELETE /api/sessions/{threadId}`                                      |
-| `Notifications`  | `GET`/`POST /api/notifications`, `POST /api/notifications/{id}/{read,dismiss,answer}`       |
-| `Jobs`           | `GET`/`POST /api/jobs`, `GET`/`PATCH`/`DELETE /api/jobs/{id}`, `POST /api/jobs/{id}/snooze` |
-| `CodingJobs`     | `GET /api/coding-jobs/{id}/logs`, `GET /api/coding-jobs/{id}/questions`                     |
-| `Stt`            | `GET /api/stt/model` (`sttModelGet`)                                                        |
-| `Wake`           | `GET /api/wake/model/{file}` (`wakeModelGet`)                                               |
+| Tag              | Operations (operationId)                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| `Health`         | `GET /health` (`healthCheck`)                                                                |
+| `Attachments`    | `POST /api/attachments` (`attachmentUpload`)                                                 |
+| `Bootstrap`      | `POST /api/bootstrap` (`bootstrap`)                                                          |
+| `Authentication` | `POST /api/auth/login` (`authLogin`), `POST /api/session` (`sessionLogin`)                   |
+| `Session`        | `GET`/`DELETE /api/session` (`sessionGet`/`sessionLogout`)                                   |
+| `Account`        | `GET /api/me` (`meGet`)                                                                      |
+| `Devices`        | `POST /api/devices`, `PATCH`/`DELETE /api/devices/{id}`, `GET /api/users/{id}/devices`       |
+| `Users`          | `GET`/`POST /api/users`, `PATCH /api/users/{id}`                                             |
+| `Preferences`    | `GET`/`PUT`/`DELETE /api/prefs`, `GET`/`PUT`/`DELETE /api/users/{id}/prefs`                  |
+| `Push`           | `GET /api/push/key`, `POST /api/push/{subscribe,unsubscribe}`                                |
+| `Weather`        | `GET /api/weather` (`weatherNow`)                                                            |
+| `ChatSessions`   | `GET /api/sessions`, `GET`/`DELETE /api/sessions/{threadId}` (paged encrypted history, #122) |
+| `Notifications`  | `GET`/`POST /api/notifications`, `POST /api/notifications/{id}/{read,dismiss,answer}`        |
+| `Jobs`           | `GET`/`POST /api/jobs`, `GET`/`PATCH`/`DELETE /api/jobs/{id}`, `POST /api/jobs/{id}/snooze`  |
+| `CodingJobs`     | `GET /api/coding-jobs/{id}/logs`, `GET /api/coding-jobs/{id}/questions`                      |
+| `Stt`            | `GET /api/stt/model` (`sttModelGet`)                                                         |
+| `Wake`           | `GET /api/wake/model/{file}` (`wakeModelGet`)                                                |
 
 Key shapes in `components.schemas`: `User`, `Device` (nullable `lastSeenAt`),
 `IssuedDevice` (one-time `token`), `AuthResult` (shared by bootstrap + device
@@ -141,10 +141,10 @@ artifact; regenerate it.
 One channel (`/ws`), two operations, fifteen messages mirroring
 `@lukestanbery/jarvis-protocol`'s types:
 
-| Operation            | Direction     | Messages                                                                                                                                                                           |
-| -------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time)  |
-| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`, `notification` (out-of-turn, only to sockets that declared the capability) |
+| Operation            | Direction     | Messages                                                                                                                                                                                                                                             |
+| -------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sendClientFrame`    | client→server | `authHandshake` (may open the socket or follow `hello`), `clientHello` (must be the first frame), `chatPrompt`, `locationFrame` (any time, refreshable), `cancelFrame` (any time)                                                                    |
+| `receiveServerFrame` | server→client | `authResult`, `chunk`, `toolCall`, `toolResult`, `done`, `error`, `audioStart`, `pcmChunk`, `audioEnd`, `notification`, `sessionTitle`, `sessionActivity`, and `sessionDeleted` (out-of-turn, only to sockets that declared the matching capability) |
 
 A client may open the socket with either the `hello` capability announcement or
 the `auth` handshake (and `auth` may also come immediately after `hello`); any

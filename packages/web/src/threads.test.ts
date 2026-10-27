@@ -10,13 +10,18 @@ import {
     appendToolResult,
     deleteThread,
     ensureThread,
+    hydrateThread,
     loadThreads,
     markAssistantError,
     NEW_CHAT_TITLE,
+    prependThreadHistory,
     saveThreads,
+    setThreadTitle,
+    syncThreadHistory,
     threadsKey,
     type ThreadMap,
 } from "./threads";
+import type { SessionDetail } from "./api";
 
 /** In-memory Storage double for node tests. */
 class FakeStorage implements Storage {
@@ -202,7 +207,7 @@ describe("thread mutations", () => {
         expect(deleteThread(map, "ghost")).toBe(map);
     });
 
-    it("trims threads to the message cap, dropping oldest first", () => {
+    it("keeps every loaded message in memory for paging", () => {
         let map = ensureThread({}, "s1", 0);
         for (let i = 0; i < 205; i += 1) {
             map = appendMessage(map, "s1", {
@@ -213,18 +218,20 @@ describe("thread mutations", () => {
             });
         }
         const messages = map.s1?.messages ?? [];
-        expect(messages).toHaveLength(200);
-        expect(messages[0]).toMatchObject({ id: "m5" });
-        expect(messages[199]).toMatchObject({ id: "m204" });
+        expect(messages).toHaveLength(205);
+        expect(messages[0]).toMatchObject({ id: "m0" });
+        expect(messages[204]).toMatchObject({ id: "m204" });
     });
 });
 
 describe("thread persistence", () => {
-    it("round-trips a map through storage", () => {
+    it("persists metadata but never message bodies", () => {
         const storage = new FakeStorage();
         const map = appendChunk(ensureThread({}, "s1", 1), "s1", "hi", 2);
         saveThreads(storage, "luke", map);
-        expect(loadThreads(storage, "luke")).toEqual(map);
+        expect(loadThreads(storage, "luke")).toEqual({
+            s1: { ...map.s1!, messages: [] },
+        });
     });
 
     it("loads an empty map when absent or corrupt", () => {
@@ -250,5 +257,141 @@ describe("thread persistence", () => {
         const persisted = loadThreads(storage, "luke");
         expect(persisted.old).toBeUndefined();
         expect(persisted.new).toBeDefined();
+    });
+});
+
+/** One server detail page with a title and paging cursor. */
+function detail(over: Partial<SessionDetail> = {}): SessionDetail {
+    return {
+        threadId: "s1",
+        kind: "text",
+        userId: 1,
+        title: "Server title",
+        historyTrimmed: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        lastActiveAt: "2026-01-02T00:00:00.000Z",
+        messages: [
+            { id: 10, role: "user", text: "hello", attachmentIds: ["a1"] },
+            {
+                id: 11,
+                role: "tool",
+                tool: {
+                    name: "webSearch",
+                    args: { query: "x" },
+                    output: "result",
+                    sources: [{ title: "Source", url: "https://example.com" }],
+                },
+            },
+            { id: 12, role: "assistant", text: "answer" },
+        ],
+        hasMore: true,
+        nextBefore: 10,
+        ...over,
+    };
+}
+
+describe("server history hydration", () => {
+    it("replaces a thread with the decrypted server page", () => {
+        const map = hydrateThread({}, "s1", detail(), 5);
+        expect(map.s1?.title).toBe("Server title");
+        expect(map.s1?.hasMore).toBe(true);
+        expect(map.s1?.nextBefore).toBe(10);
+        expect(map.s1?.messages).toHaveLength(3);
+        expect(map.s1?.messages[0]).toMatchObject({
+            id: "history:10",
+            role: "user",
+            text: "hello",
+            attachmentIds: ["a1"],
+        });
+        expect(map.s1?.messages[1]).toMatchObject({
+            id: "history:11",
+            role: "tool",
+            tool: { name: "webSearch", output: "result" },
+        });
+        expect(map.s1?.messages[2]).toMatchObject({
+            id: "history:12",
+            role: "assistant",
+            text: "answer",
+        });
+    });
+
+    it("prepends an older page and keeps the newer tail", () => {
+        const map = hydrateThread({}, "s1", detail(), 5);
+        const older = detail({
+            messages: [{ id: 8, role: "user", text: "earlier" }],
+            hasMore: false,
+            nextBefore: null,
+        });
+        const next = prependThreadHistory(map, "s1", older);
+        expect(next.s1?.messages[0]).toMatchObject({
+            id: "history:8",
+            text: "earlier",
+        });
+        expect(next.s1?.messages).toHaveLength(4);
+        expect(next.s1?.hasMore).toBe(false);
+        expect(next.s1?.nextBefore).toBeNull();
+    });
+
+    it("merges a new server page without dropping older loaded pages", () => {
+        const map = hydrateThread({}, "s1", detail(), 5);
+        const older = detail({
+            messages: [{ id: 8, role: "user", text: "earlier" }],
+            hasMore: false,
+            nextBefore: null,
+        });
+        const withOlder = prependThreadHistory(map, "s1", older);
+        const refreshed = detail({
+            title: "Finished turn",
+            messages: [
+                { id: 10, role: "user", text: "hello", attachmentIds: ["a1"] },
+                {
+                    id: 11,
+                    role: "tool",
+                    tool: {
+                        name: "webSearch",
+                        args: { query: "x" },
+                        output: "result",
+                        sources: [
+                            {
+                                title: "Source",
+                                url: "https://example.com",
+                            },
+                        ],
+                    },
+                },
+                { id: 12, role: "assistant", text: "answer" },
+                { id: 13, role: "user", text: "again" },
+                { id: 14, role: "assistant", text: "second answer" },
+            ],
+            hasMore: true,
+            nextBefore: 10,
+        });
+        const next = syncThreadHistory(withOlder, "s1", refreshed);
+        expect(next.s1?.title).toBe("Finished turn");
+        expect(next.s1?.messages.map((message) => message.id)).toEqual([
+            "history:8",
+            "history:10",
+            "history:11",
+            "history:12",
+            "history:13",
+            "history:14",
+        ]);
+        // The older page cursor is retained for the transcript's paging.
+        expect(next.s1?.hasMore).toBe(false);
+        expect(next.s1?.nextBefore).toBeNull();
+    });
+
+    it("hydrates a thread that has no loaded messages", () => {
+        const map = syncThreadHistory({}, "s1", detail(), 5);
+        expect(map.s1?.messages).toHaveLength(3);
+        expect(map.s1?.title).toBe("Server title");
+    });
+
+    it("updates a title without moving the thread", () => {
+        const map = hydrateThread({}, "s1", detail(), 5);
+        const next = setThreadTitle(map, "s1", "Better title");
+        expect(next.s1?.title).toBe("Better title");
+        expect(next.s1?.updatedAt).toBe(map.s1?.updatedAt);
+        expect(next.s1?.messages).toEqual(map.s1?.messages);
     });
 });

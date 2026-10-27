@@ -99,6 +99,9 @@ const MESSAGE_FOR_KEY: Record<string, string> = {
     audioStart: "audioStart",
     audioEnd: "audioEnd",
     notification: "notification",
+    sessionTitle: "sessionTitle",
+    sessionActivity: "sessionActivity",
+    sessionDeleted: "sessionDeleted",
 };
 
 /**
@@ -518,6 +521,36 @@ describe("AsyncAPI conformance: protocol frames", () => {
             expectWireConformant(
                 () => serializeFrame(frame),
                 MESSAGE_FOR_KEY.notification,
+            );
+        });
+
+        it("validates cross-device session sync frames (#122)", () => {
+            expectWireConformant(
+                () =>
+                    serializeFrame({
+                        sessionActivity: { sessionId: "thread-1" },
+                    }),
+                MESSAGE_FOR_KEY.sessionActivity,
+            );
+            expectWireConformant(
+                () =>
+                    serializeFrame({
+                        sessionDeleted: { sessionId: "thread-1" },
+                    }),
+                MESSAGE_FOR_KEY.sessionDeleted,
+            );
+        });
+
+        it("validates a sessionTitle frame (#122)", () => {
+            const frame: ServerFrame = {
+                sessionTitle: {
+                    sessionId: "thread-1",
+                    title: "Debugging the scheduler",
+                },
+            };
+            expectWireConformant(
+                () => serializeFrame(frame),
+                MESSAGE_FOR_KEY.sessionTitle,
             );
         });
 

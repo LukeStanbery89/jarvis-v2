@@ -74,6 +74,12 @@ const CHAT_CAPABILITIES: ClientCapability[] = [
     // The out-of-turn `notification` frame (#139): this client renders
     // notifications, so the server may push them to its sockets.
     "notification",
+    // The out-of-turn `sessionTitle` frame (#122): this client can update a
+    // sidebar title when the server generates a better one.
+    "sessionTitle",
+    // Cross-device session activity/deletion (#122 follow-up): another client
+    // can change a thread this one has open.
+    "sessionSync",
 ];
 
 /** Props for {@link AppShell}. */
@@ -104,6 +110,17 @@ export function AppShell({
      * read it. The bar only shows the button on the chat route.
      */
     const [threadsOpen, setThreadsOpen] = useState(false);
+    /**
+     * Cross-device session nudges (#122 follow-up). The values carry a
+     * monotonic sequence so two identical events still trigger the chat's
+     * effect; the chat owns the fetch because it owns `useSessions` and the
+     * open-thread transcript.
+     */
+    const [sessionSync, setSessionSync] = useState<{
+        activity: { sessionId: string; seq: number } | null;
+        deleted: { sessionId: string; seq: number } | null;
+    }>({ activity: null, deleted: null });
+    const sessionSyncSeq = useRef(0);
     // A navigation leaves the chat, so the drawer must not greet the next visit
     // open — and Escape closes it, the same courtesy the page menu pays.
     useEffect(() => {
@@ -224,6 +241,32 @@ export function AppShell({
                 jobs.refresh();
             }
         },
+        onSessionTitle: ({ sessionId, title }) => {
+            // The local record is the sidebar's freshest title cache; the
+            // server list will agree on its next refresh.
+            threads.dispatch({ type: "title", sessionId, title });
+        },
+        onSessionActivity: ({ sessionId }) => {
+            sessionSyncSeq.current += 1;
+            setSessionSync((previous) => ({
+                ...previous,
+                activity: { sessionId, seq: sessionSyncSeq.current },
+            }));
+        },
+        onSessionDeleted: ({ sessionId }) => {
+            // The deleting device also receives this frame; the reducer is a
+            // no-op when the row is already gone. Clearing the active id here
+            // means a thread deleted elsewhere cannot keep an empty chat open.
+            threads.dispatch({ type: "deleted", sessionId });
+            if (threads.activeIdRef.current === sessionId) {
+                threads.openThread(null);
+            }
+            sessionSyncSeq.current += 1;
+            setSessionSync((previous) => ({
+                ...previous,
+                deleted: { sessionId, seq: sessionSyncSeq.current },
+            }));
+        },
         onFrame: (frame) => {
             // The two notes a voice session takes from the wire (#84, #90 phase
             // 6d): the first frame of a turn moves the machine out of `waiting`,
@@ -274,7 +317,24 @@ export function AppShell({
         // `reconnecting` both precede `connected`) — and the effect that tried
         // to, with a dependency that changes every render, was a fetch loop.
         // `refresh` is a stable `useCallback`.
-        onReconnected: notifications.refresh,
+        onReconnected: () => {
+            notifications.refresh();
+            jobs.refresh();
+            // A frame pushed while the socket was down is gone. If a thread is
+            // open, treat the reconnect as an activity nudge so it refetches
+            // the newest page rather than silently missing a turn.
+            const active = threads.activeIdRef.current;
+            if (active !== null) {
+                sessionSyncSeq.current += 1;
+                setSessionSync((previous) => ({
+                    ...previous,
+                    activity: {
+                        sessionId: active,
+                        seq: sessionSyncSeq.current,
+                    },
+                }));
+            }
+        },
         onAuthRejected,
     });
 
@@ -471,6 +531,7 @@ export function AppShell({
         turning,
         turnSessionId,
         runTurn,
+        sessionSync,
     };
 
     /** The page the address names. */

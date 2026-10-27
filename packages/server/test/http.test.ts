@@ -1,8 +1,10 @@
 import request from "supertest";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { generateDeviceToken } from "@lukestanbery/jarvis-auth";
 import { createInMemoryAppDatabase } from "@lukestanbery/jarvis-auth/testing";
+import { createChatCipher } from "../src/chatCrypto";
+import type { SessionContentServices } from "../src/sessionHistory";
 import type { AppConfig } from "../src/config";
 
 const FAST: AppConfig & { bootstrapToken: string } = {
@@ -530,6 +532,146 @@ function sessionCookiePair(res: request.Response, secure = false): string {
     expect(header).toBeTruthy();
     return header!.split(";")[0];
 }
+
+describe("session history routes (#122)", () => {
+    const cipher = createChatCipher(Buffer.alloc(32, 6));
+
+    function content(): SessionContentServices {
+        return {
+            cipher,
+            events: { publish: vi.fn() },
+            history: {
+                append: vi.fn(),
+                page: vi.fn(() => ({
+                    messages: [
+                        { id: 7, role: "user" as const, text: "hello" },
+                        {
+                            id: 8,
+                            role: "assistant" as const,
+                            text: "world",
+                        },
+                    ],
+                    hasMore: true,
+                    nextBefore: 7,
+                })),
+                firstExchange: vi.fn(() => ({
+                    user: "hello",
+                    assistant: "world",
+                })),
+                enforceRetention: vi.fn(() => 0),
+                deleteThread: vi.fn(async () => {}),
+                decrypt: vi.fn(),
+            },
+        };
+    }
+
+    it("decrypts a title in the session list and returns one page", async () => {
+        const header = await ownerHeader();
+        const ownerId = store.getUserByUsername("luke")!.id;
+        store.claimSession("history-detail", {
+            userId: ownerId,
+            deviceId: null,
+            kind: "text",
+        });
+        store.setSessionTitle(
+            "history-detail",
+            cipher.encrypt("Server title"),
+            "model",
+        );
+        const historyApp = createApp(
+            store,
+            FAST,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            content(),
+        );
+
+        const list = await request(historyApp)
+            .get("/api/sessions")
+            .set("authorization", header);
+        expect(list.status).toBe(200);
+        const row = (
+            list.body as { threadId: string; title: string | null }[]
+        ).find((session) => session.threadId === "history-detail");
+        expect(row?.title).toBe("Server title");
+
+        const detail = await request(historyApp)
+            .get("/api/sessions/history-detail?limit=2&before=9")
+            .set("authorization", header);
+        expect(detail.status).toBe(200);
+        expect(detail.body).toMatchObject({
+            threadId: "history-detail",
+            title: "Server title",
+            historyTrimmed: false,
+            messages: [
+                { id: 7, role: "user", text: "hello" },
+                { id: 8, role: "assistant", text: "world" },
+            ],
+            hasMore: true,
+            nextBefore: 7,
+        });
+        store.deleteSession("history-detail");
+    });
+
+    it("deletes the checkpoint thread before the ledger row", async () => {
+        const header = await ownerHeader();
+        const ownerId = store.getUserByUsername("luke")!.id;
+        store.claimSession("history-delete", {
+            userId: ownerId,
+            deviceId: null,
+            kind: "text",
+        });
+        const services = content();
+        const historyApp = createApp(
+            store,
+            FAST,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            services,
+        );
+
+        const res = await request(historyApp)
+            .delete("/api/sessions/history-delete")
+            .set("authorization", header);
+        expect(res.status).toBe(204);
+        expect(services.history.deleteThread).toHaveBeenCalledWith(
+            "history-delete",
+        );
+        expect(services.events?.publish).toHaveBeenCalledWith({
+            type: "deleted",
+            userId: ownerId,
+            sessionId: "history-delete",
+        });
+        expect(store.getSessionByThread("history-delete")).toBeNull();
+    });
+
+    it("answers 503 when the history surface is not configured", async () => {
+        const header = await ownerHeader();
+        const ownerId = store.getUserByUsername("luke")!.id;
+        store.claimSession("history-off", {
+            userId: ownerId,
+            deviceId: null,
+            kind: "text",
+        });
+        const res = await request(app)
+            .get("/api/sessions/history-off")
+            .set("authorization", header);
+        expect(res.status).toBe(503);
+        store.deleteSession("history-off");
+    });
+});
 
 describe("cookie sessions", () => {
     it("logs in via cookie and uses it for the API", async () => {

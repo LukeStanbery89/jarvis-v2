@@ -8,7 +8,14 @@
  * built from web searches (#199). Owns the scroll container's auto-scroll via
  * {@link useAutoScroll}. Presentational: props in, no events out.
  */
-import { Fragment, memo, useMemo, useRef } from "react";
+import {
+    Fragment,
+    memo,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+} from "react";
 import { Image as ImageIcon } from "lucide-react";
 import { Markdown } from "../../Markdown";
 import { ToolCall } from "../../components/ToolCall";
@@ -108,6 +115,14 @@ export interface TranscriptProps {
     previews: Record<string, string>;
     /** Whether a conversation is open (false ⇒ the empty hint). */
     hasThread: boolean;
+    /** The newest server page is in flight for this thread. */
+    historyLoading?: boolean;
+    /** The server has older rows for this thread. */
+    hasMore?: boolean;
+    /** An older page is in flight. */
+    loadingOlder?: boolean;
+    /** Fetches the page immediately older than the first loaded row. */
+    onLoadOlder?(): void;
     /** The active thread id (an auto-scroll trigger on switch). */
     activeId: string | null;
     /**
@@ -130,11 +145,61 @@ export function Transcript({
     messages,
     previews,
     hasThread,
+    historyLoading = false,
+    hasMore = false,
+    loadingOlder = false,
+    onLoadOlder,
     activeId,
     turning,
 }: TranscriptProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
-    useAutoScroll(containerRef, messages, activeId, turning);
+    /** Scroll metrics captured before an older page is prepended. */
+    const preserveRef = useRef<{ height: number; top: number } | null>(null);
+    /** Tells useAutoScroll to skip the bottom snap for the prepend render. */
+    const holdAutoScroll = useRef(false);
+    useAutoScroll(containerRef, messages, activeId, turning, {
+        hold: holdAutoScroll,
+    });
+
+    // Restore the viewport after an older page is inserted above: keep the
+    // reader looking at the same row by preserving the distance from the
+    // bottom. This runs before the auto-scroll effect; `holdAutoScroll` makes
+    // that effect skip this update.
+    useLayoutEffect(() => {
+        const preserve = preserveRef.current;
+        const el = containerRef.current;
+        if (preserve && el) {
+            el.scrollTop = el.scrollHeight - (preserve.height - preserve.top);
+        }
+    }, [messages]);
+    useEffect(() => {
+        if (loadingOlder) {
+            return;
+        }
+        preserveRef.current = null;
+        holdAutoScroll.current = false;
+    }, [messages, loadingOlder]);
+
+    /** Fills a short thread rather than leaving a hidden scroll trigger. */
+    useEffect(() => {
+        if (!hasMore || loadingOlder) {
+            return;
+        }
+        const el = containerRef.current;
+        if (
+            el &&
+            messages.length > 0 &&
+            el.scrollHeight <= el.clientHeight + 1
+        ) {
+            preserveRef.current = {
+                height: el.scrollHeight,
+                top: el.scrollTop,
+            };
+            holdAutoScroll.current = true;
+            onLoadOlder?.();
+        }
+    }, [hasMore, loadingOlder, messages.length, onLoadOlder]);
+
     const { byAssistant, currentAssistantId } = useMemo(
         () => groupSources(messages),
         [messages],
@@ -148,10 +213,38 @@ export function Transcript({
             last?.role === "assistant" &&
             (last.error === true || last.text.trim() !== "")
         );
+
+    /** Scrolls to the top edge, which asks for the previous page. */
+    function handleScroll(event: React.UIEvent<HTMLDivElement>): void {
+        const el = event.currentTarget;
+        if (
+            !hasMore ||
+            loadingOlder ||
+            el.scrollTop > 48 ||
+            preserveRef.current !== null
+        ) {
+            return;
+        }
+        preserveRef.current = {
+            height: el.scrollHeight,
+            top: el.scrollTop,
+        };
+        holdAutoScroll.current = true;
+        onLoadOlder?.();
+    }
+
     return (
-        <div className="transcript" ref={containerRef}>
-            {!hasThread && (
+        <div className="transcript" ref={containerRef} onScroll={handleScroll}>
+            {historyLoading && messages.length === 0 && (
+                <p className="hint">Loading conversation…</p>
+            )}
+            {!hasThread && !historyLoading && (
                 <p className="hint">Pick a conversation or start a new one</p>
+            )}
+            {loadingOlder && (
+                <p className="history-loading" role="status">
+                    Loading earlier messages…
+                </p>
             )}
             {messages.map((message) => {
                 // Hold the in-flight answer's sources back until the turn

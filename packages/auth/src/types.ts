@@ -93,12 +93,16 @@ export interface WebSessionRow {
     expiresAt: string;
 }
 
+/** How a conversation title was produced. */
+export type SessionTitleSource = "excerpt" | "model";
+
 /**
  * One chat session: a nexus between the WS-turn ledger and a LangGraph thread.
  *
  * `threadId` is unique — a session maps one-to-one onto a checkpoint thread.
  * `userId`/`deviceId` are `NULL` for guest (ephemeral) sessions; `kind`
- * (`text`/`voice`) drives the lifecycle-deletion policy.
+ * (`text`/`voice`) drives the lifecycle-deletion policy. `title` is stored
+ * **encrypted** by the server; the ledger treats it as opaque text.
  */
 export interface AppSession {
     id: number;
@@ -106,6 +110,34 @@ export interface AppSession {
     userId: number | null;
     deviceId: number | null;
     kind: SessionKind;
+    /** Encrypted title, or `null` until the first prompt is claimed. */
+    title: string | null;
+    titleSource: SessionTitleSource | null;
+    /** When retention last removed older transcript rows, if ever. */
+    historyTrimmedAt: string | null;
     createdAt: string;
     lastActiveAt: string;
+}
+
+/** The roles a durable chat transcript row may have. */
+export type ChatMessageRole = "user" | "assistant" | "tool";
+
+/**
+ * One encrypted transcript row. `payload` is opaque to the ledger; the server
+ * encrypts and decrypts the presentation JSON around it.
+ */
+export interface AppChatMessage {
+    id: number;
+    sessionId: number;
+    role: ChatMessageRole;
+    payload: string;
+    createdAt: string;
+}
+
+/** One row as the transcript writer records it. */
+export interface NewChatMessage {
+    role: ChatMessageRole;
+    /** Already-encrypted payload text. */
+    payload: string;
+    createdAt: string;
 }
