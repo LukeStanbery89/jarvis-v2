@@ -1199,38 +1199,95 @@ describe("scheduler: timing", () => {
         expect(h.store.getJob(h.userId, "j1")?.attempts).toBe(1);
     });
 
-    it("refuses an overlapping tick rather than queueing it", async () => {
+    it("keeps scanning while a prompt run is in flight, and fires a timer without waiting for it", async () => {
+        let releasePrompt!: () => void;
+        const promptGate = new Promise<void>((resolve) => {
+            releasePrompt = resolve;
+        });
+        const agent: JobAgentRunner = async function* () {
+            await promptGate;
+            yield {
+                type: "token",
+                text: "prompt finished",
+            } satisfies AgentEvent;
+        };
+        const h = harness({ at: AT, actor: agent, maxPerTick: 1 });
+        h.store.createJob(h.userId, {
+            ...promptJob({ label: "Slow prompt" }),
+            id: "slow",
+            createdAt: "2026-10-15T18:00:00.000Z",
+        });
+
+        const first = h.scheduler.tick();
+        // The prompt is claimed and waiting. A timer created after that scan
+        // must still fire while the prompt is in flight, even with the
+        // non-message bound at 1 (#217).
+        h.store.createJob(h.userId, {
+            id: "timer",
+            label: "Kettle",
+            class: "timer",
+            kind: "message",
+            message: "Take the kettle off.",
+            runAt: AT.toISOString(),
+            createdAt: "2026-10-15T18:00:01.000Z",
+        });
+
+        const second = await h.scheduler.tick();
+
+        expect(second).toMatchObject({ considered: 1, skippedTick: false });
+        expect(second.outcomes).toEqual([
+            { kind: "done", output: "Take the kettle off." },
+        ]);
+        expect(h.store.getJob(h.userId, "timer")?.state).toBe("done");
+        expect(pushed(h.socket)).toEqual([
+            {
+                kind: "job.finished",
+                title: "Kettle",
+                body: "Take the kettle off.",
+            },
+        ]);
+
+        releasePrompt();
+        expect((await first).outcomes).toEqual([
+            { kind: "done", output: "prompt finished" },
+        ]);
+    });
+
+    it("keeps the non-message run bound across overlapping scans", async () => {
         let release!: () => void;
         const gate = new Promise<void>((resolve) => {
             release = resolve;
         });
-        const slow: JobRunner = {
-            run: async () => {
-                await gate;
-                return { kind: "done", output: "" };
-            },
-            recover: async () => ({ kind: "failed", error: "" }),
+        const agent: JobAgentRunner = async function* () {
+            await gate;
+            yield { type: "token", text: "done" } satisfies AgentEvent;
         };
-        const scheduler = createScheduler({
-            ledger: { listDueJobs: () => [] } as never,
-            runner: slow,
-            tickMs: 1_000,
-            maxConcurrent: 1,
-        });
+        const h = harness({ at: AT, actor: agent, maxPerTick: 1 });
+        for (const id of ["one", "two"]) {
+            h.store.createJob(h.userId, {
+                ...promptJob({ label: id }),
+                id,
+                createdAt: `2026-10-15T18:00:0${id === "one" ? "0" : "1"}.000Z`,
+            });
+        }
 
-        const first = scheduler.tick();
-        const second = await scheduler.tick();
+        const first = h.scheduler.tick();
+        const second = await h.scheduler.tick();
 
-        expect(second).toEqual({
-            considered: 0,
-            outcomes: [],
-            skippedTick: true,
-        });
+        // The first prompt still owns the only non-message slot; the second
+        // scan leaves the other prompt for a later pass rather than starting a
+        // second turn against the same model.
+        expect(second).toMatchObject({ considered: 1, skippedTick: false });
+        expect(second.outcomes).toEqual([]);
+        expect(h.store.getJob(h.userId, "two")?.state).toBe("pending");
+
         release();
-        expect((await first).skippedTick).toBe(false);
+        await first;
+        const third = await h.scheduler.tick();
+        expect(third.outcomes).toEqual([{ kind: "done", output: "done" }]);
     });
 
-    it("takes on at most what one tick allows, and finds the rest next time", async () => {
+    it("takes on at most what one scan allows, and finds the rest next time", async () => {
         const { agent, calls } = fakeAgent("ok");
         const h = harness({ at: AT, actor: agent, maxPerTick: 1 });
         for (let i = 0; i < 3; i += 1) {

@@ -4,24 +4,26 @@
  * Deliberately small. The runner owns what happens to *one* job; this owns the
  * three things that are about time and process rather than about a job:
  *
- * 1. **A coarse tick.** A short interval scans for due work. Coarse rather than
- *    a timer per job because a restart has to rebuild nothing: the queue is the
- *    `jobs` table, and a scan finds whatever is due *now*, however the process
- *    got here. The cost is that a job can be up to one tick late.
- * 2. **The claim feed's bound.** One tick takes on at most `maxConcurrent`
- *    jobs, so a backlog of a hundred cannot pin the process (and its interval)
- *    for an hour. The default is 1, and the runs go through `Promise.all`:
- *    raising it really does run turns concurrently, against one model.
+ * 1. **A short scan that does not wait for runs.** A 500 ms interval scans for
+ *    due work. The queue is the `jobs` table, so a restart rebuilds nothing and
+ *    a scan finds whatever is due *now*. A scan only claims and launches; it
+ *    does not await the runs, so a long model turn cannot stop the next scan
+ *    (#217). A `message` job — a timer or a reminder, which runs no model and
+ *    no tool — is never held behind `maxConcurrent`: an alarm that waits for a
+ *    prompt turn is not an alarm. That bound applies to non-message runs.
+ * 2. **The claim feed's bound.** One scan takes on at most `maxConcurrent`
+ *    non-message jobs *in flight*, so a backlog cannot pin the process or the
+ *    model. The default is 1; raising it really does run turns concurrently,
+ *    against one model.
  * 3. **Boot recovery.** Any `running` row belongs to a process that died — a
  *    claim lives in memory — so the first thing a scheduler does is hand those
  *    to the runner, which fails them and says so. Otherwise a job that was
  *    mid-turn when the power went out would sit `running` forever.
  *
- * Overlapping ticks are refused rather than queued: a tick that is still
- * running when the next interval fires means the previous work is still in
- * flight, and the claim (`pending` in the WHERE clause) would make a second
- * pass over the same rows a no-op anyway. Skipping says so in the summary
- * instead of pretending a pass happened.
+ * Overlapping *scans* are refused rather than queued. Runs may overlap with a
+ * later scan: the atomic claim (`pending` in the WHERE clause) makes a second
+ * look at the same rows a no-op, and the scan has no reason to wait for work it
+ * already started.
  */
 import type { AppJob, JobLedger } from "@lukestanbery/jarvis-auth";
 import { logger } from "../logger";
@@ -31,16 +33,16 @@ import type { JobRunner, RunOutcome } from "./runner";
 export interface TickSummary {
     /** How many due jobs the scan found (may exceed what was taken on). */
     considered: number;
-    /** What became of each job this tick took on. */
+    /** What became of each job this scan took on. */
     outcomes: RunOutcome[];
-    /** True when the previous tick was still running, so this one did nothing. */
+    /** True when another scan was already in progress. */
     skippedTick: boolean;
 }
 
 /** The scheduler seam the process root starts and stops. */
 export interface Scheduler {
     /**
-     * Fails interrupted work, then ticks on an interval until stopped.
+     * Fails interrupted work, then scans on an interval until stopped.
      *
      * Resolves once recovery is done and the interval is running — so a caller
      * (and a test) can tell when boot-recovery has finished. Never rejects: a
@@ -49,7 +51,7 @@ export interface Scheduler {
      * still runnable.
      */
     start(): Promise<void>;
-    /** Stops ticking. A tick already in flight finishes. */
+    /** Stops scanning. Runs already in flight finish. */
     stop(): void;
     /** One pass: take on due work (bounded), hand it to the runner. */
     tick(): Promise<TickSummary>;
@@ -63,7 +65,11 @@ export interface SchedulerOptions {
     runner: JobRunner;
     /** Interval between scans (`JARVIS_JOB_TICK_MS`). */
     tickMs: number;
-    /** Jobs one tick takes on (`JARVIS_JOB_MAX_PER_TICK`), run together. */
+    /**
+     * Non-message jobs allowed in flight at once (`JARVIS_JOB_MAX_PER_TICK`),
+     * run together. Message jobs bypass this bound because they spend no model
+     * and no tool; a timer must not wait behind a prompt turn (#217).
+     */
     maxConcurrent: number;
     /** How many due jobs a scan looks at, so the query stays bounded. */
     maxPerScan?: number;
@@ -71,16 +77,18 @@ export interface SchedulerOptions {
     now?: () => Date;
 }
 
-/** The widest scan a single tick makes when the caller does not say. */
+/** The widest scan a single pass makes when the caller does not say. */
 const DEFAULT_MAX_PER_SCAN = 100;
 
-/** Builds the scheduler (see the module doc for the four things it owns). */
+/** Builds the scheduler (see the module doc for the three things it owns). */
 export function createScheduler(options: SchedulerOptions): Scheduler {
     const { ledger, runner, tickMs, maxConcurrent } = options;
     const maxPerScan = Math.max(1, options.maxPerScan ?? DEFAULT_MAX_PER_SCAN);
     const now = options.now ?? (() => new Date());
-    /** Whether a tick is in flight — the overlap guard. */
-    let ticking = false;
+    /** Whether a scan is in flight — the overlap guard, not a run guard. */
+    let scanning = false;
+    /** Non-message runs in flight; `maxConcurrent` bounds this, not messages. */
+    let activeRuns = 0;
     let interval: ReturnType<typeof setInterval> | null = null;
 
     async function recover(): Promise<number> {
@@ -100,24 +108,74 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     }
 
     async function tick(): Promise<TickSummary> {
-        if (ticking) {
+        if (scanning) {
             return { considered: 0, outcomes: [], skippedTick: true };
         }
-        ticking = true;
+        scanning = true;
+        let considered = 0;
+        let outcomes: RunOutcome[] = [];
         try {
             const due = ledger.listDueJobs(now().toISOString(), maxPerScan);
-            const taking = due.slice(0, Math.max(1, maxConcurrent));
-            const outcomes = await Promise.all(
-                taking.map((job) => runner.run(job)),
-            );
+            considered = due.length;
+            // Message jobs are the fast lane: they run no model and no tool,
+            // so a timer is never queued behind an in-flight prompt turn. The
+            // bound stays on the jobs that can pin the process or the model.
+            let slots = Math.max(0, Math.max(1, maxConcurrent) - activeRuns);
+            const taking: AppJob[] = [];
+            for (const job of due) {
+                if (job.kind === "message") {
+                    taking.push(job);
+                    continue;
+                }
+                if (slots <= 0) {
+                    continue;
+                }
+                slots -= 1;
+                taking.push(job);
+            }
+            const started: Promise<RunOutcome>[] = [];
+            for (const job of taking) {
+                const message = job.kind === "message";
+                if (!message) {
+                    activeRuns += 1;
+                }
+                let run: Promise<RunOutcome>;
+                try {
+                    run = runner.run(job);
+                } catch (err) {
+                    if (!message) {
+                        activeRuns = Math.max(0, activeRuns - 1);
+                    }
+                    throw err;
+                }
+                if (!message) {
+                    // Both outcomes release the slot. The returned promise is
+                    // ignored, so handle rejection here; the original `run` is
+                    // still in `started` and (for `tick`) observed below.
+                    void run.then(
+                        () => {
+                            activeRuns = Math.max(0, activeRuns - 1);
+                        },
+                        () => {
+                            activeRuns = Math.max(0, activeRuns - 1);
+                        },
+                    );
+                }
+                started.push(run);
+            }
+            // The scan itself is over here. Awaiting the runs below must not
+            // keep the next scan out: a 30-second prompt turn is exactly what
+            // used to delay an alarm (#217).
+            scanning = false;
+            outcomes = await Promise.all(started);
             if (outcomes.length > 0) {
                 logger.debug(
-                    `scheduler tick: ${due.length} due, ${outcomes.length} taken on (${summarize(outcomes)})`,
+                    `scheduler scan: ${considered} due, ${outcomes.length} taken on (${summarize(outcomes)})`,
                 );
             }
-            return { considered: due.length, outcomes, skippedTick: false };
+            return { considered, outcomes, skippedTick: false };
         } finally {
-            ticking = false;
+            scanning = false;
         }
     }
 
@@ -135,17 +193,17 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
             }
             interval = setInterval(() => {
                 void tick().catch((err: unknown) => {
-                    // A tick must never take the process down: an unexpected
+                    // A scan must never take the process down: an unexpected
                     // failure is logged and the next interval tries again.
                     logger.error(
-                        `scheduler tick failed: ${err instanceof Error ? err.stack : String(err)}`,
+                        `scheduler scan failed: ${err instanceof Error ? err.stack : String(err)}`,
                     );
                 });
             }, tickMs);
             // Do not hold the event loop open for a timer nobody is waiting on.
             interval.unref?.();
             logger.info(
-                `Scheduler active: every ${tickMs}ms, up to ${maxConcurrent} job(s) per tick`,
+                `Scheduler active: every ${tickMs}ms, up to ${maxConcurrent} non-message job(s) in flight; message jobs run without that bound`,
             );
         },
         stop(): void {
