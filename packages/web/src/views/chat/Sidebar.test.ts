@@ -44,14 +44,16 @@ describe("Sidebar", () => {
         expect(html).not.toContain('aria-label="Delete Alpha"');
     });
 
-    it("gives each row the shared duration and a ring", () => {
+    it("gives each row the shared duration, with no ring at rest", () => {
         const html = renderToStaticMarkup(createElement(Sidebar, sidebar()));
 
         expect(
             html.match(new RegExp(`data-hold-ms="${HOLD_TO_DELETE_MS}"`, "g")),
         ).toHaveLength(2);
-        expect(html.match(/class="hold-to-delete-ring"/g)).toHaveLength(2);
-        expect(html.match(/class="hold-to-delete-fill"/g)).toHaveLength(2);
+        // #211: the outward ring is mounted only while a hold is live.
+        expect(html).not.toContain('class="hold-to-delete-ring"');
+        expect(html).not.toContain('class="hold-to-delete-track"');
+        expect(html).not.toContain('class="hold-to-delete-fill"');
     });
 
     it("keeps the delete control's row placement", () => {

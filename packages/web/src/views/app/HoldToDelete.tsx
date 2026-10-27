@@ -12,6 +12,11 @@
  * so the timer that fires `onDelete` and the ring the user sees cannot disagree.
  * That helper is exported for the package's node-only suite; the component's
  * pointer and keyboard handlers are the thin shell around it.
+ *
+ * At rest the button is only the trash icon. The ring is portalled to the body
+ * on every viewport and mounted only while a hold is live (or shrinking back
+ * after a cancel), so no track, circle, or fill cap is left behind at rest
+ * (#211).
  */
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -26,15 +31,32 @@ import { Trash2 } from "lucide-react";
 export const HOLD_TO_DELETE_MS = 3000;
 
 /**
- * How much larger the phone ring is than the button it belongs to.
+ * The outward ring's diameter as a multiple of the button's, by primary pointer.
  *
- * A 44 px button is exactly thumb-sized, so the ring has to grow past the
- * finger to stay visible. The overlay is also a little larger than the first
- * two-times attempt, with a heavier stroke (see `.hold-to-delete-overlay`).
+ * A 44 px button is exactly thumb-sized on a phone, so the touch ring has to
+ * grow past the finger to stay visible; a mouse needs less. The overlay is also
+ * a little larger than the button in both cases, with a heavier stroke (see
+ * `.hold-to-delete-overlay`), and the same outward ring is used on every
+ * viewport (#211).
  */
-const PHONE_RING_SCALE = 2.5;
+const HOLD_RING_SCALE_FINE = 1.75;
+const HOLD_RING_SCALE_TOUCH = 2.5;
 
-/** Where the phone's portal ring is centred, in viewport pixels. */
+/**
+ * Chooses the outward ring's scale for the primary pointer.
+ *
+ * Kept as a pure helper so the node-only suite can pin the mouse/thumb
+ * difference without a DOM. `(pointer: coarse)` is the browser's own statement
+ * that the primary input is a finger rather than a mouse or trackpad.
+ *
+ * @param coarsePointer - Whether `(pointer: coarse)` matches.
+ * @returns The ring diameter multiplier.
+ */
+export function holdRingScale(coarsePointer: boolean): number {
+    return coarsePointer ? HOLD_RING_SCALE_TOUCH : HOLD_RING_SCALE_FINE;
+}
+
+/** Where the portalled hold ring is centred, in viewport pixels. */
 interface RingAt {
     left: number;
     top: number;
@@ -111,10 +133,9 @@ export function HoldToDelete({
 }: HoldToDeleteProps) {
     const [holding, setHolding] = useState(false);
     /**
-     * The portalled phone ring's centre, or `null` on desktop (where the ring
-     * stays inside the button). Keeping it in the body's stacking context is
-     * what lets it draw above the sidebar instead of being clipped by that
-     * pane's scroll box.
+     * The portalled hold ring's centre, or `null` when no hold is live. Keeping
+     * it in the body's stacking context is what lets it draw above the sidebar
+     * instead of being clipped by that pane's scroll box.
      */
     const [ringAt, setRingAt] = useState<RingAt | null>(null);
     /** Whether the portalled ring is playing its shrink-back animation. */
@@ -153,21 +174,18 @@ export function HoldToDelete({
         stopExit();
         setRingLeaving(false);
         setHolding(true);
-        const phone =
+        const rect = target.getBoundingClientRect();
+        const coarsePointer =
             typeof window !== "undefined" &&
             typeof window.matchMedia === "function" &&
-            window.matchMedia("(max-width: 48rem)").matches;
-        if (phone) {
-            const rect = target.getBoundingClientRect();
-            const size = Math.max(rect.width, rect.height) * PHONE_RING_SCALE;
-            setRingAt({
-                left: rect.left + rect.width / 2,
-                top: rect.top + rect.height / 2,
-                size,
-            });
-        } else {
-            setRingAt(null);
-        }
+            window.matchMedia("(pointer: coarse)").matches;
+        const size =
+            Math.max(rect.width, rect.height) * holdRingScale(coarsePointer);
+        setRingAt({
+            left: rect.left + rect.width / 2,
+            top: rect.top + rect.height / 2,
+            size,
+        });
         holdRef.current = scheduleHold(durationMs, () => {
             holdRef.current = null;
             stopExit();
@@ -181,9 +199,9 @@ export function HoldToDelete({
     /**
      * Abandons a live hold.
      *
-     * The phone's portal ring shrinks back into the button instead of vanishing
-     * on the next frame; the row stays mounted, so the short exit animation can
-     * finish without holding up the pointer gesture.
+     * The outward ring shrinks back into the button instead of vanishing on the
+     * next frame; the row stays mounted, so the short exit animation can finish
+     * without holding up the pointer gesture.
      */
     function cancel(): void {
         holdRef.current?.cancel();
@@ -263,7 +281,6 @@ export function HoldToDelete({
                 title={`Press and hold to delete ${label}`}
                 data-hold-ms={durationMs}
                 data-holding={holding ? "true" : "false"}
-                data-ring={ringAt !== null ? "true" : "false"}
                 onPointerDown={handlePointerDown}
                 onPointerUp={cancel}
                 onPointerCancel={cancel}
@@ -273,32 +290,15 @@ export function HoldToDelete({
                 onBlur={cancel}
                 onContextMenu={(event) => event.preventDefault()}
             >
-                <span className="hold-to-delete-ring" aria-hidden="true">
-                    <svg viewBox="0 0 40 40" focusable="false">
-                        <circle
-                            className="hold-to-delete-track"
-                            cx="20"
-                            cy="20"
-                            r="17"
-                            pathLength={100}
-                        />
-                        <circle
-                            className="hold-to-delete-fill"
-                            cx="20"
-                            cy="20"
-                            r="17"
-                            pathLength={100}
-                        />
-                    </svg>
-                </span>
                 <Trash2 size={16} aria-hidden="true" />
             </button>
             {/*
-             * The phone ring is portalled to `document.body`: the sidebar is a
-             * scroll container (`overflow-y: auto`), so a ring drawn inside the
-             * button is clipped by the chat list's pane exactly where the user
-             * needs to see it. At the body's level it can paint over the pane
-             * and every other page control.
+             * The ring is portalled to `document.body`: the sidebar is a scroll
+             * container (`overflow-y: auto`), so a ring drawn inside the button
+             * is clipped by the chat list's pane exactly where the user needs to
+             * see it. At the body's level it can paint over the pane and every
+             * other page control. It exists only while a hold is live, so the
+             * resting button is nothing but the trash icon (#211).
              */}
             {ringAt !== null &&
                 createPortal(

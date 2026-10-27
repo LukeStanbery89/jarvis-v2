@@ -765,27 +765,30 @@ textarea::placeholder {
 }
 
 /*
- * The hold-to-delete gesture (#157).
+ * The hold-to-delete gesture (#157, #211).
  *
  * A single tap used to delete a conversation. The trash button is now the hold
  * control: a red ring fills clockwise around the icon for three seconds, and the
- * conversation goes only if the ring closes. The ring is absolutely positioned
- * inside the button's square hit area, so the row's size — and the 44px phone
- * target the `.icon-btn` rule gives it — do not change.
+ * conversation goes only if the ring closes. At rest the control is only the
+ * trash icon. The old in-button ring (and the red cap dot its fill left at
+ * `stroke-dashoffset: 100`) is gone (#211); the visible ring is the outward
+ * `.hold-to-delete-overlay`, portalled to the body and mounted only for the life
+ * of a hold or its short shrink-back.
  *
- * The circle is the whole control: the rounded-square `.icon-btn` chrome (its
- * hairline border and its hover wash) is deliberately cleared here, so nothing
- * is drawn around the ring (#157 review). The rules are two classes deep because
- * `.icon-btn` is declared *later* in the sheet at the same specificity — a bare
- * `.hold-to-delete` rule loses that source-order tie, which is exactly how the
- * square crept in. `border-radius: 50%` keeps what is left of the shape round:
- * the focus outline follows the radius, so it traces the circle too.
+ * The outward ring is the only chrome while holding: the rounded-square
+ * `.icon-btn` chrome (its hairline border and its hover wash) is deliberately
+ * cleared here, so nothing is drawn around the resting icon. The rules are two
+ * classes deep because `.icon-btn` is declared *later* in the sheet at the same
+ * specificity — a bare `.hold-to-delete` rule loses that source-order tie, which
+ * is exactly how the square crept in. `border-radius: 50%` keeps what is left of
+ * the shape round: the keyboard focus outline follows the radius, so it traces
+ * the circle too.
  *
  * The fill is a keyframe, not a transition: removing `.holding` on an early
- * release drops the animation and the base `stroke-dashoffset` snaps the ring
- * back instantly, rather than animating a second three-second reset. The
- * duration arrives as `--hold-duration` from the component, so the ring and the
- * timer that actually deletes cannot disagree.
+ * release drops the animation and the overlay's shrink-back starts immediately,
+ * rather than animating a second three-second reset. The duration arrives as
+ * `--hold-duration` from the component, so the ring and the timer that actually
+ * deletes cannot disagree.
  */
 .icon-btn.hold-to-delete {
     /* A finger is allowed a little drift while holding: `none` stops the
@@ -798,15 +801,16 @@ textarea::placeholder {
     user-select: none;
     -webkit-user-select: none;
 
-    /* No square: the ring is the button. */
+    /* No square: the ring is the only chrome, and only while holding. */
     background: transparent;
     border: 0;
     border-radius: 50%;
 }
 
-/* The visible ring is 44px, but the finger target is deliberately larger.
-   This pseudo-element is part of the button, so a drift of a few millimetres
-   still stays inside the control without changing the row's layout. */
+/* The visible ring is larger than the button, but the finger target is
+   deliberately larger still. This pseudo-element is part of the button, so a
+   drift of a few millimetres still stays inside the control without changing
+   the row's layout. */
 .icon-btn.hold-to-delete::before {
     content: "";
     position: absolute;
@@ -814,16 +818,12 @@ textarea::placeholder {
     border-radius: 50%;
 }
 
-/* The base `.icon-btn:hover` paints its rounded wash; the circle needs none.
-   The icon's own red tint (`.thread-delete:hover`) and the brightened track
-   below are the hover feedback instead. */
+/* The base `.icon-btn:hover` paints its rounded wash; the control needs none.
+   The icon's own red tint (`.thread-delete:hover`) is the hover feedback
+   instead; the ring appears only once a hold begins. */
 .icon-btn.hold-to-delete:hover {
     background: transparent;
     border-color: transparent;
-}
-
-.icon-btn.hold-to-delete:hover .hold-to-delete-track {
-    stroke: var(--primary-dim);
 }
 
 .hold-to-delete:focus-visible {
@@ -835,32 +835,15 @@ textarea::placeholder {
     color: var(--error);
 }
 
-.hold-to-delete-ring {
-    position: absolute;
-    inset: 0;
-    display: block;
-    pointer-events: none;
-}
-
-.hold-to-delete-ring svg {
-    display: block;
-    width: 100%;
-    height: 100%;
-    /* The dash begins at 3 o'clock; -90° starts it at the top, and decreasing
-       the offset then fills clockwise. `transform-box` keeps that rotation
-       centred on the ring rather than on the SVG's top-left corner. */
-    transform: rotate(-90deg);
-    transform-box: view-box;
-    transform-origin: center;
-}
-
 /*
- * The phone's ring, portalled to `<body>` by `HoldToDelete`.
+ * The outward hold ring, portalled to `<body>` by `HoldToDelete`.
  *
  * Fixed positioning and a stacking context above the app are the point: the
  * chat list is an `overflow-y: auto` pane, so a ring drawn inside the row is
  * clipped at the pane's edge. This copy is centred over the button but is
  * larger than it and is free to paint over the pane, the bar, and the composer.
+ * It is mounted only while `ringAt` is set, which is why nothing is drawn at
+ * rest (#211).
  */
 .hold-to-delete-overlay {
     position: fixed;
@@ -933,10 +916,6 @@ textarea::placeholder {
     stroke-linecap: round;
     stroke-dasharray: 100;
     stroke-dashoffset: 100;
-}
-
-.hold-to-delete.holding .hold-to-delete-fill {
-    animation: hold-to-delete-fill var(--hold-duration, 3000ms) linear forwards;
 }
 
 @keyframes hold-to-delete-fill {
@@ -3603,13 +3582,6 @@ textarea::placeholder {
     /* The thread list: the row is the target, not the label. */
     .thread-open {
         padding: 0.6rem 0.5rem;
-    }
-
-    /* The phone draws its larger ring in the body portal (see HoldToDelete),
-       so hide the in-button copy for the whole life of that overlay —
-       including the shrink-back after a cancel. */
-    .hold-to-delete[data-ring="true"] > .hold-to-delete-ring {
-        visibility: hidden;
     }
 
     /* The composer: the send button and the box beside it agree on a height. */
