@@ -24,6 +24,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import type { Runnable } from "@langchain/core/runnables";
 import {
+    Annotation,
     MessagesAnnotation,
     StateGraph,
     END,
@@ -34,6 +35,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { ToolCallTracker } from "./toolCallTracker";
 import type { AgentEvent } from "./event";
+import { logger } from "../logger";
 
 export type { AgentEvent } from "./event";
 
@@ -53,53 +55,270 @@ export interface ToolBoundChatModel extends BaseChatModel {
     ): Runnable<BaseLanguageModelInput, AIMessageChunk>;
 }
 
+/**
+ * Graph state shared by the legacy and two-role graphs.
+ *
+ * `messages` is the checkpointed conversation. The three role channels are
+ * turn-scoped control data: they are written into the state because LangGraph
+ * conditionals read state, but only `messages` is meaningful history. The
+ * input resets them on every turn.
+ */
+const AgentState = Annotation.Root({
+    ...MessagesAnnotation.spec,
+    /** Whether this turn uses the router/writer split. */
+    roleSplit: Annotation<boolean>({
+        reducer: (_left, right) => right,
+        default: () => false,
+    }),
+    /** Router/tool rounds attempted in this turn. */
+    routerRounds: Annotation<number>({
+        reducer: (_left, right) => right,
+        default: () => 0,
+    }),
+    /** Set when the router failed before any tool executed. */
+    routerFailed: Annotation<boolean>({
+        reducer: (_left, right) => right,
+        default: () => false,
+    }),
+});
+
 /** Inputs to {@link createAgentGraph}. */
 export interface AgentGraphOptions {
-    /** Chat model the agent invokes; called with `bindTools(tools)`. */
+    /** Chat model the agent invokes; the writer in the split graph. */
     model: ToolBoundChatModel;
     /** Tools the model can call; also executed by the ToolNode. */
     tools: StructuredToolInterface[];
     /** Persists graph state keyed by thread id (the sessionId). */
     checkpointer: BaseCheckpointSaver;
+    /**
+     * Optional small tool-routing model (#214). When present and the turn is
+     * marked `roleSplit`, the graph routes through `router -> tools* -> writer`
+     * instead of the legacy `model <-> tools` loop.
+     */
+    router?: ToolBoundChatModel;
+    /** Maximum router/tool rounds before the writer takes over. */
+    routerMaxRounds?: number;
 }
 
 /**
  * Builds and compiles the agent graph.
  *
- * Layout: `START -> model <-> tools`, where the model node decides the next
- * hop: route to `tools` when its latest message carries tool calls, otherwise
- * to `END`. The run's turn budget is enforced per invocation via
- * `recursionLimit` in {@link streamAgentTurn}.
+ * Legacy layout (when `router` is absent or the turn is not split):
+ * `START -> model <-> tools`, where the model decides the next hop: route to
+ * `tools` when its latest message carries tool calls, otherwise to `END`.
+ *
+ * Split layout (`router` configured and `roleSplit` set): `START -> router`,
+ * with `router <-> tools` looping until the router emits no tool call, then
+ * `writer -> END`. The writer is never bound to tools. A router failure before
+ * any tool runs falls back to the legacy `model <-> tools` loop on the same
+ * state; a failure after a tool runs goes straight to the writer so a side
+ * effect is never replayed.
+ *
+ * The run's turn budget is enforced per invocation via `recursionLimit` in
+ * {@link streamAgentTurn}; the router has an additional round cap.
  */
 export function createAgentGraph({
     model,
     tools,
     checkpointer,
+    router,
+    routerMaxRounds = 4,
 }: AgentGraphOptions) {
-    return new StateGraph(MessagesAnnotation)
+    const maxRouterRounds = Math.max(1, Math.floor(routerMaxRounds));
+    return new StateGraph(AgentState)
         .addNode("model", async (state, config) => {
-            const boundary = Number(
-                config.configurable?.historyBoundary ?? state.messages.length,
-            );
-            // Prune stale clock exchanges from the persisted prefix only; the
-            // in-flight turn's messages (from the boundary onward) — including
-            // the fresh tool result — are never touched, so the model can
-            // answer from the value it just computed.
-            const persisted = state.messages.slice(0, boundary);
-            const inFlight = state.messages.slice(boundary);
+            const boundary = boundaryOf(state, config);
+            // The legacy path has no role override; the fallback path inside
+            // a split turn uses the full legacy prompt so it can call tools.
+            const fallbackPrompt = state.roleSplit
+                ? promptFromConfig(config, "fallbackSystemPrompt")
+                : undefined;
             const response = await model
                 .bindTools(tools)
-                .invoke([...prunedClockHistory(persisted), ...inFlight]);
+                .invoke(modelInput(state, boundary, fallbackPrompt));
+            return { messages: [response] };
+        })
+        .addNode("router", async (state, config) => {
+            if (!router) {
+                throw new Error(
+                    "router node reached without a configured router model",
+                );
+            }
+            if (state.routerRounds >= maxRouterRounds) {
+                // The cap is checked before the model call, not after it:
+                // streaming a final tool call we then refuse to execute would
+                // still announce a phantom card to the client.
+                logger.warn(
+                    `Router reached its ${maxRouterRounds}-round cap; writer will answer from the results so far`,
+                );
+                return {};
+            }
+            const boundary = boundaryOf(state, config);
+            const round = state.routerRounds + 1;
+            const toolRan = state.messages
+                .slice(boundary)
+                .some((message) => message._getType() === "tool");
+            const prompt = promptFromConfig(config, "routerSystemPrompt");
+            let response: AIMessageChunk;
+            try {
+                response = await router
+                    .bindTools(tools)
+                    .invoke(modelInput(state, boundary, prompt));
+            } catch (err) {
+                // A cancelled turn is not a router failure; let the abort
+                // propagate to the existing cancellation path.
+                if (config.signal?.aborted) {
+                    throw err;
+                }
+                const detail = err instanceof Error ? err.message : String(err);
+                logger.error(`Router model failed: ${detail}`);
+                if (toolRan) {
+                    // A side effect already happened. Do not replay the turn
+                    // through the tool-capable fallback; let the writer use
+                    // the results we have.
+                    logger.warn(
+                        "Router failed after a tool ran; writer will answer from partial results",
+                    );
+                    return { routerRounds: round };
+                }
+                logger.warn(
+                    "Router failed before any tool ran; falling back to the single-model loop",
+                );
+                return { routerRounds: round, routerFailed: true };
+            }
+            if (hasToolCalls(response)) {
+                // The router's prose is a scratchpad, not the answer. Keep the
+                // tool calls in history so the writer and later turns can see
+                // what ran, but strip the prose.
+                return {
+                    messages: [routerDecisionMessage(response)],
+                    routerRounds: round,
+                };
+            }
+            // No tool call: a routing decision only. Do not persist the
+            // router's text; the writer produces the user-facing answer.
+            return { routerRounds: round };
+        })
+        .addNode("writer", async (state, config) => {
+            const boundary = boundaryOf(state, config);
+            const prompt = promptFromConfig(config, "writerSystemPrompt");
+            const response = await model.invoke(
+                modelInput(state, boundary, prompt),
+            );
             return { messages: [response] };
         })
         .addNode("tools", new ToolNode(tools))
-        .addEdge(START, "model")
-        .addConditionalEdges("model", (state) => {
-            const last = state.messages[state.messages.length - 1];
-            return last && hasToolCalls(last) ? "tools" : END;
+        .addConditionalEdges(START, (state) =>
+            state.roleSplit ? "router" : "model",
+        )
+        .addConditionalEdges("model", (state) =>
+            lastMessageHasToolCalls(state) ? "tools" : END,
+        )
+        .addConditionalEdges("router", (state) => {
+            if (state.routerFailed) {
+                return "model";
+            }
+            return lastMessageHasToolCalls(state) ? "tools" : "writer";
         })
-        .addEdge("tools", "model")
+        .addConditionalEdges("tools", (state) => {
+            if (!state.roleSplit) {
+                return "model";
+            }
+            return state.routerFailed ? "model" : "router";
+        })
+        .addEdge("writer", END)
         .compile({ checkpointer });
+}
+
+/** Reads the per-turn history boundary from the runnable config. */
+function boundaryOf(
+    state: { messages: BaseMessage[] },
+    config: { configurable?: Record<string, unknown> },
+): number {
+    return Number(
+        config.configurable?.historyBoundary ?? state.messages.length,
+    );
+}
+
+/** Reads one string from the runnable config's per-turn values. */
+function promptFromConfig(
+    config: { configurable?: Record<string, unknown> },
+    key: string,
+): string | undefined {
+    const value = config.configurable?.[key];
+    return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Builds one model call's input: pruned persisted history plus the in-flight
+ * turn, with an optional ephemeral system-prompt override.
+ *
+ * The override is never written to the checkpoint. That is what lets the
+ * router and writer share one stored base system message while each receives
+ * its own role instructions.
+ */
+function modelInput(
+    state: { messages: BaseMessage[] },
+    boundary: number,
+    rolePrompt: string | undefined,
+): BaseMessage[] {
+    const persisted = state.messages.slice(0, boundary);
+    const inFlight = state.messages.slice(boundary);
+    return withRolePrompt(
+        [...prunedClockHistory(persisted), ...inFlight],
+        rolePrompt,
+    );
+}
+
+/** Replaces the stored prime with a role prompt for one model call. */
+function withRolePrompt(
+    messages: BaseMessage[],
+    rolePrompt: string | undefined,
+): BaseMessage[] {
+    if (rolePrompt === undefined) {
+        return messages;
+    }
+    const first = messages[0];
+    if (first?._getType() === "system") {
+        return [
+            new SystemMessage({
+                ...(first.id === undefined ? {} : { id: first.id }),
+                content: rolePrompt,
+            }),
+            ...messages.slice(1),
+        ];
+    }
+    return [new SystemMessage(rolePrompt), ...messages];
+}
+
+/**
+ * Strips router prose from a tool-call message before it enters history.
+ *
+ * Tool calls must remain in the checkpoint so the writer and later turns see
+ * what ran, but the router's text is scratchpad. Empty content keeps the
+ * stored shape a clean tool-call assistant message.
+ */
+function routerDecisionMessage(response: AIMessage): AIMessage {
+    const prose =
+        typeof response.content === "string"
+            ? response.content.trim().length > 0
+            : response.content.length > 0;
+    if (!prose) {
+        return response;
+    }
+    return new AIMessage({
+        content: "",
+        tool_calls: response.tool_calls ?? [],
+        ...(response.invalid_tool_calls?.length
+            ? { invalid_tool_calls: response.invalid_tool_calls }
+            : {}),
+    });
+}
+
+/** True when the newest state message asks for a tool. */
+function lastMessageHasToolCalls(state: { messages: BaseMessage[] }): boolean {
+    const last = state.messages[state.messages.length - 1];
+    return last !== undefined && hasToolCalls(last);
 }
 
 /**
@@ -124,6 +343,20 @@ export interface TurnOptions {
      * next token. Optional: the turn timeout drains best-effort without it.
      */
     signal?: AbortSignal;
+    /**
+     * Whether this turn uses the router/writer split (#214). `false` keeps the
+     * legacy `model <-> tools` path even when a router is compiled.
+     */
+    roleSplit?: boolean;
+    /** Ephemeral router system prompt; required for a split turn. */
+    routerSystemPrompt?: string;
+    /** Ephemeral writer system prompt; required for a split turn. */
+    writerSystemPrompt?: string;
+    /**
+     * Full legacy prompt used only if the router fails before any tool runs.
+     * The fallback model needs the tool-hygiene paragraphs to route safely.
+     */
+    fallbackSystemPrompt?: string;
 }
 
 /**
@@ -167,14 +400,32 @@ export async function* streamAgentTurn(
             // tool result of the in-flight turn stays visible.
             historyBoundary: history.length,
             ...configurable,
+            ...(options.routerSystemPrompt === undefined
+                ? {}
+                : { routerSystemPrompt: options.routerSystemPrompt }),
+            ...(options.writerSystemPrompt === undefined
+                ? {}
+                : { writerSystemPrompt: options.writerSystemPrompt }),
+            ...(options.fallbackSystemPrompt === undefined
+                ? {}
+                : { fallbackSystemPrompt: options.fallbackSystemPrompt }),
         },
         recursionLimit,
         ...(signal !== undefined ? { signal } : {}),
     };
 
-    const tracked = new ToolCallTracker();
+    // Router/legacy/tool messages share one tracker so tool calls pair with
+    // their results. The writer gets its own tracker: its text is a fresh
+    // answer segment, not a continuation of the router's discarded prose.
+    const agentTracker = new ToolCallTracker();
+    const writerTracker = new ToolCallTracker();
     const stream = await graph.stream(
-        { messages: input },
+        {
+            messages: input,
+            roleSplit: options.roleSplit ?? false,
+            routerRounds: 0,
+            routerFailed: false,
+        },
         {
             ...config,
             streamMode: "messages",
@@ -193,12 +444,20 @@ export async function* streamAgentTurn(
         // announcements) and every ToolMessage forwards as before. A missing
         // metadata record forwards too (fail-open), since dropping a real
         // model message would be worse than relaying a stray one.
+        //
+        // In the split graph the router's prose is scratchpad, not an answer:
+        // its `tool` announcements still reach the client, but its text does
+        // not. The writer's node is the only source of assistant tokens.
         const node = (metadata as { langgraph_node?: string } | undefined)
             ?.langgraph_node;
         if (node === "tools" && message._getType?.() !== "tool") {
             continue;
         }
-        for (const event of tracked.onMessage(message)) {
+        const tracker = node === "writer" ? writerTracker : agentTracker;
+        for (const event of tracker.onMessage(message)) {
+            if (node === "router" && event.type !== "tool") {
+                continue;
+            }
             yield event;
         }
     }

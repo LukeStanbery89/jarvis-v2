@@ -36,6 +36,10 @@ import { homedir } from "node:os";
 afterEach(() => {
     delete process.env.PORT;
     delete process.env.LLM_TEMPERATURE;
+    delete process.env.LLM_ROUTER_MODEL;
+    delete process.env.LLM_ROUTER_TEMPERATURE;
+    delete process.env.LLM_ROUTER_MAX_TOKENS;
+    delete process.env.JARVIS_ROUTER_MAX_ROUNDS;
     delete process.env.JARVIS_AGENT_MAX_TURNS;
     delete process.env.JARVIS_DB_PATH;
     delete process.env.JARVIS_TURN_TIMEOUT_MS;
@@ -142,6 +146,25 @@ describe("getAppConfig", () => {
         expect(getLlmConfig().temperature).toBe(0);
         process.env.JARVIS_AGENT_MAX_TURNS = "0";
         expect(getLlmConfig().agentMaxTurns).toBe(DEFAULT_AGENT_MAX_TURNS);
+    });
+
+    it("reads the optional router role without changing the writer", () => {
+        expect(getLlmConfig().routerModel).toBeUndefined();
+
+        process.env.LLM_ROUTER_MODEL = "qwen/qwen3-4b-2507";
+        process.env.LLM_ROUTER_TEMPERATURE = "0";
+        process.env.LLM_ROUTER_MAX_TOKENS = "256";
+        process.env.JARVIS_ROUTER_MAX_ROUNDS = "2";
+
+        expect(getLlmConfig()).toMatchObject({
+            routerModel: "qwen/qwen3-4b-2507",
+            routerTemperature: 0,
+            routerMaxTokens: 256,
+            routerMaxRounds: 2,
+        });
+
+        process.env.LLM_ROUTER_MODEL = "   ";
+        expect(getLlmConfig().routerModel).toBeUndefined();
     });
 
     it("reads JARVIS_BOOTSTRAP_TOKEN", () => {

@@ -8,7 +8,13 @@
  * otherwise only be observable under a live model.
  */
 import { describe, expect, it } from "vitest";
-import { sharedIssueRule, systemPromptForCapabilities } from "../src/agent";
+import {
+    baseSystemPrompt,
+    routerSystemPrompt,
+    sharedIssueRule,
+    systemPromptForCapabilities,
+    writerSystemPrompt,
+} from "../src/agent";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/config";
 import type { ClientCapability } from "@lukestanbery/jarvis-protocol";
 
@@ -120,6 +126,53 @@ describe("systemPromptForCapabilities", () => {
         // Voice scoping is per-turn: a text-mode turn on a voice thread
         // renders richly again.
         expect(text).toMatch(/Markdown is rendered/);
+    });
+});
+
+describe("model-role prompts (#214)", () => {
+    it("keeps the base prompt free of tool instructions", () => {
+        const base = baseSystemPrompt(DEFAULT_SYSTEM_PROMPT, ["markdown"]);
+
+        expect(base).toContain(DEFAULT_SYSTEM_PROMPT);
+        expect(base).toMatch(/Markdown is rendered/);
+        expect(base).not.toMatch(/exactly one tool call at a time/);
+        expect(base).not.toMatch(/make exactly\s+one getCurrentTime call/);
+        expect(base).not.toMatch(/sendNotification reaches the user/);
+    });
+
+    it("gives the router the tool hygiene and the per-turn issue rule", () => {
+        const base = baseSystemPrompt(DEFAULT_SYSTEM_PROMPT, []);
+        const shared = sharedIssueRule({ number: 214, repo: "luke/app" });
+        const router = routerSystemPrompt(base, shared);
+
+        expect(router).toContain(base);
+        expect(router).toMatch(/exactly one tool call at a time/);
+        expect(router).toMatch(/make exactly\s+one getCurrentTime call/);
+        expect(router).toContain(shared);
+        expect(router).toMatch(/You are the tool router for this turn/);
+    });
+
+    it("gives the writer the base and role rule but no tool catalog", () => {
+        const base = baseSystemPrompt(DEFAULT_SYSTEM_PROMPT, ["markdown"]);
+        const writer = writerSystemPrompt(base);
+
+        expect(writer).toContain(base);
+        expect(writer).toMatch(
+            /Tool work for this turn has already been handled/,
+        );
+        expect(writer).not.toMatch(/exactly one tool call at a time/);
+        expect(writer).not.toMatch(/make exactly\s+one getCurrentTime call/);
+        expect(writer).not.toMatch(/sendNotification reaches the user/);
+    });
+
+    it("still gives the legacy prompt every tool rule", () => {
+        const legacy = systemPromptForCapabilities(DEFAULT_SYSTEM_PROMPT, [
+            "markdown",
+        ]);
+
+        expect(legacy).toMatch(/exactly one tool call at a time/);
+        expect(legacy).toMatch(/make exactly\s+one getCurrentTime call/);
+        expect(legacy).toMatch(/Markdown is rendered/);
     });
 });
 

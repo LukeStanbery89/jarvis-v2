@@ -37,10 +37,13 @@ class ScriptedChatModel extends BaseChatModel {
     responses: BaseMessage[];
     callInputs: BaseMessage[][] = [];
     private index = 0;
+    /** When set, the Nth call rejects instead of returning a scripted reply. */
+    private readonly throwAtCall: number | undefined;
 
-    constructor(responses: BaseMessage[]) {
+    constructor(responses: BaseMessage[], throwAtCall?: number) {
         super({});
         this.responses = responses;
+        this.throwAtCall = throwAtCall;
     }
 
     _llmType(): string {
@@ -58,9 +61,13 @@ class ScriptedChatModel extends BaseChatModel {
         generations: { message: BaseMessage; text: string }[];
     }> {
         this.callInputs.push(messages);
-        const next =
-            this.responses[Math.min(this.index, this.responses.length - 1)];
+        const callNumber = this.index + 1;
         this.index += 1;
+        if (this.throwAtCall === callNumber) {
+            throw new Error("scripted model failure");
+        }
+        const next =
+            this.responses[Math.min(callNumber - 1, this.responses.length - 1)];
         return {
             generations: [
                 {
@@ -91,6 +98,32 @@ function buildGraph(model: ScriptedChatModel): AgentGraph {
         >[0]["model"],
         tools: [getCurrentTime] as StructuredToolInterface[],
         checkpointer: new MemorySaver(),
+    });
+}
+
+/**
+ * Builds the two-role graph with a scripted router and writer.
+ *
+ * @param writer - The writer/fallback model.
+ * @param router - The tool-routing model.
+ * @param routerMaxRounds - Router loop cap under test.
+ * @returns The compiled graph.
+ */
+function buildSplitGraph(
+    writer: ScriptedChatModel,
+    router: ScriptedChatModel,
+    routerMaxRounds = 4,
+): AgentGraph {
+    return createAgentGraph({
+        model: writer as unknown as Parameters<
+            typeof createAgentGraph
+        >[0]["model"],
+        router: router as unknown as Parameters<
+            typeof createAgentGraph
+        >[0]["router"],
+        tools: [getCurrentTime] as StructuredToolInterface[],
+        checkpointer: new MemorySaver(),
+        routerMaxRounds,
     });
 }
 
@@ -608,6 +641,286 @@ describe("createAgentGraph", () => {
                 }),
             ),
         ).rejects.toThrow(/recursion|limit/i);
+    });
+});
+
+describe("split model roles (#214)", () => {
+    const SPLIT_SYSTEM = "Stored base system prompt.";
+    const ROUTER_PROMPT = "Router role prompt.";
+    const WRITER_PROMPT = "Writer role prompt.";
+    const FALLBACK_PROMPT = "Fallback full prompt.";
+
+    /** Concatenates only the assistant token events. */
+    function tokensOf(events: unknown[]): string {
+        return events
+            .filter(
+                (event): event is { type: "token"; text: string } =>
+                    (event as { type?: string }).type === "token",
+            )
+            .map((event) => event.text)
+            .join("");
+    }
+
+    /** Counts one event shape in the stream. */
+    function countType(events: unknown[], type: string): number {
+        return events.filter(
+            (event) => (event as { type?: string }).type === type,
+        ).length;
+    }
+
+    /** The first system message's text, or an empty string. */
+    function systemContent(messages: BaseMessage[]): string {
+        const first = messages[0];
+        return first?._getType() === "system" &&
+            typeof first.content === "string"
+            ? first.content
+            : "";
+    }
+
+    /** All tool calls stored in a message list. */
+    function storedToolCalls(messages: BaseMessage[]) {
+        return messages
+            .filter(
+                (message): message is AIMessage => message._getType() === "ai",
+            )
+            .flatMap((message) => message.tool_calls ?? []);
+    }
+
+    function splitOptions() {
+        return {
+            systemPrompt: SPLIT_SYSTEM,
+            recursionLimit: 10,
+            roleSplit: true,
+            routerSystemPrompt: ROUTER_PROMPT,
+            writerSystemPrompt: WRITER_PROMPT,
+            fallbackSystemPrompt: FALLBACK_PROMPT,
+        } as const;
+    }
+
+    it("runs the router tool loop and streams only the writer's answer", async () => {
+        const routerModel = new ScriptedChatModel([
+            new AIMessage({
+                content: "I'll check the clock.",
+                tool_calls: [
+                    {
+                        id: "split-call-1",
+                        name: "getCurrentTime",
+                        args: { question: "what time is it?" },
+                    },
+                ],
+            }),
+            new AIMessage({ content: "Routing complete." }),
+        ]);
+        const writerModel = new ScriptedChatModel([
+            new AIMessage({ content: "It is 3:26 PM." }),
+        ]);
+        const graph = buildSplitGraph(writerModel, routerModel);
+
+        const events = await collect(
+            streamAgentTurn(graph, "what time is it?", "split-tool", {
+                ...splitOptions(),
+            }),
+        );
+
+        expect(tokensOf(events)).toBe("It is 3:26 PM.");
+        expect(countType(events, "tool")).toBe(1);
+        expect(countType(events, "toolResult")).toBe(1);
+        expect(routerModel.callInputs).toHaveLength(2);
+        expect(systemContent(routerModel.callInputs[0]!)).toBe(ROUTER_PROMPT);
+        expect(
+            routerModel.callInputs[1]!.some(
+                (message) => message._getType() === "tool",
+            ),
+        ).toBe(true);
+        expect(writerModel.callInputs).toHaveLength(1);
+        expect(systemContent(writerModel.callInputs[0]!)).toBe(WRITER_PROMPT);
+        expect(
+            writerModel.callInputs[0]!.some(
+                (message) => message._getType() === "tool",
+            ),
+        ).toBe(true);
+
+        const state = await graph.getState({
+            configurable: { thread_id: "split-tool" },
+        });
+        const messages = state.values.messages as BaseMessage[];
+        expect(systemContent(messages)).toBe(SPLIT_SYSTEM);
+        const calls = storedToolCalls(messages);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.name).toBe("getCurrentTime");
+        expect(
+            messages.filter(
+                (message) =>
+                    message._getType() === "ai" &&
+                    (message as AIMessage).tool_calls?.length,
+            )[0]!.content,
+        ).toBe("");
+        expect(
+            messages.some(
+                (message) =>
+                    typeof message.content === "string" &&
+                    message.content.includes("Routing complete"),
+            ),
+        ).toBe(false);
+        expect(messages[messages.length - 1]!.content).toBe("It is 3:26 PM.");
+    });
+
+    it("goes straight to the writer when the router needs no tool", async () => {
+        const routerModel = new ScriptedChatModel([
+            new AIMessage({ content: "No tool needed." }),
+        ]);
+        const writerModel = new ScriptedChatModel([
+            new AIMessage({ content: "Just an answer." }),
+        ]);
+        const graph = buildSplitGraph(writerModel, routerModel);
+
+        const events = await collect(
+            streamAgentTurn(graph, "hello", "split-notool", {
+                ...splitOptions(),
+            }),
+        );
+
+        expect(tokensOf(events)).toBe("Just an answer.");
+        expect(countType(events, "tool")).toBe(0);
+        expect(routerModel.callInputs).toHaveLength(1);
+        expect(writerModel.callInputs).toHaveLength(1);
+        expect(systemContent(writerModel.callInputs[0]!)).toBe(WRITER_PROMPT);
+
+        const state = await graph.getState({
+            configurable: { thread_id: "split-notool" },
+        });
+        const messages = state.values.messages as BaseMessage[];
+        expect(messages).toHaveLength(3);
+        expect(
+            messages.some(
+                (message) =>
+                    typeof message.content === "string" &&
+                    message.content.includes("No tool needed"),
+            ),
+        ).toBe(false);
+        expect(messages[messages.length - 1]!.content).toBe("Just an answer.");
+    });
+
+    it("falls back to the single-model loop when the router fails before a tool", async () => {
+        const routerModel = new ScriptedChatModel([], 1);
+        const writerModel = new ScriptedChatModel([
+            new AIMessage({ content: "Fallback answer." }),
+        ]);
+        const graph = buildSplitGraph(writerModel, routerModel);
+
+        const events = await collect(
+            streamAgentTurn(graph, "what time is it?", "split-fallback", {
+                ...splitOptions(),
+            }),
+        );
+
+        expect(tokensOf(events)).toBe("Fallback answer.");
+        expect(countType(events, "tool")).toBe(0);
+        expect(routerModel.callInputs).toHaveLength(1);
+        expect(writerModel.callInputs).toHaveLength(1);
+        expect(systemContent(writerModel.callInputs[0]!)).toBe(FALLBACK_PROMPT);
+    });
+
+    it("does not replay a tool after a router failure; the writer answers", async () => {
+        const routerModel = new ScriptedChatModel(
+            [
+                new AIMessage({
+                    content: "",
+                    tool_calls: [
+                        {
+                            id: "split-boom-1",
+                            name: "getCurrentTime",
+                            args: { question: "what time is it?" },
+                        },
+                    ],
+                }),
+            ],
+            2,
+        );
+        const writerModel = new ScriptedChatModel([
+            new AIMessage({ content: "Answered from the result." }),
+        ]);
+        const graph = buildSplitGraph(writerModel, routerModel);
+
+        const events = await collect(
+            streamAgentTurn(graph, "what time is it?", "split-boom", {
+                ...splitOptions(),
+            }),
+        );
+
+        expect(tokensOf(events)).toBe("Answered from the result.");
+        expect(countType(events, "tool")).toBe(1);
+        expect(countType(events, "toolResult")).toBe(1);
+        expect(routerModel.callInputs).toHaveLength(2);
+        expect(systemContent(writerModel.callInputs[0]!)).toBe(WRITER_PROMPT);
+    });
+
+    it("stops a router that exceeds its round cap and hands off to the writer", async () => {
+        const routerModel = new ScriptedChatModel([
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "split-cap-1",
+                        name: "getCurrentTime",
+                        args: { question: "one" },
+                    },
+                ],
+            }),
+            new AIMessage({
+                content: "",
+                tool_calls: [
+                    {
+                        id: "split-cap-2",
+                        name: "getCurrentTime",
+                        args: { question: "two" },
+                    },
+                ],
+            }),
+        ]);
+        const writerModel = new ScriptedChatModel([
+            new AIMessage({ content: "Final answer." }),
+        ]);
+        const graph = buildSplitGraph(writerModel, routerModel, 2);
+
+        const events = await collect(
+            streamAgentTurn(graph, "keep checking", "split-cap", {
+                ...splitOptions(),
+            }),
+        );
+
+        expect(tokensOf(events)).toBe("Final answer.");
+        expect(countType(events, "tool")).toBe(2);
+        expect(countType(events, "toolResult")).toBe(2);
+        expect(routerModel.callInputs).toHaveLength(2);
+
+        const state = await graph.getState({
+            configurable: { thread_id: "split-cap" },
+        });
+        const messages = state.values.messages as BaseMessage[];
+        expect(storedToolCalls(messages)).toHaveLength(2);
+    });
+
+    it("keeps the legacy path when a router is compiled but the turn is not split", async () => {
+        const routerModel = new ScriptedChatModel([
+            new AIMessage({ content: "The router should not run." }),
+        ]);
+        const writerModel = new ScriptedChatModel([
+            new AIMessage({ content: "Legacy answer." }),
+        ]);
+        const graph = buildSplitGraph(writerModel, routerModel);
+
+        const events = await collect(
+            streamAgentTurn(graph, "hello", "split-legacy", {
+                systemPrompt: SPLIT_SYSTEM,
+                recursionLimit: 10,
+            }),
+        );
+
+        expect(tokensOf(events)).toBe("Legacy answer.");
+        expect(routerModel.callInputs).toHaveLength(0);
+        expect(writerModel.callInputs).toHaveLength(1);
+        expect(systemContent(writerModel.callInputs[0]!)).toBe(SPLIT_SYSTEM);
     });
 });
 
