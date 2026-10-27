@@ -1,5 +1,5 @@
 /**
- * The hold-to-delete gesture (#157).
+ * The hold-to-delete gesture (#157, #211).
  *
  * The suite is node-only and has no DOM, so the component's markup is rendered
  * with `react-dom/server` — the shape `SnoozeMenu.test.ts` established — and the
@@ -8,13 +8,19 @@
  * hold control (a ring and a duration, not a plain delete tap), a release before
  * the duration never fires, and a completed hold fires exactly once. A third
  * group reads `styles.css`, because the control's shape is a stylesheet fact: the
- * `.icon-btn` square is cleared so the circle stands alone (#157 review).
+ * `.icon-btn` square is cleared so the resting control is only the icon, and the
+ * outward ring is the only visible hold state (#211).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
-import { HOLD_TO_DELETE_MS, HoldToDelete, scheduleHold } from "./HoldToDelete";
+import {
+    HOLD_TO_DELETE_MS,
+    HoldToDelete,
+    holdRingScale,
+    scheduleHold,
+} from "./HoldToDelete";
 
 /** The markup, rendered once for every markup test. */
 const html = renderToStaticMarkup(
@@ -54,12 +60,20 @@ describe("HoldToDelete", () => {
         expect(attr(buttonTag, "style")).toContain("--hold-duration:3000ms");
     });
 
-    it("starts empty, with both ring halves in the markup", () => {
+    it("draws a smaller outward ring for a mouse than for a thumb", () => {
+        expect(holdRingScale(false)).toBe(1.75);
+        expect(holdRingScale(true)).toBe(2.5);
+        expect(holdRingScale(false)).toBeLessThan(holdRingScale(true));
+    });
+
+    it("starts empty, with no ring in the markup", () => {
         expect(attr(buttonTag, "data-holding")).toBe("false");
-        expect(attr(buttonTag, "data-ring")).toBe("false");
-        expect(html).toContain('class="hold-to-delete-ring"');
-        expect(html).toContain('class="hold-to-delete-track"');
-        expect(html).toContain('class="hold-to-delete-fill"');
+        expect(buttonTag).not.toContain("data-ring");
+        // The resting control is just the trash icon: no track, circle, or
+        // fill cap left behind (#211).
+        expect(html).not.toContain("hold-to-delete-ring");
+        expect(html).not.toContain("hold-to-delete-track");
+        expect(html).not.toContain("hold-to-delete-fill");
     });
 
     it("keeps the caller's placement class", () => {
@@ -78,13 +92,14 @@ describe("HoldToDelete", () => {
 });
 
 /**
- * The stylesheet the control's shape lives in (#157 review).
+ * The stylesheet the control's shape lives in (#157 review, #211).
  *
  * The button is an `.icon-btn`, whose shared chrome is a rounded-square hairline
  * border and a rounded hover wash — the square the reviewer asked to remove. The
  * suite cannot evaluate CSS, so it reads the sheet and checks the declarations
- * that keep the circle alone: no border, no background in either state, and a
- * round radius so the focus outline traces the circle too.
+ * that keep the resting control to just the icon: no border, no background in
+ * either state, a round radius for the keyboard focus outline, and no in-button
+ * ring left at rest. The outward overlay is the only visible hold state.
  */
 describe("the hold control's shape", () => {
     const sheet = readFileSync(
@@ -105,7 +120,7 @@ describe("the hold control's shape", () => {
         return sheet.slice(start, close);
     }
 
-    it("draws the circle alone, with no rounded-square chrome", () => {
+    it("clears the icon button's square chrome", () => {
         const base = block(".icon-btn.hold-to-delete");
 
         expect(base).toContain("border: 0;");
@@ -113,7 +128,7 @@ describe("the hold control's shape", () => {
         expect(base).toContain("border-radius: 50%;");
     });
 
-    it("keeps the square's hover wash off the circle", () => {
+    it("keeps the square's hover wash off the resting control", () => {
         // `.icon-btn:hover` paints `--primary-wash` inside the rounded shape;
         // this rule has to out-specify it, so the selector names both classes.
         expect(block(".icon-btn.hold-to-delete:hover")).toContain(
@@ -121,7 +136,16 @@ describe("the hold control's shape", () => {
         );
     });
 
-    it("draws the phone ring above the page with a heavier stroke", () => {
+    it("draws no in-button ring at rest", () => {
+        // #211: the old in-button track and fill are gone. The only ring is the
+        // portalled overlay, which the component mounts during a hold.
+        expect(sheet).not.toMatch(/\.hold-to-delete-ring\b/);
+        expect(sheet).not.toMatch(
+            /\.hold-to-delete\.holding \.hold-to-delete-fill/,
+        );
+    });
+
+    it("draws the outward hold ring above the page with a heavier stroke", () => {
         const overlay = block(".hold-to-delete-overlay");
         expect(overlay).toContain("position: fixed;");
         expect(overlay).toContain("z-index: 100;");
