@@ -73,6 +73,83 @@ vi.mock("../src/agent", () => ({
             };
             return;
         }
+        // A search-only turn: the formatted payload is long enough to be
+        // unmistakable if it leaks into the assistant bubble (#210).
+        if (prompt === "search") {
+            yield {
+                type: "tool",
+                name: "webSearch",
+                args: { query: "Taylor Swift latest album" },
+            };
+            yield {
+                type: "toolResult",
+                name: "webSearch",
+                output:
+                    "The latest album is The Life of a Showgirl.\n\n" +
+                    "1. Taylor Swift albums — https://example.com/taylor\n" +
+                    "   A discography excerpt that must stay behind the card.",
+                sources: [
+                    {
+                        title: "Taylor Swift albums",
+                        url: "https://example.com/taylor",
+                    },
+                ],
+            };
+            return;
+        }
+        if (prompt === "search-prose") {
+            yield {
+                type: "tool",
+                name: "webSearch",
+                args: { query: "Taylor Swift latest album" },
+            };
+            yield {
+                type: "toolResult",
+                name: "webSearch",
+                output:
+                    "1. Taylor Swift albums — https://example.com/taylor\n" +
+                    "   A discography excerpt.",
+                sources: [
+                    {
+                        title: "Taylor Swift albums",
+                        url: "https://example.com/taylor",
+                    },
+                ],
+            };
+            yield {
+                type: "token",
+                text: "Her latest album is The Life of a Showgirl.",
+            };
+            return;
+        }
+        if (prompt === "search-empty") {
+            yield {
+                type: "tool",
+                name: "webSearch",
+                args: { query: "nothing at all" },
+            };
+            yield {
+                type: "toolResult",
+                name: "webSearch",
+                output: "No results found.",
+                sources: [],
+            };
+            return;
+        }
+        if (prompt === "search-failed") {
+            yield {
+                type: "tool",
+                name: "webSearch",
+                args: { query: "unavailable" },
+            };
+            yield {
+                type: "toolResult",
+                name: "webSearch",
+                output: "Web search failed. Answer from your own knowledge, or tell the user that search is temporarily unavailable.",
+                sources: [],
+            };
+            return;
+        }
         // Whitespace-only prose: the leading newline a reasoning model streams
         // before its tool call, with no answer after the result.
         if (prompt === "blank") {
@@ -277,6 +354,66 @@ describe("chat websocket", () => {
         expect(toolResults).toEqual([
             { name: "getCurrentTime", output: "3:26 PM" },
         ]);
+    });
+
+    it("keeps a tool-only web search payload out of the assistant bubble", async () => {
+        const { chunks, toolResults, done, error } = await exchange({
+            prompt: "search",
+            sessionId: SESSION_ID,
+        });
+        const answer = chunks.join("");
+
+        expect(error).toBeNull();
+        expect(done).toBe(true);
+        expect(answer).toBe("I found these sources — see the links below.");
+        expect(answer).not.toContain("https://");
+        expect(answer).not.toContain("1.");
+        expect(answer).not.toContain("The Life of a Showgirl");
+        // The full result still reaches the tool card, once.
+        expect(toolResults).toEqual([
+            {
+                name: "webSearch",
+                output:
+                    "The latest album is The Life of a Showgirl.\n\n" +
+                    "1. Taylor Swift albums — https://example.com/taylor\n" +
+                    "   A discography excerpt that must stay behind the card.",
+            },
+        ]);
+    });
+
+    it("leaves a web search turn that wrote prose unchanged", async () => {
+        const { chunks, done, error } = await exchange({
+            prompt: "search-prose",
+            sessionId: SESSION_ID,
+        });
+
+        expect(error).toBeNull();
+        expect(done).toBe(true);
+        expect(chunks.join("")).toBe(
+            "Her latest album is The Life of a Showgirl.",
+        );
+    });
+
+    it("answers a tool-only search with no results plainly", async () => {
+        const { chunks, done, error } = await exchange({
+            prompt: "search-empty",
+            sessionId: SESSION_ID,
+        });
+
+        expect(error).toBeNull();
+        expect(done).toBe(true);
+        expect(chunks.join("")).toBe("I couldn't find any results for that.");
+    });
+
+    it("answers a failed tool-only search plainly", async () => {
+        const { chunks, done, error } = await exchange({
+            prompt: "search-failed",
+            sessionId: SESSION_ID,
+        });
+
+        expect(error).toBeNull();
+        expect(done).toBe(true);
+        expect(chunks.join("")).toBe("I couldn't search the web just now.");
     });
 
     it("keeps the confirmation for an action-tool-only turn", async () => {
