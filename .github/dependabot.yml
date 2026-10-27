@@ -10,10 +10,18 @@ updates:
       schedule:
           interval: "weekly"
       groups:
-          # One PR for every npm update, so a weekly maintenance pass is a
-          # single review/CI run instead of one PR per dependency. Dependabot
-          # still opens a separate alert PR for a security update it cannot
-          # group.
+          # Safe updates ride together: one review and one CI run for the
+          # weekly minor/patch pass. Majors get their own group because one
+          # incompatible major (for example TypeScript 7 breaking the contracts
+          # codegen) must not hold every patch hostage.
           npm_and_yarn:
               patterns:
                   - "*"
+              update-types:
+                  - "minor"
+                  - "patch"
+          npm_and_yarn-major:
+              patterns:
+                  - "*"
+              update-types:
+                  - "major"
