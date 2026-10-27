@@ -9,3 +9,11 @@ updates:
       directory: "/" # Location of package manifests
       schedule:
           interval: "weekly"
+      groups:
+          # One PR for every npm update, so a weekly maintenance pass is a
+          # single review/CI run instead of one PR per dependency. Dependabot
+          # still opens a separate alert PR for a security update it cannot
+          # group.
+          npm_and_yarn:
+              patterns:
+                  - "*"
