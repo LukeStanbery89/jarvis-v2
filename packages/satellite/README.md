@@ -135,13 +135,22 @@ The satellite does not ask for a password. It uses, in order:
 3. Nothing — a guest socket. Guest turns are ephemeral; use a token for a
    persistent satellite thread.
 
-To create a token with the text CLI:
+To create a token with the text CLI against the local TLS dev server:
 
 ```sh
-npm start -w @lukestanbery/jarvis-cli
+JARVIS_SERVER_URL=wss://localhost:54321/ws \
+NODE_TLS_REJECT_UNAUTHORIZED=0 \
+npm run dev -w @lukestanbery/jarvis-cli
+
 # at the prompt:
 login
 ```
+
+If the CLI reports `could not reach http://localhost:54321`, it is using its
+plain-`ws://` default against the HTTPS server. Use the `wss://` URL above;
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is only for the local self-signed certificate.
+The satellite finds the resulting `https://localhost:54321` credential entry
+automatically.
 
 Or provision a device in the admin portal and copy its one-time token into
 `JARVIS_SATELLITE_TOKEN`.
