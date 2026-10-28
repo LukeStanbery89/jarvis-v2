@@ -51,6 +51,8 @@ export interface SatelliteConfig {
     readonly silenceThreshold: string;
     /** Maximum length of one captured utterance, seconds. */
     readonly maxUtteranceSeconds: number;
+    /** How long a push-to-talk capture may wait for speech before giving up. */
+    readonly recordTimeoutMs: number;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -170,6 +172,12 @@ export function loadConfig(
             env.JARVIS_SATELLITE_MAX_UTTERANCE_SECONDS,
             12,
             1,
+        ),
+        recordTimeoutMs: envNumber(
+            "JARVIS_SATELLITE_RECORD_TIMEOUT_MS",
+            env.JARVIS_SATELLITE_RECORD_TIMEOUT_MS,
+            20_000,
+            1_000,
         ),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),
     };

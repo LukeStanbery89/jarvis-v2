@@ -90,17 +90,18 @@ npm start -w @lukestanbery/jarvis-satellite -- \
 
 Finally, the microphone paths:
 
-```sh
+````sh
 # Push-to-talk: press Enter, speak, pause. No wake phrase required.
 JARVIS_SERVER_URL=wss://localhost:54321/ws \
 JARVIS_SATELLITE_INSECURE_TLS=1 \
 npm start -w @lukestanbery/jarvis-satellite -- --ptt
+# q at the prompt quits; q while recording cancels the capture and exits.
 
 # Wake mode: launch, then say "Hey JARVIS, what is the weather?"
 JARVIS_SERVER_URL=wss://localhost:54321/ws \
 JARVIS_SATELLITE_INSECURE_TLS=1 \
 npm start -w @lukestanbery/jarvis-satellite
-```
+# q quits in either microphone mode; while recording, q cancels the capture and exits.```
 
 The first microphone launch may trigger a macOS permission prompt. If it does
 not appear, enable **Microphone** for your terminal (or the app that launched
@@ -114,7 +115,7 @@ Useful debugging:
 JARVIS_LOG_LEVEL=debug \
 JARVIS_LOG_SENSITIVE=full \
 npm start -w @lukestanbery/jarvis-satellite
-```
+````
 
 `JARVIS_LOG_SENSITIVE=full` prints the transcript; leave it off outside local
 debugging.
@@ -160,16 +161,16 @@ does not rotate or rewrite it.
 
 ## CLI modes
 
-| Flag              | Behavior                                                                          |
-| ----------------- | --------------------------------------------------------------------------------- |
-| _(none)_          | Wake loop: SoX segments speech, Whisper transcribes, “Hey JARVIS” sends the rest. |
-| `--ptt`           | Press Enter for one utterance; the whole transcript is sent.                      |
-| `--once`          | Exit after one completed turn.                                                    |
-| `--dry-run`       | Transcribe but do not send (mic or `--wav`).                                      |
-| `--wav <file>`    | Transcribe a WAV and send it; no microphone required.                             |
-| `--text <prompt>` | Send a voice-mode text prompt; tests auth/TTS/playback.                           |
-| `--check`         | Tools, token, and server handshake; no mic, no STT load.                          |
-| `-h`, `--help`    | The flag summary.                                                                 |
+| Flag              | Behavior                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| _(none)_          | Wake loop: SoX segments speech, Whisper transcribes, “Hey JARVIS” sends the rest. `q` quits. |
+| `--ptt`           | Press Enter for one utterance; `q` quits (or cancels an active capture).                     |
+| `--once`          | Exit after one completed turn.                                                               |
+| `--dry-run`       | Transcribe but do not send (mic or `--wav`).                                                 |
+| `--wav <file>`    | Transcribe a WAV and send it; no microphone required.                                        |
+| `--text <prompt>` | Send a voice-mode text prompt; tests auth/TTS/playback.                                      |
+| `--check`         | Tools, token, and server handshake; no mic, no STT load.                                     |
+| `-h`, `--help`    | The flag summary.                                                                            |
 
 ## Configuration
 

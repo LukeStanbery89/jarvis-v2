@@ -90,7 +90,11 @@ export class AudioIO {
     private readonly tempDir: string;
     /** Whether the reply should be spoken locally when the server sends none. */
     readonly localTts: boolean;
+    /** Cap on a push-to-talk capture waiting for speech. */
+    readonly recordTimeoutMs: number;
     private disposed = false;
+    private recordingCancelled = false;
+    private recordTimer: NodeJS.Timeout | null = null;
 
     constructor(private readonly config: SatelliteConfig) {
         const status = checkAudioTools();
@@ -98,6 +102,7 @@ export class AudioIO {
         this.playerCommand = status.player;
         this.voiceCommand = findLocalVoice();
         this.localTts = config.localTts;
+        this.recordTimeoutMs = config.recordTimeoutMs;
         this.tempDir = path.join(config.stateDir, "tmp");
         mkdirSync(this.tempDir, { recursive: true, mode: 0o700 });
     }
@@ -111,12 +116,41 @@ export class AudioIO {
         };
     }
 
+    /** Stops the active recorder; the pending `recordUtterance` returns null. */
+    stopRecording(): void {
+        if (this.recorder !== null && this.recorder.exitCode === null) {
+            this.recordingCancelled = true;
+            this.killRecorder();
+        }
+    }
+
+    /** Sends INT (SoX's clean stop), then KILL if the child refuses to leave. */
+    private killRecorder(): void {
+        const child = this.recorder;
+        if (child === null || child.exitCode !== null) {
+            return;
+        }
+        child.kill("SIGINT");
+        const killTimer = setTimeout(() => {
+            if (child.exitCode === null) {
+                child.kill("SIGKILL");
+            }
+        }, 500);
+        killTimer.unref();
+    }
+
     /**
      * Records one utterance, starting when SoX sees speech and stopping after
      * the configured trailing silence. Returns the temporary WAV path, or
      * `null` when the recorder was stopped before it produced a file.
+     *
+     * @param options.timeoutMs - Optional cap on how long to wait for speech.
+     *   A push-to-talk capture uses this so a missing microphone permission
+     *   does not leave the prompt stuck forever.
      */
-    async recordUtterance(): Promise<string | null> {
+    async recordUtterance(
+        options: { timeoutMs?: number } = {},
+    ): Promise<string | null> {
         if (this.capture === null) {
             throw new Error(
                 "`rec` is unavailable; install SoX before using microphone mode",
@@ -125,6 +159,7 @@ export class AudioIO {
         if (this.disposed) {
             return null;
         }
+        this.recordingCancelled = false;
         const file = path.join(
             this.tempDir,
             `utterance-${process.pid}-${Date.now()}.wav`,
@@ -161,12 +196,33 @@ export class AudioIO {
         child.stderr?.on("data", (chunk: Buffer) => {
             stderr += chunk.toString();
         });
+        if (options.timeoutMs !== undefined) {
+            this.recordTimer = setTimeout(() => {
+                if (this.recorder !== null) {
+                    logger.warn(
+                        "No speech captured before the push-to-talk timeout; releasing the microphone",
+                    );
+                    this.recordingCancelled = true;
+                    this.killRecorder();
+                }
+            }, options.timeoutMs);
+        }
         const exitCode = await new Promise<number | null>((resolve) => {
             child.on("error", () => resolve(null));
-            child.on("close", (code) => resolve(code));
+            // `exit`, not `close`: a recorder wrapper may leave a grandchild
+            // holding the stderr pipe after the wrapper itself is signalled.
+            // Destroying the pipe lets the Node process leave even then.
+            child.on("exit", (code) => {
+                child.stderr?.destroy();
+                resolve(code);
+            });
         });
+        if (this.recordTimer !== null) {
+            clearTimeout(this.recordTimer);
+            this.recordTimer = null;
+        }
         this.recorder = null;
-        if (this.disposed) {
+        if (this.disposed || this.recordingCancelled) {
             await unlink(file).catch(() => undefined);
             return null;
         }
@@ -241,7 +297,12 @@ export class AudioIO {
     /** Stops whichever child is active and makes future calls no-ops. */
     dispose(): void {
         this.disposed = true;
-        for (const child of [this.recorder, this.player, this.voice]) {
+        if (this.recordTimer !== null) {
+            clearTimeout(this.recordTimer);
+            this.recordTimer = null;
+        }
+        this.stopRecording();
+        for (const child of [this.player, this.voice]) {
             if (child !== null && child.exitCode === null) {
                 child.kill("SIGINT");
             }

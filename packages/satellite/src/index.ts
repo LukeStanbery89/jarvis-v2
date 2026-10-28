@@ -122,6 +122,7 @@ Environment:
   JARVIS_SATELLITE_SILENCE_SECONDS   Trailing silence before an utterance ends (0.9)
   JARVIS_SATELLITE_ONSET_SECONDS     Speech needed before recording starts (0.3)
   JARVIS_SATELLITE_SILENCE_THRESHOLD SoX silence threshold (1%)
+  JARVIS_SATELLITE_RECORD_TIMEOUT_MS Push-to-talk wait-for-speech cap (20000)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -248,6 +249,22 @@ async function runMicrophone(
 
     if (options.ptt) {
         const rl = createInterface({ input: stdin, output: stdout });
+        let recording = false;
+        let quitRequested = false;
+        // `rl.question` only consumes the Enter that starts a capture. Keep a
+        // line listener for the recording window so `q` can actually interrupt
+        // a microphone capture that is waiting for speech.
+        const onLine = (line: string): void => {
+            if (!recording) {
+                return;
+            }
+            if (line.trim().toLowerCase() === "q") {
+                logger.info("Cancelling recording…");
+                quitRequested = true;
+                audio.stopRecording();
+            }
+        };
+        rl.on("line", onLine);
         try {
             for (;;) {
                 const answer = await rl.question(
@@ -256,9 +273,20 @@ async function runMicrophone(
                 if (answer.trim().toLowerCase() === "q") {
                     return;
                 }
-                const file = await audio.recordUtterance();
-                if (file === null) {
+                process.stdout.write(
+                    "Recording… speak, then pause (q cancels and quits).\n",
+                );
+                recording = true;
+                const file = await audio.recordUtterance({
+                    timeoutMs: audio.recordTimeoutMs,
+                });
+                recording = false;
+                if (quitRequested) {
                     return;
+                }
+                if (file === null) {
+                    logger.info("No utterance captured; still ready.");
+                    continue;
                 }
                 try {
                     const heard = await transcribeFile(file, stt);
@@ -284,46 +312,64 @@ async function runMicrophone(
                 }
             }
         } finally {
+            rl.off("line", onLine);
             rl.close();
         }
     }
 
-    logger.info(
-        'Listening for "Hey JARVIS"… speak the command in the same breath.',
-    );
-    for (;;) {
-        const file = await audio.recordUtterance();
-        if (file === null) {
-            return;
+    const rl = createInterface({ input: stdin, output: stdout });
+    let stopRequested = false;
+    const onLine = (line: string): void => {
+        if (line.trim().toLowerCase() === "q") {
+            logger.info("Stopping…");
+            stopRequested = true;
+            audio.stopRecording();
         }
-        try {
-            const heard = await transcribeFile(file, stt);
-            process.stdout.write(`You: ${heard || "(no speech)"}\n`);
-            const command = extractWakeCommand(heard);
-            if (command === null) {
-                logger.debug("Ignoring an utterance without the wake phrase");
-                continue;
-            }
-            if (command.length === 0) {
-                logger.info("Wake phrase heard, but no command followed");
-                continue;
-            }
-            logger.sensitive("Heard command", command);
-            if (!options.dryRun) {
-                try {
-                    await runTurn(client, audio, sessionId, command);
-                } catch (err) {
-                    logger.error(
-                        `Turn failed: ${err instanceof Error ? err.message : String(err)}`,
-                    );
-                }
-            }
-            if (options.once) {
+    };
+    rl.on("line", onLine);
+    logger.info(
+        'Listening for "Hey JARVIS"… speak the command in the same breath. Press q to quit.',
+    );
+    try {
+        for (;;) {
+            const file = await audio.recordUtterance();
+            if (file === null || stopRequested) {
                 return;
             }
-        } finally {
-            await unlink(file).catch(() => undefined);
+            try {
+                const heard = await transcribeFile(file, stt);
+                process.stdout.write(`You: ${heard || "(no speech)"}\n`);
+                const command = extractWakeCommand(heard);
+                if (command === null) {
+                    logger.debug(
+                        "Ignoring an utterance without the wake phrase",
+                    );
+                    continue;
+                }
+                if (command.length === 0) {
+                    logger.info("Wake phrase heard, but no command followed");
+                    continue;
+                }
+                logger.sensitive("Heard command", command);
+                if (!options.dryRun) {
+                    try {
+                        await runTurn(client, audio, sessionId, command);
+                    } catch (err) {
+                        logger.error(
+                            `Turn failed: ${err instanceof Error ? err.message : String(err)}`,
+                        );
+                    }
+                }
+                if (options.once) {
+                    return;
+                }
+            } finally {
+                await unlink(file).catch(() => undefined);
+            }
         }
+    } finally {
+        rl.off("line", onLine);
+        rl.close();
     }
 }
 
@@ -383,6 +429,16 @@ async function main(): Promise<void> {
               : (credential.user ?? "stored device");
     process.stdout.write(`  token:  ${credentialLabel ?? "none (guest)"}\n`);
     process.stdout.write(`  thread: ${sessionId}\n`);
+    const mode = options.check
+        ? "check"
+        : options.text !== undefined
+          ? "text"
+          : options.wav !== undefined
+            ? "wav"
+            : options.ptt
+              ? "push-to-talk"
+              : "wake word";
+    process.stdout.write(`  mode:   ${mode}\n`);
 
     try {
         if (options.check) {
