@@ -57,6 +57,18 @@ export interface SatelliteConfig {
     readonly recordTimeoutMs: number;
     /** Delay after opening the PTT mic before cueing the user to speak. */
     readonly pttLeadMs: number;
+    /** Normalized RMS threshold for the continuous wake capture. */
+    readonly vadThreshold: number;
+    /** Speech needed before the wake segmenter starts an utterance. */
+    readonly vadOnsetMs: number;
+    /** Silence that ends a wake utterance. */
+    readonly vadSilenceMs: number;
+    /** Audio retained before onset, so the wake phrase's first word survives. */
+    readonly vadPreRollMs: number;
+    /** Hard cap on one wake utterance. */
+    readonly vadMaxUtteranceMs: number;
+    /** Window in which a command may follow a wake-only utterance. */
+    readonly wakeFollowUpMs: number;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -188,6 +200,42 @@ export function loadConfig(
             "JARVIS_SATELLITE_PTT_LEAD_MS",
             env.JARVIS_SATELLITE_PTT_LEAD_MS,
             600,
+            0,
+        ),
+        vadThreshold: envNumber(
+            "JARVIS_SATELLITE_VAD_THRESHOLD",
+            env.JARVIS_SATELLITE_VAD_THRESHOLD,
+            0.01,
+            0.0001,
+        ),
+        vadOnsetMs: envNumber(
+            "JARVIS_SATELLITE_VAD_ONSET_MS",
+            env.JARVIS_SATELLITE_VAD_ONSET_MS,
+            150,
+            20,
+        ),
+        vadSilenceMs: envNumber(
+            "JARVIS_SATELLITE_VAD_SILENCE_MS",
+            env.JARVIS_SATELLITE_VAD_SILENCE_MS,
+            800,
+            100,
+        ),
+        vadPreRollMs: envNumber(
+            "JARVIS_SATELLITE_VAD_PREROLL_MS",
+            env.JARVIS_SATELLITE_VAD_PREROLL_MS,
+            1_000,
+            0,
+        ),
+        vadMaxUtteranceMs: envNumber(
+            "JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS",
+            env.JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS,
+            15_000,
+            1_000,
+        ),
+        wakeFollowUpMs: envNumber(
+            "JARVIS_SATELLITE_WAKE_FOLLOWUP_MS",
+            env.JARVIS_SATELLITE_WAKE_FOLLOWUP_MS,
+            5_000,
             0,
         ),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),

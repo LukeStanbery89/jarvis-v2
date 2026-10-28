@@ -15,18 +15,22 @@ streamed TTS reply — with no display or text-chat UI.
 ## How it works
 
 ```text
-SoX `rec`                         local Whisper              JARVIS server
-────────                         ─────────────              ─────────────
-silence-segmented mic ──WAV──▶  Whisper tiny.en  ──text──▶  /ws voice prompt
+SoX `rec`                          local Whisper              JARVIS server
+────────                          ─────────────              ─────────────
+continuous raw PCM ──VAD──▶      Whisper tiny.en  ──text──▶  /ws voice prompt
                                                              │
 speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS ◀┘
 ```
 
-- **Capture:** SoX `rec` starts on speech and stops after trailing silence, so
-  the daemon is not recording silence forever. Audio stays on the device.
+- **Capture:** one SoX `rec` stays open for the life of the wake loop and
+  writes raw PCM. An energy segmenter keeps a pre-roll ring, starts an utterance
+  150 ms after speech begins, and ends it after trailing silence. Because the
+  mic is already running, “Hey JARVIS …” is captured from its first phoneme.
 - **Wake:** the transcript is checked with the shared
   `stripWakePhrase` matcher from `@lukestanbery/jarvis-voice`; “Hey JARVIS”,
-  “he jarvis”, and “Jarvis, …” all work.
+  “he jarvis”, and “Jarvis, …” all work. If the wake word arrives as its own
+  utterance, the next utterance within `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS` is
+  treated as the command, so a natural pause does not lose it.
 - **STT:** Transformers.js runs Whisper tiny.en on CPU, cached under
   `~/.jarvis/satellite/models`.
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,
@@ -101,6 +105,8 @@ npm start -w @lukestanbery/jarvis-satellite -- --ptt
 JARVIS_SERVER_URL=wss://localhost:54321/ws \
 JARVIS_SATELLITE_INSECURE_TLS=1 \
 npm start -w @lukestanbery/jarvis-satellite
+# The mic stays open. "Hey JARVIS" followed immediately by the command works;
+# a pause after the name also works (the next utterance is the command).
 # q quits in either microphone mode; while recording, q cancels the capture and exits.```
 
 The first microphone launch may trigger a macOS permission prompt. If it does
@@ -131,6 +137,26 @@ npm start -w @lukestanbery/jarvis-satellite -- --ptt
 `--check` prints the configured input, SoX paths, and the visible device names.
 You can also change **System Settings → Sound → Input** to the same device if
 you prefer the default to work everywhere.
+
+### Wake mode misses the first word or never triggers
+
+Wake mode keeps one SoX stream open and splits it with an energy VAD; it does
+not reopen the microphone for each turn. If the first syllable is still clipped,
+raise the pre-roll:
+
+```sh
+JARVIS_SATELLITE_VAD_PREROLL_MS=1500 \
+JARVIS_SATELLITE_VAD_THRESHOLD=0.006 \
+JARVIS_SERVER_URL=wss://localhost:54321/ws \
+JARVIS_SATELLITE_INSECURE_TLS=1 \
+npm start -w @lukestanbery/jarvis-satellite
+```
+
+If no `You:` line appears when you speak, lower
+`JARVIS_SATELLITE_VAD_THRESHOLD` (for example `0.005`); if room noise wakes it,
+raise it. A Bluetooth headset can take a moment to switch to its microphone
+profile when the stream opens, but because the stream stays open for the whole
+wake loop, that switch only happens once at launch, not on every sentence.
 
 Useful debugging:
 
@@ -184,16 +210,16 @@ does not rotate or rewrite it.
 
 ## CLI modes
 
-| Flag              | Behavior                                                                                     |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| _(none)_          | Wake loop: SoX segments speech, Whisper transcribes, “Hey JARVIS” sends the rest. `q` quits. |
-| `--ptt`           | Press Enter for one utterance; `q` quits (or cancels an active capture).                     |
-| `--once`          | Exit after one completed turn.                                                               |
-| `--dry-run`       | Transcribe but do not send (mic or `--wav`).                                                 |
-| `--wav <file>`    | Transcribe a WAV and send it; no microphone required.                                        |
-| `--text <prompt>` | Send a voice-mode text prompt; tests auth/TTS/playback.                                      |
-| `--check`         | Tools, token, and server handshake; no mic, no STT load.                                     |
-| `-h`, `--help`    | The flag summary.                                                                            |
+| Flag              | Behavior                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| _(none)_          | Wake loop: continuous capture, energy VAD, Whisper; “Hey JARVIS” sends the rest. `q` quits. |
+| `--ptt`           | Press Enter for one utterance; `q` quits (or cancels an active capture).                    |
+| `--once`          | Exit after one completed turn.                                                              |
+| `--dry-run`       | Transcribe but do not send (mic or `--wav`).                                                |
+| `--wav <file>`    | Transcribe a WAV and send it; no microphone required.                                       |
+| `--text <prompt>` | Send a voice-mode text prompt; tests auth/TTS/playback.                                     |
+| `--check`         | Tools, token, and server handshake; no mic, no STT load.                                    |
+| `-h`, `--help`    | The flag summary.                                                                           |
 
 ## Configuration
 
@@ -216,6 +242,12 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_MAX_UTTERANCE_SECONDS` | `12`                             | Hard cap on one utterance.                                                 |
 | `JARVIS_SATELLITE_RECORD_TIMEOUT_MS`     | `20000`                          | Push-to-talk wait-for-speech cap.                                          |
 | `JARVIS_SATELLITE_PTT_LEAD_MS`           | `600`                            | Delay after opening the mic before the “Speak now” cue (Bluetooth switch). |
+| `JARVIS_SATELLITE_VAD_THRESHOLD`         | `0.01`                           | Wake-capture RMS threshold; lower it for a quiet microphone.               |
+| `JARVIS_SATELLITE_VAD_ONSET_MS`          | `150`                            | Speech needed before the wake segmenter starts an utterance.               |
+| `JARVIS_SATELLITE_VAD_SILENCE_MS`        | `800`                            | Trailing silence that ends a wake utterance.                               |
+| `JARVIS_SATELLITE_VAD_PREROLL_MS`        | `1000`                           | Audio retained before onset, so the first phoneme is not clipped.          |
+| `JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS`  | `15000`                          | Hard cap on one wake utterance.                                            |
+| `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`      | `5000`                           | Window after a wake-only utterance for the command.                        |
 | `JARVIS_SATELLITE_LOCAL_TTS`             | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.      |
 | `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`    | `5000`                           | Connect timeout.                                                           |
 | `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`       | `5000`                           | Auth handshake timeout.                                                    |

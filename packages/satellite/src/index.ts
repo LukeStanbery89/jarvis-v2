@@ -3,8 +3,9 @@
  * Headless satellite CLI.
  *
  * Launch modes:
- * - default: SoX segments each utterance, Whisper transcribes locally, and a
- *   transcript containing “Hey JARVIS” becomes a voice turn.
+ * - default: one continuous SoX capture feeds a local energy segmenter, Whisper
+ *   transcribes each utterance, and a transcript containing “Hey JARVIS”
+ *   becomes a voice turn.
  * - `--ptt`: press Enter for one utterance, then send it without requiring the
  *   wake phrase. Useful while bringing up a microphone.
  * - `--wav <file>`: transcribe one 16 kHz WAV and send it (or `--dry-run` to
@@ -23,6 +24,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { decodeWav } from "@lukestanbery/jarvis-voice";
 import { checkAudioTools, listAudioDevices, AudioIO } from "./audio";
+import { StreamingCapture } from "./capture";
 import { SatelliteClient } from "./client";
 import { loadConfig, SAMPLE_RATE, type SatelliteConfig } from "./config";
 import { loadCredential } from "./credentials";
@@ -125,6 +127,12 @@ Environment:
   JARVIS_SATELLITE_SILENCE_THRESHOLD SoX silence threshold (1%)
   JARVIS_SATELLITE_RECORD_TIMEOUT_MS Push-to-talk wait-for-speech cap (20000)
   JARVIS_SATELLITE_PTT_LEAD_MS      Delay after opening the PTT mic before the "Speak now" cue (600)
+  JARVIS_SATELLITE_VAD_THRESHOLD    Wake-capture RMS threshold (0.01)
+  JARVIS_SATELLITE_VAD_ONSET_MS     Speech needed before an utterance starts (150)
+  JARVIS_SATELLITE_VAD_SILENCE_MS   Silence that ends an utterance (800)
+  JARVIS_SATELLITE_VAD_PREROLL_MS   Audio kept before onset so the first word survives (1000)
+  JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS  Hard cap on one wake utterance (15000)
+  JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -249,6 +257,7 @@ async function runWav(
 
 /** Microphone loops: transcript-based wake (default) or Enter-to-talk. */
 async function runMicrophone(
+    config: SatelliteConfig,
     options: CliOptions,
     stt: WhisperStt,
     client: SatelliteClient,
@@ -332,37 +341,61 @@ async function runMicrophone(
     }
 
     const rl = createInterface({ input: stdin, output: stdout });
+    let capture: StreamingCapture | null = null;
     let stopRequested = false;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+        finish = resolve;
+    });
+    const stop = (): void => {
+        if (stopRequested) {
+            return;
+        }
+        stopRequested = true;
+        capture?.stop();
+        finish();
+    };
     const onLine = (line: string): void => {
         if (line.trim().toLowerCase() === "q") {
             logger.info("Stopping…");
-            stopRequested = true;
-            audio.stopRecording();
+            stop();
         }
     };
     rl.on("line", onLine);
-    logger.info(
-        'Listening for "Hey JARVIS"… speak the command in the same breath. Press q to quit.',
-    );
+    let followUpUntil = 0;
     try {
-        for (;;) {
-            const file = await audio.recordUtterance();
-            if (file === null || stopRequested) {
-                return;
-            }
-            try {
-                const heard = await transcribeFile(file, stt);
-                process.stdout.write(`You: ${heard || "(no speech)"}\n`);
-                const command = extractWakeCommand(heard);
-                if (command === null) {
-                    logger.debug(
-                        "Ignoring an utterance without the wake phrase",
-                    );
-                    continue;
+        capture = new StreamingCapture(config, {
+            onUtterance: async (pcm) => {
+                const heard = await stt.transcribe(pcm);
+                process.stdout.write(
+                    `You: ${heard || "(no speech recognized)"}\n`,
+                );
+                let command: string | null = null;
+                if (Date.now() < followUpUntil) {
+                    // The previous utterance was only “Hey JARVIS”. Treat the
+                    // next one as the command even if it starts with the name
+                    // again, and accept the natural pause between them.
+                    followUpUntil = 0;
+                    command = extractWakeCommand(heard) ?? heard;
+                } else {
+                    const wake = extractWakeCommand(heard);
+                    if (wake === null) {
+                        logger.debug(
+                            "Ignoring an utterance without the wake phrase",
+                        );
+                        return;
+                    }
+                    if (wake.length === 0) {
+                        followUpUntil = Date.now() + config.wakeFollowUpMs;
+                        logger.info(
+                            "Wake phrase heard; listening for the command…",
+                        );
+                        return;
+                    }
+                    command = wake;
                 }
-                if (command.length === 0) {
-                    logger.info("Wake phrase heard, but no command followed");
-                    continue;
+                if (command === null || command.length === 0) {
+                    return;
                 }
                 logger.sensitive("Heard command", command);
                 if (!options.dryRun) {
@@ -375,15 +408,21 @@ async function runMicrophone(
                     }
                 }
                 if (options.once) {
-                    return;
+                    stop();
                 }
-            } finally {
-                await unlink(file).catch(() => undefined);
-            }
-        }
+            },
+            onError: (error) => {
+                logger.error(error.message);
+                stop();
+            },
+        });
+        capture.start();
+        logger.info('Listening for "Hey JARVIS"… press q to quit.');
+        await finished;
     } finally {
         rl.off("line", onLine);
         rl.close();
+        capture?.stop();
     }
 }
 
@@ -467,7 +506,7 @@ async function main(): Promise<void> {
             await runWav(options, stt, client, audio, sessionId);
             return;
         }
-        await runMicrophone(options, stt, client, audio, sessionId);
+        await runMicrophone(config, options, stt, client, audio, sessionId);
     } finally {
         shutdown();
     }
