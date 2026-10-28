@@ -76,44 +76,46 @@ export function SessionsView({ me }: { me: ApiUser }) {
             {sessions.length === 0 ? (
                 <p className="muted">No sessions yet.</p>
             ) : (
-                <table className="grid">
-                    <thead>
-                        <tr>
-                            <th>Thread</th>
-                            <th>Kind</th>
-                            <th>User</th>
-                            <th>Last active</th>
-                            <th />
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows.map((session) => (
-                            <tr key={session.threadId}>
-                                <td className="mono">{session.threadId}</td>
-                                <td>{session.kind}</td>
-                                <td>
-                                    {session.userId === null
-                                        ? "guest"
-                                        : (users.get(session.userId) ??
-                                          `#${session.userId}`)}
-                                </td>
-                                <td>
-                                    {new Date(
-                                        session.lastActiveAt,
-                                    ).toLocaleString()}
-                                </td>
-                                <td className="actions">
-                                    <Button
-                                        variant="danger"
-                                        onClick={() => void remove(session)}
-                                    >
-                                        Delete
-                                    </Button>
-                                </td>
+                <div className="table-scroll">
+                    <table className="grid">
+                        <thead>
+                            <tr>
+                                <th>Thread</th>
+                                <th>Kind</th>
+                                <th>User</th>
+                                <th>Last active</th>
+                                <th />
                             </tr>
-                        ))}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            {rows.map((session) => (
+                                <tr key={session.threadId}>
+                                    <td className="mono">{session.threadId}</td>
+                                    <td>{session.kind}</td>
+                                    <td>
+                                        {session.userId === null
+                                            ? "guest"
+                                            : (users.get(session.userId) ??
+                                              `#${session.userId}`)}
+                                    </td>
+                                    <td>
+                                        {new Date(
+                                            session.lastActiveAt,
+                                        ).toLocaleString()}
+                                    </td>
+                                    <td className="actions">
+                                        <Button
+                                            variant="danger"
+                                            onClick={() => void remove(session)}
+                                        >
+                                            Delete
+                                        </Button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
             )}
         </div>
     );
