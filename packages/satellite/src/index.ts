@@ -162,6 +162,9 @@ async function runTurn(
     sessionId: string,
     prompt: string,
 ): Promise<void> {
+    // Authenticate before printing the answer prefix so the handshake
+    // diagnostic cannot land between "JARVIS:" and the first token.
+    await client.connect();
     process.stdout.write("JARVIS: ");
     const result = await client.prompt(prompt, sessionId, {
         onChunk: (chunk) => process.stdout.write(chunk),
