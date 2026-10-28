@@ -31,6 +31,8 @@ export interface SatelliteConfig {
     readonly authTimeoutMs: number;
     /** Private state root (`~/.jarvis/satellite` by default). */
     readonly stateDir: string;
+    /** SoX input device name; undefined uses the system default. */
+    readonly inputDevice: string | undefined;
     /** Where the credential file lives; the CLI writes the same shape. */
     readonly credentialsFile: string;
     /** Persistent conversation id store. */
@@ -143,6 +145,7 @@ export function loadConfig(
             100,
         ),
         stateDir,
+        inputDevice: env.JARVIS_SATELLITE_INPUT_DEVICE?.trim() || undefined,
         credentialsFile:
             env.JARVIS_CREDENTIALS_FILE?.trim() ||
             path.join(homedir(), ".jarvis", "credentials.json"),

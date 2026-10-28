@@ -22,7 +22,7 @@ import { unlink } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { decodeWav } from "@lukestanbery/jarvis-voice";
-import { checkAudioTools, AudioIO } from "./audio";
+import { checkAudioTools, listAudioDevices, AudioIO } from "./audio";
 import { SatelliteClient } from "./client";
 import { loadConfig, SAMPLE_RATE, type SatelliteConfig } from "./config";
 import { loadCredential } from "./credentials";
@@ -116,6 +116,7 @@ Environment:
   JARVIS_SATELLITE_INSECURE_TLS      Set to 1 for a self-signed local server
   JARVIS_SATELLITE_CA                Path to a private CA bundle
   JARVIS_SATELLITE_MODEL_DIR         Local STT cache (default: ~/.jarvis/satellite/models)
+  JARVIS_SATELLITE_INPUT_DEVICE      SoX input device name (default: system default)
   JARVIS_SATELLITE_STT_MODEL         Default: onnx-community/whisper-tiny.en
   JARVIS_SATELLITE_STT_DTYPE         Default: q8
   JARVIS_SATELLITE_SESSION_ID        Fixed conversation id
@@ -199,6 +200,14 @@ async function runCheck(
     process.stdout.write(
         `capture: ${tools.capture ?? "MISSING (install SoX)"}\n`,
     );
+    process.stdout.write(`sox:     ${tools.sox ?? "MISSING"}\n`);
+    process.stdout.write(
+        `input:   ${config.inputDevice ?? "system default"}\n`,
+    );
+    const devices = listAudioDevices();
+    if (devices.length > 0) {
+        process.stdout.write(`devices: ${devices.join(" | ")}\n`);
+    }
     process.stdout.write(
         `player:  ${tools.player ?? "MISSING (install SoX)"}\n`,
     );

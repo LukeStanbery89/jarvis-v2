@@ -9,7 +9,7 @@
  * failed turn cannot leave a microphone open.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -20,6 +20,7 @@ import { SAMPLE_RATE, type SatelliteConfig } from "./config";
 /** A resolved audio tool, or the reason it is missing. */
 export interface AudioToolStatus {
     capture: string | null;
+    sox: string | null;
     player: string | null;
     problems: string[];
 }
@@ -64,6 +65,7 @@ export function pcmS16leToWav(pcm: Buffer, sampleRate: number): Buffer {
 /** Reports whether the SoX recorder and a player are available. */
 export function checkAudioTools(): AudioToolStatus {
     const capture = which("rec");
+    const sox = which("sox");
     const player = findPlayer();
     const problems: string[] = [];
     if (capture === null) {
@@ -71,12 +73,39 @@ export function checkAudioTools(): AudioToolStatus {
             "`rec` was not found; install SoX (`brew install sox` or `sudo apt install sox`)",
         );
     }
+    if (sox === null) {
+        problems.push(
+            "`sox` was not found; install SoX (`brew install sox` or `sudo apt install sox`)",
+        );
+    }
     if (player === null) {
         problems.push(
             "no audio player was found; install SoX (`play`) or use a system player",
         );
     }
-    return { capture, player, problems };
+    return { capture, sox, player, problems };
+}
+
+/**
+ * Lists the audio devices SoX can see for the current platform.
+ *
+ * On macOS this is the same `sox -V6 -n -t coreaudio` enumeration the SoX
+ * manual documents; the values are what `JARVIS_SATELLITE_INPUT_DEVICE`
+ * accepts. Linux uses the ALSA driver.
+ */
+export function listAudioDevices(): string[] {
+    const sox = which("sox");
+    if (sox === null) {
+        return [];
+    }
+    const driver = process.platform === "darwin" ? "coreaudio" : "alsa";
+    const result = spawnSync(sox, ["-V6", "-n", "-t", driver, "list-devices"], {
+        encoding: "utf8",
+    });
+    const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    return [...text.matchAll(/Found Audio Device "([^"]+)"/g)].map(
+        (match) => match[1]!,
+    );
 }
 
 /** Audio I/O for one satellite process. */
@@ -85,6 +114,9 @@ export class AudioIO {
     private player: ChildProcess | null = null;
     private voice: ChildProcess | null = null;
     private readonly capture: string | null;
+    private readonly sox: string | null;
+    private readonly inputDevice: string | undefined;
+    private readonly audioDriver: string;
     private readonly playerCommand: string | null;
     private readonly voiceCommand: string | null;
     private readonly tempDir: string;
@@ -99,6 +131,9 @@ export class AudioIO {
     constructor(private readonly config: SatelliteConfig) {
         const status = checkAudioTools();
         this.capture = status.capture;
+        this.sox = status.sox;
+        this.inputDevice = config.inputDevice;
+        this.audioDriver = process.platform === "darwin" ? "coreaudio" : "alsa";
         this.playerCommand = status.player;
         this.voiceCommand = findLocalVoice();
         this.localTts = config.localTts;
@@ -111,6 +146,7 @@ export class AudioIO {
     getTools(): AudioToolStatus {
         return {
             capture: this.capture,
+            sox: this.sox,
             player: this.playerCommand,
             problems: checkAudioTools().problems,
         };
@@ -151,7 +187,12 @@ export class AudioIO {
     async recordUtterance(
         options: { timeoutMs?: number } = {},
     ): Promise<string | null> {
-        if (this.capture === null) {
+        if (this.inputDevice !== undefined && this.sox === null) {
+            throw new Error(
+                "`sox` is unavailable; install SoX or unset JARVIS_SATELLITE_INPUT_DEVICE",
+            );
+        }
+        if (this.inputDevice === undefined && this.capture === null) {
             throw new Error(
                 "`rec` is unavailable; install SoX before using microphone mode",
             );
@@ -164,8 +205,7 @@ export class AudioIO {
             this.tempDir,
             `utterance-${process.pid}-${Date.now()}.wav`,
         );
-        const args = [
-            "-q",
+        const formatArgs = [
             "-c",
             "1",
             "-r",
@@ -174,9 +214,8 @@ export class AudioIO {
             "16",
             "-e",
             "signed-integer",
-            "-t",
-            "wav",
-            file,
+        ];
+        const effectArgs = [
             "silence",
             "1",
             String(this.config.onsetSeconds),
@@ -188,7 +227,24 @@ export class AudioIO {
             "0",
             String(this.config.maxUtteranceSeconds),
         ];
-        const child = spawn(this.capture, args, {
+        // A named device needs the `sox` executable (`rec` is the default-device
+        // wrapper). The argument order is input format/device, output file,
+        // then effects; this is the shape documented for coreaudio/ALSA.
+        const command =
+            this.inputDevice !== undefined ? this.sox : this.capture;
+        const args =
+            this.inputDevice !== undefined
+                ? [
+                      "-q",
+                      "-t",
+                      this.audioDriver,
+                      this.inputDevice,
+                      ...formatArgs,
+                      file,
+                      ...effectArgs,
+                  ]
+                : ["-q", ...formatArgs, "-t", "wav", file, ...effectArgs];
+        const child = spawn(command!, args, {
             stdio: ["ignore", "ignore", "pipe"],
         });
         this.recorder = child;
@@ -229,7 +285,7 @@ export class AudioIO {
         if (exitCode !== 0 && exitCode !== null) {
             await unlink(file).catch(() => undefined);
             throw new Error(
-                `rec failed (${exitCode})${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+                `audio capture failed (${exitCode})${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
             );
         }
         try {
