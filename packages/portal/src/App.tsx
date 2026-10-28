@@ -4,9 +4,9 @@
  *
  * Boot sequence: `GET /api/session` decides signed-in vs not (and recovers the
  * in-memory CSRF nonce after a reload). Signed-out users see Login (or Setup
- * when they've navigated there); signed-in users get the sidebar layout and the
- * active management view. The Users view and owner-scoped lists require the
- * owner role.
+ * when they've navigated there); signed-in users get the responsive shell
+ * (sidebar above 48rem, top-bar drawer below) and the active management view.
+ * The Users view and owner-scoped lists require the owner role.
  */
 import { useEffect, useState } from "react";
 import { api, setCsrfToken, setUnauthorizedHandler } from "./api";

@@ -56,7 +56,7 @@ h2 {
 
 .layout {
     display: grid;
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: 220px minmax(0, 1fr);
     min-height: 100vh;
 }
 
@@ -67,6 +67,69 @@ h2 {
     display: flex;
     flex-direction: column;
     gap: 24px;
+}
+
+/* The brand, and under 48rem the hamburger that opens the drawer. */
+.sidebar-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+/* Nav + account footer. The wrapper is what turns into the drawer on a phone;
+   on a wide screen it is simply the rest of the sidebar column. */
+.sidebar-menu {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.nav-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.nav-toggle-icon {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 18px;
+}
+
+.nav-toggle-icon span {
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor;
+    transition: transform 120ms ease;
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-icon span:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-icon span:nth-child(2) {
+    opacity: 0;
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-icon span:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+}
+
+/* The press-outside target for the phone drawer; mounted only while open. */
+.nav-scrim {
+    display: none;
 }
 
 .brand {
@@ -132,8 +195,11 @@ a.brand:focus-visible {
 }
 
 .content {
-    padding: 28px 32px;
+    width: 100%;
     max-width: 1100px;
+    margin: 0 auto;
+    padding: 28px 32px;
+    min-width: 0;
 }
 
 .boot,
@@ -284,6 +350,10 @@ code {
 
 /* ---------- tables & list rows ---------- */
 
+.table-scroll {
+    width: 100%;
+}
+
 table.grid {
     width: 100%;
     border-collapse: collapse;
@@ -333,4 +403,178 @@ table.grid th {
     gap: 8px;
     margin: 8px 0;
     align-items: center;
+}
+
+/* ---------- phone layout (#154) ---------- */
+
+/*
+ * Under 48rem — the web app's breakpoint — the fixed 220px sidebar becomes a
+ * sticky top bar with a hamburger drawer, the content column loses its desktop
+ * gutter and centring, and the tables scroll sideways with their first column
+ * pinned. Every control the phone can reach is at least 44px tall.
+ */
+@media (max-width: 48rem) {
+    .layout {
+        display: block;
+    }
+
+    .sidebar {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        flex-direction: row;
+        align-items: center;
+        gap: 0;
+        padding: 6px 16px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-top {
+        width: 100%;
+    }
+
+    a.brand {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+    }
+
+    .auth-card p a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+    }
+
+    .nav-toggle {
+        display: inline-flex;
+    }
+
+    .sidebar-menu {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        display: none;
+        max-height: calc(100vh - 4rem);
+        max-height: calc(100dvh - 4rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 12px 16px 20px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+        box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+    }
+
+    .sidebar-menu.open {
+        display: flex;
+    }
+
+    .sidebar nav a {
+        display: flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 0 12px;
+    }
+
+    .sidebar-footer {
+        margin-top: 8px;
+        padding: 12px 12px 0;
+        border-top: 1px solid var(--border);
+    }
+
+    .sidebar-footer .btn {
+        width: 100%;
+    }
+
+    .nav-scrim {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        padding: 0;
+        border: 0;
+        background: rgba(0, 0, 0, 0.45);
+        cursor: pointer;
+    }
+
+    .content {
+        max-width: none;
+        padding: 16px;
+    }
+
+    .panel {
+        padding: 16px;
+    }
+
+    .auth-card {
+        padding: 24px;
+    }
+
+    .field input,
+    .field select,
+    .inline,
+    .btn,
+    .copyable button {
+        min-height: 44px;
+    }
+
+    .btn {
+        padding: 10px 14px;
+    }
+
+    .copyable button {
+        padding: 0 12px;
+    }
+
+    .inline,
+    .inline.grow {
+        width: 100%;
+    }
+
+    .pref-row {
+        flex-wrap: wrap;
+    }
+
+    .pref-row .btn,
+    .actions .btn {
+        flex: 1;
+    }
+
+    .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior-x: contain;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+    }
+
+    table.grid {
+        min-width: 44rem;
+        border-collapse: separate;
+        border-spacing: 0;
+    }
+
+    table.grid th,
+    table.grid td {
+        white-space: nowrap;
+    }
+
+    table.grid th:first-child,
+    table.grid td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+        background: var(--panel);
+    }
+
+    table.grid th:first-child {
+        z-index: 2;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .nav-toggle-icon span {
+        transition: none;
+    }
 }

@@ -34,6 +34,11 @@ which is why the portal only ships alongside the TLS/CSRF-capable server.
 Non-owner role gating matches the REST policy (`requireOwner`); the UI simply
 hides the Users view and user-scoped selects.
 
+The shell is responsive at **48rem**, matching `packages/web`: above it a 220px
+sidebar; below it a sticky top bar with a hamburger drawer (the account line and
+Sign out move inside). Tables scroll horizontally with the first column pinned,
+and phone-width controls are at least 44px tall.
+
 ## Stack
 
 - React 19 + Vite 8 + TypeScript (strict). No router library — a tiny
@@ -78,7 +83,7 @@ src/
 ├── api.test.ts      # unit tests for the client
 ├── types.ts         # API shape aliases into @lukestanbery/jarvis-contracts
 ├── styles.css
-├── components/      # Layout (sidebar) + shared UI primitives
+├── components/      # Layout (sidebar / phone drawer) + shared UI primitives
 └── views/           # Login, Setup, Users, Devices, Sessions, Prefs
 ```
 

@@ -127,78 +127,92 @@ export function UsersView({ me }: { me: ApiUser }) {
 
             <section className="panel">
                 <h2>Accounts</h2>
-                <table className="grid">
-                    <thead>
-                        <tr>
-                            <th>Username</th>
-                            <th>Role</th>
-                            <th>Status</th>
-                            <th>Created</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {users.map((user) => (
-                            <tr key={user.id}>
-                                <td>
-                                    {user.username}
-                                    {user.id === me.id ? (
-                                        <span className="badge">you</span>
-                                    ) : null}
-                                </td>
-                                <td>{user.role}</td>
-                                <td>
-                                    <span
-                                        className={
-                                            user.disabled
-                                                ? "badge danger"
-                                                : "badge ok"
-                                        }
-                                    >
-                                        {user.disabled ? "disabled" : "active"}
-                                    </span>
-                                </td>
-                                <td>
-                                    {new Date(user.createdAt).toLocaleString()}
-                                </td>
-                                <td className="actions">
-                                    {user.role === "user" ? (
-                                        <Button
-                                            variant="ghost"
-                                            onClick={() =>
-                                                void setRoleFor(user, "owner")
-                                            }
-                                        >
-                                            Make owner
-                                        </Button>
-                                    ) : (
-                                        <Button
-                                            variant="ghost"
-                                            onClick={() =>
-                                                void setRoleFor(user, "user")
-                                            }
-                                        >
-                                            Demote
-                                        </Button>
-                                    )}
-                                    <Button
-                                        variant={
-                                            user.disabled ? "primary" : "danger"
-                                        }
-                                        disabled={user.id === me.id}
-                                        onClick={() =>
-                                            void toggleDisabled(user)
-                                        }
-                                    >
-                                        {user.disabled
-                                            ? "Re-enable"
-                                            : "Disable"}
-                                    </Button>
-                                </td>
+                <div className="table-scroll">
+                    <table className="grid">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                <th>Actions</th>
                             </tr>
-                        ))}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            {users.map((user) => (
+                                <tr key={user.id}>
+                                    <td>
+                                        {user.username}
+                                        {user.id === me.id ? (
+                                            <span className="badge">you</span>
+                                        ) : null}
+                                    </td>
+                                    <td>{user.role}</td>
+                                    <td>
+                                        <span
+                                            className={
+                                                user.disabled
+                                                    ? "badge danger"
+                                                    : "badge ok"
+                                            }
+                                        >
+                                            {user.disabled
+                                                ? "disabled"
+                                                : "active"}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {new Date(
+                                            user.createdAt,
+                                        ).toLocaleString()}
+                                    </td>
+                                    <td className="actions">
+                                        {user.role === "user" ? (
+                                            <Button
+                                                variant="ghost"
+                                                onClick={() =>
+                                                    void setRoleFor(
+                                                        user,
+                                                        "owner",
+                                                    )
+                                                }
+                                            >
+                                                Make owner
+                                            </Button>
+                                        ) : (
+                                            <Button
+                                                variant="ghost"
+                                                onClick={() =>
+                                                    void setRoleFor(
+                                                        user,
+                                                        "user",
+                                                    )
+                                                }
+                                            >
+                                                Demote
+                                            </Button>
+                                        )}
+                                        <Button
+                                            variant={
+                                                user.disabled
+                                                    ? "primary"
+                                                    : "danger"
+                                            }
+                                            disabled={user.id === me.id}
+                                            onClick={() =>
+                                                void toggleDisabled(user)
+                                            }
+                                        >
+                                            {user.disabled
+                                                ? "Re-enable"
+                                                : "Disable"}
+                                        </Button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
             </section>
         </div>
     );

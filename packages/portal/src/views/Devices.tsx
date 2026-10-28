@@ -163,72 +163,79 @@ export function DevicesView({ me }: { me: ApiUser }) {
                 {devices.length === 0 ? (
                     <p className="muted">No devices.</p>
                 ) : (
-                    <table className="grid">
-                        <thead>
-                            <tr>
-                                <th>Name</th>
-                                <th>Prefix</th>
-                                <th>Created</th>
-                                <th>Last seen</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {devices.map((device) => (
-                                <tr key={device.id}>
-                                    <td>
-                                        <input
-                                            className="inline"
-                                            value={
-                                                rename[device.id] ?? device.name
-                                            }
-                                            onChange={(e) =>
-                                                setRename((prev) => ({
-                                                    ...prev,
-                                                    [device.id]: e.target.value,
-                                                }))
-                                            }
-                                        />
-                                    </td>
-                                    <td title={String(device.id)}>
-                                        …{device.prefix}
-                                    </td>
-                                    <td>
-                                        {new Date(
-                                            device.createdAt,
-                                        ).toLocaleString()}
-                                    </td>
-                                    <td>
-                                        {device.lastSeenAt
-                                            ? new Date(
-                                                  device.lastSeenAt,
-                                              ).toLocaleString()
-                                            : "never"}
-                                    </td>
-                                    <td className="actions">
-                                        <Button
-                                            variant="ghost"
-                                            disabled={
-                                                (rename[device.id] ??
-                                                    device.name) === device.name
-                                            }
-                                            onClick={() =>
-                                                void doRename(device)
-                                            }
-                                        >
-                                            Save
-                                        </Button>
-                                        <Button
-                                            variant="danger"
-                                            onClick={() => void revoke(device)}
-                                        >
-                                            Revoke
-                                        </Button>
-                                    </td>
+                    <div className="table-scroll">
+                        <table className="grid">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Prefix</th>
+                                    <th>Created</th>
+                                    <th>Last seen</th>
+                                    <th>Actions</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {devices.map((device) => (
+                                    <tr key={device.id}>
+                                        <td>
+                                            <input
+                                                className="inline"
+                                                value={
+                                                    rename[device.id] ??
+                                                    device.name
+                                                }
+                                                onChange={(e) =>
+                                                    setRename((prev) => ({
+                                                        ...prev,
+                                                        [device.id]:
+                                                            e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </td>
+                                        <td title={String(device.id)}>
+                                            …{device.prefix}
+                                        </td>
+                                        <td>
+                                            {new Date(
+                                                device.createdAt,
+                                            ).toLocaleString()}
+                                        </td>
+                                        <td>
+                                            {device.lastSeenAt
+                                                ? new Date(
+                                                      device.lastSeenAt,
+                                                  ).toLocaleString()
+                                                : "never"}
+                                        </td>
+                                        <td className="actions">
+                                            <Button
+                                                variant="ghost"
+                                                disabled={
+                                                    (rename[device.id] ??
+                                                        device.name) ===
+                                                    device.name
+                                                }
+                                                onClick={() =>
+                                                    void doRename(device)
+                                                }
+                                            >
+                                                Save
+                                            </Button>
+                                            <Button
+                                                variant="danger"
+                                                onClick={() =>
+                                                    void revoke(device)
+                                                }
+                                            >
+                                                Revoke
+                                            </Button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 )}
             </section>
         </div>
