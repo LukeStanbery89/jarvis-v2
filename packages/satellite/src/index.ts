@@ -172,6 +172,10 @@ async function runTurn(
     audio: AudioIO,
     sessionId: string,
     prompt: string,
+    playbackHooks?: {
+        onPlaybackStart?: () => void;
+        onPlaybackEnd?: () => void;
+    },
 ): Promise<void> {
     // Authenticate before printing the answer prefix so the handshake
     // diagnostic cannot land between "JARVIS:" and the first token.
@@ -185,9 +189,19 @@ async function runTurn(
     });
     process.stdout.write("\n");
     if (result.audio !== null && result.audio.pcm.length > 0) {
-        await audio.playPcm(result.audio.pcm, result.audio.sampleRate);
+        playbackHooks?.onPlaybackStart?.();
+        try {
+            await audio.playPcm(result.audio.pcm, result.audio.sampleRate);
+        } finally {
+            playbackHooks?.onPlaybackEnd?.();
+        }
     } else if (audio.localTts) {
-        await audio.speak(result.text);
+        playbackHooks?.onPlaybackStart?.();
+        try {
+            await audio.speak(result.text);
+        } finally {
+            playbackHooks?.onPlaybackEnd?.();
+        }
     } else {
         logger.debug("Turn had no TTS audio");
     }
@@ -400,7 +414,10 @@ async function runMicrophone(
                 logger.sensitive("Heard command", command);
                 if (!options.dryRun) {
                     try {
-                        await runTurn(client, audio, sessionId, command);
+                        await runTurn(client, audio, sessionId, command, {
+                            onPlaybackStart: () => capture?.setMuted(true),
+                            onPlaybackEnd: () => capture?.setMuted(false),
+                        });
                     } catch (err) {
                         logger.error(
                             `Turn failed: ${err instanceof Error ? err.message : String(err)}`,

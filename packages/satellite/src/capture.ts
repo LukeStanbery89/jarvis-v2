@@ -28,10 +28,11 @@ export interface StreamingCaptureCallbacks {
 /**
  * One long-lived SoX capture process plus a speech segmenter.
  *
- * While a callback is running the incoming stream is deliberately discarded:
- * the reply is being generated or spoken, and transcribing the speaker's own
- * voice would create a loop. The recorder itself stays open, so the next “Hey
- * JARVIS” is captured immediately when the callback returns.
+ * The recorder stays open for the whole wake loop so the first phoneme of “Hey
+ * JARVIS …” is captured even after a turn. Audio that arrives while a callback
+ * is running is still segmented and queued, so a command spoken during
+ * transcription is not lost. Playback mutes the segmenter through
+ * {@link setMuted} to keep the reply out of the microphone.
  */
 export class StreamingCapture {
     private child: ChildProcess | null = null;
@@ -39,9 +40,12 @@ export class StreamingCapture {
     private readonly sox: string | null;
     private readonly capture: string | null;
     private readonly driver: string;
+    private readonly queue: Float32Array[] = [];
     private carry = Buffer.alloc(0);
     private busy = false;
+    private muted = false;
     private stopped = false;
+    private readonly maxQueuedUtterances = 4;
 
     constructor(
         private readonly config: SatelliteConfig,
@@ -143,6 +147,22 @@ export class StreamingCapture {
             }, 500);
             killTimer.unref();
         }
+        this.queue.length = 0;
+        this.segmenter.reset();
+    }
+
+    /**
+     * Drops microphone input while the reply is playing.
+     *
+     * The recorder remains open; this only resets the segmenter so a partially
+     * captured sentence or the reply itself cannot become the next utterance.
+     */
+    setMuted(muted: boolean): void {
+        if (this.muted === muted) {
+            return;
+        }
+        this.muted = muted;
+        this.carry = Buffer.alloc(0);
         this.segmenter.reset();
     }
 
@@ -157,7 +177,7 @@ export class StreamingCapture {
 
     /** Converts one raw chunk to int16 and feeds the segmenter. */
     private onData(chunk: Buffer): void {
-        if (this.stopped || this.busy) {
+        if (this.stopped || this.muted) {
             return;
         }
         const buffer =
@@ -173,21 +193,24 @@ export class StreamingCapture {
         }
         this.carry = Buffer.from(buffer.subarray(sampleCount * 2));
         const completed = this.segmenter.feed(samples);
-        if (completed.length === 0) {
-            return;
+        for (const utterance of completed) {
+            if (this.busy) {
+                // A callback is transcribing the previous utterance. Keep this
+                // one, bounded, so a command spoken during transcription is not
+                // lost. Playback mutes the segmenter, so the reply never lands
+                // here.
+                if (this.queue.length >= this.maxQueuedUtterances) {
+                    this.queue.shift();
+                }
+                this.queue.push(utterance);
+                continue;
+            }
+            this.busy = true;
+            void this.emit(utterance);
         }
-        // The segmenter emits in order, but a turn owns the microphone until it
-        // returns. Process one at a time; newer audio waits in the pipe, and
-        // anything spoken while busy is intentionally ignored.
-        const [utterance] = completed;
-        if (utterance === undefined) {
-            return;
-        }
-        this.busy = true;
-        void this.emit(utterance);
     }
 
-    /** Runs the callback, then resumes capture with a clean segmenter. */
+    /** Runs the callback, then takes the next queued utterance. */
     private async emit(pcm: Float32Array): Promise<void> {
         try {
             await this.callbacks.onUtterance(pcm);
@@ -196,8 +219,12 @@ export class StreamingCapture {
                 `Utterance handler failed: ${error instanceof Error ? error.message : String(error)}`,
             );
         } finally {
-            this.segmenter.reset();
-            this.busy = false;
+            const next = this.queue.shift();
+            if (next !== undefined) {
+                void this.emit(next);
+            } else {
+                this.busy = false;
+            }
         }
     }
 }
