@@ -10,6 +10,7 @@ AI-powered assistant monorepo.
 | [packages/auth](./packages/auth)           | App database + credential crypto: users/devices/sessions/prefs ledgers (`@lukestanbery/jarvis-auth`)                 |
 | [packages/server](./packages/server)       | Express backend server with WebSocket chat + REST admin API (`@lukestanbery/jarvis-server`)                          |
 | [packages/cli](./packages/cli)             | WebSocket chat REPL client (`@lukestanbery/jarvis-cli`)                                                              |
+| [packages/satellite](./packages/satellite) | Headless mic-first satellite client for macOS/Linux (`@lukestanbery/jarvis-satellite`)                               |
 | [packages/logger](./packages/logger)       | Shared leveled, timestamped logging (`@lukestanbery/jarvis-logger`)                                                  |
 | [packages/voice](./packages/voice)         | Voice-input abstractions: STT/wake-word/VAD provider interfaces + session lifecycle (`@lukestanbery/jarvis-voice`)   |
 | [packages/portal](./packages/portal)       | React admin portal served by the server at `/` (`@lukestanbery/jarvis-portal`)                                       |
