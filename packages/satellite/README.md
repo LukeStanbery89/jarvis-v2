@@ -91,7 +91,7 @@ npm start -w @lukestanbery/jarvis-satellite -- \
 Finally, the microphone paths:
 
 ````sh
-# Push-to-talk: press Enter, speak, pause. No wake phrase required.
+# Push-to-talk: press Enter, wait for "Speak now", speak, pause.
 JARVIS_SERVER_URL=wss://localhost:54321/ws \
 JARVIS_SATELLITE_INSECURE_TLS=1 \
 npm start -w @lukestanbery/jarvis-satellite -- --ptt
@@ -197,28 +197,30 @@ does not rotate or rewrite it.
 
 ## Configuration
 
-| Variable                                 | Default                          | Purpose                                                                  |
-| ---------------------------------------- | -------------------------------- | ------------------------------------------------------------------------ |
-| `JARVIS_SERVER_URL`                      | `wss://localhost:54321/ws`       | `/ws` endpoint. Use `ws://` only on a trusted plain-HTTP dev server.     |
-| `JARVIS_SATELLITE_TOKEN`                 | _(unset)_                        | Device token; overrides the credentials file.                            |
-| `JARVIS_SATELLITE_INSECURE_TLS`          | `0`                              | Disable certificate verification for a local self-signed server.         |
-| `JARVIS_SATELLITE_CA`                    | _(unset)_                        | PEM CA bundle for a private certificate.                                 |
-| `JARVIS_SATELLITE_STATE_DIR`             | `~/.jarvis/satellite`            | Private state root.                                                      |
-| `JARVIS_SATELLITE_MODEL_DIR`             | `<state>/models`                 | Whisper cache.                                                           |
-| `JARVIS_SATELLITE_INPUT_DEVICE`          | _(system default)_               | SoX input name, e.g. `MacBook Pro Microphone` or `Anker PowerConf C200`. |
-| `JARVIS_SATELLITE_STT_MODEL`             | `onnx-community/whisper-tiny.en` | Transformers.js model id.                                                |
-| `JARVIS_SATELLITE_STT_DTYPE`             | `q8`                             | Model quantization.                                                      |
-| `JARVIS_SATELLITE_SESSION_ID`            | _(persisted)_                    | Fixed voice thread id.                                                   |
-| `JARVIS_SATELLITE_SESSION_FILE`          | `<state>/sessions.json`          | Thread id store.                                                         |
-| `JARVIS_SATELLITE_ONSET_SECONDS`         | `0.3`                            | Speech needed before SoX starts recording.                               |
-| `JARVIS_SATELLITE_SILENCE_SECONDS`       | `0.9`                            | Trailing silence that ends an utterance.                                 |
-| `JARVIS_SATELLITE_SILENCE_THRESHOLD`     | `1%`                             | SoX silence threshold.                                                   |
-| `JARVIS_SATELLITE_MAX_UTTERANCE_SECONDS` | `12`                             | Hard cap on one utterance.                                               |
-| `JARVIS_SATELLITE_LOCAL_TTS`             | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.    |
-| `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`    | `5000`                           | Connect timeout.                                                         |
-| `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`       | `5000`                           | Auth handshake timeout.                                                  |
-| `JARVIS_CREDENTIALS_FILE`                | `~/.jarvis/credentials.json`     | Shared text-CLI credential store.                                        |
-| `JARVIS_LOG_LEVEL`                       | `info`                           | `debug`, `info`, `warn`, `error`, `silent`.                              |
+| Variable                                 | Default                          | Purpose                                                                    |
+| ---------------------------------------- | -------------------------------- | -------------------------------------------------------------------------- |
+| `JARVIS_SERVER_URL`                      | `wss://localhost:54321/ws`       | `/ws` endpoint. Use `ws://` only on a trusted plain-HTTP dev server.       |
+| `JARVIS_SATELLITE_TOKEN`                 | _(unset)_                        | Device token; overrides the credentials file.                              |
+| `JARVIS_SATELLITE_INSECURE_TLS`          | `0`                              | Disable certificate verification for a local self-signed server.           |
+| `JARVIS_SATELLITE_CA`                    | _(unset)_                        | PEM CA bundle for a private certificate.                                   |
+| `JARVIS_SATELLITE_STATE_DIR`             | `~/.jarvis/satellite`            | Private state root.                                                        |
+| `JARVIS_SATELLITE_MODEL_DIR`             | `<state>/models`                 | Whisper cache.                                                             |
+| `JARVIS_SATELLITE_INPUT_DEVICE`          | _(system default)_               | SoX input name, e.g. `MacBook Pro Microphone` or `Anker PowerConf C200`.   |
+| `JARVIS_SATELLITE_STT_MODEL`             | `onnx-community/whisper-tiny.en` | Transformers.js model id.                                                  |
+| `JARVIS_SATELLITE_STT_DTYPE`             | `q8`                             | Model quantization.                                                        |
+| `JARVIS_SATELLITE_SESSION_ID`            | _(persisted)_                    | Fixed voice thread id.                                                     |
+| `JARVIS_SATELLITE_SESSION_FILE`          | `<state>/sessions.json`          | Thread id store.                                                           |
+| `JARVIS_SATELLITE_ONSET_SECONDS`         | `0.3`                            | Speech needed before SoX starts recording.                                 |
+| `JARVIS_SATELLITE_SILENCE_SECONDS`       | `0.9`                            | Trailing silence that ends an utterance.                                   |
+| `JARVIS_SATELLITE_SILENCE_THRESHOLD`     | `1%`                             | SoX silence threshold.                                                     |
+| `JARVIS_SATELLITE_MAX_UTTERANCE_SECONDS` | `12`                             | Hard cap on one utterance.                                                 |
+| `JARVIS_SATELLITE_RECORD_TIMEOUT_MS`     | `20000`                          | Push-to-talk wait-for-speech cap.                                          |
+| `JARVIS_SATELLITE_PTT_LEAD_MS`           | `600`                            | Delay after opening the mic before the “Speak now” cue (Bluetooth switch). |
+| `JARVIS_SATELLITE_LOCAL_TTS`             | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.      |
+| `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`    | `5000`                           | Connect timeout.                                                           |
+| `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`       | `5000`                           | Auth handshake timeout.                                                    |
+| `JARVIS_CREDENTIALS_FILE`                | `~/.jarvis/credentials.json`     | Shared text-CLI credential store.                                          |
+| `JARVIS_LOG_LEVEL`                       | `info`                           | `debug`, `info`, `warn`, `error`, `silent`.                                |
 
 ## Security notes
 

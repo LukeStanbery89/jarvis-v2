@@ -55,6 +55,8 @@ export interface SatelliteConfig {
     readonly maxUtteranceSeconds: number;
     /** How long a push-to-talk capture may wait for speech before giving up. */
     readonly recordTimeoutMs: number;
+    /** Delay after opening the PTT mic before cueing the user to speak. */
+    readonly pttLeadMs: number;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -181,6 +183,12 @@ export function loadConfig(
             env.JARVIS_SATELLITE_RECORD_TIMEOUT_MS,
             20_000,
             1_000,
+        ),
+        pttLeadMs: envNumber(
+            "JARVIS_SATELLITE_PTT_LEAD_MS",
+            env.JARVIS_SATELLITE_PTT_LEAD_MS,
+            600,
+            0,
         ),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),
     };

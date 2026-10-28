@@ -124,6 +124,7 @@ Environment:
   JARVIS_SATELLITE_ONSET_SECONDS     Speech needed before recording starts (0.3)
   JARVIS_SATELLITE_SILENCE_THRESHOLD SoX silence threshold (1%)
   JARVIS_SATELLITE_RECORD_TIMEOUT_MS Push-to-talk wait-for-speech cap (20000)
+  JARVIS_SATELLITE_PTT_LEAD_MS      Delay after opening the PTT mic before the "Speak now" cue (600)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -282,12 +283,16 @@ async function runMicrophone(
                 if (answer.trim().toLowerCase() === "q") {
                     return;
                 }
-                process.stdout.write(
-                    "Recording… speak, then pause (q cancels and quits).\n",
-                );
+                process.stdout.write("Recording… opening the microphone.\n");
                 recording = true;
                 const file = await audio.recordUtterance({
                     timeoutMs: audio.recordTimeoutMs,
+                    leadMs: audio.pttLeadMs,
+                    onStarted: () => {
+                        process.stdout.write(
+                            "Speak now (q cancels and quits).\n",
+                        );
+                    },
                 });
                 recording = false;
                 if (quitRequested) {

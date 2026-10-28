@@ -124,6 +124,8 @@ export class AudioIO {
     readonly localTts: boolean;
     /** Cap on a push-to-talk capture waiting for speech. */
     readonly recordTimeoutMs: number;
+    /** Delay after opening the PTT mic before cueing the user to speak. */
+    readonly pttLeadMs: number;
     private disposed = false;
     private recordingCancelled = false;
     private recordTimer: NodeJS.Timeout | null = null;
@@ -138,6 +140,7 @@ export class AudioIO {
         this.voiceCommand = findLocalVoice();
         this.localTts = config.localTts;
         this.recordTimeoutMs = config.recordTimeoutMs;
+        this.pttLeadMs = config.pttLeadMs;
         this.tempDir = path.join(config.stateDir, "tmp");
         mkdirSync(this.tempDir, { recursive: true, mode: 0o700 });
     }
@@ -183,9 +186,18 @@ export class AudioIO {
      * @param options.timeoutMs - Optional cap on how long to wait for speech.
      *   A push-to-talk capture uses this so a missing microphone permission
      *   does not leave the prompt stuck forever.
+     * @param options.leadMs - Wait this long after opening the microphone
+     *   before calling {@link options.onStarted}. Bluetooth headsets switch
+     *   profiles when the mic opens; the capture is already running during the
+     *   lead, and `silence -l` keeps that audio.
+     * @param options.onStarted - Called once the mic has had its lead time.
      */
     async recordUtterance(
-        options: { timeoutMs?: number } = {},
+        options: {
+            timeoutMs?: number;
+            leadMs?: number;
+            onStarted?: () => void;
+        } = {},
     ): Promise<string | null> {
         if (this.inputDevice !== undefined && this.sox === null) {
             throw new Error(
@@ -217,6 +229,7 @@ export class AudioIO {
         ];
         const effectArgs = [
             "silence",
+            "-l",
             "1",
             String(this.config.onsetSeconds),
             this.config.silenceThreshold,
@@ -263,7 +276,7 @@ export class AudioIO {
                 }
             }, options.timeoutMs);
         }
-        const exitCode = await new Promise<number | null>((resolve) => {
+        const exitPromise = new Promise<number | null>((resolve) => {
             child.on("error", () => resolve(null));
             // `exit`, not `close`: a recorder wrapper may leave a grandchild
             // holding the stderr pipe after the wrapper itself is signalled.
@@ -273,6 +286,19 @@ export class AudioIO {
                 resolve(code);
             });
         });
+        if (options.leadMs !== undefined && options.leadMs > 0) {
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve, options.leadMs);
+            });
+        }
+        if (
+            !this.recordingCancelled &&
+            !this.disposed &&
+            child.exitCode === null
+        ) {
+            options.onStarted?.();
+        }
+        const exitCode = await exitPromise;
         if (this.recordTimer !== null) {
             clearTimeout(this.recordTimer);
             this.recordTimer = null;
