@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { extractWakeCommand, resolveWakeUtterance } from "../src/wake";
+import {
+    extractWakeCommand,
+    looksLikeRepeatedNoise,
+    resolveWakeUtterance,
+} from "../src/wake";
 
 describe("extractWakeCommand", () => {
     it("strips the exact wake phrase and keeps the command", () => {
@@ -70,5 +74,18 @@ describe("resolveWakeUtterance", () => {
 
     it("ignores empty transcripts even during follow-up", () => {
         expect(resolveWakeUtterance("", true)).toEqual({ kind: "ignore" });
+    });
+});
+
+describe("looksLikeRepeatedNoise", () => {
+    it("recognizes repeated echo tokens", () => {
+        expect(looksLikeRepeatedNoise("EH EH EH EH")).toBe(true);
+        expect(looksLikeRepeatedNoise("eh, eh, eh.")).toBe(true);
+    });
+
+    it("keeps real commands", () => {
+        expect(looksLikeRepeatedNoise("stop")).toBe(false);
+        expect(looksLikeRepeatedNoise("what about Chicago?")).toBe(false);
+        expect(looksLikeRepeatedNoise("Hey JARVIS, stop")).toBe(false);
     });
 });

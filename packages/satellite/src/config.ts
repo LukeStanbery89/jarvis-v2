@@ -79,6 +79,8 @@ export interface SatelliteConfig {
     readonly bargeInMs: number;
     /** Audio kept before the barge-in trigger to seed the command. */
     readonly bargeInPreRollMs: number;
+    /** Whether the wake and prompt-complete chimes play. */
+    readonly chimesEnabled: boolean;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -258,7 +260,7 @@ export function loadConfig(
         bargeInThreshold: envNumber(
             "JARVIS_SATELLITE_BARGE_IN_THRESHOLD",
             env.JARVIS_SATELLITE_BARGE_IN_THRESHOLD,
-            0.035,
+            0.06,
             0.0001,
         ),
         bargeInMs: envNumber(
@@ -273,6 +275,7 @@ export function loadConfig(
             500,
             0,
         ),
+        chimesEnabled: envBool(env.JARVIS_SATELLITE_CHIMES, true),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),
     };
 }

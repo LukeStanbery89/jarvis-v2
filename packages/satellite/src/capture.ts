@@ -54,6 +54,7 @@ export class StreamingCapture {
     private bargeRingSamples = 0;
     private busy = false;
     private playbackActive = false;
+    private inputMuted = false;
     private stopped = false;
     private readonly maxQueuedUtterances = 4;
 
@@ -196,6 +197,23 @@ export class StreamingCapture {
         this.segmenter.reset();
     }
 
+    /**
+     * Drops microphone input for a local cue (the lifecycle chimes).
+     *
+     * This is separate from {@link setPlaybackActive}: a chime is not a reply,
+     * so it must not arm barge-in or become an utterance. It is short enough
+     * that discarding the few hundred milliseconds it plays is preferable to
+     * hearing the cue in the next transcript.
+     */
+    setInputMuted(muted: boolean): void {
+        if (this.inputMuted === muted) {
+            return;
+        }
+        this.inputMuted = muted;
+        this.carry = Buffer.alloc(0);
+        this.segmenter.reset();
+    }
+
     /** Reports a recorder failure once, then closes the stream. */
     private fail(error: Error): void {
         if (this.stopped) {
@@ -207,7 +225,7 @@ export class StreamingCapture {
 
     /** Converts one raw chunk to int16 and feeds the active detector. */
     private onData(chunk: Buffer): void {
-        if (this.stopped) {
+        if (this.stopped || this.inputMuted) {
             return;
         }
         const buffer =
@@ -267,8 +285,9 @@ export class StreamingCapture {
 
         // The detector has confirmed sustained speech. Stop treating playback
         // as authoritative, replay the recent ring into the normal segmenter,
-        // then ask the caller to kill the player.
-        const seed = this.concatBargeRing();
+        // then ask the caller to kill the player. Keep only the onset window:
+        // the older ring is mostly the reply leaking into the microphone.
+        const seed = this.trimBargeSeed(this.concatBargeRing());
         this.playbackActive = false;
         detector.reset();
         this.bargeRing.length = 0;
@@ -278,6 +297,17 @@ export class StreamingCapture {
             this.segmenter.feed(seed);
         }
         this.callbacks.onBargeIn?.();
+    }
+
+    /** Keeps the barge seed to the speech that caused the trigger. */
+    private trimBargeSeed(seed: Int16Array): Int16Array {
+        const maxSamples = Math.round(
+            (SAMPLE_RATE * (this.config.bargeInMs + 100)) / 1000,
+        );
+        if (seed.length <= maxSamples) {
+            return seed;
+        }
+        return seed.slice(seed.length - maxSamples);
     }
 
     /** Concatenates the barge-in pre-roll ring into one PCM buffer. */

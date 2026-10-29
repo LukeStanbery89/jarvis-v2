@@ -25,13 +25,19 @@ import { stdin, stdout } from "node:process";
 import { decodeWav } from "@lukestanbery/jarvis-voice";
 import { checkAudioTools, listAudioDevices, AudioIO } from "./audio";
 import { StreamingCapture } from "./capture";
+import { createChime, type ChimeKind } from "./chime";
 import { SatelliteClient } from "./client";
 import { loadConfig, SAMPLE_RATE, type SatelliteConfig } from "./config";
 import { loadCredential } from "./credentials";
+import { createVisualIndicator, type VisualIndicator } from "./indicator";
 import { logger } from "./logger";
 import { resolveSessionId } from "./session";
 import { WhisperStt } from "./stt";
-import { extractWakeCommand, resolveWakeUtterance } from "./wake";
+import {
+    extractWakeCommand,
+    looksLikeRepeatedNoise,
+    resolveWakeUtterance,
+} from "./wake";
 
 interface CliOptions {
     check: boolean;
@@ -135,9 +141,10 @@ Environment:
   JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
   JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS  Window after a reply for a follow-up without the wake phrase (3000; 0 disables)
   JARVIS_SATELLITE_BARGE_IN         Set to 0 to disable spoken interruption (1)
-  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.035)
+  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.06)
   JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
   JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
+  JARVIS_SATELLITE_CHIMES           Set to 0 to disable wake/prompt chimes (1)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -169,6 +176,25 @@ function resample(pcm: Float32Array, from: number, to: number): Float32Array {
 async function transcribeFile(file: string, stt: WhisperStt): Promise<string> {
     const { pcm, sampleRate } = decodeWav(await readFile(file));
     return stt.transcribe(resample(pcm, sampleRate, SAMPLE_RATE));
+}
+
+/** Plays one lifecycle chime without letting the microphone hear it. */
+async function playChime(
+    config: SatelliteConfig,
+    audio: AudioIO,
+    capture: StreamingCapture | null,
+    kind: ChimeKind,
+): Promise<void> {
+    if (!config.chimesEnabled) {
+        return;
+    }
+    const chime = createChime(kind);
+    capture?.setInputMuted(true);
+    try {
+        await audio.playPcm(chime.pcm, chime.sampleRate);
+    } finally {
+        capture?.setInputMuted(false);
+    }
 }
 
 /** Prints one prompt and plays the collected TTS audio when present. */
@@ -290,6 +316,7 @@ async function runMicrophone(
     client: SatelliteClient,
     audio: AudioIO,
     sessionId: string,
+    indicator: VisualIndicator,
 ): Promise<void> {
     await stt.warmup();
 
@@ -305,6 +332,7 @@ async function runMicrophone(
                 return;
             }
             if (line.trim().toLowerCase() === "q") {
+                indicator.setListening(false);
                 logger.info("Cancelling recording…");
                 quitRequested = true;
                 audio.stopRecording();
@@ -317,6 +345,7 @@ async function runMicrophone(
                     "Press Enter to talk, or q to quit: ",
                 );
                 if (answer.trim().toLowerCase() === "q") {
+                    indicator.setListening(false);
                     return;
                 }
                 process.stdout.write("Recording… opening the microphone.\n");
@@ -325,12 +354,14 @@ async function runMicrophone(
                     timeoutMs: audio.recordTimeoutMs,
                     leadMs: audio.pttLeadMs,
                     onStarted: () => {
+                        indicator.setListening(true);
                         process.stdout.write(
                             "Speak now (q cancels and quits).\n",
                         );
                     },
                 });
                 recording = false;
+                indicator.setListening(false);
                 if (quitRequested) {
                     return;
                 }
@@ -339,6 +370,7 @@ async function runMicrophone(
                     continue;
                 }
                 try {
+                    await playChime(config, audio, null, "complete");
                     const heard = await transcribeFile(file, stt);
                     process.stdout.write(`You: ${heard || "(no speech)"}\n`);
                     const command = extractWakeCommand(heard) ?? heard;
@@ -374,16 +406,42 @@ async function runMicrophone(
     const finished = new Promise<void>((resolve) => {
         finish = resolve;
     });
+    let listeningForPrompt = false;
+    let wakeListenTimer: NodeJS.Timeout | null = null;
+    const stopListening = (): void => {
+        listeningForPrompt = false;
+        if (wakeListenTimer !== null) {
+            clearTimeout(wakeListenTimer);
+            wakeListenTimer = null;
+        }
+        indicator.setListening(false);
+    };
+    const startListening = (): void => {
+        listeningForPrompt = true;
+        if (wakeListenTimer !== null) {
+            clearTimeout(wakeListenTimer);
+        }
+        indicator.setListening(true);
+        wakeListenTimer = setTimeout(() => {
+            wakeListenTimer = null;
+            listeningForPrompt = false;
+            indicator.setListening(false);
+            logger.debug("Wake follow-up window expired");
+        }, config.wakeFollowUpMs);
+        wakeListenTimer.unref();
+    };
     const stop = (): void => {
         if (stopRequested) {
             return;
         }
         stopRequested = true;
+        stopListening();
         capture?.stop();
         finish();
     };
     const onLine = (line: string): void => {
         if (line.trim().toLowerCase() === "q") {
+            indicator.setListening(false);
             logger.info("Stopping…");
             stop();
         }
@@ -401,6 +459,12 @@ async function runMicrophone(
                 if (Date.now() < followUpUntil + config.vadOnsetMs) {
                     followUpAtSpeechStart = true;
                 }
+                if (listeningForPrompt && wakeListenTimer !== null) {
+                    // The user started the command before the wake window
+                    // expired; keep the spinner up until the prompt completes.
+                    clearTimeout(wakeListenTimer);
+                    wakeListenTimer = null;
+                }
             },
             onBargeIn: () => {
                 bargeInUntil =
@@ -410,6 +474,7 @@ async function runMicrophone(
             },
             onUtterance: async (pcm) => {
                 const heard = await stt.transcribe(pcm);
+                stopListening();
                 process.stdout.write(
                     `You: ${heard || "(no speech recognized)"}\n`,
                 );
@@ -420,6 +485,12 @@ async function runMicrophone(
                     followUpAtSpeechStart ||
                     Date.now() < followUpUntil;
                 followUpAtSpeechStart = false;
+                if (bargeIn && looksLikeRepeatedNoise(heard)) {
+                    logger.warn(
+                        "Ignoring a barge-in transcript that looks like playback echo",
+                    );
+                    return;
+                }
                 const decision = resolveWakeUtterance(heard, followUpActive);
                 if (decision.kind === "ignore") {
                     logger.debug(
@@ -428,18 +499,20 @@ async function runMicrophone(
                     return;
                 }
                 if (decision.kind === "wait") {
-                    // The wake phrase arrived on its own. Keep the follow-up
-                    // window open for the command, and re-arm it if the user
-                    // says only “Hey JARVIS” again.
-                    followUpUntil = Date.now() + config.wakeFollowUpMs;
+                    // The wake phrase arrived on its own. Play the wake cue,
+                    // then keep the follow-up window open for the command.
                     logger.info(
                         "Wake phrase heard; listening for the command…",
                     );
+                    await playChime(config, audio, capture, "wake");
+                    followUpUntil = Date.now() + config.wakeFollowUpMs;
+                    startListening();
                     return;
                 }
 
                 followUpUntil = 0;
                 const command = decision.command;
+                await playChime(config, audio, capture, "complete");
                 logger.sensitive("Heard command", command);
                 let turnSucceeded = false;
                 if (!options.dryRun) {
@@ -472,6 +545,7 @@ async function runMicrophone(
                 }
             },
             onError: (error) => {
+                indicator.setListening(false);
                 logger.error(error.message);
                 stop();
             },
@@ -497,6 +571,7 @@ async function main(): Promise<void> {
     const credential = loadCredential(config.serverUrl, config.credentialsFile);
     const sessionId = resolveSessionId(config);
     const audio = new AudioIO(config);
+    const indicator = createVisualIndicator();
     const stt = new WhisperStt(config);
     const client = new SatelliteClient({
         url: config.serverUrl,
@@ -520,6 +595,7 @@ async function main(): Promise<void> {
         if (announce) {
             logger.info("Stopping satellite…");
         }
+        indicator.dispose();
         audio.dispose();
         client.close();
     };
@@ -566,7 +642,15 @@ async function main(): Promise<void> {
             await runWav(options, stt, client, audio, sessionId);
             return;
         }
-        await runMicrophone(config, options, stt, client, audio, sessionId);
+        await runMicrophone(
+            config,
+            options,
+            stt,
+            client,
+            audio,
+            sessionId,
+            indicator,
+        );
     } finally {
         shutdown();
     }

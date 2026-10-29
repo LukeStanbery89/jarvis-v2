@@ -90,3 +90,20 @@ export function resolveWakeUtterance(
     }
     return { kind: "command", command: wake };
 }
+
+/**
+ * Recognizes a transcript that is one token repeated over and over.
+ *
+ * The satellite has no echo cancellation; a barge-in false trigger can seed
+ * Whisper with a few hundred milliseconds of the reply, which sometimes comes
+ * back as “EH EH EH …”. Such a transcript is never a real prompt and must not
+ * be sent to the model.
+ */
+export function looksLikeRepeatedNoise(text: string): boolean {
+    const words = text.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+    if (words.length < 3) {
+        return false;
+    }
+    const first = words[0];
+    return words.every((word) => word === first);
+}

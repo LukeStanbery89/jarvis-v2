@@ -43,6 +43,11 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   and the interrupting utterance becomes the next command. There is no browser
   echo cancellation on the SoX path, so the barge threshold is higher than the
   wake VAD and can be tuned or disabled.
+- **Feedback:** the wake phrase plays a rising two-note chime and starts a
+  terminal spinner while JARVIS waits for the prompt; a completed prompt plays a
+  higher confirmation chime. Chimes are generated locally and muted from the
+  capture path. The spinner is behind a `VisualIndicator` interface so an LED or
+  hardware ring can be added without touching the voice loop.
 - **STT:** Transformers.js runs Whisper tiny.en on CPU, cached under
   `~/.jarvis/satellite/models`.
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,
@@ -179,7 +184,7 @@ Barge-in is energy-based on the SoX path; there is no browser echo cancellation.
 If the reply's own output is triggering it, raise the threshold:
 
 ```sh
-JARVIS_SATELLITE_BARGE_IN_THRESHOLD=0.06 \
+JARVIS_SATELLITE_BARGE_IN_THRESHOLD=0.08 \
 JARVIS_SERVER_URL=wss://localhost:54321/ws \
 JARVIS_SATELLITE_INSECURE_TLS=1 \
 npm start -w @lukestanbery/jarvis-satellite
@@ -282,9 +287,10 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`         | `5000`                           | Window after a wake-only utterance for the command.                         |
 | `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` | `3000`                           | Window after a reply for a follow-up without the wake phrase; `0` disables. |
 | `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                  |
-| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.035`                          | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
+| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.06`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
 | `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
 | `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
+| `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the wake and prompt-complete chimes.                  |
 | `JARVIS_SATELLITE_LOCAL_TTS`                | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.       |
 | `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`       | `5000`                           | Connect timeout.                                                            |
 | `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`          | `5000`                           | Auth handshake timeout.                                                     |
