@@ -69,6 +69,8 @@ export interface SatelliteConfig {
     readonly vadMaxUtteranceMs: number;
     /** Window in which a command may follow a wake-only utterance. */
     readonly wakeFollowUpMs: number;
+    /** Window after a reply in which a follow-up needs no wake phrase; 0 disables. */
+    readonly conversationFollowUpMs: number;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -236,6 +238,12 @@ export function loadConfig(
             "JARVIS_SATELLITE_WAKE_FOLLOWUP_MS",
             env.JARVIS_SATELLITE_WAKE_FOLLOWUP_MS,
             5_000,
+            0,
+        ),
+        conversationFollowUpMs: envNumber(
+            "JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS",
+            env.JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS,
+            3_000,
             0,
         ),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),

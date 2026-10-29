@@ -31,7 +31,7 @@ import { loadCredential } from "./credentials";
 import { logger } from "./logger";
 import { resolveSessionId } from "./session";
 import { WhisperStt } from "./stt";
-import { extractWakeCommand } from "./wake";
+import { extractWakeCommand, resolveWakeUtterance } from "./wake";
 
 interface CliOptions {
     check: boolean;
@@ -133,6 +133,7 @@ Environment:
   JARVIS_SATELLITE_VAD_PREROLL_MS   Audio kept before onset so the first word survives (1000)
   JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS  Hard cap on one wake utterance (15000)
   JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
+  JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS  Window after a reply for a follow-up without the wake phrase (3000; 0 disables)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -384,40 +385,38 @@ async function runMicrophone(
                 process.stdout.write(
                     `You: ${heard || "(no speech recognized)"}\n`,
                 );
-                let command: string | null = null;
-                if (Date.now() < followUpUntil) {
-                    // The previous utterance was only “Hey JARVIS”. Treat the
-                    // next one as the command even if it starts with the name
-                    // again, and accept the natural pause between them.
-                    followUpUntil = 0;
-                    command = extractWakeCommand(heard) ?? heard;
-                } else {
-                    const wake = extractWakeCommand(heard);
-                    if (wake === null) {
-                        logger.debug(
-                            "Ignoring an utterance without the wake phrase",
-                        );
-                        return;
-                    }
-                    if (wake.length === 0) {
-                        followUpUntil = Date.now() + config.wakeFollowUpMs;
-                        logger.info(
-                            "Wake phrase heard; listening for the command…",
-                        );
-                        return;
-                    }
-                    command = wake;
-                }
-                if (command === null || command.length === 0) {
+                const decision = resolveWakeUtterance(
+                    heard,
+                    Date.now() < followUpUntil,
+                );
+                if (decision.kind === "ignore") {
+                    logger.debug(
+                        "Ignoring an utterance without the wake phrase",
+                    );
                     return;
                 }
+                if (decision.kind === "wait") {
+                    // The wake phrase arrived on its own. Keep the follow-up
+                    // window open for the command, and re-arm it if the user
+                    // says only “Hey JARVIS” again.
+                    followUpUntil = Date.now() + config.wakeFollowUpMs;
+                    logger.info(
+                        "Wake phrase heard; listening for the command…",
+                    );
+                    return;
+                }
+
+                followUpUntil = 0;
+                const command = decision.command;
                 logger.sensitive("Heard command", command);
+                let turnSucceeded = false;
                 if (!options.dryRun) {
                     try {
                         await runTurn(client, audio, sessionId, command, {
                             onPlaybackStart: () => capture?.setMuted(true),
                             onPlaybackEnd: () => capture?.setMuted(false),
                         });
+                        turnSucceeded = true;
                     } catch (err) {
                         logger.error(
                             `Turn failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -426,6 +425,11 @@ async function runMicrophone(
                 }
                 if (options.once) {
                     stop();
+                } else if (turnSucceeded && config.conversationFollowUpMs > 0) {
+                    followUpUntil = Date.now() + config.conversationFollowUpMs;
+                    logger.debug(
+                        `Follow-up window open for ${config.conversationFollowUpMs} ms`,
+                    );
                 }
             },
             onError: (error) => {

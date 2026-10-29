@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractWakeCommand } from "../src/wake";
+import { extractWakeCommand, resolveWakeUtterance } from "../src/wake";
 
 describe("extractWakeCommand", () => {
     it("strips the exact wake phrase and keeps the command", () => {
@@ -33,5 +33,42 @@ describe("extractWakeCommand", () => {
     it("ignores speech that does not address JARVIS", () => {
         expect(extractWakeCommand("what is the weather?")).toBeNull();
         expect(extractWakeCommand("")).toBeNull();
+    });
+});
+
+describe("resolveWakeUtterance", () => {
+    it("requires the wake phrase outside a follow-up window", () => {
+        expect(
+            resolveWakeUtterance("Hey JARVIS, what time is it?", false),
+        ).toEqual({ kind: "command", command: "what time is it?" });
+        expect(resolveWakeUtterance("Hey JARVIS", false)).toEqual({
+            kind: "wait",
+        });
+        expect(resolveWakeUtterance("what time is it?", false)).toEqual({
+            kind: "ignore",
+        });
+    });
+
+    it("accepts a command without the wake phrase during follow-up", () => {
+        expect(resolveWakeUtterance("what time is it?", true)).toEqual({
+            kind: "command",
+            command: "what time is it?",
+        });
+    });
+
+    it("strips a wake phrase during follow-up", () => {
+        expect(
+            resolveWakeUtterance("Hey JARVIS, what time is it?", true),
+        ).toEqual({ kind: "command", command: "what time is it?" });
+    });
+
+    it("re-arms the wake wait for a wake-only follow-up", () => {
+        expect(resolveWakeUtterance("Hey JARVIS", true)).toEqual({
+            kind: "wait",
+        });
+    });
+
+    it("ignores empty transcripts even during follow-up", () => {
+        expect(resolveWakeUtterance("", true)).toEqual({ kind: "ignore" });
     });
 });

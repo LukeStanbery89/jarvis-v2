@@ -6,6 +6,10 @@
  * transcript is checked for the wake phrase. Matching uses the shared
  * `stripWakePhrase` fuzzy matcher from `@lukestanbery/jarvis-voice`, so common
  * ASR manglings ("he jarvis", "a jarvis") still wake the device.
+ *
+ * `resolveWakeUtterance` also owns the follow-up rules: a transcript without
+ * the wake phrase is a command only while a follow-up window is open, and a
+ * second wake-only phrase re-arms the wait rather than being discarded.
  */
 import {
     DEFAULT_WAKE_PHRASE,
@@ -44,4 +48,45 @@ export function extractWakeCommand(text: string): string | null {
         .slice(match.index + match[0].length)
         .replace(/^[,.;:!?\-–—'"“”\s]+/, "")
         .trim();
+}
+
+/** What the wake loop should do with one transcript. */
+export type WakeDecision =
+    | { readonly kind: "ignore" }
+    | { readonly kind: "wait" }
+    | { readonly kind: "command"; readonly command: string };
+
+/**
+ * Decides whether an utterance starts a turn.
+ *
+ * Normal mode requires the wake phrase. A follow-up window is open after a
+ * wake-only utterance or after a completed reply; there, a transcript without
+ * the wake phrase is already a command, and a second wake-only phrase simply
+ * re-arms the wake wait. This is pure so the follow-up state machine is tested
+ * without a microphone.
+ */
+export function resolveWakeUtterance(
+    text: string,
+    followUpActive: boolean,
+): WakeDecision {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+        return { kind: "ignore" };
+    }
+
+    const wake = extractWakeCommand(trimmed);
+    if (followUpActive) {
+        if (wake === "") {
+            return { kind: "wait" };
+        }
+        return { kind: "command", command: wake ?? trimmed };
+    }
+
+    if (wake === null) {
+        return { kind: "ignore" };
+    }
+    if (wake === "") {
+        return { kind: "wait" };
+    }
+    return { kind: "command", command: wake };
 }
