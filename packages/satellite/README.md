@@ -45,9 +45,11 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   wake VAD and can be tuned or disabled.
 - **Feedback:** the wake phrase plays a rising two-note chime and starts a
   terminal spinner while JARVIS waits for the prompt; a completed prompt plays a
-  higher confirmation chime. Chimes are generated locally and muted from the
-  capture path. The spinner is behind a `VisualIndicator` interface so an LED or
-  hardware ring can be added without touching the voice loop.
+  higher confirmation chime. The spinner is also up during the post-reply
+  follow-up window and disappears when that window expires. Chimes are generated
+  locally and muted from the capture path. The spinner is behind a
+  `VisualIndicator` interface so an LED or hardware ring can be added without
+  touching the voice loop.
 - **STT:** Transformers.js runs Whisper tiny.en on CPU, cached under
   `~/.jarvis/satellite/models`.
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,
@@ -287,7 +289,7 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`         | `5000`                           | Window after a wake-only utterance for the command.                         |
 | `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` | `3000`                           | Window after a reply for a follow-up without the wake phrase; `0` disables. |
 | `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                  |
-| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.06`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
+| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.03`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
 | `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
 | `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
 | `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the wake and prompt-complete chimes.                  |

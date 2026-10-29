@@ -141,7 +141,7 @@ Environment:
   JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
   JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS  Window after a reply for a follow-up without the wake phrase (3000; 0 disables)
   JARVIS_SATELLITE_BARGE_IN         Set to 0 to disable spoken interruption (1)
-  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.06)
+  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.03)
   JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
   JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
   JARVIS_SATELLITE_CHIMES           Set to 0 to disable wake/prompt chimes (1)
@@ -416,7 +416,7 @@ async function runMicrophone(
         }
         indicator.setListening(false);
     };
-    const startListening = (): void => {
+    const startListening = (durationMs: number): void => {
         listeningForPrompt = true;
         if (wakeListenTimer !== null) {
             clearTimeout(wakeListenTimer);
@@ -426,8 +426,8 @@ async function runMicrophone(
             wakeListenTimer = null;
             listeningForPrompt = false;
             indicator.setListening(false);
-            logger.debug("Wake follow-up window expired");
-        }, config.wakeFollowUpMs);
+            logger.debug("Listening window expired");
+        }, durationMs);
         wakeListenTimer.unref();
     };
     const stop = (): void => {
@@ -506,7 +506,7 @@ async function runMicrophone(
                     );
                     await playChime(config, audio, capture, "wake");
                     followUpUntil = Date.now() + config.wakeFollowUpMs;
-                    startListening();
+                    startListening(config.wakeFollowUpMs);
                     return;
                 }
 
@@ -542,6 +542,7 @@ async function runMicrophone(
                     logger.info(
                         `Follow-up window open for ${config.conversationFollowUpMs} ms`,
                     );
+                    startListening(config.conversationFollowUpMs);
                 }
             },
             onError: (error) => {

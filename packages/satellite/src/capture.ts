@@ -17,6 +17,19 @@ import { SAMPLE_RATE, type SatelliteConfig } from "./config";
 import { logger } from "./logger";
 import { BargeInDetector, SpeechSegmenter } from "./vad";
 
+/** Normalized RMS for a chunk of int16 samples. */
+function samplesRms(samples: Int16Array): number {
+    if (samples.length === 0) {
+        return 0;
+    }
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+        const sample = (samples[i] ?? 0) / 32768;
+        sum += sample * sample;
+    }
+    return Math.sqrt(sum / samples.length);
+}
+
 /** What the wake loop does with a completed utterance. */
 export interface StreamingCaptureCallbacks {
     /** Called once per utterance with mono float PCM at {@link SAMPLE_RATE}. */
@@ -52,6 +65,7 @@ export class StreamingCapture {
     private readonly queue: Float32Array[] = [];
     private carry = Buffer.alloc(0);
     private bargeRingSamples = 0;
+    private bargePeakRms = 0;
     private busy = false;
     private playbackActive = false;
     private inputMuted = false;
@@ -194,6 +208,13 @@ export class StreamingCapture {
         this.bargeDetector?.reset();
         this.bargeRing.length = 0;
         this.bargeRingSamples = 0;
+        if (active) {
+            this.bargePeakRms = 0;
+        } else if (this.bargePeakRms > 0) {
+            logger.debug(
+                `Barge watch peak RMS ${this.bargePeakRms.toFixed(4)} (threshold ${this.config.bargeInThreshold})`,
+            );
+        }
         this.segmenter.reset();
     }
 
@@ -267,6 +288,8 @@ export class StreamingCapture {
         if (detector === null) {
             return;
         }
+        const level = samplesRms(samples);
+        this.bargePeakRms = Math.max(this.bargePeakRms, level);
         this.bargeRing.push(samples.slice());
         this.bargeRingSamples += samples.length;
         while (
@@ -288,6 +311,9 @@ export class StreamingCapture {
         // then ask the caller to kill the player. Keep only the onset window:
         // the older ring is mostly the reply leaking into the microphone.
         const seed = this.trimBargeSeed(this.concatBargeRing());
+        logger.debug(
+            `Barge-in trigger at RMS ${level.toFixed(4)} (threshold ${this.config.bargeInThreshold})`,
+        );
         this.playbackActive = false;
         detector.reset();
         this.bargeRing.length = 0;
