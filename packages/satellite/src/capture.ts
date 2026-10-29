@@ -15,7 +15,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { checkAudioTools } from "./audio";
 import { SAMPLE_RATE, type SatelliteConfig } from "./config";
 import { logger } from "./logger";
-import { SpeechSegmenter } from "./vad";
+import { BargeInDetector, SpeechSegmenter } from "./vad";
 
 /** What the wake loop does with a completed utterance. */
 export interface StreamingCaptureCallbacks {
@@ -23,6 +23,8 @@ export interface StreamingCaptureCallbacks {
     onUtterance: (pcm: Float32Array) => Promise<void> | void;
     /** Called when the segmenter confirms that someone started speaking. */
     onSpeechStart?: () => void;
+    /** Called when sustained speech interrupts playback. */
+    onBargeIn?: () => void;
     /** Called when the recorder cannot start or exits before `stop()`. */
     onError: (error: Error) => void;
 }
@@ -33,19 +35,25 @@ export interface StreamingCaptureCallbacks {
  * The recorder stays open for the whole wake loop so the first phoneme of “Hey
  * JARVIS …” is captured even after a turn. Audio that arrives while a callback
  * is running is still segmented and queued, so a command spoken during
- * transcription is not lost. Playback mutes the segmenter through
- * {@link setMuted} to keep the reply out of the microphone.
+ * transcription is not lost. During playback, a separate barge-in detector
+ * watches for sustained speech; when it fires, the short pre-roll seeds the
+ * normal segmenter so the interruption is transcribed, and the caller stops the
+ * player.
  */
 export class StreamingCapture {
     private child: ChildProcess | null = null;
     private readonly segmenter: SpeechSegmenter;
+    private readonly bargeDetector: BargeInDetector | null;
+    private readonly bargePreRollSamples: number;
+    private readonly bargeRing: Int16Array[] = [];
     private readonly sox: string | null;
     private readonly capture: string | null;
     private readonly driver: string;
     private readonly queue: Float32Array[] = [];
     private carry = Buffer.alloc(0);
+    private bargeRingSamples = 0;
     private busy = false;
-    private muted = false;
+    private playbackActive = false;
     private stopped = false;
     private readonly maxQueuedUtterances = 4;
 
@@ -68,6 +76,16 @@ export class StreamingCapture {
                 this.callbacks.onSpeechStart?.();
             },
         });
+        this.bargeDetector = config.bargeInEnabled
+            ? new BargeInDetector({
+                  threshold: config.bargeInThreshold,
+                  onsetMs: config.bargeInMs,
+                  sampleRate: SAMPLE_RATE,
+              })
+            : null;
+        this.bargePreRollSamples = Math.round(
+            (SAMPLE_RATE * config.bargeInPreRollMs) / 1000,
+        );
     }
 
     /**
@@ -153,21 +171,28 @@ export class StreamingCapture {
             killTimer.unref();
         }
         this.queue.length = 0;
+        this.bargeRing.length = 0;
+        this.bargeRingSamples = 0;
+        this.bargeDetector?.reset();
         this.segmenter.reset();
     }
 
     /**
-     * Drops microphone input while the reply is playing.
+     * Arms the barge-in watch while the reply is playing.
      *
-     * The recorder remains open; this only resets the segmenter so a partially
-     * captured sentence or the reply itself cannot become the next utterance.
+     * The recorder remains open. In this state the normal segmenter is not fed
+     * (the reply would become an utterance); instead the barge detector watches
+     * for louder, sustained speech. A trigger seeds the normal segmenter with
+     * the recent pre-roll and calls {@link StreamingCaptureCallbacks.onBargeIn}.
      */
-    setMuted(muted: boolean): void {
-        if (this.muted === muted) {
+    setPlaybackActive(active: boolean): void {
+        if (this.playbackActive === active) {
             return;
         }
-        this.muted = muted;
-        this.carry = Buffer.alloc(0);
+        this.playbackActive = active;
+        this.bargeDetector?.reset();
+        this.bargeRing.length = 0;
+        this.bargeRingSamples = 0;
         this.segmenter.reset();
     }
 
@@ -180,9 +205,9 @@ export class StreamingCapture {
         this.callbacks.onError(error);
     }
 
-    /** Converts one raw chunk to int16 and feeds the segmenter. */
+    /** Converts one raw chunk to int16 and feeds the active detector. */
     private onData(chunk: Buffer): void {
-        if (this.stopped || this.muted) {
+        if (this.stopped) {
             return;
         }
         const buffer =
@@ -197,13 +222,16 @@ export class StreamingCapture {
             samples[i] = buffer.readInt16LE(i * 2);
         }
         this.carry = Buffer.from(buffer.subarray(sampleCount * 2));
+        if (this.playbackActive) {
+            this.onPlaybackData(samples);
+            return;
+        }
         const completed = this.segmenter.feed(samples);
         for (const utterance of completed) {
             if (this.busy) {
                 // A callback is transcribing the previous utterance. Keep this
                 // one, bounded, so a command spoken during transcription is not
-                // lost. Playback mutes the segmenter, so the reply never lands
-                // here.
+                // lost.
                 if (this.queue.length >= this.maxQueuedUtterances) {
                     this.queue.shift();
                 }
@@ -213,6 +241,58 @@ export class StreamingCapture {
             this.busy = true;
             void this.emit(utterance);
         }
+    }
+
+    /** Watches for a barge-in and seeds the segmenter when one fires. */
+    private onPlaybackData(samples: Int16Array): void {
+        const detector = this.bargeDetector;
+        if (detector === null) {
+            return;
+        }
+        this.bargeRing.push(samples.slice());
+        this.bargeRingSamples += samples.length;
+        while (
+            this.bargeRingSamples > this.bargePreRollSamples &&
+            this.bargeRing.length > 0
+        ) {
+            const dropped = this.bargeRing.shift();
+            if (dropped === undefined) {
+                break;
+            }
+            this.bargeRingSamples -= dropped.length;
+        }
+        if (!detector.feed(samples)) {
+            return;
+        }
+
+        // The detector has confirmed sustained speech. Stop treating playback
+        // as authoritative, replay the recent ring into the normal segmenter,
+        // then ask the caller to kill the player.
+        const seed = this.concatBargeRing();
+        this.playbackActive = false;
+        detector.reset();
+        this.bargeRing.length = 0;
+        this.bargeRingSamples = 0;
+        this.segmenter.reset();
+        if (seed.length > 0) {
+            this.segmenter.feed(seed);
+        }
+        this.callbacks.onBargeIn?.();
+    }
+
+    /** Concatenates the barge-in pre-roll ring into one PCM buffer. */
+    private concatBargeRing(): Int16Array {
+        const total = this.bargeRing.reduce(
+            (sum, chunk) => sum + chunk.length,
+            0,
+        );
+        const out = new Int16Array(total);
+        let offset = 0;
+        for (const chunk of this.bargeRing) {
+            out.set(chunk, offset);
+            offset += chunk.length;
+        }
+        return out;
     }
 
     /** Runs the callback, then takes the next queued utterance. */

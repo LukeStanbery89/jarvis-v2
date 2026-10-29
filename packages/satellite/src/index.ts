@@ -134,6 +134,10 @@ Environment:
   JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS  Hard cap on one wake utterance (15000)
   JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
   JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS  Window after a reply for a follow-up without the wake phrase (3000; 0 disables)
+  JARVIS_SATELLITE_BARGE_IN         Set to 0 to disable spoken interruption (1)
+  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.035)
+  JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
+  JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -177,7 +181,7 @@ async function runTurn(
         onPlaybackStart?: () => void;
         onPlaybackEnd?: () => void;
     },
-): Promise<void> {
+): Promise<boolean> {
     // Authenticate before printing the answer prefix so the handshake
     // diagnostic cannot land between "JARVIS:" and the first token.
     await client.connect();
@@ -193,23 +197,27 @@ async function runTurn(
         playbackHooks?.onPlaybackStart?.();
         logger.debug("TTS playback started");
         try {
-            await audio.playPcm(result.audio.pcm, result.audio.sampleRate);
+            return await audio.playPcm(
+                result.audio.pcm,
+                result.audio.sampleRate,
+            );
         } finally {
             logger.debug("TTS playback finished");
             playbackHooks?.onPlaybackEnd?.();
         }
-    } else if (audio.localTts) {
+    }
+    if (audio.localTts) {
         playbackHooks?.onPlaybackStart?.();
         logger.debug("Local TTS playback started");
         try {
-            await audio.speak(result.text);
+            return await audio.speak(result.text);
         } finally {
             logger.debug("Local TTS playback finished");
             playbackHooks?.onPlaybackEnd?.();
         }
-    } else {
-        logger.debug("Turn had no TTS audio");
     }
+    logger.debug("Turn had no TTS audio");
+    return true;
 }
 
 /** `--check`: tools, config, token, and a real auth/hello handshake. */
@@ -383,6 +391,7 @@ async function runMicrophone(
     rl.on("line", onLine);
     let followUpUntil = 0;
     let followUpAtSpeechStart = false;
+    let bargeInUntil = 0;
     try {
         capture = new StreamingCapture(config, {
             onSpeechStart: () => {
@@ -393,13 +402,23 @@ async function runMicrophone(
                     followUpAtSpeechStart = true;
                 }
             },
+            onBargeIn: () => {
+                bargeInUntil =
+                    Date.now() + Math.max(config.conversationFollowUpMs, 5_000);
+                logger.info("Barge-in detected; stopping playback");
+                audio.stopPlayback();
+            },
             onUtterance: async (pcm) => {
                 const heard = await stt.transcribe(pcm);
                 process.stdout.write(
                     `You: ${heard || "(no speech recognized)"}\n`,
                 );
+                const bargeIn = Date.now() < bargeInUntil;
+                bargeInUntil = 0;
                 const followUpActive =
-                    followUpAtSpeechStart || Date.now() < followUpUntil;
+                    bargeIn ||
+                    followUpAtSpeechStart ||
+                    Date.now() < followUpUntil;
                 followUpAtSpeechStart = false;
                 const decision = resolveWakeUtterance(heard, followUpActive);
                 if (decision.kind === "ignore") {
@@ -425,11 +444,18 @@ async function runMicrophone(
                 let turnSucceeded = false;
                 if (!options.dryRun) {
                     try {
-                        await runTurn(client, audio, sessionId, command, {
-                            onPlaybackStart: () => capture?.setMuted(true),
-                            onPlaybackEnd: () => capture?.setMuted(false),
-                        });
-                        turnSucceeded = true;
+                        turnSucceeded = await runTurn(
+                            client,
+                            audio,
+                            sessionId,
+                            command,
+                            {
+                                onPlaybackStart: () =>
+                                    capture?.setPlaybackActive(true),
+                                onPlaybackEnd: () =>
+                                    capture?.setPlaybackActive(false),
+                            },
+                        );
                     } catch (err) {
                         logger.error(
                             `Turn failed: ${err instanceof Error ? err.message : String(err)}`,

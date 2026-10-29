@@ -71,6 +71,14 @@ export interface SatelliteConfig {
     readonly wakeFollowUpMs: number;
     /** Window after a reply in which a follow-up needs no wake phrase; 0 disables. */
     readonly conversationFollowUpMs: number;
+    /** Whether playback watches the microphone for a spoken interruption. */
+    readonly bargeInEnabled: boolean;
+    /** RMS threshold for a barge-in candidate; higher than the wake VAD. */
+    readonly bargeInThreshold: number;
+    /** Sustained speech needed before playback stops. */
+    readonly bargeInMs: number;
+    /** Audio kept before the barge-in trigger to seed the command. */
+    readonly bargeInPreRollMs: number;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -244,6 +252,25 @@ export function loadConfig(
             "JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS",
             env.JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS,
             3_000,
+            0,
+        ),
+        bargeInEnabled: envBool(env.JARVIS_SATELLITE_BARGE_IN, true),
+        bargeInThreshold: envNumber(
+            "JARVIS_SATELLITE_BARGE_IN_THRESHOLD",
+            env.JARVIS_SATELLITE_BARGE_IN_THRESHOLD,
+            0.035,
+            0.0001,
+        ),
+        bargeInMs: envNumber(
+            "JARVIS_SATELLITE_BARGE_IN_MS",
+            env.JARVIS_SATELLITE_BARGE_IN_MS,
+            300,
+            50,
+        ),
+        bargeInPreRollMs: envNumber(
+            "JARVIS_SATELLITE_BARGE_IN_PREROLL_MS",
+            env.JARVIS_SATELLITE_BARGE_IN_PREROLL_MS,
+            500,
             0,
         ),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),

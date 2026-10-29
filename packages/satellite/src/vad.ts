@@ -194,3 +194,84 @@ export class SpeechSegmenter {
         return null;
     }
 }
+
+/** Options for {@link BargeInDetector}. */
+export interface BargeInDetectorOptions {
+    /** Normalized RMS threshold; louder than the normal wake VAD. */
+    readonly threshold: number;
+    /** Sustained speech needed before the detector fires. */
+    readonly onsetMs?: number;
+    /** Analysis frame size. */
+    readonly frameMs?: number;
+    /** Capture sample rate; the microphone path is 16 kHz. */
+    readonly sampleRate?: number;
+}
+
+/**
+ * Detects sustained speech during TTS playback.
+ *
+ * This is deliberately separate from {@link SpeechSegmenter}: it only answers
+ * “is the user talking loudly enough, for long enough, to interrupt?” It does
+ * not emit an utterance. The capture layer seeds its normal segmenter with a
+ * short pre-roll when this fires, so the interruption is transcribed too.
+ */
+export class BargeInDetector {
+    private readonly frameSamples: number;
+    private readonly onsetFrames: number;
+    private pending = new Int16Array(0);
+    private aboveFrames = 0;
+    private fired = false;
+
+    constructor(private readonly options: BargeInDetectorOptions) {
+        if (!(options.threshold > 0)) {
+            throw new Error("BargeInDetector threshold must be positive");
+        }
+        const sampleRate = options.sampleRate ?? 16_000;
+        const frameMs = options.frameMs ?? 20;
+        this.frameSamples = Math.max(
+            1,
+            Math.round((sampleRate * frameMs) / 1000),
+        );
+        this.onsetFrames = Math.max(
+            1,
+            Math.ceil((options.onsetMs ?? 300) / frameMs),
+        );
+    }
+
+    /**
+     * Feeds a chunk and returns `true` exactly once, when sustained speech has
+     * crossed the threshold. Call {@link reset} before the next playback.
+     */
+    feed(samples: Int16Array): boolean {
+        if (this.fired || samples.length === 0) {
+            return false;
+        }
+        const combined = new Int16Array(this.pending.length + samples.length);
+        combined.set(this.pending);
+        combined.set(samples, this.pending.length);
+        let offset = 0;
+        while (combined.length - offset >= this.frameSamples) {
+            const frame = combined.slice(offset, offset + this.frameSamples);
+            offset += this.frameSamples;
+            if (frameRms(frame) >= this.options.threshold) {
+                this.aboveFrames += 1;
+                if (this.aboveFrames >= this.onsetFrames) {
+                    this.fired = true;
+                    this.pending = combined.slice(offset);
+                    return true;
+                }
+            } else {
+                this.aboveFrames = 0;
+            }
+        }
+        this.pending = combined.slice(offset);
+        return false;
+    }
+
+    /** Clears the candidate and arms the detector for another playback. */
+    reset(): void {
+        this.pending = new Int16Array(0);
+        this.aboveFrames = 0;
+        this.fired = false;
+    }
+}

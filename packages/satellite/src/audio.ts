@@ -128,6 +128,7 @@ export class AudioIO {
     readonly pttLeadMs: number;
     private disposed = false;
     private recordingCancelled = false;
+    private playbackStopped = false;
     private recordTimer: NodeJS.Timeout | null = null;
 
     constructor(private readonly config: SatelliteConfig) {
@@ -176,6 +177,25 @@ export class AudioIO {
             }
         }, 500);
         killTimer.unref();
+    }
+
+    /**
+     * Stops the active player or local voice. The pending `playWav`/`speak`
+     * promise resolves `false`, so a barge-in does not open a follow-up window.
+     */
+    stopPlayback(): void {
+        this.playbackStopped = true;
+        for (const child of [this.player, this.voice]) {
+            if (child !== null && child.exitCode === null) {
+                child.kill("SIGINT");
+                const killTimer = setTimeout(() => {
+                    if (child.exitCode === null) {
+                        child.kill("SIGKILL");
+                    }
+                }, 500);
+                killTimer.unref();
+            }
+        }
     }
 
     /**
@@ -326,15 +346,20 @@ export class AudioIO {
         }
     }
 
-    /** Plays a WAV file through the first available system player. */
-    async playWav(file: string): Promise<void> {
+    /** Plays a WAV file through the first available system player.
+     *
+     * @returns `true` when playback completed, `false` when it was stopped by
+     *   a barge-in or disposal.
+     */
+    async playWav(file: string): Promise<boolean> {
         if (this.playerCommand === null) {
             logger.warn("No audio player available; skipping playback");
-            return;
+            return true;
         }
         if (this.disposed) {
-            return;
+            return false;
         }
+        this.playbackStopped = false;
         const args =
             path.basename(this.playerCommand) === "afplay"
                 ? [file]
@@ -347,20 +372,24 @@ export class AudioIO {
         child.stderr?.on("data", (chunk: Buffer) => {
             stderr += chunk.toString();
         });
-        await new Promise<void>((resolve) => {
-            child.on("error", () => resolve());
-            child.on("close", () => resolve());
+        const completed = await new Promise<boolean>((resolve) => {
+            child.on("error", () => resolve(false));
+            child.on("close", () => resolve(!this.playbackStopped));
         });
         this.player = null;
         if (stderr.trim().length > 0 && !this.disposed) {
             logger.debug(`Player said: ${stderr.trim()}`);
         }
+        return completed;
     }
 
-    /** Writes and plays one streamed TTS turn's mono s16le PCM. */
-    async playPcm(pcm: Buffer, sampleRate: number): Promise<void> {
+    /** Writes and plays one streamed TTS turn's mono s16le PCM.
+     *
+     * @returns `true` when playback completed, `false` when interrupted.
+     */
+    async playPcm(pcm: Buffer, sampleRate: number): Promise<boolean> {
         if (pcm.length === 0) {
-            return;
+            return true;
         }
         const file = path.join(
             this.tempDir,
@@ -370,7 +399,7 @@ export class AudioIO {
             await writeFile(file, pcmS16leToWav(pcm, sampleRate), {
                 mode: 0o600,
             });
-            await this.playWav(file);
+            return await this.playWav(file);
         } finally {
             await unlink(file).catch(() => undefined);
         }
@@ -384,11 +413,7 @@ export class AudioIO {
             this.recordTimer = null;
         }
         this.stopRecording();
-        for (const child of [this.player, this.voice]) {
-            if (child !== null && child.exitCode === null) {
-                child.kill("SIGINT");
-            }
-        }
+        this.stopPlayback();
         this.recorder = null;
         this.player = null;
         this.voice = null;
@@ -398,34 +423,38 @@ export class AudioIO {
      * Speaks text with the platform's local TTS. This is the offline fallback
      * used only when `JARVIS_SATELLITE_LOCAL_TTS=1` and the server sent no
      * audio; it is deliberately not the primary voice.
+     *
+     * @returns `true` when speech completed, `false` when interrupted.
      */
-    async speak(text: string): Promise<void> {
+    async speak(text: string): Promise<boolean> {
         if (!this.localTts) {
-            return;
+            return true;
         }
         const trimmed = text.trim();
         if (trimmed.length === 0) {
-            return;
+            return true;
         }
         if (this.voiceCommand === null) {
             logger.warn(
                 "Local TTS requested, but no `say`/`espeak` command was found",
             );
-            return;
+            return true;
         }
         if (this.disposed) {
-            return;
+            return false;
         }
+        this.playbackStopped = false;
         const command = path.basename(this.voiceCommand);
         const args = command === "spd-say" ? ["-w", trimmed] : [trimmed];
         const child = spawn(this.voiceCommand, args, {
             stdio: ["ignore", "ignore", "pipe"],
         });
         this.voice = child;
-        await new Promise<void>((resolve) => {
-            child.on("error", () => resolve());
-            child.on("close", () => resolve());
+        const completed = await new Promise<boolean>((resolve) => {
+            child.on("error", () => resolve(false));
+            child.on("close", () => resolve(!this.playbackStopped));
         });
         this.voice = null;
+        return completed;
     }
 }

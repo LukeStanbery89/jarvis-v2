@@ -7,10 +7,10 @@ locally, sends a `mode: "voice"` turn over `/ws`, and plays the server’s
 streamed TTS reply — with no display or text-chat UI.
 
 > **Phase 1a status:** the wake word is detected in the local Whisper
-> transcript, not by openWakeWord yet. Camera capture, barge-in, proactive
-> notification speech, and multi-satellite arbitration are follow-up phases in
-> #240. This package is deliberately small enough to put on a Mac or Pi and
-> test the audio/auth/TTS path end to end.
+> transcript, not by openWakeWord yet. Camera capture, echo-cancelled barge-in,
+> proactive notification speech, and multi-satellite arbitration are follow-up
+> phases in #240. This package is deliberately small enough to put on a Mac or
+> Pi and test the audio/auth/TTS path end to end.
 
 ## How it works
 
@@ -37,6 +37,12 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   checked at speech onset, so an utterance that starts inside the window is
   accepted even if Whisper finishes after it expires. Set it to `0` to require
   “Hey JARVIS” every time.
+- **Barge-in:** while playback is running, a louder energy detector watches for
+  sustained speech. When it fires, the player is stopped, the last
+  `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS` of audio seeds the normal segmenter,
+  and the interrupting utterance becomes the next command. There is no browser
+  echo cancellation on the SoX path, so the barge threshold is higher than the
+  wake VAD and can be tuned or disabled.
 - **STT:** Transformers.js runs Whisper tiny.en on CPU, cached under
   `~/.jarvis/satellite/models`.
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,
@@ -167,6 +173,22 @@ raise it. A Bluetooth headset can take a moment to switch to its microphone
 profile when the stream opens, but because the stream stays open for the whole
 wake loop, that switch only happens once at launch, not on every sentence.
 
+### Barge-in does not trigger, or stops on its own
+
+Barge-in is energy-based on the SoX path; there is no browser echo cancellation.
+If the reply's own output is triggering it, raise the threshold:
+
+```sh
+JARVIS_SATELLITE_BARGE_IN_THRESHOLD=0.06 \
+JARVIS_SERVER_URL=wss://localhost:54321/ws \
+JARVIS_SATELLITE_INSECURE_TLS=1 \
+npm start -w @lukestanbery/jarvis-satellite
+```
+
+If it does not trigger when you interrupt, lower it (for example `0.02`) or
+disable it entirely with `JARVIS_SATELLITE_BARGE_IN=0`. The detector requires
+300 ms of speech by default; `JARVIS_SATELLITE_BARGE_IN_MS` controls that.
+
 Useful debugging:
 
 ```sh
@@ -259,6 +281,10 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS`     | `15000`                          | Hard cap on one wake utterance.                                             |
 | `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`         | `5000`                           | Window after a wake-only utterance for the command.                         |
 | `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` | `3000`                           | Window after a reply for a follow-up without the wake phrase; `0` disables. |
+| `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                  |
+| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.035`                          | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
+| `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
+| `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
 | `JARVIS_SATELLITE_LOCAL_TTS`                | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.       |
 | `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`       | `5000`                           | Connect timeout.                                                            |
 | `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`          | `5000`                           | Auth handshake timeout.                                                     |
@@ -283,7 +309,7 @@ does not rotate or rewrite it.
 
 - openWakeWord (the transcript-based wake path is the stand-in).
 - Camera capture.
-- Barge-in / interrupt while the reply is playing.
+- Echo cancellation for barge-in; the satellite uses an energy threshold.
 - Spoken timer/reminder notifications.
 - Multi-satellite claim arbitration.
 - A systemd/launchd installer (the README gives the runtime shape; service

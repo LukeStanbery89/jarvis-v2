@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SpeechSegmenter } from "../src/vad";
+import { BargeInDetector, SpeechSegmenter } from "../src/vad";
 
 const FRAME_MS = 20;
 const SAMPLE_RATE = 1_000;
@@ -38,6 +38,43 @@ function segmenter(): SpeechSegmenter {
         maxUtteranceMs: 1_000,
     });
 }
+
+describe("BargeInDetector", () => {
+    function detector(): BargeInDetector {
+        return new BargeInDetector({
+            threshold: 0.01,
+            onsetMs: 40,
+            frameMs: FRAME_MS,
+            sampleRate: SAMPLE_RATE,
+        });
+    }
+
+    it("fires once after sustained speech", () => {
+        const sut = detector();
+        const speech = frame(1_000);
+        expect(sut.feed(speech)).toBe(false);
+        expect(sut.feed(speech)).toBe(true);
+        expect(sut.feed(speech)).toBe(false);
+    });
+
+    it("does not fire for a short burst or quiet audio", () => {
+        const sut = detector();
+        expect(sut.feed(frame(1_000))).toBe(false);
+        expect(sut.feed(frame(0))).toBe(false);
+        expect(sut.feed(frame(100))).toBe(false);
+        expect(sut.feed(frame(100))).toBe(false);
+    });
+
+    it("re-arms after reset", () => {
+        const sut = detector();
+        const speech = frame(1_000);
+        expect(sut.feed(speech)).toBe(false);
+        expect(sut.feed(speech)).toBe(true);
+        sut.reset();
+        expect(sut.feed(speech)).toBe(false);
+        expect(sut.feed(speech)).toBe(true);
+    });
+});
 
 describe("SpeechSegmenter", () => {
     it("keeps the pre-roll and the first speech frame", () => {
