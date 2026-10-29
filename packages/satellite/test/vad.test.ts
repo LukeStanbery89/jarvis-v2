@@ -99,6 +99,26 @@ describe("SpeechSegmenter", () => {
         expect(completed[0]!.length).toBe(10 * speech.length);
     });
 
+    it("notifies once when speech onset is confirmed", () => {
+        let starts = 0;
+        const sut = new SpeechSegmenter({
+            threshold: 0.01,
+            frameMs: FRAME_MS,
+            sampleRate: SAMPLE_RATE,
+            onsetMs: 40,
+            silenceMs: 40,
+            preRollMs: 200,
+            maxUtteranceMs: 1_000,
+            onSpeechStart: () => {
+                starts += 1;
+            },
+        });
+        const silence = frame(0);
+        const speech = frame(1_000);
+        feed(sut, [silence, silence, speech, speech, silence, silence]);
+        expect(starts).toBe(1);
+    });
+
     it("ignores quiet input", () => {
         const sut = segmenter();
         const quiet = frame(100);

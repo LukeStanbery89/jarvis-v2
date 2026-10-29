@@ -21,6 +21,8 @@ import { SpeechSegmenter } from "./vad";
 export interface StreamingCaptureCallbacks {
     /** Called once per utterance with mono float PCM at {@link SAMPLE_RATE}. */
     onUtterance: (pcm: Float32Array) => Promise<void> | void;
+    /** Called when the segmenter confirms that someone started speaking. */
+    onSpeechStart?: () => void;
     /** Called when the recorder cannot start or exits before `stop()`. */
     onError: (error: Error) => void;
 }
@@ -62,6 +64,9 @@ export class StreamingCapture {
             preRollMs: config.vadPreRollMs,
             maxUtteranceMs: config.vadMaxUtteranceMs,
             sampleRate: SAMPLE_RATE,
+            onSpeechStart: () => {
+                this.callbacks.onSpeechStart?.();
+            },
         });
     }
 

@@ -33,7 +33,10 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   treated as the command, so a natural pause does not lose it.
 - **Follow-up:** after JARVIS finishes a reply, the next utterance within
   `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` (3 seconds by default) is accepted
-  without the wake phrase. Set it to `0` to require “Hey JARVIS” every time.
+  without the wake phrase. The window opens only after playback ends, and it is
+  checked at speech onset, so an utterance that starts inside the window is
+  accepted even if Whisper finishes after it expires. Set it to `0` to require
+  “Hey JARVIS” every time.
 - **STT:** Transformers.js runs Whisper tiny.en on CPU, cached under
   `~/.jarvis/satellite/models`.
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,

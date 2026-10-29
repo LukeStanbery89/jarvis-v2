@@ -27,6 +27,8 @@ export interface SpeechSegmenterOptions {
     readonly frameMs?: number;
     /** Capture sample rate; the microphone path is 16 kHz. */
     readonly sampleRate?: number;
+    /** Called when enough speech has arrived to confirm an utterance onset. */
+    readonly onSpeechStart?: () => void;
 }
 
 /** Converts an interleaved mono int16 frame sequence to float PCM. */
@@ -155,6 +157,11 @@ export class SpeechSegmenter {
                     this.speaking = true;
                     this.belowFrames = 0;
                     this.aboveFrames = 0;
+                    // Let the capture layer timestamp the onset before it
+                    // knows the utterance's completion time. Follow-up
+                    // windows must be judged against when speech started, not
+                    // when Whisper finished a second later.
+                    this.options.onSpeechStart?.();
                     // `ring` already contains the onset frames and their
                     // pre-roll; copy it before clearing the ring, because the
                     // utterance must keep the frames the ring is about to drop.

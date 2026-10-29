@@ -191,16 +191,20 @@ async function runTurn(
     process.stdout.write("\n");
     if (result.audio !== null && result.audio.pcm.length > 0) {
         playbackHooks?.onPlaybackStart?.();
+        logger.debug("TTS playback started");
         try {
             await audio.playPcm(result.audio.pcm, result.audio.sampleRate);
         } finally {
+            logger.debug("TTS playback finished");
             playbackHooks?.onPlaybackEnd?.();
         }
     } else if (audio.localTts) {
         playbackHooks?.onPlaybackStart?.();
+        logger.debug("Local TTS playback started");
         try {
             await audio.speak(result.text);
         } finally {
+            logger.debug("Local TTS playback finished");
             playbackHooks?.onPlaybackEnd?.();
         }
     } else {
@@ -378,17 +382,26 @@ async function runMicrophone(
     };
     rl.on("line", onLine);
     let followUpUntil = 0;
+    let followUpAtSpeechStart = false;
     try {
         capture = new StreamingCapture(config, {
+            onSpeechStart: () => {
+                // The window is measured against the start of speech, not the
+                // end of the transcript. Whisper plus the trailing-silence
+                // window can easily outlast a three-second follow-up window.
+                if (Date.now() < followUpUntil + config.vadOnsetMs) {
+                    followUpAtSpeechStart = true;
+                }
+            },
             onUtterance: async (pcm) => {
                 const heard = await stt.transcribe(pcm);
                 process.stdout.write(
                     `You: ${heard || "(no speech recognized)"}\n`,
                 );
-                const decision = resolveWakeUtterance(
-                    heard,
-                    Date.now() < followUpUntil,
-                );
+                const followUpActive =
+                    followUpAtSpeechStart || Date.now() < followUpUntil;
+                followUpAtSpeechStart = false;
+                const decision = resolveWakeUtterance(heard, followUpActive);
                 if (decision.kind === "ignore") {
                     logger.debug(
                         "Ignoring an utterance without the wake phrase",
@@ -427,7 +440,7 @@ async function runMicrophone(
                     stop();
                 } else if (turnSucceeded && config.conversationFollowUpMs > 0) {
                     followUpUntil = Date.now() + config.conversationFollowUpMs;
-                    logger.debug(
+                    logger.info(
                         `Follow-up window open for ${config.conversationFollowUpMs} ms`,
                     );
                 }
