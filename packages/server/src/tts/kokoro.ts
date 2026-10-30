@@ -71,15 +71,22 @@ export const DEFAULT_KOKORO_CACHE_DIR = `${homedir()}/.jarvis/tts`;
  * is `./.cache` relative to the process CWD, which would litter the repo or
  * the container workdir), then loads kokoro-js.
  *
+ * Set the cache on **kokoro-js's own** `env` export. Importing the server's
+ * optional `@huggingface/transformers` first would load a second
+ * transformers.js/ONNX runtime, and that combination can make Kokoro's model
+ * fail with `Preferred output locations must have the same size as output
+ * names`. `kokoro-js` owns the exact transformers.js version it was built
+ * against, so its `env` is the one that matters.
+ *
  * @returns The kokoro-js module.
  */
 const defaultLoadModule: KokoroModuleLoader = async () => {
-    const transformers = await import("@huggingface/transformers");
+    const kokoro = await import("kokoro-js");
     const cacheDir = cacheDirOverride;
     if (cacheDir !== null) {
-        transformers.env.cacheDir = cacheDir;
+        kokoro.env.cacheDir = cacheDir;
     }
-    return import("kokoro-js");
+    return kokoro;
 };
 
 /**
