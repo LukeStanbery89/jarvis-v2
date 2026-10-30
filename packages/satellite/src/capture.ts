@@ -36,6 +36,8 @@ export interface StreamingCaptureCallbacks {
     onUtterance: (pcm: Float32Array) => Promise<void> | void;
     /** Called when the segmenter confirms that someone started speaking. */
     onSpeechStart?: () => void;
+    /** One fixed-size frame for the openWakeWord detector. */
+    onFrame?: (frame: Int16Array) => void;
     /** Called when sustained speech interrupts playback. */
     onBargeIn?: () => void;
     /** Called when the recorder cannot start or exits before `stop()`. */
@@ -69,6 +71,8 @@ export class StreamingCapture {
     private busy = false;
     private playbackActive = false;
     private inputMuted = false;
+    private wakeMode = false;
+    private frameCarry = new Int16Array(0);
     private stopped = false;
     private readonly maxQueuedUtterances = 1;
 
@@ -188,6 +192,7 @@ export class StreamingCapture {
         this.queue.length = 0;
         this.bargeRing.length = 0;
         this.bargeRingSamples = 0;
+        this.frameCarry = new Int16Array(0);
         this.bargeDetector?.reset();
         this.segmenter.reset();
     }
@@ -240,6 +245,20 @@ export class StreamingCapture {
         this.queue.length = 0;
     }
 
+    /**
+     * Switches between the openWakeWord frame path and the normal VAD
+     * segmenter. The detector owns command segmentation while armed, so the
+     * transcript segmenter must not also see the wake phrase.
+     */
+    setWakeMode(enabled: boolean): void {
+        if (this.wakeMode === enabled) {
+            return;
+        }
+        this.wakeMode = enabled;
+        this.frameCarry = new Int16Array(0);
+        this.segmenter.reset();
+    }
+
     /** Reports a recorder failure once, then closes the stream. */
     private fail(error: Error): void {
         if (this.stopped) {
@@ -270,6 +289,10 @@ export class StreamingCapture {
             this.onPlaybackData(samples);
             return;
         }
+        if (this.wakeMode) {
+            this.emitWakeFrames(samples);
+            return;
+        }
         const completed = this.segmenter.feed(samples);
         for (const utterance of completed) {
             if (this.busy) {
@@ -285,6 +308,25 @@ export class StreamingCapture {
             this.busy = true;
             void this.emit(utterance);
         }
+    }
+
+    /** Splits raw samples into openWakeWord's 1280-sample frames. */
+    private emitWakeFrames(samples: Int16Array): void {
+        if (this.callbacks.onFrame === undefined) {
+            return;
+        }
+        const combined = new Int16Array(
+            this.frameCarry.length + samples.length,
+        );
+        combined.set(this.frameCarry);
+        combined.set(samples, this.frameCarry.length);
+        let offset = 0;
+        while (combined.length - offset >= 1280) {
+            const frame = combined.slice(offset, offset + 1280);
+            this.callbacks.onFrame(frame);
+            offset += 1280;
+        }
+        this.frameCarry = combined.slice(offset);
     }
 
     /** Watches for a barge-in and seeds the segmenter when one fires. */

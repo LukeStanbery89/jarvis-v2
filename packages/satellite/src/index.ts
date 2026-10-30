@@ -36,6 +36,7 @@ import { loadConfig, SAMPLE_RATE, type SatelliteConfig } from "./config";
 import { loadCredential } from "./credentials";
 import { createVisualIndicator, type VisualIndicator } from "./indicator";
 import { logger } from "./logger";
+import { OpenWakeWordDetector } from "./openWakeWord";
 import { resolveSessionId } from "./session";
 import { WhisperStt } from "./stt";
 import {
@@ -150,6 +151,10 @@ Environment:
   JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
   JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
   JARVIS_SATELLITE_CHIMES           Set to 0 to disable wake/prompt chimes (1)
+  JARVIS_SATELLITE_OPENWAKEWORD     Set to 0 to force transcript wake (1)
+  JARVIS_SATELLITE_WAKE_MODEL_DIR   Wake ONNX cache (default: <state>/wake)
+  JARVIS_SATELLITE_WAKE_MODEL_URL   Wake model source (default: server /api/wake/model/)
+  JARVIS_SATELLITE_WAKE_THRESHOLD   openWakeWord score threshold (0.5)
   JARVIS_SATELLITE_LOCAL_TTS         Set to 1 to speak text locally when the server sends no audio
   JARVIS_LOG_LEVEL                   debug | info | warn | error | silent
 
@@ -340,6 +345,11 @@ async function runCheck(
     process.stdout.write(
         `stt:     ${config.sttModel} (${config.sttDtype}) → ${config.modelCacheDir}\n`,
     );
+    process.stdout.write(
+        config.openWakeWord
+            ? `wake:    openWakeWord hey_jarvis → ${config.wakeModelDir}\n`
+            : "wake:    transcript fallback (JARVIS_SATELLITE_OPENWAKEWORD=0)\n",
+    );
     for (const problem of tools.problems) {
         process.stdout.write(`problem: ${problem}\n`);
     }
@@ -465,6 +475,8 @@ async function runMicrophone(
 
     const rl = createInterface({ input: stdin, output: stdout });
     let capture: StreamingCapture | null = null;
+    let wakeDetector: OpenWakeWordDetector | null = null;
+    let owwFeeding = false;
     let stopRequested = false;
     let finish!: () => void;
     const finished = new Promise<void>((resolve) => {
@@ -472,6 +484,8 @@ async function runMicrophone(
     });
     let listeningForPrompt = false;
     let wakeListenTimer: NodeJS.Timeout | null = null;
+    let rearmTimer: NodeJS.Timeout | null = null;
+    let wakeFeedback: Promise<void> = Promise.resolve();
     const stopListening = (): void => {
         listeningForPrompt = false;
         if (wakeListenTimer !== null) {
@@ -480,9 +494,16 @@ async function runMicrophone(
         }
         indicator.setListening(false);
     };
+    const clearRearm = (): void => {
+        if (rearmTimer !== null) {
+            clearTimeout(rearmTimer);
+            rearmTimer = null;
+        }
+    };
     const startListening = (
         durationMs: number,
         kind: "wake" | "follow-up",
+        onExpire?: () => void | Promise<void>,
     ): void => {
         listeningForPrompt = true;
         if (wakeListenTimer !== null) {
@@ -498,6 +519,9 @@ async function runMicrophone(
                     ? "Follow-up window closed"
                     : "Wake follow-up window closed",
             );
+            if (onExpire !== undefined) {
+                void onExpire();
+            }
         }, durationMs);
         wakeListenTimer.unref();
     };
@@ -507,8 +531,130 @@ async function runMicrophone(
         }
         stopRequested = true;
         stopListening();
+        clearRearm();
+        wakeDetector?.stop();
         capture?.stop();
         finish();
+    };
+    const rearmWake = async (): Promise<void> => {
+        if (stopRequested) {
+            return;
+        }
+        clearRearm();
+        if (wakeDetector === null) {
+            capture?.setWakeMode(false);
+            return;
+        }
+        try {
+            await wakeDetector.reset();
+            if (stopRequested) {
+                return;
+            }
+            owwFeeding = true;
+            capture?.setWakeMode(true);
+            logger.debug("openWakeWord detector re-armed");
+        } catch (err) {
+            logger.warn(
+                `openWakeWord re-arm failed (${err instanceof Error ? err.message : String(err)}); using transcript wake`,
+            );
+            wakeDetector = null;
+            owwFeeding = false;
+            capture?.setWakeMode(false);
+        }
+    };
+    const scheduleRearm = (delayMs: number): void => {
+        if (wakeDetector === null) {
+            return;
+        }
+        clearRearm();
+        rearmTimer = setTimeout(() => {
+            rearmTimer = null;
+            void rearmWake();
+        }, delayMs);
+        rearmTimer.unref();
+    };
+    const completeTurn = async (command: string): Promise<void> => {
+        logger.sensitive("Heard command", command);
+        // Restore the normal VAD segmenter before playback: barge-in and the
+        // follow-up window both need it. openWakeWord stops receiving frames.
+        owwFeeding = false;
+        capture?.setWakeMode(false);
+        let turnSucceeded = options.dryRun;
+        if (!options.dryRun) {
+            try {
+                turnSucceeded = await runTurn(
+                    client,
+                    audio,
+                    sessionId,
+                    command,
+                    {
+                        onPlaybackStart: () => capture?.setPlaybackActive(true),
+                        onPlaybackEnd: () => capture?.setPlaybackActive(false),
+                    },
+                );
+            } catch (err) {
+                logger.error(
+                    `Turn failed: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
+        if (options.once) {
+            stop();
+            return;
+        }
+        if (options.dryRun) {
+            await rearmWake();
+            return;
+        }
+        if (turnSucceeded && config.conversationFollowUpMs > 0) {
+            followUpUntil = Date.now() + config.conversationFollowUpMs;
+            logger.info(
+                `Follow-up window open for ${config.conversationFollowUpMs} ms`,
+            );
+            startListening(config.conversationFollowUpMs, "follow-up", () =>
+                rearmWake(),
+            );
+            return;
+        }
+        if (!turnSucceeded && Date.now() < bargeInUntil) {
+            // The interrupting utterance may still be in the capture queue;
+            // leave the normal segmenter in place and re-arm only if it never
+            // arrives.
+            scheduleRearm(Math.max(config.conversationFollowUpMs, 5_000));
+            return;
+        }
+        await rearmWake();
+    };
+    const handleCommandAudio = async (pcm: Float32Array): Promise<void> => {
+        clearRearm();
+        await wakeFeedback;
+        stopListening();
+        const heard = await stt.transcribe(pcm);
+        process.stdout.write(`You: ${heard || "(no speech recognized)"}\n`);
+        if (heard.length === 0 || looksLikeRepeatedNoise(heard)) {
+            logger.warn("Ignoring a wake command that did not transcribe");
+            await rearmWake();
+            return;
+        }
+        const command = extractWakeCommand(heard) ?? heard;
+        await playChime(config, audio, capture, "complete");
+        await completeTurn(command);
+    };
+    const handleWake = (confidence: number): void => {
+        if (stopRequested) {
+            return;
+        }
+        clearRearm();
+        owwFeeding = true;
+        logger.info(`Wake phrase recognized (${confidence.toFixed(2)})`);
+        wakeFeedback = (async () => {
+            await playChime(config, audio, capture, "wake");
+            if (stopRequested) {
+                return;
+            }
+            followUpUntil = Date.now() + config.wakeFollowUpMs;
+            startListening(config.wakeFollowUpMs, "wake", () => rearmWake());
+        })();
     };
     const onLine = (line: string): void => {
         if (line.trim().toLowerCase() === "q") {
@@ -523,6 +669,11 @@ async function runMicrophone(
     let bargeInUntil = 0;
     try {
         capture = new StreamingCapture(config, {
+            onFrame: (frame) => {
+                if (owwFeeding) {
+                    wakeDetector?.push(frame);
+                }
+            },
             onSpeechStart: () => {
                 // The window is measured against the start of speech, not the
                 // end of the transcript. Whisper plus the trailing-silence
@@ -545,6 +696,7 @@ async function runMicrophone(
                 audio.stopPlayback();
             },
             onUtterance: async (pcm) => {
+                clearRearm();
                 const heard = await stt.transcribe(pcm);
                 stopListening();
                 process.stdout.write(
@@ -552,14 +704,16 @@ async function runMicrophone(
                 );
                 const bargeIn = Date.now() < bargeInUntil;
                 bargeInUntil = 0;
+                const wasFollowUp = Date.now() < followUpUntil;
                 const followUpActive =
-                    bargeIn ||
-                    followUpAtSpeechStart ||
-                    Date.now() < followUpUntil;
+                    bargeIn || followUpAtSpeechStart || wasFollowUp;
                 followUpAtSpeechStart = false;
                 if (bargeIn && looksLikeRepeatedNoise(heard)) {
                     logger.warn(
                         "Ignoring a barge-in transcript that looks like playback echo",
+                    );
+                    scheduleRearm(
+                        Math.max(config.conversationFollowUpMs, 5_000),
                     );
                     return;
                 }
@@ -568,6 +722,18 @@ async function runMicrophone(
                     logger.debug(
                         "Ignoring an utterance without the wake phrase",
                     );
+                    if (wasFollowUp) {
+                        const remaining = followUpUntil - Date.now();
+                        if (remaining > 0) {
+                            startListening(remaining, "follow-up", () =>
+                                rearmWake(),
+                            );
+                        } else {
+                            await rearmWake();
+                        }
+                    } else {
+                        await rearmWake();
+                    }
                     return;
                 }
                 if (decision.kind === "wait") {
@@ -578,44 +744,16 @@ async function runMicrophone(
                     );
                     await playChime(config, audio, capture, "wake");
                     followUpUntil = Date.now() + config.wakeFollowUpMs;
-                    startListening(config.wakeFollowUpMs, "wake");
+                    startListening(config.wakeFollowUpMs, "wake", () =>
+                        rearmWake(),
+                    );
                     return;
                 }
 
                 followUpUntil = 0;
                 const command = decision.command;
                 await playChime(config, audio, capture, "complete");
-                logger.sensitive("Heard command", command);
-                let turnSucceeded = false;
-                if (!options.dryRun) {
-                    try {
-                        turnSucceeded = await runTurn(
-                            client,
-                            audio,
-                            sessionId,
-                            command,
-                            {
-                                onPlaybackStart: () =>
-                                    capture?.setPlaybackActive(true),
-                                onPlaybackEnd: () =>
-                                    capture?.setPlaybackActive(false),
-                            },
-                        );
-                    } catch (err) {
-                        logger.error(
-                            `Turn failed: ${err instanceof Error ? err.message : String(err)}`,
-                        );
-                    }
-                }
-                if (options.once) {
-                    stop();
-                } else if (turnSucceeded && config.conversationFollowUpMs > 0) {
-                    followUpUntil = Date.now() + config.conversationFollowUpMs;
-                    logger.info(
-                        `Follow-up window open for ${config.conversationFollowUpMs} ms`,
-                    );
-                    startListening(config.conversationFollowUpMs, "follow-up");
-                }
+                await completeTurn(command);
             },
             onError: (error) => {
                 indicator.setListening(false);
@@ -623,12 +761,48 @@ async function runMicrophone(
                 stop();
             },
         });
+        if (config.openWakeWord) {
+            try {
+                const detector = new OpenWakeWordDetector(config);
+                await detector.start({
+                    onWake: handleWake,
+                    onCommand: (pcm) => {
+                        void handleCommandAudio(pcm);
+                    },
+                    onError: (error) => {
+                        logger.error(
+                            `openWakeWord failed (${error.message}); using transcript wake`,
+                        );
+                        wakeDetector = null;
+                        owwFeeding = false;
+                        capture?.setWakeMode(false);
+                    },
+                });
+                wakeDetector = detector;
+                owwFeeding = true;
+                capture.setWakeMode(true);
+            } catch (err) {
+                logger.warn(
+                    `openWakeWord unavailable (${err instanceof Error ? err.message : String(err)}); using transcript wake`,
+                );
+                wakeDetector = null;
+                owwFeeding = false;
+                capture.setWakeMode(false);
+            }
+        }
         capture.start();
-        logger.info('Listening for "Hey JARVIS"… press q to quit.');
+        logger.info(
+            wakeDetector !== null
+                ? 'Listening for "Hey JARVIS"… openWakeWord armed. Press q to quit.'
+                : 'Listening for "Hey JARVIS"… transcript wake. Press q to quit.',
+        );
         await finished;
     } finally {
         rl.off("line", onLine);
         rl.close();
+        stopListening();
+        clearRearm();
+        wakeDetector?.stop();
         capture?.stop();
     }
 }

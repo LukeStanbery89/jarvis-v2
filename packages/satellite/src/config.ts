@@ -15,6 +15,10 @@ export const SAMPLE_RATE = 16_000;
 /** The default server WebSocket, matching the TLS dev server. */
 const DEFAULT_SERVER_URL = "wss://localhost:54321/ws";
 
+/** The upstream openWakeWord release, used when the server route is absent. */
+export const DEFAULT_WAKE_MODEL_URL =
+    "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/";
+
 /** The default local STT model; the tiny English model is the Pi-friendly one. */
 const DEFAULT_STT_MODEL = "onnx-community/whisper-tiny.en";
 
@@ -81,6 +85,14 @@ export interface SatelliteConfig {
     readonly bargeInPreRollMs: number;
     /** Whether the wake and prompt-complete chimes play. */
     readonly chimesEnabled: boolean;
+    /** Whether to try the local openWakeWord detector before transcript wake. */
+    readonly openWakeWord: boolean;
+    /** Where the wake-word ONNX files cache. */
+    readonly wakeModelDir: string;
+    /** Where missing wake-word files are fetched from. */
+    readonly wakeModelUrl: string;
+    /** Detection threshold, 0..1. */
+    readonly wakeThreshold: number;
     /** Speak the reply locally when the server sent no audio (macOS `say`). */
     readonly localTts: boolean;
 }
@@ -276,6 +288,19 @@ export function loadConfig(
             0,
         ),
         chimesEnabled: envBool(env.JARVIS_SATELLITE_CHIMES, true),
+        openWakeWord: envBool(env.JARVIS_SATELLITE_OPENWAKEWORD, true),
+        wakeModelDir:
+            env.JARVIS_SATELLITE_WAKE_MODEL_DIR?.trim() ||
+            path.join(stateDir, "wake"),
+        wakeModelUrl:
+            env.JARVIS_SATELLITE_WAKE_MODEL_URL?.trim() ||
+            `${serverOrigin(serverUrl)}/api/wake/model/`,
+        wakeThreshold: envNumber(
+            "JARVIS_SATELLITE_WAKE_THRESHOLD",
+            env.JARVIS_SATELLITE_WAKE_THRESHOLD,
+            0.5,
+            0.01,
+        ),
         localTts: envBool(env.JARVIS_SATELLITE_LOCAL_TTS, false),
     };
 }

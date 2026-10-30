@@ -6,20 +6,21 @@ satellite that wakes on “Hey JARVIS”, captures and transcribes the command
 locally, sends a `mode: "voice"` turn over `/ws`, and plays the server’s
 streamed TTS reply — with no display or text-chat UI.
 
-> **Phase 1a status:** the wake word is detected in the local Whisper
-> transcript, not by openWakeWord yet. Camera capture, echo-cancelled barge-in,
-> proactive notification speech, and multi-satellite arbitration are follow-up
-> phases in #240. This package is deliberately small enough to put on a Mac or
-> Pi and test the audio/auth/TTS path end to end.
+> **Phase 1a status:** wake detection uses the local openWakeWord ONNX detector
+> with a transcript fallback when models are unavailable. Camera capture,
+> echo-cancelled barge-in, proactive notification speech, and multi-satellite
+> arbitration are follow-up phases in #240. This package is deliberately small
+> enough to put on a Mac or Pi and test the audio/auth/TTS path end to end.
 
 ## How it works
 
 ```text
-SoX `rec`                          local Whisper              JARVIS server
-────────                          ─────────────              ─────────────
-continuous raw PCM ──VAD──▶      Whisper tiny.en  ──text──▶  /ws voice prompt
+SoX `rec`                         local Whisper              JARVIS server
+────────                         ─────────────              ─────────────
+continuous raw PCM ──┬─ openWakeWord ── wake cue
+                     └─ VAD ── command ── Whisper tiny.en ──text──▶ /ws voice prompt
                                                              │
-speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS ◀┘
+speaker ◀──PCM── SoX/CoreAudio named pipe ◀──PCM s16le── Kokoro TTS ◀┘
 ```
 
 - **Capture:** one SoX `rec` stays open for the life of the wake loop and
@@ -28,11 +29,13 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   mic is already running, “Hey JARVIS …” is captured from its first phoneme.
   Only the newest completed utterance is kept while a turn is busy, so stale
   prompts cannot build a backlog.
-- **Wake:** the transcript is checked with the shared
-  `stripWakePhrase` matcher from `@lukestanbery/jarvis-voice`; “Hey JARVIS”,
-  “he jarvis”, and “Jarvis, …” all work. If the wake word arrives as its own
-  utterance, the next utterance within `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS` is
-  treated as the command, so a natural pause does not lose it.
+- **Wake:** the default path runs `openwakeword-web`’s ONNX engine locally,
+  feeding it the same 16 kHz frames as the VAD. The wake phrase is cut at its
+  score onset (#121), so Whisper only receives the command. The three model
+  files come from the server’s `/api/wake/model/` route (or the upstream release
+  if the route is unavailable), cache under `<state>/wake`, and fall back to
+  transcript matching when models cannot be loaded. The transcript matcher
+  remains available with `JARVIS_SATELLITE_OPENWAKEWORD=0`.
 - **Follow-up:** after JARVIS finishes a reply, the next utterance within
   `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` (3 seconds by default) is accepted
   without the wake phrase. The window opens only after playback ends, and it is
@@ -74,8 +77,11 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
 - A device token, or an existing text-CLI login in
   `~/.jarvis/credentials.json`
 
-The first run downloads the Whisper model (about 40 MB). Plan for that on a
-metered connection; later runs use the local cache.
+The first run downloads the Whisper model (about 40 MB) and the three
+openWakeWord ONNX files (about 3.6 MB). Plan for that on a metered connection;
+later runs use the local caches. If the server does not serve wake models, the
+satellite falls back to the upstream openWakeWord release; if neither is
+reachable, it falls back to transcript wake matching.
 
 ## Build
 
@@ -300,6 +306,10 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
 | `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
 | `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the wake and prompt-complete chimes.                  |
+| `JARVIS_SATELLITE_OPENWAKEWORD`             | `1`                              | Set to `0` to force transcript-based wake matching.                         |
+| `JARVIS_SATELLITE_WAKE_MODEL_DIR`           | `<state>/wake`                   | Local cache for the three openWakeWord ONNX files.                          |
+| `JARVIS_SATELLITE_WAKE_MODEL_URL`           | server `/api/wake/model/`        | Where missing wake models download from; upstream is the fallback.          |
+| `JARVIS_SATELLITE_WAKE_THRESHOLD`           | `0.5`                            | openWakeWord detection threshold.                                           |
 | `JARVIS_SATELLITE_LOCAL_TTS`                | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.       |
 | `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`       | `5000`                           | Connect timeout.                                                            |
 | `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`          | `5000`                           | Auth handshake timeout.                                                     |
@@ -322,7 +332,6 @@ does not rotate or rewrite it.
 
 ## Not in this slice
 
-- openWakeWord (the transcript-based wake path is the stand-in).
 - Camera capture.
 - Echo cancellation for barge-in; the satellite uses an energy threshold.
 - Spoken timer/reminder notifications.
