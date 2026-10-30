@@ -35,6 +35,12 @@ export interface PromptHandlers {
     onChunk?: (chunk: string) => void;
     onTool?: (name: string, args: unknown) => void;
     onToolResult?: (name: string, output: unknown) => void;
+    /** Starts a streaming player at the server's TTS sample rate. */
+    onAudioStart?: (sampleRate: number) => void;
+    /** One binary mono s16le chunk from the active audio span. */
+    onAudioChunk?: (chunk: Buffer) => void;
+    /** The server closed the audio span. */
+    onAudioEnd?: () => void;
 }
 
 /** One turn's spoken audio. */
@@ -291,7 +297,12 @@ export class SatelliteClient {
         if (isBinary) {
             const active = this.active;
             if (active !== null && active.audioStarted) {
-                active.chunks.push(asBuffer(data));
+                const chunk = asBuffer(data);
+                if (active.handlers.onAudioChunk !== undefined) {
+                    active.handlers.onAudioChunk(chunk);
+                } else {
+                    active.chunks.push(chunk);
+                }
             }
             return;
         }
@@ -326,6 +337,7 @@ export class SatelliteClient {
             if (active !== null) {
                 active.audioStarted = true;
                 active.sampleRate = frame.audioStart.sampleRate;
+                active.handlers.onAudioStart?.(frame.audioStart.sampleRate);
             }
             return;
         }
@@ -333,6 +345,7 @@ export class SatelliteClient {
             const active = this.active;
             if (active !== null) {
                 active.audioEnded = true;
+                active.handlers.onAudioEnd?.();
                 this.maybeFinish();
             }
             return;

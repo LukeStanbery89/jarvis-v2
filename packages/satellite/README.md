@@ -26,6 +26,8 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   writes raw PCM. An energy segmenter keeps a pre-roll ring, starts an utterance
   150 ms after speech begins, and ends it after trailing silence. Because the
   mic is already running, “Hey JARVIS …” is captured from its first phoneme.
+  Only the newest completed utterance is kept while a turn is busy, so stale
+  prompts cannot build a backlog.
 - **Wake:** the transcript is checked with the shared
   `stripWakePhrase` matcher from `@lukestanbery/jarvis-voice`; “Hey JARVIS”,
   “he jarvis”, and “Jarvis, …” all work. If the wake word arrives as its own
@@ -35,10 +37,12 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
   `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` (3 seconds by default) is accepted
   without the wake phrase. The window opens only after playback ends, and it is
   checked at speech onset, so an utterance that starts inside the window is
-  accepted even if Whisper finishes after it expires. Set it to `0` to require
-  “Hey JARVIS” every time.
+  accepted even if Whisper finishes after it expires. The spinner is up for the
+  whole window and `Follow-up window closed` is logged when it expires. Set it
+  to `0` to require “Hey JARVIS” every time.
 - **Barge-in:** while playback is running, a louder energy detector watches for
-  sustained speech. When it fires, the player is stopped, the last
+  sustained speech. When it fires, the player is stopped, stale queued
+  utterances are discarded, the last
   `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS` of audio seeds the normal segmenter,
   and the interrupting utterance becomes the next command. There is no browser
   echo cancellation on the SoX path, so the barge threshold is higher than the
@@ -55,8 +59,11 @@ speaker ◀──WAV── `afplay`/`aplay` ◀──PCM s16le──  Kokoro TTS
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,
   declares `audio`, and sends `mode: "voice"` prompts. Text frames are parsed
   by `@lukestanbery/jarvis-protocol`.
-- **Playback:** the server’s mono `pcm_s16le` stream is wrapped in a WAV and
-  played with `afplay` (macOS) or `aplay`/SoX `play` (Linux).
+- **Playback:** the server’s `audioStart`/binary `pcm_s16le`/`audioEnd` span is
+  fed to a raw PCM player through a named pipe as it arrives, so a long answer
+  starts speaking before the full WAV is collected. If no streaming-capable
+  player exists, the client falls back to `afplay`/`aplay` with the collected
+  turn.
 
 ## Prerequisites
 

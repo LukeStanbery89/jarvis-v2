@@ -23,7 +23,12 @@ import { unlink } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { decodeWav } from "@lukestanbery/jarvis-voice";
-import { checkAudioTools, listAudioDevices, AudioIO } from "./audio";
+import {
+    checkAudioTools,
+    listAudioDevices,
+    AudioIO,
+    type PcmStream,
+} from "./audio";
 import { StreamingCapture } from "./capture";
 import { createChime, type ChimeKind } from "./chime";
 import { SatelliteClient } from "./client";
@@ -197,7 +202,7 @@ async function playChime(
     }
 }
 
-/** Prints one prompt and plays the collected TTS audio when present. */
+/** Prints one prompt and streams/plays its TTS audio when present. */
 async function runTurn(
     client: SatelliteClient,
     audio: AudioIO,
@@ -212,13 +217,72 @@ async function runTurn(
     // diagnostic cannot land between "JARVIS:" and the first token.
     await client.connect();
     process.stdout.write("JARVIS: ");
-    const result = await client.prompt(prompt, sessionId, {
-        onChunk: (chunk) => process.stdout.write(chunk),
-        onTool: (name) => logger.info(`Agent calling tool ${name}`),
-        onToolResult: (name) =>
-            logger.debug(`Agent tool ${name} returned a result`),
-    });
+    const audioState: {
+        stream: PcmStream | null;
+        finished: Promise<boolean> | null;
+    } = { stream: null, finished: null };
+    const fallbackChunks: Buffer[] = [];
+    let streamedSampleRate = 24_000;
+    let result: Awaited<ReturnType<SatelliteClient["prompt"]>>;
+    try {
+        result = await client.prompt(prompt, sessionId, {
+            onChunk: (chunk) => process.stdout.write(chunk),
+            onTool: (name) => logger.info(`Agent calling tool ${name}`),
+            onToolResult: (name) =>
+                logger.debug(`Agent tool ${name} returned a result`),
+            onAudioStart: (sampleRate) => {
+                streamedSampleRate = sampleRate;
+                audioState.stream = audio.startPcmStream(sampleRate);
+                if (audioState.stream !== null) {
+                    playbackHooks?.onPlaybackStart?.();
+                    logger.debug("TTS stream started");
+                }
+            },
+            onAudioChunk: (chunk) => {
+                if (audioState.stream !== null) {
+                    audioState.stream.write(chunk);
+                } else {
+                    fallbackChunks.push(chunk);
+                }
+            },
+            onAudioEnd: () => {
+                if (audioState.stream !== null) {
+                    audioState.finished = audioState.stream.end();
+                }
+            },
+        });
+    } catch (err) {
+        if (audioState.stream !== null) {
+            audio.stopPlayback();
+            await audioState.stream.end();
+            playbackHooks?.onPlaybackEnd?.();
+        }
+        throw err;
+    }
     process.stdout.write("\n");
+    const activeStream = audioState.stream;
+    if (activeStream !== null) {
+        const finished = audioState.finished ?? activeStream.end();
+        try {
+            return await finished;
+        } finally {
+            logger.debug("TTS stream finished");
+            playbackHooks?.onPlaybackEnd?.();
+        }
+    }
+    if (fallbackChunks.length > 0) {
+        playbackHooks?.onPlaybackStart?.();
+        logger.debug("TTS fallback playback started");
+        try {
+            return await audio.playPcm(
+                Buffer.concat(fallbackChunks),
+                streamedSampleRate,
+            );
+        } finally {
+            logger.debug("TTS fallback playback finished");
+            playbackHooks?.onPlaybackEnd?.();
+        }
+    }
     if (result.audio !== null && result.audio.pcm.length > 0) {
         playbackHooks?.onPlaybackStart?.();
         logger.debug("TTS playback started");
@@ -416,7 +480,10 @@ async function runMicrophone(
         }
         indicator.setListening(false);
     };
-    const startListening = (durationMs: number): void => {
+    const startListening = (
+        durationMs: number,
+        kind: "wake" | "follow-up",
+    ): void => {
         listeningForPrompt = true;
         if (wakeListenTimer !== null) {
             clearTimeout(wakeListenTimer);
@@ -426,7 +493,11 @@ async function runMicrophone(
             wakeListenTimer = null;
             listeningForPrompt = false;
             indicator.setListening(false);
-            logger.debug("Listening window expired");
+            logger.info(
+                kind === "follow-up"
+                    ? "Follow-up window closed"
+                    : "Wake follow-up window closed",
+            );
         }, durationMs);
         wakeListenTimer.unref();
     };
@@ -469,6 +540,7 @@ async function runMicrophone(
             onBargeIn: () => {
                 bargeInUntil =
                     Date.now() + Math.max(config.conversationFollowUpMs, 5_000);
+                capture?.discardQueued();
                 logger.info("Barge-in detected; stopping playback");
                 audio.stopPlayback();
             },
@@ -506,7 +578,7 @@ async function runMicrophone(
                     );
                     await playChime(config, audio, capture, "wake");
                     followUpUntil = Date.now() + config.wakeFollowUpMs;
-                    startListening(config.wakeFollowUpMs);
+                    startListening(config.wakeFollowUpMs, "wake");
                     return;
                 }
 
@@ -542,7 +614,7 @@ async function runMicrophone(
                     logger.info(
                         `Follow-up window open for ${config.conversationFollowUpMs} ms`,
                     );
-                    startListening(config.conversationFollowUpMs);
+                    startListening(config.conversationFollowUpMs, "follow-up");
                 }
             },
             onError: (error) => {

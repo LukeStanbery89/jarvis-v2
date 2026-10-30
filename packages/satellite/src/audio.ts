@@ -11,6 +11,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { createWriteStream, type WriteStream } from "node:fs";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { encodeWav } from "@lukestanbery/jarvis-voice";
@@ -23,6 +24,14 @@ export interface AudioToolStatus {
     sox: string | null;
     player: string | null;
     problems: string[];
+}
+
+/** A streaming mono s16le player fed by the server's TTS chunks. */
+export interface PcmStream {
+    /** Queues one chunk; writes are ordered and backpressured. */
+    write(chunk: Buffer): void;
+    /** Ends the stream and resolves `true` only if playback completed. */
+    end(): Promise<boolean>;
 }
 
 /** Returns an executable's resolved path, or `null` when it is not on PATH. */
@@ -43,6 +52,20 @@ function findPlayer(): string | null {
         return which("afplay");
     }
     return which("aplay") ?? which("play");
+}
+
+/**
+ * Selects a player that can read raw PCM from a named pipe.
+ *
+ * macOS uses SoX's CoreAudio output; Linux prefers `aplay`, with SoX/ALSA as a
+ * fallback. `null` makes the satellite fall back to collecting the turn and
+ * using `afplay`/`aplay` as before.
+ */
+function findStreamPlayer(): string | null {
+    if (process.platform === "darwin") {
+        return which("sox");
+    }
+    return which("aplay") ?? which("sox");
 }
 
 /** Selects a local text-to-speech command for the offline fallback. */
@@ -118,7 +141,10 @@ export class AudioIO {
     private readonly inputDevice: string | undefined;
     private readonly audioDriver: string;
     private readonly playerCommand: string | null;
+    private readonly streamPlayerCommand: string | null;
     private readonly voiceCommand: string | null;
+    private streamSink: WriteStream | null = null;
+    private streamFifo: string | null = null;
     private readonly tempDir: string;
     /** Whether the reply should be spoken locally when the server sends none. */
     readonly localTts: boolean;
@@ -138,6 +164,7 @@ export class AudioIO {
         this.inputDevice = config.inputDevice;
         this.audioDriver = process.platform === "darwin" ? "coreaudio" : "alsa";
         this.playerCommand = status.player;
+        this.streamPlayerCommand = findStreamPlayer();
         this.voiceCommand = findLocalVoice();
         this.localTts = config.localTts;
         this.recordTimeoutMs = config.recordTimeoutMs;
@@ -185,6 +212,13 @@ export class AudioIO {
      */
     stopPlayback(): void {
         this.playbackStopped = true;
+        this.streamSink?.destroy();
+        this.streamSink = null;
+        if (this.streamFifo !== null) {
+            const fifo = this.streamFifo;
+            this.streamFifo = null;
+            void unlink(fifo).catch(() => undefined);
+        }
         for (const child of [this.player, this.voice]) {
             if (child !== null && child.exitCode === null) {
                 child.kill("SIGINT");
@@ -344,6 +378,161 @@ export class AudioIO {
         } catch {
             return null;
         }
+    }
+
+    /**
+     * Starts a raw PCM player fed chunk by chunk, so a long reply begins
+     * speaking as soon as the server sends `audioStart` instead of after the
+     * whole WAV is collected. Returns `null` when no streaming-capable player
+     * exists; the caller then falls back to {@link playPcm}.
+     */
+    startPcmStream(sampleRate: number): PcmStream | null {
+        if (this.streamPlayerCommand === null || this.disposed) {
+            return null;
+        }
+        this.playbackStopped = false;
+        const fifo = path.join(
+            this.tempDir,
+            `pcm-${process.pid}-${Date.now()}.fifo`,
+        );
+        const made = spawnSync("mkfifo", [fifo], {
+            stdio: "ignore",
+        });
+        if (made.status !== 0) {
+            logger.debug("Could not create the streaming PCM pipe");
+            return null;
+        }
+        this.streamFifo = fifo;
+        const command = this.streamPlayerCommand;
+        const name = path.basename(command);
+        const args =
+            name === "aplay"
+                ? [
+                      "-q",
+                      "-t",
+                      "raw",
+                      "-f",
+                      "S16_LE",
+                      "-r",
+                      String(sampleRate),
+                      "-c",
+                      "1",
+                      fifo,
+                  ]
+                : [
+                      "-q",
+                      "-t",
+                      "raw",
+                      "-r",
+                      String(sampleRate),
+                      "-c",
+                      "1",
+                      "-b",
+                      "16",
+                      "-e",
+                      "signed-integer",
+                      fifo,
+                      "-t",
+                      process.platform === "darwin" ? "coreaudio" : "alsa",
+                      "default",
+                  ];
+        const child = spawn(command, args, {
+            stdio: ["ignore", "ignore", "pipe"],
+        });
+        this.player = child;
+        let stderr = "";
+        child.stderr?.on("data", (chunk: Buffer) => {
+            stderr += chunk.toString();
+        });
+        const sink = createWriteStream(fifo, { flags: "w" });
+        this.streamSink = sink;
+        sink.on("error", (err: Error) => {
+            logger.debug(`Stream pipe closed: ${err.message}`);
+        });
+        const closed = new Promise<boolean>((resolve) => {
+            child.on("error", () => {
+                sink.destroy();
+                resolve(false);
+            });
+            child.on("close", () => {
+                sink.destroy();
+                resolve(!this.playbackStopped);
+            });
+        });
+        let writes: Promise<void> = Promise.resolve();
+        let ended = false;
+
+        const finish = async (): Promise<boolean> => {
+            if (ended) {
+                return closed;
+            }
+            ended = true;
+            if (!this.playbackStopped) {
+                await writes;
+            }
+            if (!sink.destroyed) {
+                await new Promise<void>((resolve) => {
+                    sink.once("close", () => resolve());
+                    sink.once("error", () => resolve());
+                    sink.end();
+                });
+            }
+            const completed = await closed;
+            if (this.player === child) {
+                this.player = null;
+            }
+            if (this.streamSink === sink) {
+                this.streamSink = null;
+            }
+            if (this.streamFifo === fifo) {
+                this.streamFifo = null;
+            }
+            await unlink(fifo).catch(() => undefined);
+            if (stderr.trim().length > 0 && !this.disposed) {
+                logger.debug(`Stream player said: ${stderr.trim()}`);
+            }
+            return completed;
+        };
+
+        return {
+            write: (chunk: Buffer): void => {
+                if (ended || this.playbackStopped || sink.destroyed) {
+                    return;
+                }
+                writes = writes
+                    .then(
+                        () =>
+                            new Promise<void>((resolve) => {
+                                if (sink.destroyed) {
+                                    resolve();
+                                    return;
+                                }
+                                try {
+                                    if (sink.write(chunk)) {
+                                        resolve();
+                                        return;
+                                    }
+                                    const done = (): void => {
+                                        sink.off("drain", done);
+                                        sink.off("error", done);
+                                        sink.off("close", done);
+                                        resolve();
+                                    };
+                                    sink.once("drain", done);
+                                    sink.once("error", done);
+                                    sink.once("close", done);
+                                } catch {
+                                    resolve();
+                                }
+                            }),
+                    )
+                    .catch(() => {
+                        // A killed player can break the pipe; `finish` still
+                        // resolves as interrupted through `closed`.
+                    });
+            },
+            end: finish,
+        };
     }
 
     /** Plays a WAV file through the first available system player.

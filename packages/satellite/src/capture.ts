@@ -70,7 +70,7 @@ export class StreamingCapture {
     private playbackActive = false;
     private inputMuted = false;
     private stopped = false;
-    private readonly maxQueuedUtterances = 4;
+    private readonly maxQueuedUtterances = 1;
 
     constructor(
         private readonly config: SatelliteConfig,
@@ -235,6 +235,11 @@ export class StreamingCapture {
         this.segmenter.reset();
     }
 
+    /** Drops any completed-but-not-yet-processed utterance. */
+    discardQueued(): void {
+        this.queue.length = 0;
+    }
+
     /** Reports a recorder failure once, then closes the stream. */
     private fail(error: Error): void {
         if (this.stopped) {
@@ -268,9 +273,9 @@ export class StreamingCapture {
         const completed = this.segmenter.feed(samples);
         for (const utterance of completed) {
             if (this.busy) {
-                // A callback is transcribing the previous utterance. Keep this
-                // one, bounded, so a command spoken during transcription is not
-                // lost.
+                // A callback is transcribing or playing the previous turn.
+                // Keep only the newest utterance: a barge-in or a replacement
+                // prompt should supersede stale queued speech.
                 if (this.queue.length >= this.maxQueuedUtterances) {
                     this.queue.shift();
                 }
