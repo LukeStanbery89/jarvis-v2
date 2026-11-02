@@ -17,6 +17,7 @@ import WebSocket, { type RawData } from "ws";
 import {
     parseFrame,
     serializeAuth,
+    serializeCancel,
     serializeHello,
     serializeRequest,
     type NotificationFrame,
@@ -173,6 +174,28 @@ export class SatelliteClient {
             active.reject(err instanceof Error ? err : new Error(String(err)));
         }
         return result;
+    }
+
+    /**
+     * Cancels the in-flight turn on the server and rejects its local waiter.
+     *
+     * A barge-in must do this before sending the interrupting prompt: the
+     * server permits one turn per thread, so without `cancel` the newest
+     * command is rejected while the abandoned reply is still generating.
+     */
+    cancel(): void {
+        const active = this.active;
+        this.active = null;
+        if (this.socket?.readyState === WebSocket.OPEN) {
+            try {
+                this.socket.send(serializeCancel());
+            } catch (err) {
+                logger.warn(
+                    `Could not send cancel: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
+        active?.reject(new Error("turn cancelled"));
     }
 
     /** Closes the socket; an in-flight turn is rejected. */

@@ -193,6 +193,22 @@ raise it. A Bluetooth headset can take a moment to switch to its microphone
 profile when the stream opens, but because the stream stays open for the whole
 wake loop, that switch only happens once at launch, not on every sentence.
 
+### Transcripts lose the first word
+
+The openWakeWord command segmenter uses the same `VAD_PREROLL_MS` as the
+normal path (1000 ms by default), so a quiet first syllable is kept. If a
+command still comes back clipped, raise it with
+`JARVIS_SATELLITE_VAD_PREROLL_MS=1500`; if the microphone is noisy, use the
+slightly larger model:
+
+```sh
+JARVIS_SATELLITE_STT_MODEL=onnx-community/whisper-base.en
+JARVIS_SATELLITE_STT_DTYPE=q8
+```
+
+`whisper-tiny.en` is the Pi Zero-friendly default; `whisper-base.en` is a good
+quality trade-off on a Mac or a Pi 4/5.
+
 ### Barge-in does not trigger, or stops on its own
 
 Barge-in is energy-based on the SoX path; there is no browser echo cancellation.
@@ -302,7 +318,7 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`         | `5000`                           | Window after a wake-only utterance for the command.                         |
 | `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` | `3000`                           | Window after a reply for a follow-up without the wake phrase; `0` disables. |
 | `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                  |
-| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.03`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
+| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.05`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
 | `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
 | `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
 | `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the wake and prompt-complete chimes.                  |

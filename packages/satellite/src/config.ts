@@ -272,7 +272,7 @@ export function loadConfig(
         bargeInThreshold: envNumber(
             "JARVIS_SATELLITE_BARGE_IN_THRESHOLD",
             env.JARVIS_SATELLITE_BARGE_IN_THRESHOLD,
-            0.03,
+            0.05,
             0.0001,
         ),
         bargeInMs: envNumber(

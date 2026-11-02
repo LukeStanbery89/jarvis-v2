@@ -147,7 +147,7 @@ Environment:
   JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
   JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS  Window after a reply for a follow-up without the wake phrase (3000; 0 disables)
   JARVIS_SATELLITE_BARGE_IN         Set to 0 to disable spoken interruption (1)
-  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.03)
+  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.05)
   JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
   JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
   JARVIS_SATELLITE_CHIMES           Set to 0 to disable wake/prompt chimes (1)
@@ -631,12 +631,21 @@ async function runMicrophone(
         stopListening();
         const heard = await stt.transcribe(pcm);
         process.stdout.write(`You: ${heard || "(no speech recognized)"}\n`);
-        if (heard.length === 0 || looksLikeRepeatedNoise(heard)) {
+        if (
+            heard.length === 0 ||
+            !/[a-z0-9]/i.test(heard) ||
+            looksLikeRepeatedNoise(heard)
+        ) {
             logger.warn("Ignoring a wake command that did not transcribe");
             await rearmWake();
             return;
         }
         const command = extractWakeCommand(heard) ?? heard;
+        if (command.length === 0) {
+            logger.warn("Ignoring a wake command with no command words");
+            await rearmWake();
+            return;
+        }
         await playChime(config, audio, capture, "complete");
         await completeTurn(command);
     };
@@ -692,7 +701,8 @@ async function runMicrophone(
                 bargeInUntil =
                     Date.now() + Math.max(config.conversationFollowUpMs, 5_000);
                 capture?.discardQueued();
-                logger.info("Barge-in detected; stopping playback");
+                logger.info("Barge-in detected; cancelling the turn");
+                client.cancel();
                 audio.stopPlayback();
             },
             onUtterance: async (pcm) => {
@@ -752,6 +762,11 @@ async function runMicrophone(
 
                 followUpUntil = 0;
                 const command = decision.command;
+                if (!/[a-z0-9]/i.test(command)) {
+                    logger.debug("Ignoring a punctuation-only transcript");
+                    await rearmWake();
+                    return;
+                }
                 await playChime(config, audio, capture, "complete");
                 await completeTurn(command);
             },

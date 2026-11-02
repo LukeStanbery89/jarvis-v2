@@ -6,11 +6,10 @@
  * feeds it the same raw frames SoX already produces, which keeps wake detection
  * local without adding a Python sidecar.
  *
- * The command cut follows the #121 invariant implemented by the browser
- * provider: the phrase's score ramps up at its end, so the first command frame
- * is found by walking back from the threshold crossing to a short quiet run.
- * Only frames from that point onward reach the command segmenter and, later,
- * Whisper.
+ * The command stream starts just after the detector's threshold crossing, so
+ * the phrase itself never reaches Whisper (#121). The command segmenter keeps
+ * the same pre-roll as the normal VAD path, which is what preserves the first
+ * word of a quiet command.
  */
 import type { SatelliteConfig } from "./config";
 import { logger } from "./logger";
@@ -31,12 +30,6 @@ const importEsm = new Function("specifier", "return import(specifier)") as (
 /** openWakeWord's capture frame: 1280 samples (80 ms at 16 kHz). */
 export const WAKE_FRAME_SAMPLES = 1280;
 
-/** Score below which a frame is before the phrase (mirrors #121). */
-const SCORE_FLOOR = 0.01;
-/** How far back the cut searches. */
-const CUT_SCAN_FRAMES = 12;
-/** Quiet frames needed to identify the boundary. */
-const CUT_RUN_FRAMES = 2;
 /** Last-resort cap on unpredicted frames (~10 seconds). */
 const MAX_BACKLOG_FRAMES = 125;
 
@@ -85,7 +78,7 @@ export class OpenWakeWordDetector {
             threshold: config.vadThreshold,
             onsetMs: config.vadOnsetMs,
             silenceMs: config.vadSilenceMs,
-            preRollMs: 0,
+            preRollMs: config.vadPreRollMs,
             maxUtteranceMs: config.vadMaxUtteranceMs,
             sampleRate: 16_000,
         });
@@ -242,7 +235,7 @@ export class OpenWakeWordDetector {
             });
     }
 
-    /** Starts the command stream from the phrase's score onset. */
+    /** Starts the command stream just after the threshold crossing. */
     private fire(confidence: number): void {
         if (this.detected) {
             return;
@@ -251,6 +244,9 @@ export class OpenWakeWordDetector {
         this.armed = false;
         const start = this.commandStartIndex();
         const recovered = this.captured.slice(start);
+        logger.debug(
+            `wake cut frame ${start} (cursor ${this.cursor}, captured ${this.captured.length}, recovered ${recovered.length})`,
+        );
         this.captured = [];
         this.cursor = 0;
         this.callbacks?.onWake(confidence);
@@ -270,30 +266,18 @@ export class OpenWakeWordDetector {
                 break;
             }
             this.commandEmitted = true;
+            logger.debug(`wake command: ${pcm.length} samples`);
             void this.callbacks?.onCommand(pcm);
         }
     }
 
-    /** The first frame after the phrase, using the #121 score-onset cut. */
+    /**
+     * The first frame after the phrase. Detection crosses near the phrase's
+     * end; searching backward from the crossing can land on the phrase tail
+     * (which then closes the command segmenter during a deliberate pause), so
+     * the satellite starts one frame after the crossing instead.
+     */
     private commandStartIndex(): number {
-        const from = Math.max(0, this.cursor - CUT_SCAN_FRAMES);
-        for (let i = this.cursor - 1; i > from; i -= 1) {
-            let quiet = true;
-            for (let back = 0; back < CUT_RUN_FRAMES; back += 1) {
-                const score = this.captured[i - back]?.score;
-                if (
-                    score === null ||
-                    score === undefined ||
-                    score >= SCORE_FLOOR
-                ) {
-                    quiet = false;
-                    break;
-                }
-            }
-            if (quiet) {
-                return i + 1;
-            }
-        }
-        return this.cursor;
+        return this.cursor + 1;
     }
 }
