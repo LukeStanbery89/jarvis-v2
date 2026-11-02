@@ -147,11 +147,12 @@ Environment:
   JARVIS_SATELLITE_WAKE_FOLLOWUP_MS Window after a wake-only utterance for the command (5000)
   JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS  Window after a reply for a follow-up without the wake phrase (3000; 0 disables)
   JARVIS_SATELLITE_BARGE_IN         Set to 0 to disable spoken interruption (1)
-  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.03)
+  JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.02)
   JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
   JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
   JARVIS_SATELLITE_CHIMES           Set to 0 to disable the prompt-complete chime (1)
-  JARVIS_SATELLITE_WAKE_CHIME       Set to 1 to play the wake chime in openWakeWord (0; may clip a same-breath command)
+  JARVIS_SATELLITE_WAKE_CHIME       Set to 0 to disable the wake chime in openWakeWord (1)
+  JARVIS_SATELLITE_CHIME_MUTE_INPUT Set to 1 to mute capture during the wake chime (0; headphones)
   JARVIS_SATELLITE_OPENWAKEWORD     Set to 0 to force transcript wake (1)
   JARVIS_SATELLITE_WAKE_MODEL_DIR   Wake ONNX cache (default: <state>/wake)
   JARVIS_SATELLITE_WAKE_MODEL_URL   Wake model source (default: server /api/wake/model/)
@@ -189,22 +190,33 @@ async function transcribeFile(file: string, stt: WhisperStt): Promise<string> {
     return stt.transcribe(resample(pcm, sampleRate, SAMPLE_RATE));
 }
 
-/** Plays one lifecycle chime without letting the microphone hear it. */
+/**
+ * Plays one lifecycle chime.
+ *
+ * The completion chime mutes capture, because the prompt is already captured.
+ * The wake chime may leave capture live for headphones: muting it for ~250 ms
+ * would swallow the start of a same-breath command.
+ */
 async function playChime(
     config: SatelliteConfig,
     audio: AudioIO,
     capture: StreamingCapture | null,
     kind: ChimeKind,
+    muteInput = true,
 ): Promise<void> {
     if (!config.chimesEnabled) {
         return;
     }
     const chime = createChime(kind);
-    capture?.setInputMuted(true);
+    if (muteInput) {
+        capture?.setInputMuted(true);
+    }
     try {
         await audio.playPcm(chime.pcm, chime.sampleRate);
     } finally {
-        capture?.setInputMuted(false);
+        if (muteInput) {
+            capture?.setInputMuted(false);
+        }
     }
 }
 
@@ -658,11 +670,17 @@ async function runMicrophone(
         owwFeeding = true;
         logger.info(`Wake phrase recognized (${confidence.toFixed(2)})`);
         wakeFeedback = (async () => {
-            // A wake chime mutes the mic for ~250 ms, which is exactly where a
-            // same-breath command starts. Keep it opt-in for the local
-            // openWakeWord path; the spinner is the default wake cue.
+            // Leave capture live for headphones; muting the ~250 ms wake cue
+            // would swallow a same-breath command. Speaker deployments can set
+            // JARVIS_SATELLITE_CHIME_MUTE_INPUT=1.
             if (config.wakeChimeEnabled) {
-                await playChime(config, audio, capture, "wake");
+                await playChime(
+                    config,
+                    audio,
+                    capture,
+                    "wake",
+                    config.chimeMuteInput,
+                );
             }
             if (stopRequested) {
                 return;
@@ -758,7 +776,13 @@ async function runMicrophone(
                     logger.info(
                         "Wake phrase heard; listening for the command…",
                     );
-                    await playChime(config, audio, capture, "wake");
+                    await playChime(
+                        config,
+                        audio,
+                        capture,
+                        "wake",
+                        config.chimeMuteInput,
+                    );
                     followUpUntil = Date.now() + config.wakeFollowUpMs;
                     startListening(config.wakeFollowUpMs, "wake", () =>
                         rearmWake(),

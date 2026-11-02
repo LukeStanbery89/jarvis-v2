@@ -85,11 +85,13 @@ export interface SatelliteConfig {
     readonly bargeInPreRollMs: number;
     /** Whether the prompt-complete chime plays. */
     readonly chimesEnabled: boolean;
-    /**
-     * Whether the openWakeWord path plays a wake chime. Off by default: the
-     * chime mutes the microphone, which would swallow a same-breath command.
-     */
+    /** Whether the wake chime plays in the openWakeWord path. */
     readonly wakeChimeEnabled: boolean;
+    /**
+     * Whether the wake chime mutes capture. Headphones do not echo the cue, so
+     * the default leaves the microphone live and a same-breath command intact.
+     */
+    readonly chimeMuteInput: boolean;
     /** Whether to try the local openWakeWord detector before transcript wake. */
     readonly openWakeWord: boolean;
     /** Where the wake-word ONNX files cache. */
@@ -277,7 +279,7 @@ export function loadConfig(
         bargeInThreshold: envNumber(
             "JARVIS_SATELLITE_BARGE_IN_THRESHOLD",
             env.JARVIS_SATELLITE_BARGE_IN_THRESHOLD,
-            0.03,
+            0.02,
             0.0001,
         ),
         bargeInMs: envNumber(
@@ -293,7 +295,8 @@ export function loadConfig(
             0,
         ),
         chimesEnabled: envBool(env.JARVIS_SATELLITE_CHIMES, true),
-        wakeChimeEnabled: envBool(env.JARVIS_SATELLITE_WAKE_CHIME, false),
+        wakeChimeEnabled: envBool(env.JARVIS_SATELLITE_WAKE_CHIME, true),
+        chimeMuteInput: envBool(env.JARVIS_SATELLITE_CHIME_MUTE_INPUT, false),
         openWakeWord: envBool(env.JARVIS_SATELLITE_OPENWAKEWORD, true),
         wakeModelDir:
             env.JARVIS_SATELLITE_WAKE_MODEL_DIR?.trim() ||

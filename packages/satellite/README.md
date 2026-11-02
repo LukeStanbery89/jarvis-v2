@@ -51,14 +51,16 @@ speaker ◀──PCM── SoX/CoreAudio named pipe ◀──PCM s16le── Kok
   protocol `cancel` first so the server frees the turn for that command. There
   is no browser echo cancellation on the SoX path, so the barge threshold is
   higher than the wake VAD and can be tuned or disabled.
-- **Feedback:** the wake phrase starts a terminal spinner while JARVIS waits for
-  the prompt; a completed prompt plays a confirmation chime. The wake chime is
-  opt-in (`JARVIS_SATELLITE_WAKE_CHIME=1`) because its ~250 ms mute window sits
-  exactly where a same-breath command begins. The spinner is also up during the
-  post-reply follow-up window and disappears when that window expires. Chimes
-  are generated locally and muted from the capture path. The spinner is behind a
-  `VisualIndicator` interface so an LED or hardware ring can be added without
-  touching the voice loop.
+- **Feedback:** the wake phrase plays a rising two-note chime and starts a
+  terminal spinner while JARVIS waits for the prompt; a completed prompt plays a
+  higher confirmation chime. The wake chime is generated locally and, with the
+  default headphone-friendly setting, leaves the microphone live so a
+  same-breath command is not swallowed. On speakers, set
+  `JARVIS_SATELLITE_CHIME_MUTE_INPUT=1` (or disable the wake chime) if the cue
+  echoes into the command. The spinner is also up during the post-reply
+  follow-up window and disappears when that window expires. The spinner is
+  behind a `VisualIndicator` interface so an LED or hardware ring can be added
+  without touching the voice loop.
 - **STT:** Transformers.js runs Whisper tiny.en on CPU, cached under
   `~/.jarvis/satellite/models`.
 - **Transport:** `ws` connects to `/ws`, authenticates with a device token,
@@ -293,47 +295,48 @@ does not rotate or rewrite it.
 
 ## Configuration
 
-| Variable                                    | Default                          | Purpose                                                                      |
-| ------------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------- |
-| `JARVIS_SERVER_URL`                         | `wss://localhost:54321/ws`       | `/ws` endpoint. Use `ws://` only on a trusted plain-HTTP dev server.         |
-| `JARVIS_SATELLITE_TOKEN`                    | _(unset)_                        | Device token; overrides the credentials file.                                |
-| `JARVIS_SATELLITE_INSECURE_TLS`             | `0`                              | Disable certificate verification for a local self-signed server.             |
-| `JARVIS_SATELLITE_CA`                       | _(unset)_                        | PEM CA bundle for a private certificate.                                     |
-| `JARVIS_SATELLITE_STATE_DIR`                | `~/.jarvis/satellite`            | Private state root.                                                          |
-| `JARVIS_SATELLITE_MODEL_DIR`                | `<state>/models`                 | Whisper cache.                                                               |
-| `JARVIS_SATELLITE_INPUT_DEVICE`             | _(system default)_               | SoX input name, e.g. `MacBook Pro Microphone` or `Anker PowerConf C200`.     |
-| `JARVIS_SATELLITE_STT_MODEL`                | `onnx-community/whisper-tiny.en` | Transformers.js model id.                                                    |
-| `JARVIS_SATELLITE_STT_DTYPE`                | `q8`                             | Model quantization.                                                          |
-| `JARVIS_SATELLITE_SESSION_ID`               | _(persisted)_                    | Fixed voice thread id.                                                       |
-| `JARVIS_SATELLITE_SESSION_FILE`             | `<state>/sessions.json`          | Thread id store.                                                             |
-| `JARVIS_SATELLITE_ONSET_SECONDS`            | `0.3`                            | Speech needed before SoX starts recording.                                   |
-| `JARVIS_SATELLITE_SILENCE_SECONDS`          | `0.9`                            | Trailing silence that ends an utterance.                                     |
-| `JARVIS_SATELLITE_SILENCE_THRESHOLD`        | `1%`                             | SoX silence threshold.                                                       |
-| `JARVIS_SATELLITE_MAX_UTTERANCE_SECONDS`    | `12`                             | Hard cap on one utterance.                                                   |
-| `JARVIS_SATELLITE_RECORD_TIMEOUT_MS`        | `20000`                          | Push-to-talk wait-for-speech cap.                                            |
-| `JARVIS_SATELLITE_PTT_LEAD_MS`              | `600`                            | Delay after opening the mic before the “Speak now” cue (Bluetooth switch).   |
-| `JARVIS_SATELLITE_VAD_THRESHOLD`            | `0.01`                           | Wake-capture RMS threshold; lower it for a quiet microphone.                 |
-| `JARVIS_SATELLITE_VAD_ONSET_MS`             | `150`                            | Speech needed before the wake segmenter starts an utterance.                 |
-| `JARVIS_SATELLITE_VAD_SILENCE_MS`           | `800`                            | Trailing silence that ends a wake utterance.                                 |
-| `JARVIS_SATELLITE_VAD_PREROLL_MS`           | `1000`                           | Audio retained before onset, so the first phoneme is not clipped.            |
-| `JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS`     | `15000`                          | Hard cap on one wake utterance.                                              |
-| `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`         | `5000`                           | Window after a wake-only utterance for the command.                          |
-| `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` | `3000`                           | Window after a reply for a follow-up without the wake phrase; `0` disables.  |
-| `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                   |
-| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.03`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.          |
-| `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                               |
-| `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.        |
-| `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the prompt-complete chime.                             |
-| `JARVIS_SATELLITE_WAKE_CHIME`               | `0`                              | Set to `1` to play a wake chime in openWakeWord; it can clip the first word. |
-| `JARVIS_SATELLITE_OPENWAKEWORD`             | `1`                              | Set to `0` to force transcript-based wake matching.                          |
-| `JARVIS_SATELLITE_WAKE_MODEL_DIR`           | `<state>/wake`                   | Local cache for the three openWakeWord ONNX files.                           |
-| `JARVIS_SATELLITE_WAKE_MODEL_URL`           | server `/api/wake/model/`        | Where missing wake models download from; upstream is the fallback.           |
-| `JARVIS_SATELLITE_WAKE_THRESHOLD`           | `0.5`                            | openWakeWord detection threshold.                                            |
-| `JARVIS_SATELLITE_LOCAL_TTS`                | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.        |
-| `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`       | `5000`                           | Connect timeout.                                                             |
-| `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`          | `5000`                           | Auth handshake timeout.                                                      |
-| `JARVIS_CREDENTIALS_FILE`                   | `~/.jarvis/credentials.json`     | Shared text-CLI credential store.                                            |
-| `JARVIS_LOG_LEVEL`                          | `info`                           | `debug`, `info`, `warn`, `error`, `silent`.                                  |
+| Variable                                    | Default                          | Purpose                                                                     |
+| ------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| `JARVIS_SERVER_URL`                         | `wss://localhost:54321/ws`       | `/ws` endpoint. Use `ws://` only on a trusted plain-HTTP dev server.        |
+| `JARVIS_SATELLITE_TOKEN`                    | _(unset)_                        | Device token; overrides the credentials file.                               |
+| `JARVIS_SATELLITE_INSECURE_TLS`             | `0`                              | Disable certificate verification for a local self-signed server.            |
+| `JARVIS_SATELLITE_CA`                       | _(unset)_                        | PEM CA bundle for a private certificate.                                    |
+| `JARVIS_SATELLITE_STATE_DIR`                | `~/.jarvis/satellite`            | Private state root.                                                         |
+| `JARVIS_SATELLITE_MODEL_DIR`                | `<state>/models`                 | Whisper cache.                                                              |
+| `JARVIS_SATELLITE_INPUT_DEVICE`             | _(system default)_               | SoX input name, e.g. `MacBook Pro Microphone` or `Anker PowerConf C200`.    |
+| `JARVIS_SATELLITE_STT_MODEL`                | `onnx-community/whisper-tiny.en` | Transformers.js model id.                                                   |
+| `JARVIS_SATELLITE_STT_DTYPE`                | `q8`                             | Model quantization.                                                         |
+| `JARVIS_SATELLITE_SESSION_ID`               | _(persisted)_                    | Fixed voice thread id.                                                      |
+| `JARVIS_SATELLITE_SESSION_FILE`             | `<state>/sessions.json`          | Thread id store.                                                            |
+| `JARVIS_SATELLITE_ONSET_SECONDS`            | `0.3`                            | Speech needed before SoX starts recording.                                  |
+| `JARVIS_SATELLITE_SILENCE_SECONDS`          | `0.9`                            | Trailing silence that ends an utterance.                                    |
+| `JARVIS_SATELLITE_SILENCE_THRESHOLD`        | `1%`                             | SoX silence threshold.                                                      |
+| `JARVIS_SATELLITE_MAX_UTTERANCE_SECONDS`    | `12`                             | Hard cap on one utterance.                                                  |
+| `JARVIS_SATELLITE_RECORD_TIMEOUT_MS`        | `20000`                          | Push-to-talk wait-for-speech cap.                                           |
+| `JARVIS_SATELLITE_PTT_LEAD_MS`              | `600`                            | Delay after opening the mic before the “Speak now” cue (Bluetooth switch).  |
+| `JARVIS_SATELLITE_VAD_THRESHOLD`            | `0.01`                           | Wake-capture RMS threshold; lower it for a quiet microphone.                |
+| `JARVIS_SATELLITE_VAD_ONSET_MS`             | `150`                            | Speech needed before the wake segmenter starts an utterance.                |
+| `JARVIS_SATELLITE_VAD_SILENCE_MS`           | `800`                            | Trailing silence that ends a wake utterance.                                |
+| `JARVIS_SATELLITE_VAD_PREROLL_MS`           | `1000`                           | Audio retained before onset, so the first phoneme is not clipped.           |
+| `JARVIS_SATELLITE_VAD_MAX_UTTERANCE_MS`     | `15000`                          | Hard cap on one wake utterance.                                             |
+| `JARVIS_SATELLITE_WAKE_FOLLOWUP_MS`         | `5000`                           | Window after a wake-only utterance for the command.                         |
+| `JARVIS_SATELLITE_CONVERSATION_FOLLOWUP_MS` | `3000`                           | Window after a reply for a follow-up without the wake phrase; `0` disables. |
+| `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                  |
+| `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.02`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
+| `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
+| `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
+| `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the prompt-complete chime.                            |
+| `JARVIS_SATELLITE_WAKE_CHIME`               | `1`                              | Set to `0` to disable the wake chime in openWakeWord.                       |
+| `JARVIS_SATELLITE_CHIME_MUTE_INPUT`         | `0`                              | Set to `1` to mute capture during the wake chime (needed on speakers).      |
+| `JARVIS_SATELLITE_OPENWAKEWORD`             | `1`                              | Set to `0` to force transcript-based wake matching.                         |
+| `JARVIS_SATELLITE_WAKE_MODEL_DIR`           | `<state>/wake`                   | Local cache for the three openWakeWord ONNX files.                          |
+| `JARVIS_SATELLITE_WAKE_MODEL_URL`           | server `/api/wake/model/`        | Where missing wake models download from; upstream is the fallback.          |
+| `JARVIS_SATELLITE_WAKE_THRESHOLD`           | `0.5`                            | openWakeWord detection threshold.                                           |
+| `JARVIS_SATELLITE_LOCAL_TTS`                | `0`                              | Speak with macOS `say`/Linux `espeak` when the server sends no audio.       |
+| `JARVIS_SATELLITE_CONNECT_TIMEOUT_MS`       | `5000`                           | Connect timeout.                                                            |
+| `JARVIS_SATELLITE_AUTH_TIMEOUT_MS`          | `5000`                           | Auth handshake timeout.                                                     |
+| `JARVIS_CREDENTIALS_FILE`                   | `~/.jarvis/credentials.json`     | Shared text-CLI credential store.                                           |
+| `JARVIS_LOG_LEVEL`                          | `info`                           | `debug`, `info`, `warn`, `error`, `silent`.                                 |
 
 ## Security notes
 
