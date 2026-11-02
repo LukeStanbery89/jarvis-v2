@@ -324,7 +324,7 @@ does not rotate or rewrite it.
 | `JARVIS_SATELLITE_BARGE_IN`                 | `1`                              | Set to `0` to disable spoken interruption during playback.                  |
 | `JARVIS_SATELLITE_BARGE_IN_THRESHOLD`       | `0.02`                           | RMS needed to consider speech a barge-in; higher than the wake VAD.         |
 | `JARVIS_SATELLITE_BARGE_IN_MS`              | `300`                            | Sustained speech needed before playback stops.                              |
-| `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `500`                            | Audio kept before the barge trigger to seed the interrupting command.       |
+| `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS`      | `1500`                           | Audio kept before the barge trigger to seed the interrupting command.       |
 | `JARVIS_SATELLITE_CHIMES`                   | `1`                              | Set to `0` to disable the prompt-complete chime.                            |
 | `JARVIS_SATELLITE_WAKE_CHIME`               | `1`                              | Set to `0` to disable the wake chime in openWakeWord.                       |
 | `JARVIS_SATELLITE_CHIME_MUTE_INPUT`         | `0`                              | Set to `1` to mute capture during the wake chime (needed on speakers).      |

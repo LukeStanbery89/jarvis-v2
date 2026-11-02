@@ -291,7 +291,7 @@ export function loadConfig(
         bargeInPreRollMs: envNumber(
             "JARVIS_SATELLITE_BARGE_IN_PREROLL_MS",
             env.JARVIS_SATELLITE_BARGE_IN_PREROLL_MS,
-            500,
+            1_500,
             0,
         ),
         chimesEnabled: envBool(env.JARVIS_SATELLITE_CHIMES, true),

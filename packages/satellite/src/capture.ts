@@ -355,8 +355,9 @@ export class StreamingCapture {
 
         // The detector has confirmed sustained speech. Stop treating playback
         // as authoritative, replay the recent ring into the normal segmenter,
-        // then ask the caller to kill the player. Keep only the onset window:
-        // the older ring is mostly the reply leaking into the microphone.
+        // then ask the caller to kill the player. Keep the whole pre-roll and
+        // onset: a barge may be "Hey JARVIS …" and trimming to the trigger
+        // leaves only "JARVIS", which Whisper turns into "service".
         const seed = this.trimBargeSeed(this.concatBargeRing());
         logger.debug(
             `Barge-in trigger at RMS ${level.toFixed(4)} (threshold ${this.config.bargeInThreshold})`,
@@ -372,10 +373,12 @@ export class StreamingCapture {
         this.callbacks.onBargeIn?.();
     }
 
-    /** Keeps the barge seed to the speech that caused the trigger. */
+    /** Keeps the barge seed to the pre-roll plus the trigger window. */
     private trimBargeSeed(seed: Int16Array): Int16Array {
         const maxSamples = Math.round(
-            (SAMPLE_RATE * (this.config.bargeInMs + 100)) / 1000,
+            (SAMPLE_RATE *
+                (this.config.bargeInPreRollMs + this.config.bargeInMs + 200)) /
+                1000,
         );
         if (seed.length <= maxSamples) {
             return seed;

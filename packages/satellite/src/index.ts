@@ -149,7 +149,7 @@ Environment:
   JARVIS_SATELLITE_BARGE_IN         Set to 0 to disable spoken interruption (1)
   JARVIS_SATELLITE_BARGE_IN_THRESHOLD  Barge-in RMS threshold (0.02)
   JARVIS_SATELLITE_BARGE_IN_MS      Sustained speech before interrupting (300)
-  JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (500)
+  JARVIS_SATELLITE_BARGE_IN_PREROLL_MS  Audio kept before the barge trigger (1500)
   JARVIS_SATELLITE_CHIMES           Set to 0 to disable the prompt-complete chime (1)
   JARVIS_SATELLITE_WAKE_CHIME       Set to 0 to disable the wake chime in openWakeWord (1)
   JARVIS_SATELLITE_CHIME_MUTE_INPUT Set to 1 to mute capture during the wake chime (0; headphones)
