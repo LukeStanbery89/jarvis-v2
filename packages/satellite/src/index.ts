@@ -41,6 +41,7 @@ import { resolveSessionId } from "./session";
 import { WhisperStt } from "./stt";
 import {
     extractWakeCommand,
+    isStopCommand,
     looksLikeRepeatedNoise,
     resolveWakeUtterance,
 } from "./wake";
@@ -498,7 +499,7 @@ async function runMicrophone(
     let listeningForPrompt = false;
     let wakeListenTimer: NodeJS.Timeout | null = null;
     let rearmTimer: NodeJS.Timeout | null = null;
-    let wakeFeedback: Promise<void> = Promise.resolve();
+    let wakeActive = false;
     const stopListening = (): void => {
         listeningForPrompt = false;
         if (wakeListenTimer !== null) {
@@ -554,6 +555,7 @@ async function runMicrophone(
             return;
         }
         clearRearm();
+        wakeActive = false;
         if (wakeDetector === null) {
             capture?.setWakeMode(false);
             return;
@@ -590,6 +592,7 @@ async function runMicrophone(
         logger.sensitive("Heard command", command);
         // Restore the normal VAD segmenter before playback: barge-in and the
         // follow-up window both need it. openWakeWord stops receiving frames.
+        wakeActive = false;
         owwFeeding = false;
         capture?.setWakeMode(false);
         let turnSucceeded = options.dryRun;
@@ -638,56 +641,18 @@ async function runMicrophone(
         }
         await rearmWake();
     };
-    const handleCommandAudio = async (pcm: Float32Array): Promise<void> => {
-        clearRearm();
-        await wakeFeedback;
-        stopListening();
-        const heard = await stt.transcribe(pcm);
-        process.stdout.write(`You: ${heard || "(no speech recognized)"}\n`);
-        if (
-            heard.length === 0 ||
-            !/[a-z0-9]/i.test(heard) ||
-            looksLikeRepeatedNoise(heard)
-        ) {
-            logger.warn("Ignoring a wake command that did not transcribe");
-            await rearmWake();
-            return;
-        }
-        const command = extractWakeCommand(heard) ?? heard;
-        if (command.length === 0) {
-            logger.warn("Ignoring a wake command with no command words");
-            await rearmWake();
-            return;
-        }
-        await playChime(config, audio, capture, "complete");
-        await completeTurn(command);
-    };
     const handleWake = (confidence: number): void => {
         if (stopRequested) {
             return;
         }
         clearRearm();
         owwFeeding = true;
+        wakeActive = true;
         logger.info(`Wake phrase recognized (${confidence.toFixed(2)})`);
-        wakeFeedback = (async () => {
-            // Leave capture live for headphones; muting the ~250 ms wake cue
-            // would swallow a same-breath command. Speaker deployments can set
-            // JARVIS_SATELLITE_CHIME_MUTE_INPUT=1.
-            if (config.wakeChimeEnabled) {
-                await playChime(
-                    config,
-                    audio,
-                    capture,
-                    "wake",
-                    config.chimeMuteInput,
-                );
-            }
-            if (stopRequested) {
-                return;
-            }
-            followUpUntil = Date.now() + config.wakeFollowUpMs;
-            startListening(config.wakeFollowUpMs, "wake", () => rearmWake());
-        })();
+        // The normal segmenter owns the utterance now. Do not play a chime
+        // here: a same-breath command is already in progress.
+        followUpUntil = Date.now() + config.wakeFollowUpMs;
+        startListening(config.wakeFollowUpMs, "wake", () => rearmWake());
     };
     const onLine = (line: string): void => {
         if (line.trim().toLowerCase() === "q") {
@@ -731,16 +696,30 @@ async function runMicrophone(
             },
             onUtterance: async (pcm) => {
                 clearRearm();
+                const bargeIn = Date.now() < bargeInUntil;
+                const wasFollowUp = Date.now() < followUpUntil;
+                const wasWake = wakeActive;
+                if (
+                    wakeDetector !== null &&
+                    !wasWake &&
+                    !bargeIn &&
+                    !wasFollowUp &&
+                    !followUpAtSpeechStart
+                ) {
+                    logger.debug(
+                        "Ignoring ambient speech while openWakeWord is armed",
+                    );
+                    return;
+                }
                 const heard = await stt.transcribe(pcm);
                 stopListening();
                 process.stdout.write(
                     `You: ${heard || "(no speech recognized)"}\n`,
                 );
-                const bargeIn = Date.now() < bargeInUntil;
                 bargeInUntil = 0;
-                const wasFollowUp = Date.now() < followUpUntil;
+                wakeActive = false;
                 const followUpActive =
-                    bargeIn || followUpAtSpeechStart || wasFollowUp;
+                    bargeIn || wasWake || followUpAtSpeechStart || wasFollowUp;
                 followUpAtSpeechStart = false;
                 if (bargeIn && looksLikeRepeatedNoise(heard)) {
                     logger.warn(
@@ -749,6 +728,15 @@ async function runMicrophone(
                     scheduleRearm(
                         Math.max(config.conversationFollowUpMs, 5_000),
                     );
+                    return;
+                }
+                const spoken = extractWakeCommand(heard) ?? heard;
+                if (bargeIn && isStopCommand(spoken)) {
+                    logger.info("Stopped by voice");
+                    followUpUntil = 0;
+                    client.cancel();
+                    audio.stopPlayback();
+                    await rearmWake();
                     return;
                 }
                 const decision = resolveWakeUtterance(heard, followUpActive);
@@ -776,13 +764,15 @@ async function runMicrophone(
                     logger.info(
                         "Wake phrase heard; listening for the command…",
                     );
-                    await playChime(
-                        config,
-                        audio,
-                        capture,
-                        "wake",
-                        config.chimeMuteInput,
-                    );
+                    if (config.wakeChimeEnabled) {
+                        await playChime(
+                            config,
+                            audio,
+                            capture,
+                            "wake",
+                            config.chimeMuteInput,
+                        );
+                    }
                     followUpUntil = Date.now() + config.wakeFollowUpMs;
                     startListening(config.wakeFollowUpMs, "wake", () =>
                         rearmWake(),
@@ -811,9 +801,9 @@ async function runMicrophone(
                 const detector = new OpenWakeWordDetector(config);
                 await detector.start({
                     onWake: handleWake,
-                    onCommand: (pcm) => {
-                        void handleCommandAudio(pcm);
-                    },
+                    // The normal segmenter owns the command audio; the
+                    // detector is only the wake gate now.
+                    onCommand: () => undefined,
                     onError: (error) => {
                         logger.error(
                             `openWakeWord failed (${error.message}); using transcript wake`,

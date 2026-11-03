@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     extractWakeCommand,
+    isStopCommand,
     looksLikeRepeatedNoise,
     resolveWakeUtterance,
 } from "../src/wake";
@@ -87,5 +88,20 @@ describe("looksLikeRepeatedNoise", () => {
         expect(looksLikeRepeatedNoise("stop")).toBe(false);
         expect(looksLikeRepeatedNoise("what about Chicago?")).toBe(false);
         expect(looksLikeRepeatedNoise("Hey JARVIS, stop")).toBe(false);
+    });
+});
+
+describe("isStopCommand", () => {
+    it("recognizes stop variants", () => {
+        expect(isStopCommand("stop")).toBe(true);
+        expect(isStopCommand("Stop!")).toBe(true);
+        expect(isStopCommand("stop talking please")).toBe(true);
+        expect(isStopCommand("never mind")).toBe(true);
+        expect(isStopCommand("Hey JARVIS, stop")).toBe(false);
+    });
+
+    it("does not treat real prompts as stops", () => {
+        expect(isStopCommand("stop the timer")).toBe(false);
+        expect(isStopCommand("what time is it?")).toBe(false);
     });
 });

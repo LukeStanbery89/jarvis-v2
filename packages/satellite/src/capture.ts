@@ -291,7 +291,9 @@ export class StreamingCapture {
         }
         if (this.wakeMode) {
             this.emitWakeFrames(samples);
-            return;
+            // Keep the normal segmenter running too: it owns the full
+            // wake+command utterance, so a one-breath command is not clipped
+            // at the detector's late threshold crossing.
         }
         const completed = this.segmenter.feed(samples);
         for (const utterance of completed) {

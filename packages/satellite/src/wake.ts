@@ -92,6 +92,25 @@ export function resolveWakeUtterance(
 }
 
 /**
+ * True for a spoken stop/cancel command that should end the current turn
+ * without producing a reply.
+ *
+ * The match is applied after the wake phrase is stripped, so both "stop" and
+ * "Hey JARVIS, stop" qualify. Punctuation and a trailing "please" are ignored.
+ */
+export function isStopCommand(text: string): boolean {
+    const normalized = text
+        .trim()
+        .toLowerCase()
+        .replace(/[.!?,;:]+$/g, "")
+        .replace(/\s+please$/, "")
+        .trim();
+    return /^(?:stop|stop it|stop talking|shut up|be quiet|quiet|cancel|never mind|nevermind)$/.test(
+        normalized,
+    );
+}
+
+/**
  * Recognizes a transcript that is one token repeated over and over.
  *
  * The satellite has no echo cancellation; a barge-in false trigger can seed
