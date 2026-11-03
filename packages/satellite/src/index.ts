@@ -501,6 +501,8 @@ async function runMicrophone(
     let wakeListenTimer: NodeJS.Timeout | null = null;
     let rearmTimer: NodeJS.Timeout | null = null;
     let wakeActive = false;
+    let voiceStopRequested = false;
+    let busyTranscript: Promise<void> = Promise.resolve();
     const stopListening = (): void => {
         listeningForPrompt = false;
         if (wakeListenTimer !== null) {
@@ -557,6 +559,7 @@ async function runMicrophone(
         }
         clearRearm();
         wakeActive = false;
+        voiceStopRequested = false;
         if (wakeDetector === null) {
             capture?.setWakeMode(false);
             return;
@@ -590,6 +593,11 @@ async function runMicrophone(
         rearmTimer.unref();
     };
     const completeTurn = async (command: string): Promise<void> => {
+        if (voiceStopRequested) {
+            voiceStopRequested = false;
+            await rearmWake();
+            return;
+        }
         logger.sensitive("Heard command", command);
         // Restore the normal VAD segmenter before playback: barge-in and the
         // follow-up window both need it. openWakeWord stops receiving frames.
@@ -615,6 +623,7 @@ async function runMicrophone(
                 );
             }
         }
+        voiceStopRequested = false;
         if (options.once) {
             stop();
             return;
@@ -666,6 +675,28 @@ async function runMicrophone(
     let followUpUntil = 0;
     let followUpAtSpeechStart = false;
     let bargeInUntil = 0;
+    const monitorBusyUtterance = (pcm: Float32Array): void => {
+        busyTranscript = busyTranscript
+            .then(async () => {
+                const heard = await stt.transcribe(pcm);
+                const spoken = extractCommandAfterWake(heard) ?? heard;
+                if (!isStopCommand(spoken)) {
+                    return;
+                }
+                logger.info("Stopped by voice");
+                voiceStopRequested = true;
+                bargeInUntil =
+                    Date.now() + Math.max(config.conversationFollowUpMs, 5_000);
+                client.cancel();
+                audio.stopPlayback();
+                capture?.discardQueued();
+            })
+            .catch((error: unknown) => {
+                logger.warn(
+                    `Stop monitor failed: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            });
+    };
     try {
         capture = new StreamingCapture(config, {
             onFrame: (frame) => {
@@ -687,6 +718,7 @@ async function runMicrophone(
                     wakeListenTimer = null;
                 }
             },
+            onUtteranceWhileBusy: monitorBusyUtterance,
             onBargeIn: () => {
                 bargeInUntil =
                     Date.now() + Math.max(config.conversationFollowUpMs, 5_000);
@@ -737,7 +769,13 @@ async function runMicrophone(
                 process.stdout.write(
                     `You: ${display || "(no speech recognized)"}\n`,
                 );
-                if (bargeIn && isStopCommand(spoken)) {
+                if (voiceStopRequested) {
+                    voiceStopRequested = false;
+                    followUpUntil = 0;
+                    await rearmWake();
+                    return;
+                }
+                if (isStopCommand(spoken)) {
                     logger.info("Stopped by voice");
                     followUpUntil = 0;
                     client.cancel();

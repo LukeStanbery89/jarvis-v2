@@ -38,6 +38,12 @@ export interface StreamingCaptureCallbacks {
     onSpeechStart?: () => void;
     /** One fixed-size frame for the openWakeWord detector. */
     onFrame?: (frame: Int16Array) => void;
+    /**
+     * One utterance captured while a callback is still busy. The stop monitor
+     * uses this to hear "stop" during a thinking/streaming turn; the utterance
+     * is still queued for the normal latest-wins path.
+     */
+    onUtteranceWhileBusy?: (pcm: Float32Array) => void;
     /** Called when sustained speech interrupts playback. */
     onBargeIn?: () => void;
     /** Called when the recorder cannot start or exits before `stop()`. */
@@ -299,8 +305,9 @@ export class StreamingCapture {
         for (const utterance of completed) {
             if (this.busy) {
                 // A callback is transcribing or playing the previous turn.
-                // Keep only the newest utterance: a barge-in or a replacement
-                // prompt should supersede stale queued speech.
+                // Let a stop monitor hear this utterance concurrently, then
+                // keep only the newest one for the normal path.
+                this.callbacks.onUtteranceWhileBusy?.(utterance);
                 if (this.queue.length >= this.maxQueuedUtterances) {
                     this.queue.shift();
                 }

@@ -48,9 +48,11 @@ speaker ◀──PCM── SoX/CoreAudio named pipe ◀──PCM s16le── Kok
   utterances are discarded, the last
   `JARVIS_SATELLITE_BARGE_IN_PREROLL_MS` of audio seeds the normal segmenter,
   and the interrupting utterance becomes the next command. A barge sends the
-  protocol `cancel` first so the server frees the turn for that command. There
-  is no browser echo cancellation on the SoX path, so the barge threshold is
-  higher than the wake VAD and can be tuned or disabled.
+  protocol `cancel` first so the server frees the turn for that command. A
+  spoken stop/cancel command is also watched while the model is thinking (not
+  only during playback), so it can cancel an in-flight server turn without a
+  reply. There is no browser echo cancellation on the SoX path, so the barge
+  threshold is higher than the wake VAD and can be tuned or disabled.
 - **Feedback:** the wake phrase plays a rising two-note chime and starts a
   terminal spinner while JARVIS waits for the prompt; a completed prompt plays a
   higher confirmation chime. The wake chime is generated locally and, with the
