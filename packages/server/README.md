@@ -1967,9 +1967,11 @@ fragment overhead cannot dominate the win. Enable it with:
 
 Deployment posture (deliberate):
 
-- `kokoro-js` and `@huggingface/transformers` are **optionalDependencies** —
-  TTS is config-gated like the optional tools, and a missing install makes
-  the provider report itself unavailable; it is never a boot failure.
+- `kokoro-js` is an **optionalDependency** — TTS is config-gated like the
+  optional tools, and a missing install makes the provider report itself
+  unavailable; it is never a boot failure. Its bundled `@huggingface/transformers`
+  is the only transformers.js/ONNX runtime the server loads for TTS; the
+  provider deliberately does not import a second copy.
 - Model weights are **never baked into the image**: first synthesis
   downloads the checkpoint into `~/.jarvis/tts` (created `0700` via the auth package's private-fs helpers; set via environment for local runs / `JARVIS_TTS_CACHE_DIR` only affects the standalone TTS harness — the server does not read this env var).
 - The Docker prod stage installs with `--omit=optional`, so the runtime

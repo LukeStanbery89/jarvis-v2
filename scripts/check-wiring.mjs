@@ -144,8 +144,17 @@ const untracked = execFileSync(
 )
     .split("\n")
     .filter(Boolean);
+/**
+ * A package's `src/index.ts` is the surface itself, not a component that needs
+ * an importer. This matters when a PR adds a whole new package: its entrypoint
+ * is necessarily the root of the import graph.
+ */
+function isPackageEntrypoint(file) {
+    return /^packages\/[^/]+\/src\/index\.ts$/.test(file);
+}
+
 const added = [...new Set([...addedTracked, ...untracked])].filter(
-    (file) => isSource(file) && !isBarrel(file),
+    (file) => isSource(file) && !isBarrel(file) && !isPackageEntrypoint(file),
 );
 
 // Importers may themselves be new and untracked: a brand-new surface can wire

@@ -100,6 +100,20 @@ The server URL defaults to `ws://localhost:54321/ws`. Override it with the
 JARVIS_SERVER_URL=ws://localhost:9000/ws jarvis
 ```
 
+If the server uses TLS (the local dev server does), point the CLI at `wss://`
+instead. A self-signed local certificate also needs Node to trust it for the
+login `fetch` and WebSocket handshake:
+
+```sh
+JARVIS_SERVER_URL=wss://localhost:54321/ws \
+NODE_TLS_REJECT_UNAUTHORIZED=0 \
+jarvis
+```
+
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is a development-only escape hatch; use a
+trusted certificate or `NODE_EXTRA_CA_CERTS` in a real deployment. Without the
+`wss://` URL, login reports `could not reach http://localhost:54321`.
+
 The CLI keeps one conversation-thread id **per identity** — `guest` plus one
 per logged-in account — in `~/.jarvis/session-id` (override the path with
 `JARVIS_SESSION_FILE`). The active id is sent as `sessionId` with every

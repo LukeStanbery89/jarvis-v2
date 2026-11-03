@@ -8,11 +8,11 @@
  * resolution ever modernizes, these declarations can be deleted in favor of
  * the shipped types.
  *
- * Both packages are `optionalDependencies` of the server (TTS is
- * config-gated, and the Docker prod stage installs with `--omit=optional`),
- * so nothing here is a hard runtime requirement: a missing install surfaces
- * at the lazy `import()` and is reported as an unavailable provider, never
- * as a type error.
+ * `kokoro-js` is an `optionalDependency` of the server (TTS is config-gated,
+ * and the Docker prod stage installs with `--omit=optional`), so nothing here
+ * is a hard runtime requirement: a missing install surfaces at the lazy
+ * `import()` and is reported as an unavailable provider, never as a type
+ * error.
  */
 declare module "kokoro-js" {
     /**
@@ -46,13 +46,11 @@ declare module "kokoro-js" {
             options?: { voice?: string; speed?: number },
         ): Promise<KokoroRawAudio>;
     }
-}
 
-declare module "@huggingface/transformers" {
     /**
-     * The slice of transformers.js `env` the provider touches: the model
-     * cache directory (defaults to `./.cache` relative to the process CWD,
-     * which would litter the repo — the provider pins it under `~/.jarvis`).
+     * kokoro-js re-exports its bundled transformers.js `env`; setting
+     * `cacheDir` here pins model weights under the server's private tree
+     * without importing a second transformers.js/ONNX runtime.
      */
     export const env: {
         cacheDir: string;
