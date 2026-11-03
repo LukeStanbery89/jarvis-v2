@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    extractCommandAfterWake,
     extractWakeCommand,
     isStopCommand,
     looksLikeRepeatedNoise,
@@ -103,5 +104,32 @@ describe("isStopCommand", () => {
     it("does not treat real prompts as stops", () => {
         expect(isStopCommand("stop the timer")).toBe(false);
         expect(isStopCommand("what time is it?")).toBe(false);
+    });
+});
+
+describe("extractCommandAfterWake", () => {
+    it("keeps an exact wake match", () => {
+        expect(extractCommandAfterWake("Hey JARVIS, what time is it?")).toBe(
+            "what time is it?",
+        );
+    });
+
+    it("recovers a command after a mangled wake clause", () => {
+        expect(
+            extractCommandAfterWake(
+                "You drove us, tell me about Abraham Lincoln.",
+            ),
+        ).toBe("tell me about Abraham Lincoln.");
+        expect(extractCommandAfterWake("Adriever's, what time is it?")).toBe(
+            "what time is it?",
+        );
+    });
+
+    it("does not strip long leading text", () => {
+        expect(
+            extractCommandAfterWake(
+                "This is a long sentence before the comma, and a command",
+            ),
+        ).toBeNull();
     });
 });

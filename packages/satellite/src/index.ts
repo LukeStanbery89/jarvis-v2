@@ -40,6 +40,7 @@ import { OpenWakeWordDetector } from "./openWakeWord";
 import { resolveSessionId } from "./session";
 import { WhisperStt } from "./stt";
 import {
+    extractCommandAfterWake,
     extractWakeCommand,
     isStopCommand,
     looksLikeRepeatedNoise,
@@ -132,7 +133,7 @@ Environment:
   JARVIS_SATELLITE_CA                Path to a private CA bundle
   JARVIS_SATELLITE_MODEL_DIR         Local STT cache (default: ~/.jarvis/satellite/models)
   JARVIS_SATELLITE_INPUT_DEVICE      SoX input device name (default: system default)
-  JARVIS_SATELLITE_STT_MODEL         Default: onnx-community/whisper-tiny.en
+  JARVIS_SATELLITE_STT_MODEL         Default: whisper-base.en (whisper-tiny.en on Linux arm64)
   JARVIS_SATELLITE_STT_DTYPE         Default: q8
   JARVIS_SATELLITE_SESSION_ID        Fixed conversation id
   JARVIS_SATELLITE_SILENCE_SECONDS   Trailing silence before an utterance ends (0.9)
@@ -713,9 +714,6 @@ async function runMicrophone(
                 }
                 const heard = await stt.transcribe(pcm);
                 stopListening();
-                process.stdout.write(
-                    `You: ${heard || "(no speech recognized)"}\n`,
-                );
                 bargeInUntil = 0;
                 wakeActive = false;
                 const followUpActive =
@@ -725,12 +723,20 @@ async function runMicrophone(
                     logger.warn(
                         "Ignoring a barge-in transcript that looks like playback echo",
                     );
+                    process.stdout.write(`You: ${heard}\n`);
                     scheduleRearm(
                         Math.max(config.conversationFollowUpMs, 5_000),
                     );
                     return;
                 }
-                const spoken = extractWakeCommand(heard) ?? heard;
+                const spoken =
+                    wasWake || bargeIn
+                        ? (extractCommandAfterWake(heard) ?? heard)
+                        : (extractWakeCommand(heard) ?? heard);
+                const display = spoken.length > 0 ? spoken : heard;
+                process.stdout.write(
+                    `You: ${display || "(no speech recognized)"}\n`,
+                );
                 if (bargeIn && isStopCommand(spoken)) {
                     logger.info("Stopped by voice");
                     followUpUntil = 0;
@@ -739,7 +745,10 @@ async function runMicrophone(
                     await rearmWake();
                     return;
                 }
-                const decision = resolveWakeUtterance(heard, followUpActive);
+                const decision = resolveWakeUtterance(
+                    spoken.length > 0 ? spoken : heard,
+                    followUpActive,
+                );
                 if (decision.kind === "ignore") {
                     logger.debug(
                         "Ignoring an utterance without the wake phrase",

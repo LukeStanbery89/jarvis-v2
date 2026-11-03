@@ -19,8 +19,15 @@ const DEFAULT_SERVER_URL = "wss://localhost:54321/ws";
 export const DEFAULT_WAKE_MODEL_URL =
     "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/";
 
-/** The default local STT model; the tiny English model is the Pi-friendly one. */
-const DEFAULT_STT_MODEL = "onnx-community/whisper-tiny.en";
+/**
+ * The default local STT model. The base English model is noticeably better at
+ * the short wake phrase on a Mac or a full Linux host; the tiny model remains
+ * the default on Linux arm64 (Pi Zero 2 W / Pi 4/5) where CPU is scarce.
+ */
+const DEFAULT_STT_MODEL =
+    process.platform === "linux" && process.arch === "arm64"
+        ? "onnx-community/whisper-tiny.en"
+        : "onnx-community/whisper-base.en";
 
 export interface SatelliteConfig {
     /** The `/ws` endpoint, `ws://` or `wss://`. */

@@ -50,6 +50,39 @@ export function extractWakeCommand(text: string): string | null {
         .trim();
 }
 
+/**
+ * Extracts a command when openWakeWord already proved the phrase was spoken.
+ *
+ * Whisper sometimes mangles the short wake phrase into a different leading
+ * clause ("You drove us, tell me…"). The detector is the authority on whether
+ * the phrase happened, so when exact matching fails, a short comma-terminated
+ * leading clause is treated as the misheard wake phrase.
+ *
+ * @param text - The full local transcript.
+ * @returns The command, `""` for a wake-only utterance, or `null` when no
+ *   command can be recovered.
+ */
+export function extractCommandAfterWake(text: string): string | null {
+    const exact = extractWakeCommand(text);
+    if (exact !== null) {
+        return exact;
+    }
+    const comma = text.indexOf(",");
+    if (comma <= 0) {
+        return null;
+    }
+    const prefix = text.slice(0, comma).trim();
+    const command = text.slice(comma + 1).trim();
+    if (command.length === 0) {
+        return null;
+    }
+    const words = prefix.match(/[a-z0-9']+/gi) ?? [];
+    if (words.length === 0 || words.length > 4) {
+        return null;
+    }
+    return command;
+}
+
 /** What the wake loop should do with one transcript. */
 export type WakeDecision =
     | { readonly kind: "ignore" }

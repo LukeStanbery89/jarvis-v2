@@ -1,7 +1,8 @@
 /**
  * Local speech-to-text through Transformers.js.
  *
- * The first satellite slice runs Whisper tiny.en on CPU, fully on-device. The
+ * The satellite runs Whisper locally on CPU, fully on-device (base.en by
+ * default, tiny.en on Linux arm64). The
  * model is downloaded once into the satellite's private cache and then loaded
  * lazily; the microphone path never sends raw audio to the server. The engine
  * is behind {@link WhisperStt} so a Vosk or whisper.cpp provider can replace
